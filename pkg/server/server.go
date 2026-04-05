@@ -1,0 +1,502 @@
+// Package server implements the MCP server using mcp-go SDK.
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/thebtf/aimux/pkg/config"
+	"github.com/thebtf/aimux/pkg/driver"
+	"github.com/thebtf/aimux/pkg/executor"
+	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
+	"github.com/thebtf/aimux/pkg/logger"
+	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/session"
+	"github.com/thebtf/aimux/pkg/types"
+)
+
+const serverVersion = "3.0.0-dev"
+
+// Server holds all dependencies for the MCP server.
+type Server struct {
+	cfg      *config.Config
+	log      *logger.Logger
+	registry *driver.Registry
+	router   *routing.Router
+	sessions *session.Registry
+	jobs     *session.JobManager
+	breakers *executor.BreakerRegistry
+	executor types.Executor
+	mcp      *server.MCPServer
+}
+
+// New creates a new MCP server with all dependencies wired.
+func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *routing.Router) *Server {
+	s := &Server{
+		cfg:      cfg,
+		log:      log,
+		registry: reg,
+		router:   router,
+		sessions: session.NewRegistry(),
+		jobs:     session.NewJobManager(),
+		breakers: executor.NewBreakerRegistry(executor.BreakerConfig{
+			FailureThreshold: cfg.CircuitBreaker.FailureThreshold,
+			CooldownSeconds:  cfg.CircuitBreaker.CooldownSeconds,
+			HalfOpenMaxCalls: cfg.CircuitBreaker.HalfOpenMaxCalls,
+		}),
+		executor: pipeExec.New(), // Default to pipe; ConPTY/PTY added later
+	}
+
+	// Create MCP server with capabilities
+	s.mcp = server.NewMCPServer(
+		"aimux",
+		serverVersion,
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true),
+		server.WithPromptCapabilities(true),
+		server.WithLogging(),
+		server.WithRecovery(),
+	)
+
+	s.registerTools()
+	s.registerResources()
+	s.registerPrompts()
+
+	return s
+}
+
+// ServeStdio starts the MCP server on stdio transport.
+func (s *Server) ServeStdio() error {
+	s.log.Info("MCP server starting on stdio (aimux v%s)", serverVersion)
+	return server.ServeStdio(s.mcp)
+}
+
+// --- Tool Registration ---
+
+func (s *Server) registerTools() {
+	// exec tool
+	s.mcp.AddTool(
+		mcp.NewTool("exec",
+			mcp.WithDescription("Execute a prompt via an AI coding CLI"),
+			mcp.WithString("prompt",
+				mcp.Required(),
+				mcp.Description("The prompt to send to the CLI"),
+			),
+			mcp.WithString("cli",
+				mcp.Description("CLI override (auto-resolved from role)"),
+			),
+			mcp.WithString("role",
+				mcp.Description("Task type: coding, codereview, thinkdeep, secaudit, debug, planner, analyze, refactor, testgen, docgen"),
+			),
+			mcp.WithString("model",
+				mcp.Description("Model override"),
+			),
+			mcp.WithString("reasoning_effort",
+				mcp.Description("Reasoning effort: low/medium/high/xhigh"),
+			),
+			mcp.WithString("cwd",
+				mcp.Description("Working directory for the CLI process"),
+			),
+			mcp.WithString("session_id",
+				mcp.Description("Resume session by ID"),
+			),
+			mcp.WithBoolean("async",
+				mcp.Description("Return job_id immediately for background execution"),
+			),
+			mcp.WithBoolean("read_only",
+				mcp.Description("Execute in read-only sandbox mode"),
+			),
+			mcp.WithNumber("timeout_seconds",
+				mcp.Description("Timeout override in seconds"),
+			),
+		),
+		s.handleExec,
+	)
+
+	// status tool
+	s.mcp.AddTool(
+		mcp.NewTool("status",
+			mcp.WithDescription("Check async job status"),
+			mcp.WithString("job_id",
+				mcp.Required(),
+				mcp.Description("Job ID from async exec response"),
+			),
+		),
+		s.handleStatus,
+	)
+
+	// sessions tool
+	s.mcp.AddTool(
+		mcp.NewTool("sessions",
+			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc"),
+			mcp.WithString("action",
+				mcp.Required(),
+				mcp.Description("Action: list, info, kill, gc, health, cancel"),
+				mcp.Enum("list", "info", "kill", "gc", "health", "cancel"),
+			),
+			mcp.WithString("session_id",
+				mcp.Description("Session ID (required for info/kill)"),
+			),
+			mcp.WithString("job_id",
+				mcp.Description("Job ID (required for cancel)"),
+			),
+			mcp.WithString("status",
+				mcp.Description("Filter by status: active, completed, failed, all"),
+			),
+			mcp.WithNumber("limit",
+				mcp.Description("Max results (default 10)"),
+			),
+		),
+		s.handleSessions,
+	)
+}
+
+func (s *Server) registerResources() {
+	// Job resource
+	s.mcp.AddResource(
+		mcp.NewResource(
+			"aimux://health",
+			"Server Health",
+			mcp.WithResourceDescription("Current server health and running jobs"),
+			mcp.WithMIMEType("application/json"),
+		),
+		s.handleHealthResource,
+	)
+}
+
+func (s *Server) registerPrompts() {
+	// Background execution protocol prompt
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-background",
+			mcp.WithPromptDescription("Step-by-step orchestration for running aimux CLI tasks in background"),
+			mcp.WithArgument("task_description",
+				mcp.ArgumentDescription("Description of the task to execute"),
+			),
+		),
+		s.handleBackgroundPrompt,
+	)
+}
+
+// --- Tool Handlers ---
+
+func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	prompt, err := request.RequireString("prompt")
+	if err != nil {
+		return mcp.NewToolResultError("prompt is required"), nil
+	}
+
+	cli := request.GetString("cli", "")
+	role := request.GetString("role", "default")
+	model := request.GetString("model", "")
+	effort := request.GetString("reasoning_effort", "")
+	cwd := request.GetString("cwd", "")
+	sessionID := request.GetString("session_id", "")
+	async := request.GetBool("async", false)
+	readOnly := request.GetBool("read_only", false)
+	timeoutSec := int(request.GetFloat("timeout_seconds", 0))
+
+	_ = sessionID // Will be used for session resume in Phase 4
+
+	// Resolve CLI from role
+	if cli == "" {
+		pref, resolveErr := s.router.Resolve(role)
+		if resolveErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("role resolution failed: %v", resolveErr)), nil
+		}
+		cli = pref.CLI
+		if model == "" {
+			model = pref.Model
+		}
+		if effort == "" {
+			effort = pref.ReasoningEffort
+		}
+	}
+
+	// Check circuit breaker
+	cb := s.breakers.Get(cli)
+	if !cb.Allow() {
+		return mcp.NewToolResultError(types.NewCircuitOpenError(cli).Error()), nil
+	}
+
+	// Get CLI profile
+	profile, profileErr := s.registry.Get(cli)
+	if profileErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("CLI %q not configured", cli)), nil
+	}
+
+	// Resolve read_only from role
+	if routing.IsAdvisory(role) {
+		readOnly = true
+	}
+
+	// Resolve timeout
+	if timeoutSec == 0 {
+		timeoutSec = profile.TimeoutSeconds
+	}
+
+	// Create session + job
+	sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+	job := s.jobs.Create(sess.ID, cli)
+
+	// Build spawn args
+	args := types.SpawnArgs{
+		CLI:            cli,
+		Command:        profile.Command.Base,
+		Args:           buildArgs(profile, model, effort, readOnly, prompt),
+		CWD:            cwd,
+		TimeoutSeconds: timeoutSec,
+	}
+
+	s.log.Info("exec: cli=%s role=%s job=%s async=%v", cli, role, job.ID, async)
+
+	if async {
+		// Async mode: execute in background, return job_id immediately
+		go s.executeJob(context.Background(), job.ID, sess.ID, args, cb)
+
+		result := map[string]any{
+			"job_id":     job.ID,
+			"session_id": sess.ID,
+			"status":     "running",
+		}
+		data, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(data)), nil
+	}
+
+	// Sync mode: execute and return
+	s.executeJob(ctx, job.ID, sess.ID, args, cb)
+
+	j := s.jobs.Get(job.ID)
+	if j == nil {
+		return mcp.NewToolResultError("job disappeared"), nil
+	}
+
+	if j.Status == types.JobStatusFailed && j.Error != nil {
+		return mcp.NewToolResultError(j.Error.Error()), nil
+	}
+
+	result := map[string]any{
+		"session_id": sess.ID,
+		"status":     string(j.Status),
+		"content":    j.Content,
+	}
+	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+// executeJob runs a CLI process and updates job/session state.
+func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args types.SpawnArgs, cb *executor.CircuitBreaker) {
+	s.jobs.StartJob(jobID, 0)
+	s.sessions.Update(sessionID, func(sess *session.Session) {
+		sess.Status = types.SessionStatusRunning
+	})
+
+	result, err := s.executor.Run(ctx, args)
+
+	if err != nil {
+		cb.RecordFailure(false)
+		s.jobs.FailJob(jobID, types.NewExecutorError(err.Error(), err, ""))
+		s.sessions.Update(sessionID, func(sess *session.Session) {
+			sess.Status = types.SessionStatusFailed
+		})
+		s.log.Error("exec failed: job=%s error=%v", jobID, err)
+		return
+	}
+
+	cb.RecordSuccess()
+
+	if result.Error != nil {
+		s.jobs.FailJob(jobID, result.Error)
+		s.sessions.Update(sessionID, func(sess *session.Session) {
+			sess.Status = types.SessionStatusFailed
+		})
+		s.log.Warn("exec partial: job=%s error=%v", jobID, result.Error)
+		return
+	}
+
+	s.jobs.CompleteJob(jobID, result.Content, result.ExitCode)
+	s.sessions.Update(sessionID, func(sess *session.Session) {
+		sess.Status = types.SessionStatusCompleted
+		sess.Turns++
+	})
+	s.log.Info("exec complete: job=%s exit=%d len=%d", jobID, result.ExitCode, len(result.Content))
+}
+
+func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	jobID, err := request.RequireString("job_id")
+	if err != nil {
+		return mcp.NewToolResultError("job_id is required"), nil
+	}
+
+	j := s.jobs.Get(jobID)
+	if j == nil {
+		return mcp.NewToolResultError(fmt.Sprintf("job %q not found", jobID)), nil
+	}
+
+	pollCount := s.jobs.IncrementPoll(jobID)
+
+	result := map[string]any{
+		"job_id":     j.ID,
+		"status":     string(j.Status),
+		"progress":   j.Progress,
+		"poll_count": pollCount,
+		"session_id": j.SessionID,
+	}
+
+	if j.Status == types.JobStatusCompleted || j.Status == types.JobStatusFailed {
+		result["content"] = j.Content
+		if j.Error != nil {
+			result["error"] = j.Error.Error()
+		}
+	}
+
+	if pollCount >= 3 {
+		result["warning"] = "Polling detected. Prefer background tasks over polling."
+	}
+
+	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	action, err := request.RequireString("action")
+	if err != nil {
+		return mcp.NewToolResultError("action is required"), nil
+	}
+
+	switch action {
+	case "list":
+		statusFilter := request.GetString("status", "")
+		sessions := s.sessions.List(types.SessionStatus(statusFilter))
+		data, _ := json.Marshal(map[string]any{
+			"sessions": sessions,
+			"count":    len(sessions),
+		})
+		return mcp.NewToolResultText(string(data)), nil
+
+	case "info":
+		sessionID := request.GetString("session_id", "")
+		if sessionID == "" {
+			return mcp.NewToolResultError("session_id required for info"), nil
+		}
+		sess := s.sessions.Get(sessionID)
+		if sess == nil {
+			return mcp.NewToolResultError("session not found"), nil
+		}
+		jobs := s.jobs.ListBySession(sessionID)
+		data, _ := json.Marshal(map[string]any{
+			"session": sess,
+			"jobs":    jobs,
+		})
+		return mcp.NewToolResultText(string(data)), nil
+
+	case "health":
+		running := s.jobs.ListRunning()
+		data, _ := json.Marshal(map[string]any{
+			"total_sessions": s.sessions.Count(),
+			"running_jobs":   len(running),
+		})
+		return mcp.NewToolResultText(string(data)), nil
+
+	case "cancel":
+		jobID := request.GetString("job_id", "")
+		if jobID == "" {
+			return mcp.NewToolResultError("job_id required for cancel"), nil
+		}
+		j := s.jobs.Get(jobID)
+		if j == nil {
+			return mcp.NewToolResultError("job not found"), nil
+		}
+		s.jobs.FailJob(jobID, types.NewExecutorError("cancelled by user", nil, ""))
+		return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
+
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
+	}
+}
+
+// --- Resource Handlers ---
+
+func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	running := s.jobs.ListRunning()
+	health := map[string]any{
+		"version":        serverVersion,
+		"total_sessions": s.sessions.Count(),
+		"running_jobs":   len(running),
+	}
+	data, _ := json.Marshal(health)
+
+	return []mcp.ResourceContents{
+		mcp.TextResourceContents{
+			URI:      request.Params.URI,
+			MIMEType: "application/json",
+			Text:     string(data),
+		},
+	}, nil
+}
+
+// --- Prompt Handlers ---
+
+func (s *Server) handleBackgroundPrompt(ctx context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	taskDesc := ""
+	if args := request.Params.Arguments; args != nil {
+		if desc, exists := args["task_description"]; exists && desc != "" {
+			taskDesc = desc
+		}
+	}
+
+	instructions := "Use aimux exec with async=true for background execution. " +
+		"Check status with the status tool using the returned job_id. " +
+		"Prefer background tasks over synchronous calls for long-running operations."
+
+	if taskDesc != "" {
+		instructions = fmt.Sprintf("Task: %s\n\n%s", taskDesc, instructions)
+	}
+
+	return mcp.NewGetPromptResult(
+		"Background execution protocol",
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(
+				mcp.RoleAssistant,
+				mcp.NewTextContent(instructions),
+			),
+		},
+	), nil
+}
+
+// --- Helpers ---
+
+// buildArgs constructs CLI arguments from profile and parameters.
+func buildArgs(profile *config.CLIProfile, model, effort string, readOnly bool, prompt string) []string {
+	var args []string
+
+	if profile.Features.Headless && profile.Name == "codex" {
+		args = append(args, "--full-auto")
+	}
+
+	if readOnly && len(profile.ReadOnlyFlags) > 0 {
+		args = append(args, profile.ReadOnlyFlags...)
+	}
+
+	if model != "" && profile.ModelFlag != "" {
+		args = append(args, profile.ModelFlag, model)
+	}
+
+	if effort != "" && profile.Reasoning != nil {
+		if profile.Reasoning.FlagValueTemplate != "" {
+			val := fmt.Sprintf(profile.Reasoning.FlagValueTemplate, effort)
+			args = append(args, profile.Reasoning.Flag, val)
+		} else {
+			args = append(args, profile.Reasoning.Flag, effort)
+		}
+	}
+
+	if prompt != "" && profile.PromptFlag != "" {
+		args = append(args, profile.PromptFlag, prompt)
+	}
+
+	return args
+}
