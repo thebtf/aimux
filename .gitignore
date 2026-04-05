@@ -2,6 +2,7 @@
 /aimux
 /aimux.exe
 /dist/
+*.exe
 
 # IDE
 .idea/
