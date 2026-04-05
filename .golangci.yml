@@ -1,0 +1,31 @@
+# Anti-stub linter configuration for aimux v3
+# Constitution P17: No Stubs — enforced via static analysis
+
+linters:
+  enable:
+    - ineffassign     # catches _ = computedValue (STUB-DISCARD)
+    - staticcheck     # SA4006: value assigned and never used
+    - govet           # standard Go vet checks
+    - unused          # unused variables, functions, types
+    - godox           # catches TODO/FIXME/HACK comments (STUB-TODO)
+
+linters-settings:
+  staticcheck:
+    checks:
+      - "SA4006"      # value assigned to _ and never used
+      - "SA4009"      # function argument overwritten before first use
+      - "SA1006"      # Printf with no formatting verbs
+  godox:
+    keywords:
+      - TODO
+      - FIXME
+      - HACK
+      - SCAFFOLD
+      - PLACEHOLDER
+
+issues:
+  exclude-rules:
+    - path: "_test.go"
+      linters: [godox]  # allow TODOs in test files
+    - path: "cmd/aimux/shutdown.go"
+      linters: [godox]  # shutdown documentation uses TODO for future work
