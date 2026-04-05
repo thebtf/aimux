@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +63,29 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		done <- cmd.Wait()
 	}()
 
+	// Completion pattern: poll stdout for pattern match (process may not exit after completing)
+	var patternDone <-chan struct{}
+	if args.CompletionPattern != "" {
+		patternCh := make(chan struct{}, 1)
+		patternDone = patternCh
+		re := regexp.MustCompile(args.CompletionPattern)
+		go func() {
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if re.MatchString(stdout.String()) {
+						patternCh <- struct{}{}
+						return
+					}
+				case <-done:
+					return // process exited, stop checking
+				}
+			}
+		}()
+	}
+
 	// Build optional timeout channel
 	var timerC <-chan time.Time
 	if args.TimeoutSeconds > 0 {
@@ -85,6 +109,16 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		return &types.Result{
 			Content:    stdout.String(),
 			ExitCode:   exitCode,
+			DurationMS: time.Since(start).Milliseconds(),
+		}, nil
+
+	case <-patternDone:
+		// Completion pattern matched — kill process and return output
+		_ = killProcess(cmd)
+		<-done
+		return &types.Result{
+			Content:    stdout.String(),
+			ExitCode:   0,
 			DurationMS: time.Since(start).Milliseconds(),
 		}, nil
 

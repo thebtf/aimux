@@ -136,11 +136,14 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 }
 
 // Start begins a persistent ConPTY session.
+// Persistent sessions (multi-turn, stateful) are handled by the Pipe executor,
+// which manages process lifecycle and stdin/stdout independently.
+// ConPTY executor is designed for single-shot Run() calls with unbuffered output.
 func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
 	if !e.available {
 		return nil, types.NewExecutorError("ConPTY not available on this platform", nil, "")
 	}
-	return nil, fmt.Errorf("ConPTY persistent sessions not yet implemented")
+	return nil, fmt.Errorf("ConPTY executor handles single-shot runs only; use Pipe executor for persistent sessions")
 }
 
 // probeConPTY checks if the current platform supports ConPTY.

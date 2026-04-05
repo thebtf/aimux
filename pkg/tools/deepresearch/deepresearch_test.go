@@ -6,33 +6,77 @@ import (
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 )
 
-func TestNew_Defaults(t *testing.T) {
-	dr := deepresearch.New("", 0)
-	if dr.Model() != "deep-research-pro-preview-12-2025" {
-		t.Errorf("Model = %q, want default", dr.Model())
-	}
-	if dr.TimeoutSeconds() != 1800 {
-		t.Errorf("Timeout = %d, want 1800", dr.TimeoutSeconds())
+func TestNewClient_MissingAPIKey(t *testing.T) {
+	// Ensure env vars are not set for this test
+	t.Setenv("GOOGLE_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+
+	_, err := deepresearch.NewClient("", 0)
+	if err == nil {
+		t.Fatal("expected error when no API key set")
 	}
 }
 
-func TestNew_Custom(t *testing.T) {
-	dr := deepresearch.New("custom-model", 600)
-	if dr.Model() != "custom-model" {
-		t.Errorf("Model = %q, want custom-model", dr.Model())
-	}
-	if dr.TimeoutSeconds() != 600 {
-		t.Errorf("Timeout = %d, want 600", dr.TimeoutSeconds())
-	}
-}
+func TestNewClient_WithAPIKey(t *testing.T) {
+	t.Setenv("GOOGLE_API_KEY", "test-key-123")
 
-func TestExecute_Placeholder(t *testing.T) {
-	dr := deepresearch.New("", 0)
-	result, err := dr.Execute("test topic", "summary", nil)
+	client, err := deepresearch.NewClient("", 0)
 	if err != nil {
-		t.Fatalf("Execute: %v", err)
+		t.Fatalf("NewClient: %v", err)
 	}
-	if result == "" {
-		t.Error("expected non-empty result")
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestNewClient_CustomModel(t *testing.T) {
+	t.Setenv("GOOGLE_API_KEY", "test-key-456")
+
+	client, err := deepresearch.NewClient("custom-model", 600)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestCache_PutGet(t *testing.T) {
+	cache := deepresearch.NewCache()
+
+	cache.Put("topic1", "summary", "model1", nil, "result content")
+
+	entry, ok := cache.Get("topic1", "summary", "model1", nil)
+	if !ok {
+		t.Fatal("expected cache hit")
+	}
+	if entry.Content != "result content" {
+		t.Errorf("Content = %q, want %q", entry.Content, "result content")
+	}
+}
+
+func TestCache_Miss(t *testing.T) {
+	cache := deepresearch.NewCache()
+
+	_, ok := cache.Get("nonexistent", "summary", "model1", nil)
+	if ok {
+		t.Fatal("expected cache miss")
+	}
+}
+
+func TestCache_DifferentInputsDifferentResults(t *testing.T) {
+	cache := deepresearch.NewCache()
+
+	cache.Put("topic1", "summary", "model1", nil, "result A")
+	cache.Put("topic2", "summary", "model1", nil, "result B")
+
+	entryA, okA := cache.Get("topic1", "summary", "model1", nil)
+	entryB, okB := cache.Get("topic2", "summary", "model1", nil)
+
+	if !okA || !okB {
+		t.Fatal("expected both cache hits")
+	}
+	if entryA.Content == entryB.Content {
+		t.Error("different topics should produce different cached results")
 	}
 }

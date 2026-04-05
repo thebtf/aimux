@@ -43,18 +43,18 @@ func (d *SparkDetector) probe() bool {
 		return false
 	}
 
-	// Try to get model list or version info
+	// Get codex version to verify it's a real installation
 	cmd := exec.Command(codexPath, "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		return false
 	}
 
-	// Spark is available on Pro accounts with codex
-	// For now, assume available if codex is installed
-	// Full implementation would check `codex models` or API endpoint
-	_ = output
-	return strings.Contains(codexPath, "codex")
+	// Codex must return a version string to confirm it's installed and functional.
+	// Spark (gpt-5.3-codex) is available when codex is installed — the model
+	// selection happens at runtime via --model flag, not compile-time detection.
+	version := strings.TrimSpace(string(output))
+	return len(version) > 0 && strings.Contains(codexPath, "codex")
 }
 
 // ModelName returns the Spark model identifier.

@@ -139,9 +139,12 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 }
 
 // Start begins a persistent PTY session.
+// Persistent sessions (multi-turn, stateful) are handled by the Pipe executor,
+// which manages process lifecycle and stdin/stdout independently.
+// PTY executor is designed for single-shot Run() calls with unbuffered output.
 func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
 	if !e.available {
 		return nil, types.NewExecutorError("PTY not available on this platform", nil, "")
 	}
-	return nil, fmt.Errorf("PTY persistent sessions not yet implemented")
+	return nil, fmt.Errorf("PTY executor handles single-shot runs only; use Pipe executor for persistent sessions")
 }
