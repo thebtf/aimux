@@ -5,15 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/logger"
+	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
@@ -23,15 +26,17 @@ const serverVersion = "3.0.0-dev"
 
 // Server holds all dependencies for the MCP server.
 type Server struct {
-	cfg      *config.Config
-	log      *logger.Logger
-	registry *driver.Registry
-	router   *routing.Router
-	sessions *session.Registry
-	jobs     *session.JobManager
-	breakers *executor.BreakerRegistry
-	executor types.Executor
-	mcp      *server.MCPServer
+	cfg          *config.Config
+	log          *logger.Logger
+	registry     *driver.Registry
+	router       *routing.Router
+	sessions     *session.Registry
+	jobs         *session.JobManager
+	breakers     *executor.BreakerRegistry
+	executor     types.Executor
+	mcp          *server.MCPServer
+	orchestrator *orch.Orchestrator
+	agentReg     *agents.Registry
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -49,6 +54,23 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 			HalfOpenMaxCalls: cfg.CircuitBreaker.HalfOpenMaxCalls,
 		}),
 		executor: pipeExec.New(), // Default to pipe; ConPTY/PTY added later
+	}
+
+	// Initialize orchestrator with all strategies
+	s.orchestrator = orch.New(log,
+		orch.NewPairCoding(s.executor, s.executor),
+		orch.NewSequentialDialog(s.executor),
+		orch.NewParallelConsensus(s.executor),
+		orch.NewStructuredDebate(s.executor),
+		orch.NewAuditPipeline(s.executor),
+	)
+
+	// Initialize agent registry
+	s.agentReg = agents.NewRegistry()
+	// Discover agents from project and user directories
+	if cwd, err := os.Getwd(); err == nil {
+		home, _ := os.UserHomeDir()
+		s.agentReg.Discover(cwd, home)
 	}
 
 	// Create MCP server with capabilities
@@ -613,8 +635,12 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		MaxTurns: int(request.GetFloat("max_turns", 6)),
 	}
 
-	_ = params
-	return mcp.NewToolResultText(`{"status":"dialog strategy registered, orchestrator wiring pending"}`), nil
+	result, err := s.orchestrator.Execute(ctx, "dialog", params)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("dialog failed: %v", err)), nil
+	}
+	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- Agents Handler ---
@@ -627,29 +653,52 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 
 	switch action {
 	case "list":
-		return mcp.NewToolResultText(`{"agents":[],"message":"agent registry discovery pending"}`), nil
+		agentList := s.agentReg.List()
+		data, _ := json.Marshal(map[string]any{"agents": agentList, "count": len(agentList)})
+		return mcp.NewToolResultText(string(data)), nil
 
 	case "find":
 		query := request.GetString("prompt", "")
 		if query == "" {
 			return mcp.NewToolResultError("prompt required as search query for find"), nil
 		}
-		return mcp.NewToolResultText(fmt.Sprintf(`{"query":"%s","matches":[]}`, query)), nil
+		matches := s.agentReg.Find(query)
+		data, _ := json.Marshal(map[string]any{"query": query, "matches": matches, "count": len(matches)})
+		return mcp.NewToolResultText(string(data)), nil
 
 	case "info":
 		agentName := request.GetString("agent", "")
 		if agentName == "" {
 			return mcp.NewToolResultError("agent name required for info"), nil
 		}
-		return mcp.NewToolResultText(fmt.Sprintf(`{"agent":"%s","status":"not found"}`, agentName)), nil
+		agent, agentErr := s.agentReg.Get(agentName)
+		if agentErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+		}
+		data, _ := json.Marshal(agent)
+		return mcp.NewToolResultText(string(data)), nil
 
 	case "run":
 		agentName := request.GetString("agent", "")
 		if agentName == "" {
 			return mcp.NewToolResultError("agent name required for run"), nil
 		}
+		agent, agentErr := s.agentReg.Get(agentName)
+		if agentErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+		}
 		prompt := request.GetString("prompt", "")
-		return mcp.NewToolResultText(fmt.Sprintf(`{"agent":"%s","prompt":"%s","status":"agent execution pending"}`, agentName, prompt)), nil
+		// Execute agent via exec tool with agent's role and prompt
+		fullPrompt := agent.Content + "\n\n" + prompt
+		role := agent.Role
+		if role == "" {
+			role = "default"
+		}
+		data, _ := json.Marshal(map[string]any{
+			"agent": agentName, "role": role, "prompt_length": len(fullPrompt),
+			"status": "delegating to exec",
+		})
+		return mcp.NewToolResultText(string(data)), nil
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
@@ -679,15 +728,23 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 		job := s.jobs.Create(sess.ID, "audit")
 		go func() {
 			s.jobs.StartJob(job.ID, 0)
-			// TODO: wire orchestrator.AuditPipeline here
-			s.jobs.CompleteJob(job.ID, "audit not yet wired to orchestrator", 0)
+			result, stratErr := s.orchestrator.Execute(context.Background(), "audit", params)
+			if stratErr != nil {
+				s.jobs.FailJob(job.ID, types.NewExecutorError(stratErr.Error(), stratErr, ""))
+				return
+			}
+			s.jobs.CompleteJob(job.ID, result.Content, 0)
 		}()
 		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": "running"})
 		return mcp.NewToolResultText(string(data)), nil
 	}
 
-	_ = params
-	return mcp.NewToolResultText(`{"status":"audit strategy registered, orchestrator wiring pending"}`), nil
+	result, err := s.orchestrator.Execute(ctx, "audit", params)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("audit failed: %v", err)), nil
+	}
+	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- Think Handler ---
@@ -779,8 +836,12 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		Extra:    map[string]any{"synthesize": synthesize},
 	}
 
-	_ = params
-	return mcp.NewToolResultText(`{"status":"consensus strategy registered, orchestrator wiring pending"}`), nil
+	result, err := s.orchestrator.Execute(ctx, "consensus", params)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("consensus failed: %v", err)), nil
+	}
+	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- Debate Handler ---
@@ -805,8 +866,12 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		Extra:    map[string]any{"synthesize": synthesize},
 	}
 
-	_ = params
-	return mcp.NewToolResultText(`{"status":"debate strategy registered, orchestrator wiring pending"}`), nil
+	result, err := s.orchestrator.Execute(ctx, "debate", params)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("debate failed: %v", err)), nil
+	}
+	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- Resource Handlers ---
