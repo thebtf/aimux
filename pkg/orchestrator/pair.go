@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/thebtf/aimux/pkg/types"
@@ -179,19 +181,19 @@ func (p *PairCoding) Execute(ctx context.Context, params types.StrategyParams) (
 }
 
 // reviewHunks sends each hunk to the reviewer for validation.
+// Loads review-checklist.md from prompts.d/ if available (includes anti-stub rules).
 func (p *PairCoding) reviewHunks(ctx context.Context, hunks []DiffHunk, reviewerCLI string, params types.StrategyParams) ([]types.HunkReview, error) {
-	// Build review prompt with all hunks
+	// Load review checklist from prompts.d/ (includes 7th criterion: Completeness/anti-stub)
+	checklist := loadReviewChecklist()
+
+	// Build review prompt with checklist + hunks
 	var sb strings.Builder
-	sb.WriteString("Review the following code changes. For each hunk, respond with a JSON array of verdicts.\n\n")
-	sb.WriteString("Original task: " + params.Prompt + "\n\n")
+	sb.WriteString(checklist)
+	sb.WriteString("\n\nOriginal task: " + params.Prompt + "\n\n")
 
 	for _, h := range hunks {
 		sb.WriteString(fmt.Sprintf("### Hunk %d (%s)\n```diff\n%s```\n\n", h.Index, h.FilePath, h.Content))
 	}
-
-	sb.WriteString("Respond with a JSON array:\n")
-	sb.WriteString(`[{"hunk_index": 0, "verdict": "approved|modified|changes_requested", "comment": "...", "modified": "..."}]`)
-	sb.WriteString("\n\nVerdicts: approved (hunk is correct), modified (fixed version in 'modified' field), changes_requested (explain issue in 'comment')")
 
 	reviewResult, err := p.reviewer.Run(ctx, types.SpawnArgs{
 		CLI:            reviewerCLI,
@@ -295,4 +297,46 @@ func buildReprompt(originalPrompt string, reviews []types.HunkReview) string {
 
 	sb.WriteString("\nPlease address the feedback and produce an updated unified diff.")
 	return sb.String()
+}
+
+// loadReviewChecklist loads review-checklist.md from prompts.d/ directories.
+// Falls back to a minimal hardcoded checklist if file not found.
+func loadReviewChecklist() string {
+	// Search in common locations
+	searchPaths := []string{
+		"config/prompts.d/review-checklist.md",
+		filepath.Join("..", "config", "prompts.d", "review-checklist.md"),
+	}
+
+	// Also check AIMUX_CONFIG_DIR
+	if configDir := os.Getenv("AIMUX_CONFIG_DIR"); configDir != "" {
+		searchPaths = append([]string{
+			filepath.Join(configDir, "prompts.d", "review-checklist.md"),
+		}, searchPaths...)
+	}
+
+	for _, path := range searchPaths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return string(data)
+		}
+	}
+
+	// Fallback: minimal checklist with anti-stub rules
+	return `Review each hunk against this checklist:
+1. Correctness: Does the code do what the task asks?
+2. Security: Any injection, hardcoded secrets, unsafe input?
+3. Performance: Obvious inefficiencies?
+4. Style: Follows conventions?
+5. Tests: Edge cases covered?
+6. Scope: Within requested scope?
+7. Completeness: Is this real implementation, not a stub?
+   - _ = variable (STUB-PASSTHROUGH)
+   - Hardcoded return strings (STUB-HARDCODED)
+   - Log-only function bodies (STUB-NOOP)
+   - TODO/FIXME comments (STUB-TODO)
+   If ANY stub detected: verdict MUST be changes_requested with STUB-* rule ID.
+
+Respond as JSON array:
+[{"hunk_index": 0, "verdict": "approved|modified|changes_requested", "comment": "...", "modified": "..."}]`
 }
