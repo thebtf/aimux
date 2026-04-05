@@ -1,0 +1,135 @@
+package pipe_test
+
+import (
+	"context"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/thebtf/aimux/pkg/executor/pipe"
+	"github.com/thebtf/aimux/pkg/types"
+)
+
+func echoCommand() (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd", []string{"/c", "echo", "hello world"}
+	}
+	return "echo", []string{"hello world"}
+}
+
+func sleepCommand() (string, []string) {
+	if runtime.GOOS == "windows" {
+		// ping -n 6 = ~5 seconds (1 per second + 1 initial)
+		return "ping", []string{"-n", "6", "127.0.0.1"}
+	}
+	return "sleep", []string{"5"}
+}
+
+func TestPipeExecutor_Run_Echo(t *testing.T) {
+	exec := pipe.New()
+
+	if exec.Name() != "pipe" {
+		t.Errorf("Name = %q, want pipe", exec.Name())
+	}
+	if !exec.Available() {
+		t.Error("pipe executor should always be available")
+	}
+
+	cmd, args := echoCommand()
+
+	result, err := exec.Run(context.Background(), types.SpawnArgs{
+		Command: cmd,
+		Args:    args,
+	})
+
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", result.ExitCode)
+	}
+
+	if !strings.Contains(result.Content, "hello world") {
+		t.Errorf("Content = %q, want to contain 'hello world'", result.Content)
+	}
+
+	if result.DurationMS <= 0 {
+		t.Error("DurationMS should be positive")
+	}
+}
+
+func TestPipeExecutor_Run_Timeout(t *testing.T) {
+	exec := pipe.New()
+
+	cmd, args := sleepCommand()
+
+	result, err := exec.Run(context.Background(), types.SpawnArgs{
+		Command:        cmd,
+		Args:           args,
+		TimeoutSeconds: 1,
+	})
+
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.ExitCode != 124 {
+		t.Errorf("ExitCode = %d, want 124 (timeout)", result.ExitCode)
+	}
+
+	if !result.Partial {
+		t.Error("expected Partial=true for timeout")
+	}
+
+	if result.Error == nil {
+		t.Error("expected Error to be set for timeout")
+	}
+}
+
+func TestPipeExecutor_Run_ContextCancel(t *testing.T) {
+	exec := pipe.New()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cmd, args := sleepCommand()
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		cancel()
+	}()
+
+	result, err := exec.Run(ctx, types.SpawnArgs{
+		Command: cmd,
+		Args:    args,
+	})
+
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.ExitCode != 130 {
+		t.Errorf("ExitCode = %d, want 130 (cancelled)", result.ExitCode)
+	}
+
+	if !result.Partial {
+		t.Error("expected Partial=true for cancel")
+	}
+}
+
+func TestPipeExecutor_Run_BadCommand(t *testing.T) {
+	exec := pipe.New()
+
+	_, err := exec.Run(context.Background(), types.SpawnArgs{
+		Command: "nonexistent_command_xyz",
+	})
+
+	if err == nil {
+		t.Fatal("expected error for nonexistent command")
+	}
+
+	if !types.IsTypedError(err, types.ErrorTypeExecutor) {
+		t.Errorf("expected ExecutorError, got %T", err)
+	}
+}
