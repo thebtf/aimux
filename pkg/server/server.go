@@ -263,6 +263,43 @@ func (s *Server) registerTools() {
 		),
 		s.handleDebate,
 	)
+
+	// dialog tool
+	s.mcp.AddTool(
+		mcp.NewTool("dialog",
+			mcp.WithDescription("Sequential multi-turn dialog between AI CLIs"),
+			mcp.WithString("prompt",
+				mcp.Required(),
+				mcp.Description("Dialog topic or initial prompt"),
+			),
+			mcp.WithNumber("max_turns",
+				mcp.Description("Maximum turns (default 6)"),
+			),
+			mcp.WithBoolean("async",
+				mcp.Description("Run in background"),
+			),
+		),
+		s.handleDialog,
+	)
+
+	// agents tool
+	s.mcp.AddTool(
+		mcp.NewTool("agents",
+			mcp.WithDescription("Discover and run Loom Agents"),
+			mcp.WithString("action",
+				mcp.Required(),
+				mcp.Description("Action: list, run, info, find"),
+				mcp.Enum("list", "run", "info", "find"),
+			),
+			mcp.WithString("agent",
+				mcp.Description("Agent name (required for run/info)"),
+			),
+			mcp.WithString("prompt",
+				mcp.Description("Prompt for run, or search query for find"),
+			),
+		),
+		s.handleAgents,
+	)
 }
 
 func (s *Server) registerResources() {
@@ -551,6 +588,68 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		}
 		s.jobs.FailJob(jobID, types.NewExecutorError("cancelled by user", nil, ""))
 		return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
+
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
+	}
+}
+
+// --- Dialog Handler ---
+
+func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	prompt, err := request.RequireString("prompt")
+	if err != nil {
+		return mcp.NewToolResultError("prompt is required"), nil
+	}
+
+	enabled := s.registry.EnabledCLIs()
+	if len(enabled) < 2 {
+		return mcp.NewToolResultError("dialog requires at least 2 CLIs"), nil
+	}
+
+	params := types.StrategyParams{
+		Prompt:   prompt,
+		CLIs:     enabled[:2],
+		MaxTurns: int(request.GetFloat("max_turns", 6)),
+	}
+
+	_ = params
+	return mcp.NewToolResultText(`{"status":"dialog strategy registered, orchestrator wiring pending"}`), nil
+}
+
+// --- Agents Handler ---
+
+func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	action, err := request.RequireString("action")
+	if err != nil {
+		return mcp.NewToolResultError("action is required"), nil
+	}
+
+	switch action {
+	case "list":
+		return mcp.NewToolResultText(`{"agents":[],"message":"agent registry discovery pending"}`), nil
+
+	case "find":
+		query := request.GetString("prompt", "")
+		if query == "" {
+			return mcp.NewToolResultError("prompt required as search query for find"), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf(`{"query":"%s","matches":[]}`, query)), nil
+
+	case "info":
+		agentName := request.GetString("agent", "")
+		if agentName == "" {
+			return mcp.NewToolResultError("agent name required for info"), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf(`{"agent":"%s","status":"not found"}`, agentName)), nil
+
+	case "run":
+		agentName := request.GetString("agent", "")
+		if agentName == "" {
+			return mcp.NewToolResultError("agent name required for run"), nil
+		}
+		prompt := request.GetString("prompt", "")
+		return mcp.NewToolResultText(fmt.Sprintf(`{"agent":"%s","prompt":"%s","status":"agent execution pending"}`, agentName, prompt)), nil
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
