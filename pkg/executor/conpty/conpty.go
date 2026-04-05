@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
@@ -63,6 +64,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	cmd.Dir = args.CWD
 
 	if len(args.Env) > 0 {
+		cmd.Env = os.Environ()
 		for k, v := range args.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}

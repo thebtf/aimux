@@ -10,14 +10,16 @@ import (
 
 // Client wraps the Google GenAI SDK for Deep Research API calls.
 type Client struct {
-	apiKey  string
-	model   string
-	timeout int
-	cache   *Cache
+	apiKey   string
+	model    string
+	timeout  int
+	cache    *Cache
+	genai    *genai.Client
 }
 
 // NewClient creates a GenAI API client.
 // API key from GOOGLE_API_KEY or GEMINI_API_KEY environment variable.
+// The GenAI client is created once and reused across requests.
 func NewClient(model string, timeoutSeconds int) (*Client, error) {
 	apiKey := os.Getenv("GOOGLE_API_KEY")
 	if apiKey == "" {
@@ -39,26 +41,37 @@ func NewClient(model string, timeoutSeconds int) (*Client, error) {
 		model:   model,
 		timeout: timeoutSeconds,
 		cache:   NewCache(),
+		// genai client created lazily on first Research() call
 	}, nil
 }
 
+// Close releases the underlying GenAI client resources.
+func (c *Client) Close() {
+	// genai.Client doesn't currently expose Close(), but we keep
+	// this method for API completeness and future SDK versions.
+	c.genai = nil
+}
+
 // Research executes a deep research query with optional file attachments.
-// Returns cached result if available (unless force=true).
-func (c *Client) Research(ctx context.Context, topic, outputFormat string, files []string, force bool) (string, error) {
+// Returns (content, cacheHit, error). cacheHit indicates if result came from cache.
+func (c *Client) Research(ctx context.Context, topic, outputFormat string, files []string, force bool) (string, bool, error) {
 	// Check cache first
 	if !force {
 		if cached, ok := c.cache.Get(topic, outputFormat, c.model, files); ok {
-			return cached.Content, nil
+			return cached.Content, true, nil
 		}
 	}
 
-	// Create GenAI client
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  c.apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return "", fmt.Errorf("create GenAI client: %w", err)
+	// Create or reuse GenAI client
+	if c.genai == nil {
+		client, err := genai.NewClient(ctx, &genai.ClientConfig{
+			APIKey:  c.apiKey,
+			Backend: genai.BackendGeminiAPI,
+		})
+		if err != nil {
+			return "", false, fmt.Errorf("create GenAI client: %w", err)
+		}
+		c.genai = client
 	}
 
 	// Build prompt
@@ -68,9 +81,9 @@ func (c *Client) Research(ctx context.Context, topic, outputFormat string, files
 	}
 
 	// Generate content
-	result, err := client.Models.GenerateContent(ctx, c.model, genai.Text(prompt), nil)
+	result, err := c.genai.Models.GenerateContent(ctx, c.model, genai.Text(prompt), nil)
 	if err != nil {
-		return "", fmt.Errorf("GenAI generate: %w", err)
+		return "", false, fmt.Errorf("GenAI generate: %w", err)
 	}
 
 	// Extract text from response using SDK helper
@@ -79,7 +92,7 @@ func (c *Client) Research(ctx context.Context, topic, outputFormat string, files
 	// Cache result
 	c.cache.Put(topic, outputFormat, c.model, files, content)
 
-	return content, nil
+	return content, false, nil
 }
 
 // SearchCache searches cached research by keyword.

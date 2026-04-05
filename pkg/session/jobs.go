@@ -60,6 +60,13 @@ func (m *JobManager) Create(sessionID, cli string) *Job {
 	return j
 }
 
+// Import inserts a job from recovery (WAL replay). Thread-safe.
+func (m *JobManager) Import(j *Job) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobs[j.ID] = j
+}
+
 // Get returns a job by ID, or nil if not found.
 func (m *JobManager) Get(id string) *Job {
 	m.mu.RLock()

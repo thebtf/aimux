@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -397,6 +398,14 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	model := request.GetString("model", "")
 	effort := request.GetString("reasoning_effort", "")
 	cwd := request.GetString("cwd", "")
+	if cwd != "" {
+		cwd = filepath.Clean(cwd)
+		if info, err := os.Stat(cwd); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("cwd %q not found: %v", cwd, err)), nil
+		} else if !info.IsDir() {
+			return mcp.NewToolResultError(fmt.Sprintf("cwd %q is not a directory", cwd)), nil
+		}
+	}
 	sessionID := request.GetString("session_id", "")
 	async := request.GetBool("async", false)
 	readOnly := request.GetBool("read_only", false)
@@ -1055,15 +1064,16 @@ func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch unavailable: %v. Set GOOGLE_API_KEY or GEMINI_API_KEY.", clientErr)), nil
 	}
 
-	content, researchErr := client.Research(ctx, topic, outputFormat, nil, force)
+	content, cacheHit, researchErr := client.Research(ctx, topic, outputFormat, nil, force)
 	if researchErr != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch failed: %v", researchErr)), nil
 	}
+	defer client.Close()
 
 	result := map[string]any{
 		"topic":   topic,
 		"content": content,
-		"cached":  !force,
+		"cached":  cacheHit,
 	}
 	data, _ := json.Marshal(result)
 	return mcp.NewToolResultText(string(data)), nil
@@ -1168,7 +1178,7 @@ func buildArgs(profile *config.CLIProfile, model, effort string, readOnly bool, 
 
 	if effort != "" && profile.Reasoning != nil {
 		if profile.Reasoning.FlagValueTemplate != "" {
-			val := fmt.Sprintf(profile.Reasoning.FlagValueTemplate, effort)
+			val := strings.ReplaceAll(profile.Reasoning.FlagValueTemplate, "%s", effort)
 			args = append(args, profile.Reasoning.Flag, val)
 		} else {
 			args = append(args, profile.Reasoning.Flag, effort)

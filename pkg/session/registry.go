@@ -56,6 +56,13 @@ func (r *Registry) Create(cli string, mode types.SessionMode, cwd string) *Sessi
 	return s
 }
 
+// Import inserts a session from recovery (WAL replay). Thread-safe.
+func (r *Registry) Import(s *Session) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessions[s.ID] = s
+}
+
 // Get returns a session by ID, or nil if not found.
 func (r *Registry) Get(id string) *Session {
 	r.mu.RLock()

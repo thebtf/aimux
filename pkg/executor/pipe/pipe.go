@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -211,25 +212,46 @@ func (s *pipeSession) Send(ctx context.Context, prompt string) (*types.Result, e
 		return nil, types.NewExecutorError("failed to write to stdin", err, "")
 	}
 
+	// Read response with inactivity timeout (500ms without new data = response complete).
+	// Pipes return partial reads — cannot use buffer-fill as completion signal.
 	var buf bytes.Buffer
 	tmp := make([]byte, 4096)
+	inactivityTimeout := 500 * time.Millisecond
+	readCh := make(chan readResult, 1)
+
 	for {
-		n, readErr := s.stdout.Read(tmp)
-		if n > 0 {
-			buf.Write(tmp[:n])
-		}
-		if readErr != nil {
-			break
-		}
-		if n < len(tmp) {
-			break
+		go func() {
+			n, err := s.stdout.Read(tmp)
+			readCh <- readResult{n, err}
+		}()
+
+		select {
+		case r := <-readCh:
+			if r.n > 0 {
+				buf.Write(tmp[:r.n])
+			}
+			if r.err != nil {
+				goto done
+			}
+			// Got data — reset inactivity timer, continue reading
+		case <-time.After(inactivityTimeout):
+			// No data for 500ms — response complete
+			goto done
+		case <-ctx.Done():
+			goto done
 		}
 	}
 
+done:
 	return &types.Result{
 		Content:    buf.String(),
 		DurationMS: time.Since(start).Milliseconds(),
 	}, nil
+}
+
+type readResult struct {
+	n   int
+	err error
 }
 
 func (s *pipeSession) Stream(ctx context.Context, prompt string) (<-chan types.Event, error) {
@@ -273,7 +295,7 @@ func killProcess(cmd *exec.Cmd) error {
 }
 
 func mergeEnv(extra map[string]string) []string {
-	env := make([]string, 0)
+	env := os.Environ()
 	for k, v := range extra {
 		env = append(env, k+"="+v)
 	}

@@ -26,8 +26,7 @@ func RecoverFromWAL(walPath string, sessions *Registry, jobs *JobManager) error 
 			if err := json.Unmarshal(entry.Data, &sess); err != nil {
 				continue
 			}
-			// Re-register session (status may be stale)
-			sessions.sessions[sess.ID] = &sess
+			sessions.Import(&sess)
 
 		case "session_update":
 			var update struct {
@@ -55,7 +54,7 @@ func RecoverFromWAL(walPath string, sessions *Registry, jobs *JobManager) error 
 			if err := json.Unmarshal(entry.Data, &job); err != nil {
 				continue
 			}
-			jobs.jobs[job.ID] = &job
+			jobs.Import(&job)
 
 		case "job_update":
 			var update struct {
