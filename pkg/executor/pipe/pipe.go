@@ -66,24 +66,30 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	// Completion pattern: poll stdout for pattern match (process may not exit after completing)
 	var patternDone <-chan struct{}
 	if args.CompletionPattern != "" {
-		patternCh := make(chan struct{}, 1)
-		patternDone = patternCh
-		re := regexp.MustCompile(args.CompletionPattern)
-		go func() {
-			ticker := time.NewTicker(100 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if re.MatchString(stdout.String()) {
-						patternCh <- struct{}{}
-						return
+		re, reErr := regexp.Compile(args.CompletionPattern)
+		if reErr != nil {
+			// Invalid regex — skip pattern matching, process runs to natural exit
+			re = nil
+		}
+		if re != nil {
+			patternCh := make(chan struct{}, 1)
+			patternDone = patternCh
+			go func() {
+				ticker := time.NewTicker(100 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						if re.MatchString(stdout.String()) {
+							patternCh <- struct{}{}
+							return
+						}
+					case <-done:
+						return // process exited, stop checking
 					}
-				case <-done:
-					return // process exited, stop checking
 				}
-			}
-		}()
+			}()
+		}
 	}
 
 	// Build optional timeout channel

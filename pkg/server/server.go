@@ -408,6 +408,9 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		if existing == nil {
 			return mcp.NewToolResultError(fmt.Sprintf("session %q not found", sessionID)), nil
 		}
+		if existing.Status == types.SessionStatusFailed || existing.Status == types.SessionStatusCompleted {
+			return mcp.NewToolResultError(fmt.Sprintf("session %q is %s — create a new session instead", sessionID, existing.Status)), nil
+		}
 		if cli == "" {
 			cli = existing.CLI
 		} else if cli != existing.CLI {
