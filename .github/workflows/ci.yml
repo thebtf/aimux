@@ -25,8 +25,13 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test with race detector
-        run: go test -race -coverprofile=coverage.out -timeout 5m ./...
+      - name: Test with race detector (Unix)
+        if: runner.os != 'Windows'
+        run: go test -race -coverprofile coverage.out -timeout 5m ./...
+
+      - name: Test without race detector (Windows)
+        if: runner.os == 'Windows'
+        run: go test -timeout 5m ./...
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'
@@ -47,4 +52,4 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.1.6
