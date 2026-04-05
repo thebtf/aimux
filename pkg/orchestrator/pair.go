@@ -331,10 +331,12 @@ func loadReviewChecklist() string {
 5. Tests: Edge cases covered?
 6. Scope: Within requested scope?
 7. Completeness: Is this real implementation, not a stub?
-   - _ = variable (STUB-PASSTHROUGH)
-   - Hardcoded return strings (STUB-HARDCODED)
-   - Log-only function bodies (STUB-NOOP)
-   - TODO/FIXME comments (STUB-TODO)
+   - _ = variable — value computed then discarded (STUB-PASSTHROUGH)
+   - Hardcoded return strings like "delegating to..." (STUB-HARDCODED)
+   - Log-only function bodies with no real logic (STUB-NOOP)
+   - TODO/FIXME/SCAFFOLD comments (STUB-TODO)
+   - Parameters not used in computation (STUB-DISCARD)
+   - Interface methods returning only zero values (STUB-INTERFACE-EMPTY)
    If ANY stub detected: verdict MUST be changes_requested with STUB-* rule ID.
 
 Respond as JSON array:
