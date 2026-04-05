@@ -14,7 +14,9 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
+	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
+	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
 	"github.com/thebtf/aimux/pkg/logger"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/routing"
@@ -53,7 +55,7 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 			CooldownSeconds:  cfg.CircuitBreaker.CooldownSeconds,
 			HalfOpenMaxCalls: cfg.CircuitBreaker.HalfOpenMaxCalls,
 		}),
-		executor: pipeExec.New(), // Default to pipe; ConPTY/PTY added later
+		executor: selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
 	}
 
 	// Initialize orchestrator with all strategies
@@ -955,4 +957,15 @@ func buildArgs(profile *config.CLIProfile, model, effort string, readOnly bool, 
 	}
 
 	return args
+}
+
+// selectBestExecutor returns the best available executor for the current platform.
+// Priority: ConPTY (Windows) > PTY (Linux/Mac) > Pipe (everywhere).
+func selectBestExecutor() types.Executor {
+	sel := executor.NewSelector(
+		conptyExec.New(), // ConPTY: Windows 10 1809+
+		ptyExec.New(),    // PTY: Linux, macOS
+		pipeExec.New(),   // Pipe: everywhere (fallback)
+	)
+	return sel.Select()
 }
