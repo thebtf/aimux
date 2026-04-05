@@ -1,0 +1,307 @@
+# aimux v2 → v3 Feature Parity Tracker
+# Generated from v2.17.0 TypeScript codebase (D:\Dev\mcp-aimux)
+# Date: 2026-04-05
+#
+# Status levels: pending → implemented → tested → verified
+# "verified" = side-by-side comparison with v2 output confirmed identical behavior
+
+# ─── TOOLS ────────────────────────────────────────────────────────────────────
+
+[tools.exec]
+status = "pending"
+params = [
+  "cli", "prompt", "label", "session_id", "model", "reasoning_effort",
+  "cwd", "agent", "files", "role", "role_prompt", "timeout_seconds",
+  "async", "read_only",
+]
+behaviors = [
+  "sync", "async", "session_resume", "role_routing", "intent_routing",
+  "pair_mode_routing", "bootstrap_injection", "guardrails",
+  "file_references", "stdin_piping", "progress_keepalive",
+  "adaptive_content", "default_model_passthrough", "label_auto_generation",
+  "agent_prompt_building", "persona_routing",
+]
+
+[tools.exec_task]
+status = "pending"
+note = "Task-based variant via MCP experimental tasks API"
+params = [
+  "cli", "prompt", "role", "label", "session_id", "model",
+  "cwd", "files", "role_prompt", "timeout_seconds", "read_only", "reasoning_effort",
+]
+behaviors = ["mcp_task_lifecycle", "task_support_optional", "background_only"]
+
+[tools.sessions]
+status = "pending"
+params = [
+  "action", "session_id", "job_id", "cwd", "limit", "status", "include_all_instances",
+]
+behaviors = [
+  "list", "info", "kill", "cleanup", "gc", "dashboard", "cancel", "health",
+]
+
+[tools.status]
+status = "pending"
+params = ["job_id"]
+behaviors = [
+  "poll_count_tracking", "poll_warning", "activity_hint", "pid_liveness_check",
+  "loop_detection", "expected_duration_range", "guidance_message", "zombie_detection",
+]
+
+[tools.think]
+status = "pending"
+params = [
+  "pattern", "session_id", "mode", "dialog_cli", "dialog_max_turns",
+  # Pattern-specific params (17 patterns, ~40 optional fields)
+  "thought", "thoughtNumber", "totalThoughts", "nextThoughtNeeded",
+  "isRevision", "revisesThought", "branchFromThought", "branchId",
+  "needsMoreThoughts", "currentStep", "previousSteps", "remainingSteps",
+  "modelName", "problem", "approachName", "issue", "decision", "topic",
+  "task", "operation", "timeFrame", "domainName", "systemName",
+  "algorithmType", "problemDefinition", "stage", "inquiryId", "iteration",
+  "nextStageNeeded", "nextContributionNeeded", "activePersonaId", "nextPersonaId",
+  "steps", "assumptions", "alternatives", "evidence", "options", "criteria",
+  "subProblems", "dependencies", "risks", "stakeholders", "premises",
+  "counterarguments", "fallacies",
+]
+behaviors = [
+  "solo_mode", "consensus_mode", "auto_mode",
+  "stateless_patterns", "stateful_patterns", "pattern_completion",
+  "dialog_fallback_cli",
+]
+
+[tools.consensus]
+status = "pending"
+params = [
+  "topic", "proposal", "participants", "blinded", "synthesize",
+  "max_turns", "model", "reasoning_effort", "timeout_seconds",
+  "retry_per_turn", "async", "cwd",
+]
+behaviors = [
+  "sync", "async", "blinded_opinions", "auto_participant_resolution",
+  "multi_turn_orchestration", "synthesis", "dialog_budget_computation",
+]
+
+[tools.debate]
+status = "pending"
+params = [
+  "topic", "participants", "max_turns", "synthesize", "model",
+  "reasoning_effort", "timeout_seconds", "retry_per_turn", "async", "cwd",
+]
+behaviors = [
+  "sync", "async", "non_blinded", "adversarial_stances",
+  "convergence_detection", "auto_participant_resolution", "synthesis_verdict",
+]
+
+[tools.investigate]
+status = "pending"
+params = [
+  "action", "recall_topic", "topic", "session_id", "domain",
+  "coverage_areas", "finding",
+]
+behaviors = [
+  "iterative_convergence", "dual_stop_condition", "correction_tracking",
+  "domain_specialization", "report_generation", "report_archival",
+  "sqlite_persistence",
+]
+
+[tools.pair_start]
+status = "pending"
+params = [
+  "task", "navigator_cli", "driver_cli", "cwd", "navigator_model",
+  "driver_model", "max_turns", "timeout_seconds", "reasoning_effort",
+  "max_retries", "thrashing_threshold", "max_rejections",
+]
+behaviors = [
+  "autonomous_loop", "fire_and_forget", "loom_engine",
+  "quality_gate", "review_checklist", "thrashing_detection",
+  "progress_notifications",
+]
+
+[tools.pair_status]
+status = "pending"
+params = ["pair_id"]
+behaviors = ["status_inspection"]
+
+[tools.pair_stop]
+status = "pending"
+params = ["pair_id"]
+behaviors = ["graceful_stop"]
+
+[tools.audit]
+status = "pending"
+params = ["cwd", "scope", "mode", "rules_config", "async"]
+behaviors = [
+  "multi_agent_parallel", "category_specialization", "scan_validate_pipeline",
+  "investigate_mode", "deduplication", "severity_sorting",
+  "markdown_report", "validation_stats", "executive_summary",
+  "configurable_roles",
+]
+
+[tools.research]
+status = "pending"
+params = [
+  "topic", "participants", "cwd", "synthesize", "timeout_seconds", "async",
+]
+behaviors = [
+  "sync", "async", "parallel_multi_model", "auto_participant_resolution",
+  "synthesis", "single_cli_fallback",
+]
+
+[tools.deepresearch]
+status = "pending"
+params = [
+  "topic", "output_format", "files", "cwd", "model", "timeout_seconds", "force",
+]
+behaviors = [
+  "always_async", "gemini_api_transport", "exact_match_cache",
+  "files_api_upload", "files_hash", "30_day_ttl",
+  "progress_notifications", "131k_input_limit",
+]
+
+[tools.deepresearch_cache]
+status = "pending"
+params = ["query", "limit"]
+behaviors = ["keyword_search", "freshness_info", "content_preview", "30_day_ttl"]
+
+[tools.deepresearch_task]
+status = "pending"
+note = "Task-based variant via MCP experimental tasks API"
+params = [
+  "topic", "output_format", "files", "cwd", "model", "timeout_seconds", "force",
+]
+behaviors = ["mcp_task_lifecycle", "task_support_optional", "cache_aware"]
+
+[tools.agents]
+status = "pending"
+params = ["action", "agent", "prompt"]
+behaviors = [
+  "auto_discovery", "project_and_user", "cc_compatible",
+  "loom_extensions", "intent_based_search", "prompt_building",
+]
+
+# ─── DEPRECATED (not in v3 scope) ────────────────────────────────────────────
+
+[tools.dialog]
+status = "deprecated"
+note = "ADR-012: replaced by consensus + debate"
+
+# ─── RESOURCES ────────────────────────────────────────────────────────────────
+
+[resources.job]
+status = "pending"
+uri_template = "aimux://jobs/{job_id}"
+behaviors = ["list_all_jobs", "subscribe_notifications", "list_changed"]
+
+[resources.agent]
+status = "pending"
+uri_template = "agent://{agent_name}"
+behaviors = ["list_all_agents", "dynamic_discovery"]
+
+[resources.skill_references]
+status = "pending"
+uri_pattern = "aimux://skills/references/{name}"
+files = ["dialog-patterns", "exec-patterns", "think-workflow-patterns", "workflow-run-pair-deepresearch"]
+
+# ─── PROMPTS ──────────────────────────────────────────────────────────────────
+
+[prompts.skill]
+status = "pending"
+title = "aimux — AI CLI Multiplexer Skill"
+
+[prompts.background]
+status = "pending"
+title = "aimux — Background Execution Protocol"
+args = ["task_description"]
+
+[prompts.tool_selector]
+status = "pending"
+title = "aimux — Tool Selection Guide"
+
+[prompts.persona_selector]
+status = "pending"
+title = "aimux — Expert Persona Selector"
+args = ["task_description"]
+
+[prompts.investigate]
+status = "pending"
+title = "aimux — Launch Investigation"
+args = ["topic"]
+
+[prompts.compare]
+status = "pending"
+title = "aimux — Multi-Model Compare"
+args = ["prompt"]
+
+[prompts.pair]
+status = "pending"
+title = "aimux — Start Pair Programming"
+args = ["prompt"]
+
+[prompts.status]
+status = "pending"
+title = "aimux — Sessions & Health Dashboard"
+
+[prompts.audit]
+status = "pending"
+title = "aimux — Run Compliance Audit"
+args = ["scope"]
+
+# ─── SERVER CAPABILITIES ──────────────────────────────────────────────────────
+
+[capabilities]
+status = "pending"
+logging = true
+resources_subscribe = true
+resources_list_changed = true
+tasks_list = true
+tasks_cancel = true
+
+# ─── TRANSPORT ────────────────────────────────────────────────────────────────
+
+[transport.subprocess]
+status = "pending"
+behaviors = [
+  "shim_resolution", "launcher_modes", "stdin_piping",
+  "inactivity_timeout", "max_wall_clock", "max_output_bytes",
+  "completion_pattern", "encoding_fallback", "retry_with_backoff",
+]
+
+[transport.api]
+status = "pending"
+note = "Google Gemini API for deepresearch"
+behaviors = ["google_deep_research", "files_api_upload", "job_resurrection"]
+
+# ─── INFRASTRUCTURE ───────────────────────────────────────────────────────────
+
+[infrastructure.sqlite]
+status = "pending"
+behaviors = [
+  "session_tracking", "job_tracking", "gc_runner",
+  "investigation_state", "deep_research_cache", "poll_count",
+]
+
+[infrastructure.cli_discovery]
+status = "pending"
+behaviors = ["parallel_probing", "env_override", "availability_check"]
+
+[infrastructure.role_routing]
+status = "pending"
+behaviors = ["env_overrides", "default_preferences", "fallback_chain", "intent_router"]
+
+[infrastructure.bootstrap]
+status = "pending"
+behaviors = ["toml_prompt_loading", "guardrails_injection", "status_tag_instruction"]
+
+# ─── SUPPORTED CLIs ──────────────────────────────────────────────────────────
+
+[clis]
+supported = ["gemini", "qwen", "codex", "claude", "aider", "droid", "opencode"]
+output_parsers = { json = ["gemini", "qwen", "claude", "droid", "opencode"], jsonl = ["codex"], text = ["aider"] }
+
+# ─── ROLES ────────────────────────────────────────────────────────────────────
+
+[roles]
+base = ["coding", "review", "planning", "default"]
+workflow = ["coding", "thinkdeep", "codereview", "secaudit", "debug", "challenge", "refactor", "analyze", "testgen", "docgen", "tracer", "planner", "precommit"]
+persona = ["backend-architect", "security-auditor", "code-reviewer", "database-architect", "frontend-developer", "devops-engineer", "tdd-orchestrator", "debugger", "incident-responder", "ai-engineer", "docs-architect", "cloud-architect", "performance-engineer", "api-designer", "testing-strategist", "refactoring-expert"]
