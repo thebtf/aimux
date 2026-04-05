@@ -191,11 +191,34 @@ func (a *AuditPipeline) validate(ctx context.Context, params types.StrategyParam
 		return nil, err
 	}
 
-	// Parse validation response (simplified — real implementation parses structured response)
-	_ = result.Content
-	// Mark all as confirmed for now (full implementation parses validator response)
+	// Parse validator response: look for per-finding verdicts
+	// Expected format: "1. CONFIRMED", "2. FALSE_POSITIVE", "3. UNCONFIRMED"
+	lines := strings.Split(result.Content, "\n")
+	verdictMap := make(map[int]types.AuditConfidence)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		for i := range findings {
+			prefix := fmt.Sprintf("%d.", i+1)
+			if strings.HasPrefix(line, prefix) {
+				rest := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+				switch {
+				case strings.Contains(rest, "false_positive") || strings.Contains(rest, "false positive"):
+					verdictMap[i] = types.AuditConfidenceFalsePositive
+				case strings.Contains(rest, "unconfirmed"):
+					verdictMap[i] = types.AuditConfidenceUnconfirmed
+				case strings.Contains(rest, "confirmed") || strings.Contains(rest, "verified"):
+					verdictMap[i] = types.AuditConfidenceConfirmed
+				}
+			}
+		}
+	}
+	// Apply verdicts; default to confirmed if validator didn't mention finding
 	for i := range findings {
-		findings[i].Confidence = types.AuditConfidenceConfirmed
+		if v, ok := verdictMap[i]; ok {
+			findings[i].Confidence = v
+		} else {
+			findings[i].Confidence = types.AuditConfidenceConfirmed
+		}
 	}
 
 	return findings, nil

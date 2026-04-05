@@ -90,6 +90,7 @@ type Config struct {
 	Roles          map[string]types.RolePreference     `yaml:"roles"`
 	CircuitBreaker CircuitBreakerConfig                `yaml:"circuit_breaker"`
 	CLIProfiles    map[string]*CLIProfile              `yaml:"-"` // loaded from cli.d/
+	ConfigDir      string                              `yaml:"-"` // directory containing config files
 }
 
 // CLIProfile represents a single CLI plugin configuration.
@@ -128,6 +129,7 @@ type ReasoningConfig struct {
 func Load(configDir string) (*Config, error) {
 	cfg := &Config{
 		CLIProfiles: make(map[string]*CLIProfile),
+		ConfigDir:   configDir,
 	}
 
 	// Load main config

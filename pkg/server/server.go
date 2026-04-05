@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -19,6 +20,7 @@ import (
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
 	"github.com/thebtf/aimux/pkg/logger"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
+	"github.com/thebtf/aimux/pkg/prompt"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 	"github.com/thebtf/aimux/pkg/session"
@@ -40,6 +42,7 @@ type Server struct {
 	mcp          *server.MCPServer
 	orchestrator *orch.Orchestrator
 	agentReg     *agents.Registry
+	promptEng    *prompt.Engine
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -67,6 +70,13 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		orch.NewStructuredDebate(s.executor),
 		orch.NewAuditPipeline(s.executor),
 	)
+
+	// Initialize prompt engine with built-in and project prompts.d/
+	builtInPrompts := filepath.Join(cfg.ConfigDir, "prompts.d")
+	s.promptEng = prompt.NewEngine(builtInPrompts)
+	if err := s.promptEng.Load(); err != nil {
+		log.Warn("prompt engine load: %v", err)
+	}
 
 	// Initialize agent registry
 	s.agentReg = agents.NewRegistry()
@@ -392,7 +402,22 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	readOnly := request.GetBool("read_only", false)
 	timeoutSec := int(request.GetFloat("timeout_seconds", 0))
 
-	_ = sessionID // Will be used for session resume in Phase 4
+	// Session resume: if session_id provided, lookup existing session and inherit CLI
+	if sessionID != "" {
+		existing := s.sessions.Get(sessionID)
+		if existing == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("session %q not found", sessionID)), nil
+		}
+		if cli == "" {
+			cli = existing.CLI
+		} else if cli != existing.CLI {
+			return mcp.NewToolResultError(fmt.Sprintf("session %q belongs to CLI %q, not %q", sessionID, existing.CLI, cli)), nil
+		}
+		if cwd == "" {
+			cwd = existing.CWD
+		}
+		s.log.Info("exec: resuming session=%s cli=%s turns=%d", sessionID, cli, existing.Turns)
+	}
 
 	// Resolve CLI from role
 	if cli == "" {
@@ -499,6 +524,9 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultText(string(data)), nil
 	}
 
+	// Bootstrap prompt injection: prepend role-specific prompt from prompts.d/
+	prompt = s.injectBootstrap(role, prompt)
+
 	// Non-coding roles: direct execution
 	sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
 	job := s.jobs.Create(sess.ID, cli)
@@ -509,6 +537,13 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		Args:           buildArgs(profile, model, effort, readOnly, prompt),
 		CWD:            cwd,
 		TimeoutSeconds: timeoutSec,
+	}
+
+	// Stdin piping for long prompts (Windows 8191 char limit)
+	if profile.StdinThreshold > 0 && len(prompt) > profile.StdinThreshold {
+		args.Stdin = prompt
+		args.Args = buildArgs(profile, model, effort, readOnly, "") // empty prompt — piped via stdin
+		s.log.Info("exec: stdin piping activated (prompt=%d chars, threshold=%d)", len(prompt), profile.StdinThreshold)
 	}
 
 	s.log.Info("exec: cli=%s role=%s job=%s async=%v", cli, role, job.ID, async)
@@ -1133,6 +1168,22 @@ func buildArgs(profile *config.CLIProfile, model, effort string, readOnly bool, 
 	}
 
 	return args
+}
+
+// injectBootstrap prepends role-specific prompt from prompts.d/ if available.
+// Falls back to original prompt if no template found for the role.
+func (s *Server) injectBootstrap(role, userPrompt string) string {
+	if s.promptEng == nil {
+		return userPrompt
+	}
+
+	// Try role-specific template (e.g., "coding-rules", "review-checklist")
+	tmpl, err := s.promptEng.Resolve(role, nil)
+	if err != nil {
+		return userPrompt // no template for this role — use prompt as-is
+	}
+
+	return tmpl + "\n\n" + userPrompt
 }
 
 // selectBestExecutor returns the best available executor for the current platform.
