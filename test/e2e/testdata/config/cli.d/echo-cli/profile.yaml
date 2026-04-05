@@ -1,0 +1,25 @@
+# Echo CLI profile for e2e testing — always available, echoes prompt back
+name: echo-cli
+binary: echo
+display_name: "Echo (test)"
+
+features:
+  streaming: false
+  headless: false
+  read_only: false
+  session_resume: false
+  json: false
+  jsonl: false
+  stdin_pipe: false
+
+output_format: text
+
+command:
+  base: "echo"
+
+prompt_flag: ""
+prompt_flag_type: positional
+model_flag: ""
+default_model: ""
+timeout_seconds: 5
+stdin_threshold: 0
