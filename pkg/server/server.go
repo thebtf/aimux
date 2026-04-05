@@ -486,6 +486,9 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		s.log.Info("exec: PairCoding driver=%s reviewer=%s job=%s async=%v", cli, reviewerCLI, job.ID, async)
 
 		if async {
+			if err := s.checkConcurrencyLimit(); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			go s.executePairCoding(context.Background(), job.ID, sess.ID, pairParams, cb)
 			result := map[string]any{
 				"job_id":     job.ID,
@@ -552,6 +555,9 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	s.log.Info("exec: cli=%s role=%s job=%s async=%v", cli, role, job.ID, async)
 
 	if async {
+		if err := s.checkConcurrencyLimit(); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		go s.executeJob(context.Background(), job.ID, sess.ID, args, cb)
 
 		result := map[string]any{
@@ -856,6 +862,9 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		async := request.GetBool("async", false)
 
 		if async {
+			if err := s.checkConcurrencyLimit(); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			go s.executeJob(context.Background(), job.ID, sess.ID, args, cb)
 			data, _ := json.Marshal(map[string]any{
 				"agent":      agentName,
@@ -1187,6 +1196,19 @@ func (s *Server) injectBootstrap(role, userPrompt string) string {
 	}
 
 	return tmpl + "\n\n" + userPrompt
+}
+
+// checkConcurrencyLimit returns an error if the maximum concurrent job limit is reached.
+func (s *Server) checkConcurrencyLimit() error {
+	max := s.cfg.Server.MaxConcurrentJobs
+	if max <= 0 {
+		return nil // no limit configured
+	}
+	running := s.jobs.CountRunning()
+	if running >= max {
+		return fmt.Errorf("max concurrent jobs reached (%d/%d) — wait for running jobs to complete", running, max)
+	}
+	return nil
 }
 
 // selectBestExecutor returns the best available executor for the current platform.

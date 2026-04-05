@@ -44,8 +44,9 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		cmd.Env = mergeEnv(args.Env)
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	var stderr bytes.Buffer
+	stdout := &safeBuffer{}
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if args.Stdin != "" {
@@ -277,4 +278,29 @@ func mergeEnv(extra map[string]string) []string {
 		env = append(env, k+"="+v)
 	}
 	return env
+}
+
+// safeBuffer is a goroutine-safe bytes.Buffer wrapper.
+// Solves BUG-001: concurrent reads (completion pattern polling) and writes (OS pipe).
+type safeBuffer struct {
+	buf bytes.Buffer
+	mu  sync.Mutex
+}
+
+func (sb *safeBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *safeBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
+func (sb *safeBuffer) Len() int {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Len()
 }

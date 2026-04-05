@@ -189,6 +189,20 @@ func (m *JobManager) ListRunning() []*Job {
 	return result
 }
 
+// CountRunning returns the number of jobs in running state.
+func (m *JobManager) CountRunning() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for _, j := range m.jobs {
+		if j.Status == types.JobStatusRunning {
+			count++
+		}
+	}
+	return count
+}
+
 // Delete removes a job.
 func (m *JobManager) Delete(id string) bool {
 	m.mu.Lock()
