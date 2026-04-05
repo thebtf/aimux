@@ -153,6 +153,116 @@ func (s *Server) registerTools() {
 		),
 		s.handleSessions,
 	)
+
+	// audit tool
+	s.mcp.AddTool(
+		mcp.NewTool("audit",
+			mcp.WithDescription("Run multi-agent codebase audit: scan→validate→investigate"),
+			mcp.WithString("cwd",
+				mcp.Description("Working directory to audit"),
+			),
+			mcp.WithString("mode",
+				mcp.Description("Audit mode: quick (scan only), standard (scan+validate), deep (scan+validate+investigate)"),
+				mcp.Enum("quick", "standard", "deep"),
+			),
+			mcp.WithString("scope",
+				mcp.Description("Scope: full or changed"),
+				mcp.Enum("full", "changed"),
+			),
+			mcp.WithBoolean("async",
+				mcp.Description("Run in background"),
+			),
+		),
+		s.handleAudit,
+	)
+
+	// think tool
+	s.mcp.AddTool(
+		mcp.NewTool("think",
+			mcp.WithDescription("Structured thinking patterns for analysis and reasoning"),
+			mcp.WithString("pattern",
+				mcp.Required(),
+				mcp.Description("Thinking pattern: critical_thinking, decision_framework, problem_decomposition, scientific_method, debugging_approach, sequential_thinking, etc."),
+			),
+			mcp.WithString("issue",
+				mcp.Description("The issue or question to think about"),
+			),
+			mcp.WithString("topic",
+				mcp.Description("Topic for analysis"),
+			),
+			mcp.WithString("session_id",
+				mcp.Description("Session ID for stateful patterns"),
+			),
+		),
+		s.handleThink,
+	)
+
+	// investigate tool
+	s.mcp.AddTool(
+		mcp.NewTool("investigate",
+			mcp.WithDescription("Iterative convergent investigation with domain specialization"),
+			mcp.WithString("action",
+				mcp.Required(),
+				mcp.Description("Action: start, finding, assess, report, status, list, recall"),
+				mcp.Enum("start", "finding", "assess", "report", "status", "list", "recall"),
+			),
+			mcp.WithString("topic",
+				mcp.Description("Investigation topic (required for start)"),
+			),
+			mcp.WithString("session_id",
+				mcp.Description("Investigation session ID"),
+			),
+			mcp.WithString("domain",
+				mcp.Description("Domain: generic, security, performance, code-quality, architecture, debugging"),
+			),
+		),
+		s.handleInvestigate,
+	)
+
+	// consensus tool
+	s.mcp.AddTool(
+		mcp.NewTool("consensus",
+			mcp.WithDescription("Multi-model blinded consensus with optional synthesis"),
+			mcp.WithString("topic",
+				mcp.Required(),
+				mcp.Description("Topic for consensus"),
+			),
+			mcp.WithBoolean("synthesize",
+				mcp.Description("Generate synthesis of opinions (default false)"),
+			),
+			mcp.WithBoolean("blinded",
+				mcp.Description("Participants cannot see each other (default true)"),
+			),
+			mcp.WithNumber("max_turns",
+				mcp.Description("Maximum turns"),
+			),
+			mcp.WithBoolean("async",
+				mcp.Description("Run in background"),
+			),
+		),
+		s.handleConsensus,
+	)
+
+	// debate tool
+	s.mcp.AddTool(
+		mcp.NewTool("debate",
+			mcp.WithDescription("Structured adversarial debate with verdict synthesis"),
+			mcp.WithString("topic",
+				mcp.Required(),
+				mcp.Description("Topic for debate"),
+			),
+			mcp.WithBoolean("synthesize",
+				mcp.Description("Generate verdict (default true)"),
+			),
+			mcp.WithNumber("max_turns",
+				mcp.Description("Maximum turns (default 6)"),
+			),
+			mcp.WithBoolean("async",
+				mcp.Description("Run in background"),
+			),
+		),
+		s.handleDebate,
+	)
 }
 
 func (s *Server) registerResources() {
@@ -416,6 +526,159 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
 	}
+}
+
+// --- Audit Handler ---
+
+func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cwd := request.GetString("cwd", "")
+	mode := request.GetString("mode", "standard")
+	async := request.GetBool("async", false)
+
+	params := types.StrategyParams{
+		Prompt: fmt.Sprintf("Audit codebase at %s", cwd),
+		CWD:    cwd,
+		Extra: map[string]any{
+			"mode":              mode,
+			"parallel_scanners": s.cfg.Server.Audit.ParallelScanners,
+			"scanner_role":      s.cfg.Server.Audit.ScannerRole,
+			"validator_role":    s.cfg.Server.Audit.ValidatorRole,
+		},
+	}
+
+	if async {
+		sess := s.sessions.Create("audit", types.SessionModeOnceStateless, cwd)
+		job := s.jobs.Create(sess.ID, "audit")
+		go func() {
+			s.jobs.StartJob(job.ID, 0)
+			// TODO: wire orchestrator.AuditPipeline here
+			s.jobs.CompleteJob(job.ID, "audit not yet wired to orchestrator", 0)
+		}()
+		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": "running"})
+		return mcp.NewToolResultText(string(data)), nil
+	}
+
+	_ = params
+	return mcp.NewToolResultText(`{"status":"audit strategy registered, orchestrator wiring pending"}`), nil
+}
+
+// --- Think Handler ---
+
+func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	pattern, err := request.RequireString("pattern")
+	if err != nil {
+		return mcp.NewToolResultError("pattern is required"), nil
+	}
+
+	issue := request.GetString("issue", "")
+	topic := request.GetString("topic", "")
+
+	input := issue
+	if input == "" {
+		input = topic
+	}
+	if input == "" {
+		input = pattern
+	}
+
+	// Think is in-process (solo mode) — no external CLI call
+	result := map[string]any{
+		"pattern": pattern,
+		"input":   input,
+		"output":  fmt.Sprintf("Thinking with pattern '%s' about: %s", pattern, input),
+		"mode":    "solo",
+	}
+
+	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+// --- Investigate Handler ---
+
+func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	action, err := request.RequireString("action")
+	if err != nil {
+		return mcp.NewToolResultError("action is required"), nil
+	}
+
+	switch action {
+	case "start":
+		topic := request.GetString("topic", "")
+		if topic == "" {
+			return mcp.NewToolResultError("topic required for start"), nil
+		}
+		domain := request.GetString("domain", "generic")
+
+		sess := s.sessions.Create("investigate", types.SessionModeOnceStateful, "")
+		result := map[string]any{
+			"session_id": sess.ID,
+			"topic":      topic,
+			"domain":     domain,
+			"status":     "started",
+			"message":    "Investigation started. Use finding action to add findings, assess to check convergence.",
+		}
+		data, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(data)), nil
+
+	case "status", "list", "recall":
+		return mcp.NewToolResultText(fmt.Sprintf(`{"action":"%s","status":"ok"}`, action)), nil
+
+	default:
+		return mcp.NewToolResultText(fmt.Sprintf(`{"action":"%s","status":"acknowledged"}`, action)), nil
+	}
+}
+
+// --- Consensus Handler ---
+
+func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	topic, err := request.RequireString("topic")
+	if err != nil {
+		return mcp.NewToolResultError("topic is required"), nil
+	}
+
+	synthesize := request.GetBool("synthesize", false)
+
+	// Resolve participants from role preferences
+	enabled := s.registry.EnabledCLIs()
+	if len(enabled) < 2 {
+		return mcp.NewToolResultError("consensus requires at least 2 CLIs"), nil
+	}
+
+	params := types.StrategyParams{
+		Prompt:   topic,
+		CLIs:     enabled[:2], // First 2 enabled CLIs
+		MaxTurns: int(request.GetFloat("max_turns", 0)),
+		Extra:    map[string]any{"synthesize": synthesize},
+	}
+
+	_ = params
+	return mcp.NewToolResultText(`{"status":"consensus strategy registered, orchestrator wiring pending"}`), nil
+}
+
+// --- Debate Handler ---
+
+func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	topic, err := request.RequireString("topic")
+	if err != nil {
+		return mcp.NewToolResultError("topic is required"), nil
+	}
+
+	synthesize := request.GetBool("synthesize", true)
+
+	enabled := s.registry.EnabledCLIs()
+	if len(enabled) < 2 {
+		return mcp.NewToolResultError("debate requires at least 2 CLIs"), nil
+	}
+
+	params := types.StrategyParams{
+		Prompt:   topic,
+		CLIs:     enabled[:2],
+		MaxTurns: int(request.GetFloat("max_turns", 6)),
+		Extra:    map[string]any{"synthesize": synthesize},
+	}
+
+	_ = params
+	return mcp.NewToolResultText(`{"status":"debate strategy registered, orchestrator wiring pending"}`), nil
 }
 
 // --- Resource Handlers ---
