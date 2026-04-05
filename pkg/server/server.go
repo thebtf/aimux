@@ -20,6 +20,7 @@ import (
 	"github.com/thebtf/aimux/pkg/logger"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -323,6 +324,27 @@ func (s *Server) registerTools() {
 			),
 		),
 		s.handleAgents,
+	)
+
+	// deepresearch tool
+	s.mcp.AddTool(
+		mcp.NewTool("deepresearch",
+			mcp.WithDescription("Deep research via Google Gemini API with file attachments and caching"),
+			mcp.WithString("topic",
+				mcp.Required(),
+				mcp.Description("Research topic"),
+			),
+			mcp.WithString("output_format",
+				mcp.Description("Output format hint (e.g., 'executive summary')"),
+			),
+			mcp.WithString("model",
+				mcp.Description("Model override (default: gemini-2.0-flash)"),
+			),
+			mcp.WithBoolean("force",
+				mcp.Description("Bypass cache"),
+			),
+		),
+		s.handleDeepresearch,
 	)
 }
 
@@ -841,6 +863,38 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 	result, err := s.orchestrator.Execute(ctx, "consensus", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("consensus failed: %v", err)), nil
+	}
+	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+// --- DeepResearch Handler ---
+
+func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	topic, err := request.RequireString("topic")
+	if err != nil {
+		return mcp.NewToolResultError("topic is required"), nil
+	}
+
+	outputFormat := request.GetString("output_format", "")
+	model := request.GetString("model", "")
+	force := request.GetBool("force", false)
+
+	// Try to create GenAI client
+	client, clientErr := deepresearch.NewClient(model, 0)
+	if clientErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch unavailable: %v. Set GOOGLE_API_KEY or GEMINI_API_KEY.", clientErr)), nil
+	}
+
+	content, researchErr := client.Research(ctx, topic, outputFormat, nil, force)
+	if researchErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch failed: %v", researchErr)), nil
+	}
+
+	result := map[string]any{
+		"topic":   topic,
+		"content": content,
+		"cached":  !force,
 	}
 	data, _ := json.Marshal(result)
 	return mcp.NewToolResultText(string(data)), nil
