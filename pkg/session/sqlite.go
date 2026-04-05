@@ -118,7 +118,7 @@ func (s *Store) SnapshotJob(job *Job) error {
 	return err
 }
 
-// SnapshotAll dumps all in-memory sessions and jobs to SQLite.
+// SnapshotAll dumps all in-memory sessions and jobs to SQLite atomically.
 func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -127,14 +127,43 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	defer tx.Rollback()
 
 	for _, sess := range sessions.List("") {
-		if err := s.SnapshotSession(sess); err != nil {
-			return err
+		if _, execErr := tx.Exec(`
+			INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, created_at, last_active_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, sess.CLI, sess.Mode, sess.CLISessionID, sess.PID,
+			sess.Status, sess.Turns, sess.CWD,
+			sess.CreatedAt.Format(time.RFC3339),
+			sess.LastActiveAt.Format(time.RFC3339),
+		); execErr != nil {
+			return execErr
 		}
 	}
 
 	for _, job := range jobs.ListRunning() {
-		if err := s.SnapshotJob(job); err != nil {
-			return err
+		var errorJSON, pheromonesJSON, pipelineJSON []byte
+		if job.Error != nil {
+			errorJSON, _ = json.Marshal(job.Error)
+		}
+		if len(job.Pheromones) > 0 {
+			pheromonesJSON, _ = json.Marshal(job.Pheromones)
+		}
+		if job.Pipeline != nil {
+			pipelineJSON, _ = json.Marshal(job.Pipeline)
+		}
+		completedAt := ""
+		if job.CompletedAt != nil {
+			completedAt = job.CompletedAt.Format(time.RFC3339)
+		}
+		if _, execErr := tx.Exec(`
+			INSERT OR REPLACE INTO jobs (id, session_id, cli, status, progress, content, exit_code,
+				error_json, poll_count, pheromones_json, pipeline_json, pid, created_at, progress_updated_at, completed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			job.ID, job.SessionID, job.CLI, job.Status, job.Progress, job.Content, job.ExitCode,
+			string(errorJSON), job.PollCount, string(pheromonesJSON), string(pipelineJSON),
+			job.PID, job.CreatedAt.Format(time.RFC3339), job.ProgressUpdatedAt.Format(time.RFC3339),
+			completedAt,
+		); execErr != nil {
+			return execErr
 		}
 	}
 

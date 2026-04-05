@@ -17,6 +17,7 @@ type ServerConfig struct {
 	LogFile               string `yaml:"log_file"`
 	DBPath                string `yaml:"db_path"`
 	MaxConcurrentJobs     int    `yaml:"max_concurrent_jobs"`
+	MaxPromptBytes        int    `yaml:"max_prompt_bytes"`
 	SessionTTLHours       int    `yaml:"session_ttl_hours"`
 	GCIntervalSeconds     int    `yaml:"gc_interval_seconds"`
 	ProgressIntervalSeconds int  `yaml:"progress_interval_seconds"`
@@ -195,6 +196,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if s.MaxConcurrentJobs == 0 {
 		s.MaxConcurrentJobs = 10
+	}
+	if s.MaxPromptBytes == 0 {
+		s.MaxPromptBytes = 1048576 // 1MB
 	}
 	if s.SessionTTLHours == 0 {
 		s.SessionTTLHours = 24

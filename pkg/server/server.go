@@ -393,6 +393,11 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError("prompt is required"), nil
 	}
 
+	maxPrompt := s.cfg.Server.MaxPromptBytes
+	if maxPrompt > 0 && len(prompt) > maxPrompt {
+		return mcp.NewToolResultError(fmt.Sprintf("prompt too large (%d bytes, max %d)", len(prompt), maxPrompt)), nil
+	}
+
 	cli := request.GetString("cli", "")
 	role := request.GetString("role", "default")
 	model := request.GetString("model", "")
@@ -1061,11 +1066,24 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		return mcp.NewToolResultError("consensus requires at least 2 CLIs"), nil
 	}
 
+	async := request.GetBool("async", false)
+
 	params := types.StrategyParams{
 		Prompt:   topic,
 		CLIs:     enabled[:2], // First 2 enabled CLIs
 		MaxTurns: int(request.GetFloat("max_turns", 0)),
 		Extra:    map[string]any{"synthesize": synthesize},
+	}
+
+	if async {
+		if err := s.checkConcurrencyLimit(); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		sess := s.sessions.Create("consensus", types.SessionModeOnceStateful, "")
+		job := s.jobs.Create(sess.ID, "consensus")
+		go s.executeStrategy(context.Background(), job.ID, sess.ID, "consensus", params)
+		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
+		return mcp.NewToolResultText(string(data)), nil
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "consensus", params)
@@ -1124,11 +1142,24 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("debate requires at least 2 CLIs"), nil
 	}
 
+	async := request.GetBool("async", false)
+
 	params := types.StrategyParams{
 		Prompt:   topic,
 		CLIs:     enabled[:2],
 		MaxTurns: int(request.GetFloat("max_turns", 6)),
 		Extra:    map[string]any{"synthesize": synthesize},
+	}
+
+	if async {
+		if err := s.checkConcurrencyLimit(); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		sess := s.sessions.Create("debate", types.SessionModeOnceStateful, "")
+		job := s.jobs.Create(sess.ID, "debate")
+		go s.executeStrategy(context.Background(), job.ID, sess.ID, "debate", params)
+		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
+		return mcp.NewToolResultText(string(data)), nil
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "debate", params)
@@ -1236,6 +1267,30 @@ func (s *Server) injectBootstrap(role, userPrompt string) string {
 	}
 
 	return tmpl + "\n\n" + userPrompt
+}
+
+// executeStrategy runs an orchestrator strategy in background and updates job/session state.
+func (s *Server) executeStrategy(ctx context.Context, jobID, sessionID, strategyName string, params types.StrategyParams) {
+	s.jobs.StartJob(jobID, 0)
+	s.sessions.Update(sessionID, func(sess *session.Session) {
+		sess.Status = types.SessionStatusRunning
+	})
+
+	result, err := s.orchestrator.Execute(ctx, strategyName, params)
+	if err != nil {
+		s.jobs.FailJob(jobID, types.NewExecutorError(err.Error(), err, ""))
+		s.sessions.Update(sessionID, func(sess *session.Session) {
+			sess.Status = types.SessionStatusFailed
+		})
+		return
+	}
+
+	data, _ := json.Marshal(result)
+	s.jobs.CompleteJob(jobID, string(data), 0)
+	s.sessions.Update(sessionID, func(sess *session.Session) {
+		sess.Status = types.SessionStatusCompleted
+		sess.Turns += result.Turns
+	})
 }
 
 // checkConcurrencyLimit returns an error if the maximum concurrent job limit is reached.
