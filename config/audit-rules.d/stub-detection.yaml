@@ -1,0 +1,139 @@
+# Anti-Stub Detection Rules
+# These rules are used by PairCoding reviewer, Audit scanner, and pre-commit hooks.
+# Each rule defines a pattern that indicates stub/placeholder code.
+#
+# Override per-project: {cwd}/.aimux/audit-rules.d/stub-detection.yaml
+# Disable a rule: set enabled: false
+# Add custom patterns: use additional_patterns list
+
+rules:
+  - id: STUB-DISCARD
+    description: "Computed value assigned to blank identifier — value prepared but never used"
+    severity: HIGH
+    pattern: '_ = \w+'
+    keywords: []
+    exclude_files: ["*_test.go"]
+    exclude_patterns:
+      - '_ = err'           # intentional error discard (with comment)
+      - '_ = range'         # idiomatic Go range discard
+      - '_ = x\.\(.*\)'    # compile-time type assertion check
+    enabled: true
+    example: |
+      pairParams := buildParams(...)
+      _ = pairParams  // <-- STUB: computed value discarded
+
+  - id: STUB-HARDCODED
+    description: "Function returns string literal not derived from any input parameter"
+    severity: HIGH
+    pattern: 'return ".*"'
+    keywords:
+      - "delegating to"
+      - "wiring pending"
+      - "not yet implemented"
+      - "placeholder"
+      - "scaffold"
+      - "API integration pending"
+    exclude_files: ["*_test.go", "cmd/aimux/shutdown.go"]
+    exclude_patterns: []
+    enabled: true
+    example: |
+      func handleRun(ctx, req) (*Result, error) {
+          return mcp.NewToolResultText(`{"status":"delegating to exec"}`), nil
+      }
+
+  - id: STUB-TODO
+    description: "TODO/FIXME/SCAFFOLD/PLACEHOLDER markers in implementation code"
+    severity: MEDIUM
+    pattern: '(TODO|FIXME|SCAFFOLD|PLACEHOLDER|HACK)[\s:]'
+    keywords:
+      - "TODO"
+      - "FIXME"
+      - "SCAFFOLD"
+      - "PLACEHOLDER"
+      - "HACK"
+    exclude_files: ["*_test.go"]
+    exclude_patterns:
+      - "stubs-quality.*TODO"  # audit prompt mentioning TODO detection
+    enabled: true
+    example: |
+      // TODO: implement real logic here
+      func process() { return nil }
+
+  - id: STUB-NOOP
+    description: "Function body contains only logging/printing and a return — no real work"
+    severity: HIGH
+    pattern: null  # requires AST analysis or manual review
+    keywords: []
+    exclude_files: ["*_test.go"]
+    exclude_patterns: []
+    enabled: true
+    example: |
+      func handleThink(ctx, req) (*Result, error) {
+          log.Info("think called")
+          return &Result{Content: "thinking..."}, nil
+      }
+
+  - id: STUB-PASSTHROUGH
+    description: "Function computes intermediate value from params, then discards it and returns unrelated value"
+    severity: CRITICAL
+    pattern: null  # requires semantic analysis
+    keywords:
+      - "_ = "
+      - "params prepared"
+    exclude_files: ["*_test.go"]
+    exclude_patterns: []
+    enabled: true
+    example: |
+      pairParams := types.StrategyParams{Prompt: prompt, CLIs: clis}
+      _ = pairParams  // <-- CRITICAL: params built from inputs then discarded
+      // falls through to different code path
+
+  - id: STUB-TEST-STRUCTURAL
+    description: "Test only asserts constructor result is non-nil — never tests behavioral output"
+    severity: MEDIUM
+    pattern: 'assert\.Not(Nil|Empty)\(.*New'
+    keywords: []
+    exclude_files: []  # applies TO test files
+    include_files: ["*_test.go"]  # only check test files
+    exclude_patterns: []
+    enabled: true
+    example: |
+      func TestNewServer(t *testing.T) {
+          srv := NewServer(cfg)
+          assert.NotNil(t, srv)  // <-- only tests constructor, not behavior
+      }
+
+  - id: STUB-COVERAGE-ZERO
+    description: "Exported function with zero test coverage — no test exercises this code path"
+    severity: HIGH
+    pattern: null  # requires coverage analysis
+    keywords: []
+    exclude_files: ["cmd/**"]  # main() excluded
+    exclude_patterns: []
+    enabled: true
+    example: |
+      // Function exists in source but no test calls it
+      func (s *Server) handleDeepresearch(...) { ... }  // 0% coverage
+
+  - id: STUB-INTERFACE-EMPTY
+    description: "Interface implementation where all methods return zero/default values"
+    severity: CRITICAL
+    pattern: null  # requires AST analysis
+    keywords:
+      - 'return nil, nil'
+      - 'return "", nil'
+      - 'return 0, nil'
+      - 'return false, nil'
+    exclude_files: ["*_test.go"]
+    exclude_patterns: []
+    enabled: true
+    example: |
+      func (e *Executor) Run(ctx, args) (*Result, error) {
+          return nil, fmt.Errorf("not implemented")
+      }
+      func (e *Executor) Start(ctx, args) (Session, error) {
+          return nil, fmt.Errorf("not implemented")
+      }
+
+# Additional custom patterns (per-project extension point)
+additional_patterns: []
