@@ -503,7 +503,9 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			if err := s.checkConcurrencyLimit(); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			go s.executePairCoding(context.Background(), job.ID, sess.ID, pairParams, cb)
+			jobCtx, jobCancel := context.WithCancel(context.Background())
+			s.jobs.RegisterCancel(job.ID, jobCancel)
+			go s.executePairCoding(jobCtx, job.ID, sess.ID, pairParams, cb)
 			result := map[string]any{
 				"job_id":     job.ID,
 				"session_id": sess.ID,
@@ -572,7 +574,9 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		if err := s.checkConcurrencyLimit(); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		go s.executeJob(context.Background(), job.ID, sess.ID, args, cb)
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		s.jobs.RegisterCancel(job.ID, jobCancel)
+		go s.executeJob(jobCtx, job.ID, sess.ID, args, cb)
 
 		result := map[string]any{
 			"job_id":     job.ID,
@@ -752,11 +756,9 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if jobID == "" {
 			return mcp.NewToolResultError("job_id required for cancel"), nil
 		}
-		j := s.jobs.Get(jobID)
-		if j == nil {
+		if !s.jobs.CancelJob(jobID) {
 			return mcp.NewToolResultError("job not found"), nil
 		}
-		s.jobs.FailJob(jobID, types.NewExecutorError("cancelled by user", nil, ""))
 		return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
 
 	case "kill":
@@ -909,7 +911,9 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			if err := s.checkConcurrencyLimit(); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			go s.executeJob(context.Background(), job.ID, sess.ID, args, cb)
+			jobCtx, jobCancel := context.WithCancel(context.Background())
+			s.jobs.RegisterCancel(job.ID, jobCancel)
+			go s.executeJob(jobCtx, job.ID, sess.ID, args, cb)
 			data, _ := json.Marshal(map[string]any{
 				"agent":      agentName,
 				"job_id":     job.ID,
@@ -1081,7 +1085,9 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		}
 		sess := s.sessions.Create("consensus", types.SessionModeOnceStateful, "")
 		job := s.jobs.Create(sess.ID, "consensus")
-		go s.executeStrategy(context.Background(), job.ID, sess.ID, "consensus", params)
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		s.jobs.RegisterCancel(job.ID, jobCancel)
+		go s.executeStrategy(jobCtx, job.ID, sess.ID, "consensus", params)
 		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 		return mcp.NewToolResultText(string(data)), nil
 	}
@@ -1157,7 +1163,9 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		}
 		sess := s.sessions.Create("debate", types.SessionModeOnceStateful, "")
 		job := s.jobs.Create(sess.ID, "debate")
-		go s.executeStrategy(context.Background(), job.ID, sess.ID, "debate", params)
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		s.jobs.RegisterCancel(job.ID, jobCancel)
+		go s.executeStrategy(jobCtx, job.ID, sess.ID, "debate", params)
 		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 		return mcp.NewToolResultText(string(data)), nil
 	}

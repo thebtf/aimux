@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -29,14 +30,16 @@ type Job struct {
 
 // JobManager manages async jobs with state machine transitions.
 type JobManager struct {
-	jobs map[string]*Job
-	mu   sync.RWMutex
+	jobs    map[string]*Job
+	cancels map[string]context.CancelFunc
+	mu      sync.RWMutex
 }
 
 // NewJobManager creates an empty job manager.
 func NewJobManager() *JobManager {
 	return &JobManager{
-		jobs: make(map[string]*Job),
+		jobs:    make(map[string]*Job),
+		cancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -208,6 +211,39 @@ func (m *JobManager) CountRunning() int {
 		}
 	}
 	return count
+}
+
+// RegisterCancel stores a CancelFunc for an async job.
+// Called when launching a background goroutine with context.WithCancel.
+func (m *JobManager) RegisterCancel(id string, cancel context.CancelFunc) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cancels[id] = cancel
+}
+
+// CancelJob calls the stored CancelFunc for a job and marks it as failed.
+// Returns true if the job was found and cancelled.
+func (m *JobManager) CancelJob(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cancel, ok := m.cancels[id]
+	if ok {
+		cancel()
+		delete(m.cancels, id)
+	}
+
+	j, exists := m.jobs[id]
+	if !exists {
+		return false
+	}
+	if j.Status == types.JobStatusRunning || j.Status == types.JobStatusCreated {
+		now := time.Now()
+		j.Status = types.JobStatusFailed
+		j.Error = types.NewExecutorError("job cancelled", nil, j.Content)
+		j.CompletedAt = &now
+	}
+	return true
 }
 
 // Delete removes a job.
