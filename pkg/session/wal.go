@@ -110,10 +110,21 @@ func (w *WAL) Close() error {
 }
 
 // Truncate clears the WAL after a successful SQLite snapshot.
+// Reopens the file to work around O_APPEND semantics on Windows.
 func (w *WAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.file.Truncate(0)
+
+	name := w.file.Name()
+	w.file.Close()
+
+	// Rewrite as empty file
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("truncate WAL: %w", err)
+	}
+	w.file = f
+	return nil
 }
 
 func splitLines(data []byte) [][]byte {
