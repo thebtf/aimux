@@ -754,6 +754,36 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		s.jobs.FailJob(jobID, types.NewExecutorError("cancelled by user", nil, ""))
 		return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
 
+	case "kill":
+		sessionID := request.GetString("session_id", "")
+		if sessionID == "" {
+			return mcp.NewToolResultError("session_id required for kill"), nil
+		}
+		sess := s.sessions.Get(sessionID)
+		if sess == nil {
+			return mcp.NewToolResultError("session not found"), nil
+		}
+		// Fail all running jobs for this session
+		for _, j := range s.jobs.ListBySession(sessionID) {
+			if j.Status == types.JobStatusRunning || j.Status == types.JobStatusCreated {
+				s.jobs.FailJob(j.ID, types.NewExecutorError("session killed", nil, ""))
+			}
+		}
+		s.sessions.Delete(sessionID)
+		return mcp.NewToolResultText(`{"status":"killed"}`), nil
+
+	case "gc":
+		// Garbage collect expired sessions (idle > 1 hour)
+		collected := 0
+		for _, sess := range s.sessions.List("") {
+			if sess.Status == types.SessionStatusCompleted || sess.Status == types.SessionStatusFailed {
+				s.sessions.Delete(sess.ID)
+				collected++
+			}
+		}
+		data, _ := json.Marshal(map[string]any{"collected": collected})
+		return mcp.NewToolResultText(string(data)), nil
+
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
 	}
