@@ -1,0 +1,26 @@
+# Binaries
+/aimux
+/aimux.exe
+/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+/vendor/
+
+# Agent state (never commit)
+.agent/CONTINUITY.md
+.agent/autopilot.local.md
+.agent/pre-compact-*.json
+
+# Test artifacts
+coverage.out
+*.test
