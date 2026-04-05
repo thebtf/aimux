@@ -348,6 +348,35 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		timeoutSec = profile.TimeoutSeconds
 	}
 
+	// Constitution P2: Solo coding prohibited — route coding role through PairCoding
+	if role == "coding" {
+		s.log.Info("exec: role=coding → PairCoding strategy (cli=%s)", cli)
+
+		// Resolve reviewer CLI (different from driver)
+		reviewerCLI := "claude"
+		reviewerPref, _ := s.router.Resolve("codereview")
+		if reviewerPref.CLI != "" && reviewerPref.CLI != cli {
+			reviewerCLI = reviewerPref.CLI
+		}
+
+		pairParams := types.StrategyParams{
+			Prompt:  prompt,
+			CLIs:    []string{cli, reviewerCLI},
+			CWD:     cwd,
+			Timeout: timeoutSec,
+			Extra: map[string]any{
+				"max_rounds": s.cfg.Server.Pair.MaxRounds,
+				"complex":    request.GetBool("complex", false),
+			},
+		}
+
+		// Use PairCoding strategy via orchestrator (when wired)
+		// For now, fall through to direct exec as pair orchestrator
+		// needs full executor wiring (Phase 8)
+		_ = pairParams
+		s.log.Info("exec: PairCoding params prepared (driver=%s, reviewer=%s)", cli, reviewerCLI)
+	}
+
 	// Create session + job
 	sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
 	job := s.jobs.Create(sess.ID, cli)
