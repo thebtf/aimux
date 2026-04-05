@@ -1,8 +1,6 @@
 package executor
 
 import (
-	"runtime"
-
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -27,17 +25,3 @@ func (s *Selector) Select() types.Executor {
 	return nil
 }
 
-// SelectByName returns a specific executor by name.
-func (s *Selector) SelectByName(name string) types.Executor {
-	for _, exec := range s.executors {
-		if exec.Name() == name {
-			return exec
-		}
-	}
-	return nil
-}
-
-// IsWindows returns true on Windows (for ConPTY detection).
-func IsWindows() bool {
-	return runtime.GOOS == "windows"
-}

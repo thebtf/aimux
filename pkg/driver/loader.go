@@ -45,13 +45,6 @@ func (r *Registry) Probe() {
 	wg.Wait()
 }
 
-// IsAvailable returns true if a CLI is installed and reachable.
-func (r *Registry) IsAvailable(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.available[name]
-}
-
 // EnabledCLIs returns names of all available CLIs.
 func (r *Registry) EnabledCLIs() []string {
 	r.mu.RLock()
@@ -78,14 +71,3 @@ func (r *Registry) Get(name string) (*config.CLIProfile, error) {
 	return profile, nil
 }
 
-// All returns all configured CLI profiles.
-func (r *Registry) All() map[string]*config.CLIProfile {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make(map[string]*config.CLIProfile, len(r.profiles))
-	for k, v := range r.profiles {
-		result[k] = v
-	}
-	return result
-}

@@ -79,22 +79,6 @@ func ShouldUseStdin(profile *config.CLIProfile, prompt string) bool {
 	return profile.StdinThreshold > 0 && len(prompt) > profile.StdinThreshold
 }
 
-// BuildStdinArgs returns args with a placeholder for the prompt flag
-// when the prompt will be piped via stdin instead.
-func BuildStdinArgs(profile *config.CLIProfile, params TemplateParams) (string, []string, string) {
-	stdinContent := params.Prompt
-	params.Prompt = "" // Clear prompt from args
-
-	command, args := ResolveCommand(profile, params)
-
-	// Add prompt flag with empty placeholder for short flags
-	if profile.PromptFlagType == "short" {
-		args = append(args, profile.PromptFlag, "")
-	}
-
-	return command, args, stdinContent
-}
-
 // ValidateReasoningEffort checks if a reasoning effort level is valid for a CLI.
 func ValidateReasoningEffort(profile *config.CLIProfile, level string) error {
 	if profile.Reasoning == nil {
