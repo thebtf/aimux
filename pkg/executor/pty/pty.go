@@ -1,13 +1,20 @@
 // Package pty implements the Unix PTY executor for Linux and macOS.
 // Uses creack/pty for pseudo-terminal allocation, providing unbuffered
-// text output similar to ConPTY on Windows.
+// text output (Constitution P4: ConPTY-first, PTY on Unix, Pipe fallback).
 package pty
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os/exec"
 	"runtime"
+	"time"
 
+	"github.com/creack/pty"
+
+	"github.com/thebtf/aimux/pkg/executor/pipeline"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -30,24 +37,105 @@ func (e *Executor) Name() string { return "pty" }
 func (e *Executor) Available() bool { return e.available }
 
 // Run executes a single prompt via PTY and returns the result.
+// The process sees a TTY → produces unbuffered line-oriented output.
 func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
 	if !e.available {
 		return nil, types.NewExecutorError("PTY not available on this platform", nil, "")
 	}
 
-	// TODO: Full PTY implementation via github.com/creack/pty
-	// pty.Start(cmd) → read from pty file descriptor → parse text output
-	//
-	// Implementation requires:
-	// 1. exec.Command with args
-	// 2. pty.Start(cmd) to allocate PTY and start process
-	// 3. Read loop on PTY fd with ANSI stripping
-	// 4. Timeout/cancel handling via context
-	// 5. PTY close on cleanup
+	start := time.Now()
 
-	return nil, types.NewExecutorError(
-		"PTY executor not yet fully implemented — use pipe executor as fallback",
-		nil, "")
+	cmd := exec.Command(args.Command, args.Args...)
+	cmd.Dir = args.CWD
+
+	if len(args.Env) > 0 {
+		for k, v := range args.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+
+	// Start with PTY
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return nil, types.NewExecutorError(
+			fmt.Sprintf("PTY start failed for %s", args.Command), err, "")
+	}
+	defer ptmx.Close()
+
+	// Write stdin if provided
+	if args.Stdin != "" {
+		go func() {
+			ptmx.Write([]byte(args.Stdin))
+			ptmx.Write([]byte{4}) // EOT
+		}()
+	}
+
+	// Read output in background
+	var output bytes.Buffer
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(&output, ptmx)
+		readDone <- err
+	}()
+
+	// Wait for process with timeout
+	procDone := make(chan error, 1)
+	go func() {
+		procDone <- cmd.Wait()
+	}()
+
+	var timerC <-chan time.Time
+	if args.TimeoutSeconds > 0 {
+		timer := time.NewTimer(time.Duration(args.TimeoutSeconds) * time.Second)
+		defer timer.Stop()
+		timerC = timer.C
+	}
+
+	select {
+	case waitErr := <-procDone:
+		// Process exited — wait for read to finish
+		<-readDone
+
+		content := pipeline.StripANSI(output.String())
+		exitCode := 0
+		if waitErr != nil {
+			if exitErr, ok := waitErr.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			}
+		}
+		return &types.Result{
+			Content:    content,
+			ExitCode:   exitCode,
+			DurationMS: time.Since(start).Milliseconds(),
+		}, nil
+
+	case <-timerC:
+		cmd.Process.Kill()
+		<-procDone
+		<-readDone
+		content := pipeline.StripANSI(output.String())
+		return &types.Result{
+			Content:    content,
+			ExitCode:   124,
+			Partial:    true,
+			DurationMS: time.Since(start).Milliseconds(),
+			Error: types.NewTimeoutError(
+				fmt.Sprintf("PTY timed out after %ds", args.TimeoutSeconds), content),
+		}, nil
+
+	case <-ctx.Done():
+		cmd.Process.Kill()
+		<-procDone
+		<-readDone
+		content := pipeline.StripANSI(output.String())
+		return &types.Result{
+			Content:    content,
+			ExitCode:   130,
+			Partial:    true,
+			DurationMS: time.Since(start).Milliseconds(),
+			Error: types.NewExecutorError("PTY cancelled", ctx.Err(), content),
+		}, nil
+	}
 }
 
 // Start begins a persistent PTY session.
@@ -55,6 +143,5 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 	if !e.available {
 		return nil, types.NewExecutorError("PTY not available on this platform", nil, "")
 	}
-
 	return nil, fmt.Errorf("PTY persistent sessions not yet implemented")
 }
