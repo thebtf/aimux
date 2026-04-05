@@ -89,7 +89,17 @@ func (a *AuditPipeline) Execute(ctx context.Context, params types.StrategyParams
 func (a *AuditPipeline) scan(ctx context.Context, params types.StrategyParams, parallel int, role string) ([]auditFinding, error) {
 	// Define scanner categories
 	categories := []string{
-		"stubs-quality: Check for TODO/stub implementations, incomplete error handling, test quality",
+		"stubs-quality: Check for stub/placeholder code using these SPECIFIC patterns:\n" +
+			"STUB-DISCARD: `_ = expr` where value is computed then discarded (not type assertion or error ignore)\n" +
+			"STUB-HARDCODED: function returns string literal not derived from parameters (e.g. 'return \"delegating to exec\"')\n" +
+			"STUB-TODO: TODO/FIXME/SCAFFOLD/PLACEHOLDER markers in implementation code\n" +
+			"STUB-NOOP: function body contains only logging/printing and a return with no real logic\n" +
+			"STUB-PASSTHROUGH: function computes value from params, then discards it and returns unrelated value\n" +
+			"STUB-TEST-STRUCTURAL: test only checks constructor result is non-nil, never verifies behavioral output\n" +
+			"STUB-COVERAGE-ZERO: exported function with zero test coverage\n" +
+			"STUB-INTERFACE-EMPTY: interface implementation where all methods return zero/default values\n" +
+			"For each finding, output: FINDING: [SEVERITY] STUB-RULEID — description (file:line)\n" +
+			"Severity: CRITICAL for STUB-PASSTHROUGH and STUB-INTERFACE-EMPTY, HIGH for others",
 		"security-validation: Check for hardcoded secrets, injection vulnerabilities, input validation",
 		"architecture-patterns: Check for circular dependencies, god objects, DRY violations",
 	}
