@@ -453,18 +453,56 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			},
 		}
 
-		// Use PairCoding strategy via orchestrator (when wired)
-		// For now, fall through to direct exec as pair orchestrator
-		// needs full executor wiring (Phase 8)
-		_ = pairParams
-		s.log.Info("exec: PairCoding params prepared (driver=%s, reviewer=%s)", cli, reviewerCLI)
+		sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+		job := s.jobs.Create(sess.ID, cli)
+		s.log.Info("exec: PairCoding driver=%s reviewer=%s job=%s async=%v", cli, reviewerCLI, job.ID, async)
+
+		if async {
+			go s.executePairCoding(context.Background(), job.ID, sess.ID, pairParams, cb)
+			result := map[string]any{
+				"job_id":     job.ID,
+				"session_id": sess.ID,
+				"status":     "running",
+			}
+			data, _ := json.Marshal(result)
+			return mcp.NewToolResultText(string(data)), nil
+		}
+
+		s.executePairCoding(ctx, job.ID, sess.ID, pairParams, cb)
+
+		j := s.jobs.Get(job.ID)
+		if j == nil {
+			return mcp.NewToolResultError("job disappeared"), nil
+		}
+		if j.Status == types.JobStatusFailed && j.Error != nil {
+			return mcp.NewToolResultError(j.Error.Error()), nil
+		}
+
+		// j.Content is JSON-encoded StrategyResult with ReviewReport
+		result := map[string]any{
+			"session_id": sess.ID,
+			"status":     string(j.Status),
+		}
+		// Parse strategy result to include fields at top level
+		var stratResult types.StrategyResult
+		if json.Unmarshal([]byte(j.Content), &stratResult) == nil {
+			result["content"] = stratResult.Content
+			result["turns"] = stratResult.Turns
+			result["participants"] = stratResult.Participants
+			if stratResult.ReviewReport != nil {
+				result["review_report"] = stratResult.ReviewReport
+			}
+		} else {
+			result["content"] = j.Content
+		}
+		data, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(data)), nil
 	}
 
-	// Create session + job
+	// Non-coding roles: direct execution
 	sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
 	job := s.jobs.Create(sess.ID, cli)
 
-	// Build spawn args
 	args := types.SpawnArgs{
 		CLI:            cli,
 		Command:        profile.Command.Base,
@@ -476,7 +514,6 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	s.log.Info("exec: cli=%s role=%s job=%s async=%v", cli, role, job.ID, async)
 
 	if async {
-		// Async mode: execute in background, return job_id immediately
 		go s.executeJob(context.Background(), job.ID, sess.ID, args, cb)
 
 		result := map[string]any{
@@ -488,7 +525,6 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultText(string(data)), nil
 	}
 
-	// Sync mode: execute and return
 	s.executeJob(ctx, job.ID, sess.ID, args, cb)
 
 	j := s.jobs.Get(job.ID)
@@ -507,6 +543,36 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	}
 	data, _ := json.Marshal(result)
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// executePairCoding runs a pair coding pipeline via orchestrator and updates job/session state.
+func (s *Server) executePairCoding(ctx context.Context, jobID, sessionID string, params types.StrategyParams, cb *executor.CircuitBreaker) {
+	s.jobs.StartJob(jobID, 0)
+	s.sessions.Update(sessionID, func(sess *session.Session) {
+		sess.Status = types.SessionStatusRunning
+	})
+
+	stratResult, err := s.orchestrator.Execute(ctx, "pair_coding", params)
+	if err != nil {
+		cb.RecordFailure(false)
+		s.jobs.FailJob(jobID, types.NewExecutorError(err.Error(), err, ""))
+		s.sessions.Update(sessionID, func(sess *session.Session) {
+			sess.Status = types.SessionStatusFailed
+		})
+		s.log.Error("pair_coding failed: job=%s error=%v", jobID, err)
+		return
+	}
+
+	cb.RecordSuccess()
+
+	// Encode full strategy result as JSON content (includes ReviewReport)
+	data, _ := json.Marshal(stratResult)
+	s.jobs.CompleteJob(jobID, string(data), 0)
+	s.sessions.Update(sessionID, func(sess *session.Session) {
+		sess.Status = types.SessionStatusCompleted
+		sess.Turns += stratResult.Turns
+	})
+	s.log.Info("pair_coding complete: job=%s turns=%d", jobID, stratResult.Turns)
 }
 
 // executeJob runs a CLI process and updates job/session state.
@@ -712,15 +778,71 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
 		}
 		prompt := request.GetString("prompt", "")
-		// Execute agent via exec tool with agent's role and prompt
 		fullPrompt := agent.Content + "\n\n" + prompt
 		role := agent.Role
 		if role == "" {
 			role = "default"
 		}
+		cwd := request.GetString("cwd", "")
+
+		// Resolve CLI from agent role
+		cli := ""
+		pref, resolveErr := s.router.Resolve(role)
+		if resolveErr == nil {
+			cli = pref.CLI
+		}
+		if cli == "" {
+			cli = "codex" // default executor
+		}
+
+		profile, profileErr := s.registry.Get(cli)
+		if profileErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("CLI %q not configured for agent role %q", cli, role)), nil
+		}
+
+		readOnly := routing.IsAdvisory(role)
+		sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+		job := s.jobs.Create(sess.ID, cli)
+
+		args := types.SpawnArgs{
+			CLI:            cli,
+			Command:        profile.Command.Base,
+			Args:           buildArgs(profile, pref.Model, pref.ReasoningEffort, readOnly, fullPrompt),
+			CWD:            cwd,
+			TimeoutSeconds: profile.TimeoutSeconds,
+		}
+
+		s.log.Info("agents: run agent=%s cli=%s role=%s job=%s", agentName, cli, role, job.ID)
+
+		cb := s.breakers.Get(cli)
+		async := request.GetBool("async", false)
+
+		if async {
+			go s.executeJob(context.Background(), job.ID, sess.ID, args, cb)
+			data, _ := json.Marshal(map[string]any{
+				"agent":      agentName,
+				"job_id":     job.ID,
+				"session_id": sess.ID,
+				"status":     "running",
+			})
+			return mcp.NewToolResultText(string(data)), nil
+		}
+
+		s.executeJob(ctx, job.ID, sess.ID, args, cb)
+
+		j := s.jobs.Get(job.ID)
+		if j == nil {
+			return mcp.NewToolResultError("agent job disappeared"), nil
+		}
+		if j.Status == types.JobStatusFailed && j.Error != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("agent %q failed: %v", agentName, j.Error)), nil
+		}
+
 		data, _ := json.Marshal(map[string]any{
-			"agent": agentName, "role": role, "prompt_length": len(fullPrompt),
-			"status": "delegating to exec",
+			"agent":      agentName,
+			"session_id": sess.ID,
+			"status":     string(j.Status),
+			"content":    j.Content,
 		})
 		return mcp.NewToolResultText(string(data)), nil
 
