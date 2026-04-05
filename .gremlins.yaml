@@ -1,0 +1,18 @@
+# Gremlins mutation testing configuration
+# Constitution P17: No Stubs — mutation testing catches stubs that survive structural tests.
+# A function with >50% surviving mutants is likely a stub or undertested.
+
+threshold:
+  efficacy: 75  # fail if mutation kill rate < 75%
+
+# Only mutate implementation packages (not test helpers, not cmd/)
+packages:
+  - ./pkg/...
+
+# Exclude test files and generated code
+exclude:
+  - "*_test.go"
+  - "*.pb.go"
+
+# Timeout per mutant (generous for CI)
+timeout-coefficient: 3
