@@ -1,0 +1,102 @@
+# aimux v3 — Default Server Configuration
+# Override per-project via {cwd}/.aimux/config.yaml
+# Override per-setting via AIMUX_* environment variables
+
+server:
+  log_level: info
+  log_file: ~/.config/aimux/aimux.log
+  db_path: ~/.config/aimux/sessions.db
+  max_concurrent_jobs: 10
+  session_ttl_hours: 24
+  gc_interval_seconds: 300
+  progress_interval_seconds: 15
+  default_async: false
+  default_timeout_seconds: 300
+
+  # Audit pipeline configuration
+  audit:
+    scanner_role: codereview
+    validator_role: analyze
+    default_mode: standard
+    parallel_scanners: 3
+    scanner_timeout_seconds: 600
+    validator_timeout_seconds: 300
+
+  # Pair coding configuration
+  pair:
+    driver_role: coding
+    reviewer_role: codereview
+    max_rounds: 3
+    driver_timeout_seconds: 300
+    reviewer_timeout_seconds: 180
+
+  # Consensus configuration
+  consensus:
+    default_blinded: true
+    default_synthesize: false
+    max_turns: 8
+    timeout_per_turn_seconds: 180
+
+  # Debate configuration
+  debate:
+    default_synthesize: true
+    max_turns: 6
+    timeout_per_turn_seconds: 180
+
+  # Research configuration
+  research:
+    default_synthesize: true
+    timeout_per_participant_seconds: 300
+
+  # Think configuration
+  think:
+    auto_consensus_threshold: 60
+    default_dialog_max_turns: 4
+
+# Role → CLI preferences (overridden by AIMUX_ROLE_* env)
+roles:
+  coding:
+    cli: codex
+    model: gpt-5.3-codex
+  codereview:
+    cli: codex
+    model: gpt-5.4
+    reasoning_effort: high
+  thinkdeep:
+    cli: codex
+    model: gpt-5.4
+    reasoning_effort: high
+  secaudit:
+    cli: codex
+    model: gpt-5.4
+    reasoning_effort: high
+  debug:
+    cli: codex
+  planner:
+    cli: codex
+    model: gpt-5.4
+    reasoning_effort: high
+  analyze:
+    cli: gemini
+  refactor:
+    cli: codex
+  testgen:
+    cli: codex
+  docgen:
+    cli: codex
+  tracer:
+    cli: codex
+  precommit:
+    cli: codex
+  challenge:
+    cli: codex
+    model: gpt-5.4
+    reasoning_effort: high
+  default:
+    cli: codex
+
+# Circuit breaker settings
+circuit_breaker:
+  failure_threshold: 3
+  cooldown_seconds: 300
+  half_open_max_calls: 1

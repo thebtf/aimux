@@ -1,0 +1,54 @@
+# Codex CLI profile — primary coding agent
+name: codex
+binary: codex
+display_name: "Codex (OpenAI)"
+
+features:
+  streaming: true
+  headless: true
+  read_only: true
+  session_resume: true
+  json: false
+  jsonl: true
+  stdin_pipe: true
+
+output_format: jsonl
+
+# Command templates with feature flag resolution
+command:
+  base: "codex"
+  args_template: >-
+    {{if .Headless}}--full-auto{{end}}
+    {{if .ReadOnly}}--sandbox read-only{{end}}
+    {{if .Model}}-m {{.Model}}{{end}}
+    {{if .ReasoningEffort}}-c model_reasoning_effort="{{.ReasoningEffort}}"{{end}}
+    {{if .SessionResume}}exec resume {{.SessionID}}{{end}}
+    -p "{{.Prompt}}"
+
+# Prompt flag for headless mode
+prompt_flag: "-p"
+prompt_flag_type: "short"
+
+# Default model (passed via -m when input.model not set)
+default_model: ""
+
+# Model flag
+model_flag: "-m"
+
+# Reasoning effort via config
+reasoning:
+  flag: "-c"
+  flag_value_template: 'model_reasoning_effort="{{.Level}}"'
+  levels: [low, medium, high, xhigh]
+
+# Timeout defaults
+timeout_seconds: 3600
+
+# Stdin piping threshold (chars)
+stdin_threshold: 6000
+
+# Completion pattern for early termination
+completion_pattern: "turn\\.completed"
+
+# Read-only flags
+read_only_flags: ["--sandbox", "read-only"]

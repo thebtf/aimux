@@ -1,0 +1,39 @@
+# Droid CLI profile
+name: droid
+binary: droid
+display_name: "Droid"
+
+features:
+  streaming: true
+  headless: true
+  read_only: true
+  session_resume: false
+  json: true
+  jsonl: false
+  stdin_pipe: true
+
+output_format: json
+
+command:
+  base: "droid"
+  args_template: >-
+    {{if .Model}}--model {{.Model}}{{end}}
+    {{if .ReasoningEffort}}-r {{.ReasoningEffort}}{{end}}
+    --output-format json
+    -p "{{.Prompt}}"
+
+prompt_flag: "-p"
+prompt_flag_type: "short"
+
+default_model: ""
+model_flag: "--model"
+
+reasoning:
+  flag: "-r"
+  levels: [none, low, medium, high, xhigh]
+
+timeout_seconds: 600
+
+stdin_threshold: 6000
+
+read_only_flags: []

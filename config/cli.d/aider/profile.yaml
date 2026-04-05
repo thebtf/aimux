@@ -1,0 +1,37 @@
+# Aider CLI profile
+name: aider
+binary: aider
+display_name: "Aider"
+
+features:
+  streaming: true
+  headless: true
+  read_only: false
+  session_resume: false
+  json: false
+  jsonl: false
+  stdin_pipe: false
+
+output_format: text
+
+command:
+  base: "aider"
+  args_template: >-
+    --no-auto-commits
+    --no-dirty-commits
+    --no-auto-test
+    --no-auto-lint
+    {{if .Model}}--model {{.Model}}{{end}}
+    --message "{{.Prompt}}"
+
+prompt_flag: "--message"
+prompt_flag_type: "long"
+
+default_model: ""
+model_flag: "--model"
+
+timeout_seconds: 600
+
+stdin_threshold: 0
+
+read_only_flags: []

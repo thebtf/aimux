@@ -1,0 +1,34 @@
+# Gemini CLI profile
+name: gemini
+binary: gemini
+display_name: "Gemini (Google)"
+
+features:
+  streaming: true
+  headless: true
+  read_only: false
+  session_resume: false
+  json: true
+  jsonl: false
+  stdin_pipe: true
+
+output_format: json
+
+command:
+  base: "gemini"
+  args_template: >-
+    {{if .Model}}--model {{.Model}}{{end}}
+    --output-format json
+    -p "{{.Prompt}}"
+
+prompt_flag: "-p"
+prompt_flag_type: "short"
+
+default_model: ""
+model_flag: "--model"
+
+timeout_seconds: 600
+
+stdin_threshold: 6000
+
+read_only_flags: []
