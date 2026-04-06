@@ -319,16 +319,28 @@ func TestE2E_Audit_Quick(t *testing.T) {
 // --- Think Tool ---
 
 func TestE2E_Think_AllPatterns(t *testing.T) {
-	patterns := []string{"critical_thinking", "decision_framework", "sequential_thinking"}
-	for _, pattern := range patterns {
-		t.Run(pattern, func(t *testing.T) {
-			resp := initAndCall(t, "think", map[string]any{
-				"pattern": pattern,
-				"issue":   "test issue for " + pattern,
-			})
+	cases := []struct {
+		pattern string
+		params  map[string]any
+	}{
+		{"critical_thinking", map[string]any{"issue": "test issue for critical_thinking"}},
+		{"decision_framework", map[string]any{
+			"decision": "choose a framework",
+			"criteria": []any{map[string]any{"name": "speed", "weight": 1.0}},
+			"options":  []any{map[string]any{"name": "A", "scores": map[string]any{"speed": 8.0}}},
+		}},
+		{"sequential_thinking", map[string]any{"thought": "first thought about testing"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.pattern, func(t *testing.T) {
+			params := map[string]any{"pattern": tc.pattern}
+			for k, v := range tc.params {
+				params[k] = v
+			}
+			resp := initAndCall(t, "think", params)
 			data := extractToolJSON(t, resp)
-			if data["pattern"] != pattern {
-				t.Errorf("pattern = %v, want %v", data["pattern"], pattern)
+			if data["pattern"] != tc.pattern {
+				t.Errorf("pattern = %v, want %v", data["pattern"], tc.pattern)
 			}
 			if data["mode"] != "solo" {
 				t.Errorf("mode = %v, want solo", data["mode"])
