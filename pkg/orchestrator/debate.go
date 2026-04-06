@@ -72,7 +72,7 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 		history = append(history, debateEntry{
 			CLI:     cli,
 			Stance:  stance,
-			Content: result.Content,
+			Content: CompactTurnContent(result.Content, 0),
 			Turn:    totalTurns,
 		})
 	}
@@ -85,13 +85,16 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 
 	content := sb.String()
 
-	// Synthesis: final verdict
+	// Synthesis: final verdict with budget-aware prompt
 	if synthesize && len(history) > 0 {
-		synthPrompt := fmt.Sprintf(
-			"You moderated a debate on: %s\n\nArguments:\n\n%s\n\n"+
-				"Provide a final verdict: which side presented stronger arguments? "+
-				"Summarize key points from each side and give your recommendation.",
-			params.Prompt, content)
+		var responses []string
+		for _, h := range history {
+			responses = append(responses, fmt.Sprintf("[%s (%s)]: %s", h.CLI, h.Stance, h.Content))
+		}
+		budget := ComputeDialogBudget(nil)
+		synthPrompt := BuildSynthesisPrompt(
+			params.Prompt+"\n\nProvide a final verdict: which side presented stronger arguments? Summarize key points from each side and give your recommendation.",
+			responses, budget)
 
 		synthResult, synthErr := d.executor.Run(ctx, resolveOrFallback(d.resolver, participants[0], synthPrompt, params.CWD, params.Timeout))
 		if synthErr == nil {
