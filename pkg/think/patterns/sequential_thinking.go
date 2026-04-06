@@ -2,10 +2,13 @@ package patterns
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
+
+const duplicateThoughtThreshold = 0.8 // Jaccard similarity above this triggers warning
 
 type sequentialThinkingPattern struct{}
 
@@ -117,6 +120,22 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 		branches[branchId] = entry
 	}
 
+	// Detect duplicate/similar thoughts
+	currentThought, _ := validInput["thought"].(string)
+	var similarTo string
+	var similarity float64
+	for _, existing := range thoughts {
+		if m, ok := existing.(map[string]any); ok {
+			if prev, ok := m["thought"].(string); ok {
+				sim := jaccardSimilarity(prev, currentThought)
+				if sim > similarity {
+					similarity = sim
+					similarTo = prev
+				}
+			}
+		}
+	}
+
 	thoughts = append(thoughts, entry)
 
 	think.UpdateSessionState(sessionID, map[string]any{
@@ -131,6 +150,14 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 		"totalInSession":  len(thoughts),
 		"totalThoughts":   validInput["totalThoughts"],
 		"hasBranches":     hasBranches,
+	}
+
+	if similarity >= duplicateThoughtThreshold {
+		data["duplicateWarning"] = fmt.Sprintf(
+			"This thought is %.0f%% similar to an existing thought: %q. Consider revising instead.",
+			similarity*100, similarTo,
+		)
+		data["similarity"] = similarity
 	}
 
 	return think.MakeThinkResult("sequential_thinking", data, sessionID, nil, "sequential_thinking", nil), nil
@@ -150,3 +177,41 @@ func toInt(v any) (int, bool) {
 	}
 }
 
+// jaccardSimilarity computes the Jaccard similarity between two strings
+// by splitting them into word sets and computing |intersection|/|union|.
+func jaccardSimilarity(a, b string) float64 {
+	setA := wordSet(a)
+	setB := wordSet(b)
+
+	if len(setA) == 0 && len(setB) == 0 {
+		return 1.0
+	}
+
+	intersection := 0
+	for w := range setA {
+		if setB[w] {
+			intersection++
+		}
+	}
+
+	union := len(setA)
+	for w := range setB {
+		if !setA[w] {
+			union++
+		}
+	}
+
+	if union == 0 {
+		return 0.0
+	}
+	return float64(intersection) / float64(union)
+}
+
+func wordSet(s string) map[string]bool {
+	words := strings.Fields(strings.ToLower(s))
+	set := make(map[string]bool, len(words))
+	for _, w := range words {
+		set[w] = true
+	}
+	return set
+}
