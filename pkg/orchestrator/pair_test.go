@@ -36,7 +36,7 @@ func TestPairCoding_NoDiffContent(t *testing.T) {
 		runResult: &types.Result{Content: "LGTM", ExitCode: 0},
 	}
 
-	pair := orchestrator.NewPairCoding(driver, reviewer)
+	pair := orchestrator.NewPairCoding(driver, reviewer, nil)
 
 	result, err := pair.Execute(context.Background(), types.StrategyParams{
 		Prompt: "add hello function",
@@ -74,7 +74,7 @@ func TestPairCoding_WithDiff(t *testing.T) {
 		runResult: &types.Result{Content: reviewJSON, ExitCode: 0},
 	}
 
-	pair := orchestrator.NewPairCoding(driver, reviewer)
+	pair := orchestrator.NewPairCoding(driver, reviewer, nil)
 
 	result, err := pair.Execute(context.Background(), types.StrategyParams{
 		Prompt: "add hello function",
@@ -106,7 +106,7 @@ func TestPairCoding_DriverFailure(t *testing.T) {
 	}
 	reviewer := &mockExecutor{}
 
-	pair := orchestrator.NewPairCoding(driver, reviewer)
+	pair := orchestrator.NewPairCoding(driver, reviewer, nil)
 
 	_, err := pair.Execute(context.Background(), types.StrategyParams{
 		Prompt: "add hello",

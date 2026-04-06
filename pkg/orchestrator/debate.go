@@ -12,11 +12,12 @@ import (
 // Participants have assigned stances (for/against) and see each other's arguments.
 type StructuredDebate struct {
 	executor types.Executor
+	resolver types.CLIResolver
 }
 
 // NewStructuredDebate creates a debate strategy.
-func NewStructuredDebate(executor types.Executor) *StructuredDebate {
-	return &StructuredDebate{executor: executor}
+func NewStructuredDebate(executor types.Executor, resolver types.CLIResolver) *StructuredDebate {
+	return &StructuredDebate{executor: executor, resolver: resolver}
 }
 
 // Name returns the strategy name.
@@ -63,13 +64,7 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 
 		prompt := buildDebatePrompt(params.Prompt, history, cli, stance)
 
-		result, err := d.executor.Run(ctx, types.SpawnArgs{
-			CLI:            cli,
-			Command:        cli,
-			Args:           []string{"-p", prompt},
-			CWD:            params.CWD,
-			TimeoutSeconds: params.Timeout,
-		})
+		result, err := d.executor.Run(ctx, resolveOrFallback(d.resolver, cli, prompt, params.CWD, params.Timeout))
 		if err != nil {
 			return nil, fmt.Errorf("debate turn %d (%s) failed: %w", totalTurns, cli, err)
 		}
@@ -98,13 +93,7 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 				"Summarize key points from each side and give your recommendation.",
 			params.Prompt, content)
 
-		synthResult, err := d.executor.Run(ctx, types.SpawnArgs{
-			CLI:            participants[0],
-			Command:        participants[0],
-			Args:           []string{"-p", synthPrompt},
-			CWD:            params.CWD,
-			TimeoutSeconds: params.Timeout,
-		})
+		synthResult, err := d.executor.Run(ctx, resolveOrFallback(d.resolver, participants[0], synthPrompt, params.CWD, params.Timeout))
 		if err == nil {
 			content += "\n\n---\n\n## Verdict\n\n" + synthResult.Content
 			totalTurns++

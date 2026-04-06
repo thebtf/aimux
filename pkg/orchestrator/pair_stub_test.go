@@ -47,7 +47,7 @@ func TestPairStub_ReviewerPromptContainsAntiStubCriteria(t *testing.T) {
 		response:       `[{"hunk_index": 0, "verdict": "changes_requested", "comment": "STUB-PASSTHROUGH"}]`,
 	}
 
-	pair := orchestrator.NewPairCoding(driver, reviewer)
+	pair := orchestrator.NewPairCoding(driver, reviewer, nil)
 	result, err := pair.Execute(context.Background(), types.StrategyParams{
 		Prompt: "add hello function",
 		CLIs:   []string{"codex", "claude"},
@@ -95,7 +95,7 @@ func TestPairStub_CleanDiffApproved(t *testing.T) {
 		},
 	}
 
-	pair := orchestrator.NewPairCoding(driver, reviewer)
+	pair := orchestrator.NewPairCoding(driver, reviewer, nil)
 	result, err := pair.Execute(context.Background(), types.StrategyParams{
 		Prompt: "add Hello function",
 		CLIs:   []string{"codex", "claude"},

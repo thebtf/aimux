@@ -63,13 +63,16 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		executor: selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
 	}
 
+	// Initialize CLI resolver for profile-aware command resolution
+	cliResolver := resolve.NewProfileResolver(cfg.CLIProfiles)
+
 	// Initialize orchestrator with all strategies
 	s.orchestrator = orch.New(log,
-		orch.NewPairCoding(s.executor, s.executor),
-		orch.NewSequentialDialog(s.executor),
-		orch.NewParallelConsensus(s.executor),
-		orch.NewStructuredDebate(s.executor),
-		orch.NewAuditPipeline(s.executor),
+		orch.NewPairCoding(s.executor, s.executor, cliResolver),
+		orch.NewSequentialDialog(s.executor, cliResolver),
+		orch.NewParallelConsensus(s.executor, cliResolver),
+		orch.NewStructuredDebate(s.executor, cliResolver),
+		orch.NewAuditPipeline(s.executor, cliResolver),
 	)
 
 	// Initialize prompt engine with built-in and project prompts.d/

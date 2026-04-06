@@ -28,7 +28,7 @@ func TestPairIntegration_EndToEnd(t *testing.T) {
 	driver := &mockExecutor{runResult: &types.Result{Content: diffOutput, ExitCode: 0}}
 	reviewer := &mockExecutor{runResult: &types.Result{Content: reviewJSON, ExitCode: 0}}
 
-	pair := orchestrator.NewPairCoding(driver, reviewer)
+	pair := orchestrator.NewPairCoding(driver, reviewer, nil)
 
 	result, err := pair.Execute(context.Background(), types.StrategyParams{
 		Prompt:  "Add Hello() function to hello.go",
@@ -80,7 +80,7 @@ func TestPairIntegration_ComplexMode(t *testing.T) {
 	driver := &mockExecutor{runResult: &types.Result{Content: diffOutput, ExitCode: 0}}
 	reviewer := &mockExecutor{runResult: &types.Result{Content: reviewJSON, ExitCode: 0}}
 
-	pair := orchestrator.NewPairCoding(driver, reviewer)
+	pair := orchestrator.NewPairCoding(driver, reviewer, nil)
 
 	result, err := pair.Execute(context.Background(), types.StrategyParams{
 		Prompt: "Add init function",

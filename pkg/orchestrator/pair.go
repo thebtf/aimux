@@ -17,13 +17,15 @@ import (
 type PairCoding struct {
 	driver   types.Executor
 	reviewer types.Executor
+	resolver types.CLIResolver
 }
 
 // NewPairCoding creates a pair coding strategy with driver and reviewer executors.
-func NewPairCoding(driver, reviewer types.Executor) *PairCoding {
+func NewPairCoding(driver, reviewer types.Executor, resolver types.CLIResolver) *PairCoding {
 	return &PairCoding{
 		driver:   driver,
 		reviewer: reviewer,
+		resolver: resolver,
 	}
 }
 
@@ -70,13 +72,7 @@ func (p *PairCoding) Execute(ctx context.Context, params types.StrategyParams) (
 			driverPrompt = buildReprompt(params.Prompt, allReviews)
 		}
 
-		driverResult, err := p.driver.Run(ctx, types.SpawnArgs{
-			CLI:            driverCLI,
-			Command:        driverCLI,
-			Args:           []string{"-p", driverPrompt},
-			CWD:            params.CWD,
-			TimeoutSeconds: params.Timeout,
-		})
+		driverResult, err := p.driver.Run(ctx, resolveOrFallback(p.resolver, driverCLI, driverPrompt, params.CWD, params.Timeout))
 		if err != nil {
 			return nil, fmt.Errorf("driver failed (round %d): %w", round+1, err)
 		}
@@ -195,13 +191,7 @@ func (p *PairCoding) reviewHunks(ctx context.Context, hunks []DiffHunk, reviewer
 		sb.WriteString(fmt.Sprintf("### Hunk %d (%s)\n```diff\n%s```\n\n", h.Index, h.FilePath, h.Content))
 	}
 
-	reviewResult, err := p.reviewer.Run(ctx, types.SpawnArgs{
-		CLI:            reviewerCLI,
-		Command:        reviewerCLI,
-		Args:           []string{"-p", sb.String()},
-		CWD:            params.CWD,
-		TimeoutSeconds: params.Timeout,
-	})
+	reviewResult, err := p.reviewer.Run(ctx, resolveOrFallback(p.resolver, reviewerCLI, sb.String(), params.CWD, params.Timeout))
 	if err != nil {
 		return nil, err
 	}
