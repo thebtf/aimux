@@ -64,14 +64,17 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 
 	wg.Wait()
 
-	// Collect successful opinions
+	// Collect successful opinions with compaction
 	var opinions []string
+	var responseTexts []string
 	var successCLIs []string
 	for _, r := range results {
 		if r.Err != nil {
 			continue
 		}
-		opinions = append(opinions, fmt.Sprintf("## %s\n\n%s", r.CLI, r.Content))
+		compacted := CompactTurnContent(r.Content, 0)
+		opinions = append(opinions, fmt.Sprintf("## %s\n\n%s", r.CLI, compacted))
+		responseTexts = append(responseTexts, compacted)
 		successCLIs = append(successCLIs, r.CLI)
 	}
 
@@ -82,12 +85,10 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 	content := strings.Join(opinions, "\n\n---\n\n")
 	turns := len(successCLIs)
 
-	// Phase 2: Optional synthesis
+	// Phase 2: Optional synthesis with budget-aware prompt
 	if synthesize && len(successCLIs) > 1 {
-		synthPrompt := fmt.Sprintf(
-			"You received the following independent opinions on: %s\n\n%s\n\n"+
-				"Synthesize these into a consensus. Identify agreements, disagreements, and provide a final recommendation.",
-			params.Prompt, content)
+		budget := ComputeDialogBudget(nil)
+		synthPrompt := BuildSynthesisPrompt(params.Prompt, responseTexts, budget)
 
 		synthResult, synthErr := c.executor.Run(ctx, resolveOrFallback(c.resolver, successCLIs[0], synthPrompt, params.CWD, params.Timeout))
 		if synthErr == nil {

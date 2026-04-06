@@ -79,24 +79,34 @@ type InvestigationSummary struct {
 	FindingsCount int    `json:"findings_count"`
 }
 
+// ConflictDetail provides rich conflict information for an area.
+type ConflictDetail struct {
+	Area     string   `json:"area"`
+	Score    int      `json:"score"`    // 1-3: graduated severity difference
+	Sources  []string `json:"sources"`  // different sources that disagree
+	Findings []string `json:"findings"` // finding IDs involved
+	Reason   string   `json:"reason"`   // "severity_divergent" or "source_disagreement"
+}
+
 // AssessResult contains convergence assessment output.
 type AssessResult struct {
-	Iteration           int            `json:"iteration"`
-	ConvergenceScore    float64        `json:"convergence_score"`
-	CoverageScore       float64        `json:"coverage_score"`
-	FindingsCount       int            `json:"findings_count"`
-	CorrectionsCount    int            `json:"corrections_count"`
-	Recommendation      string         `json:"recommendation"`
-	UncheckedAreas      []string       `json:"unchecked_areas"`
-	WeakAreas           []string       `json:"weak_areas"`
-	ConflictingAreas    []string       `json:"conflicting_areas"`
-	PriorityNext        string         `json:"priority_next,omitempty"`
-	SuggestedAngle      string         `json:"suggested_angle,omitempty"`
-	SuggestedThinkCall  string         `json:"suggested_think_call,omitempty"`
-	AntiPatternWarnings []string       `json:"anti_pattern_warnings,omitempty"`
-	PatternHints        []PatternEntry `json:"pattern_hints,omitempty"`
-	AdversarialPrompt   string         `json:"adversarial_prompt,omitempty"`
-	Message             string         `json:"message"`
+	Iteration           int              `json:"iteration"`
+	ConvergenceScore    float64          `json:"convergence_score"`
+	CoverageScore       float64          `json:"coverage_score"`
+	FindingsCount       int              `json:"findings_count"`
+	CorrectionsCount    int              `json:"corrections_count"`
+	Recommendation      string           `json:"recommendation"`
+	UncheckedAreas      []string         `json:"unchecked_areas"`
+	WeakAreas           []string         `json:"weak_areas"`
+	ConflictingAreas    []string         `json:"conflicting_areas"`
+	ConflictDetails     []ConflictDetail `json:"conflict_details,omitempty"`
+	PriorityNext        string           `json:"priority_next,omitempty"`
+	SuggestedAngle      string           `json:"suggested_angle,omitempty"`
+	SuggestedThinkCall  string           `json:"suggested_think_call,omitempty"`
+	AntiPatternWarnings []string         `json:"anti_pattern_warnings,omitempty"`
+	PatternHints        []PatternEntry   `json:"pattern_hints,omitempty"`
+	AdversarialPrompt   string           `json:"adversarial_prompt,omitempty"`
+	Message             string           `json:"message"`
 }
 
 // PatternEntry describes what to look for during investigation.
