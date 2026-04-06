@@ -17,6 +17,7 @@ import (
 	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/hooks"
 	inv "github.com/thebtf/aimux/pkg/investigate"
+	"github.com/thebtf/aimux/pkg/metrics"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
@@ -50,6 +51,7 @@ type Server struct {
 	agentReg     *agents.Registry
 	promptEng    *prompt.Engine
 	hooks        *hooks.Registry
+	metrics      *metrics.Collector
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -68,6 +70,7 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		}),
 		executor: selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
 	}
+	s.metrics = metrics.New()
 
 	// Initialize CLI resolver for profile-aware command resolution
 	cliResolver := resolve.NewProfileResolver(cfg.CLIProfiles)
@@ -440,6 +443,16 @@ func (s *Server) registerResources() {
 		),
 		s.handleHealthResource,
 	)
+
+	s.mcp.AddResource(
+		mcp.NewResource(
+			"aimux://metrics",
+			"Request Metrics",
+			mcp.WithResourceDescription("Per-CLI request counts, error rates, and latency metrics"),
+			mcp.WithMIMEType("application/json"),
+		),
+		s.handleMetricsResource,
+	)
 }
 
 func (s *Server) registerPrompts() {
@@ -718,6 +731,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args t
 
 	if err != nil {
 		cb.RecordFailure(false)
+		s.metrics.RecordRequest(args.CLI, 0, true)
 		s.jobs.FailJob(jobID, types.NewExecutorError(err.Error(), err, ""))
 		s.sessions.Update(sessionID, func(sess *session.Session) {
 			sess.Status = types.SessionStatusFailed
@@ -729,6 +743,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args t
 	cb.RecordSuccess()
 
 	if result.Error != nil {
+		s.metrics.RecordRequest(args.CLI, 0, true)
 		s.jobs.FailJob(jobID, result.Error)
 		s.sessions.Update(sessionID, func(sess *session.Session) {
 			sess.Status = types.SessionStatusFailed
@@ -746,6 +761,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args t
 	// Validate turn content quality
 	validation := executor.ValidateTurnContent(parsed, "", result.ExitCode)
 	if !validation.Valid {
+		s.metrics.RecordRequest(args.CLI, 0, true)
 		s.jobs.FailJob(jobID, types.NewExecutorError(validation.Errors[0], nil, "validation"))
 		s.sessions.Update(sessionID, func(sess *session.Session) {
 			sess.Status = types.SessionStatusFailed
@@ -757,6 +773,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args t
 		s.log.Warn("exec warnings: job=%s warnings=%v", jobID, validation.Warnings)
 	}
 
+	s.metrics.RecordRequest(args.CLI, result.DurationMS, false)
 	s.jobs.CompleteJob(jobID, parsed, result.ExitCode)
 	s.sessions.Update(sessionID, func(sess *session.Session) {
 		sess.Status = types.SessionStatusCompleted
@@ -1521,6 +1538,7 @@ func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResou
 		"version":        serverVersion,
 		"total_sessions": s.sessions.Count(),
 		"running_jobs":   len(running),
+		"metrics":        s.metrics.Snapshot(),
 	}
 	data, _ := json.Marshal(health)
 
@@ -1529,6 +1547,16 @@ func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResou
 			URI:      request.Params.URI,
 			MIMEType: "application/json",
 			Text:     string(data),
+		},
+	}, nil
+}
+
+func (s *Server) handleMetricsResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return []mcp.ResourceContents{
+		mcp.TextResourceContents{
+			URI:      request.Params.URI,
+			MIMEType: "application/json",
+			Text:     s.metrics.Snapshot().JSON(),
 		},
 	}, nil
 }
