@@ -1301,9 +1301,13 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 
 	case "list":
 		active := inv.ListInvestigations()
+		cwd, _ := os.Getwd()
+		savedReports, _ := inv.ListReports(cwd)
 		data, _ := json.Marshal(map[string]any{
 			"active_investigations": active,
 			"active_count":          len(active),
+			"saved_reports":         savedReports,
+			"saved_count":           len(savedReports),
 		})
 		return mcp.NewToolResultText(string(data)), nil
 
@@ -1312,9 +1316,31 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if topic == "" {
 			return mcp.NewToolResultError("topic required for recall"), nil
 		}
+		cwd, _ := os.Getwd()
+		result, err := inv.RecallReport(cwd, topic)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("recall error: %v", err)), nil
+		}
+		if result == nil {
+			// Return available topics to help the user
+			reports, _ := inv.ListReports(cwd)
+			topics := make([]string, 0, len(reports))
+			for _, r := range reports {
+				topics = append(topics, r.Topic)
+			}
+			data, _ := json.Marshal(map[string]any{
+				"found":            false,
+				"message":          fmt.Sprintf("No report found matching %q", topic),
+				"available_topics": topics,
+			})
+			return mcp.NewToolResultText(string(data)), nil
+		}
 		data, _ := json.Marshal(map[string]any{
-			"found":   false,
-			"message": fmt.Sprintf("Recall by topic %q — use list action to see available reports.", topic),
+			"found":    true,
+			"filename": result.Filename,
+			"topic":    result.Topic,
+			"date":     result.Date,
+			"content":  result.Content,
 		})
 		return mcp.NewToolResultText(string(data)), nil
 

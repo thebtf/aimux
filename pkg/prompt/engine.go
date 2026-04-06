@@ -35,30 +35,29 @@ func NewEngine(dirs ...string) *Engine {
 	}
 }
 
-// Load scans all directories for .md and .txt template files.
+// Load scans all directories (recursively) for .md and .txt template files.
+// Subdirectory files are registered by filename only (no path prefix),
+// so roles/coding.md becomes template "coding".
 func (e *Engine) Load() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	for _, dir := range e.dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue // directory doesn't exist — skip silently
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
+		err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil // skip unreadable entries
 			}
-			name := entry.Name()
+			if d.IsDir() {
+				return nil
+			}
+			name := d.Name()
 			if !strings.HasSuffix(name, ".md") && !strings.HasSuffix(name, ".txt") {
-				continue
+				return nil
 			}
 
-			path := filepath.Join(dir, name)
 			content, err := os.ReadFile(path)
 			if err != nil {
-				continue
+				return nil
 			}
 
 			tmplName := strings.TrimSuffix(strings.TrimSuffix(name, ".md"), ".txt")
@@ -67,6 +66,10 @@ func (e *Engine) Load() error {
 				Content: string(content),
 				Vars:    make(map[string]string),
 			}
+			return nil
+		})
+		if err != nil {
+			continue // directory doesn't exist — skip silently
 		}
 	}
 
