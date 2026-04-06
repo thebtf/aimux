@@ -18,11 +18,16 @@ Thumbs.db
 /vendor/
 .gocache/
 
-# Agent state (never commit)
+# Agent state (public repo — keep specs, exclude working data)
 .agent/CONTINUITY.md
 .agent/autopilot.local.md
 .agent/pre-compact-*.json
+.agent/data/
+.agent/reports/
+.agent/plans/
+.agent/scratch/
 
 # Test artifacts
 coverage.out
 *.test
+.aider*
