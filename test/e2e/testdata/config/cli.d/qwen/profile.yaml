@@ -1,0 +1,22 @@
+# Qwen emulator profile for e2e testing (gemini fork)
+name: qwen
+binary: testcli
+display_name: "Qwen (emulated)"
+features:
+  streaming: true
+  headless: true
+  read_only: false
+  session_resume: false
+  json: true
+  jsonl: true
+  stdin_pipe: false
+output_format: jsonl
+command:
+  base: "testcli qwen --output-format stream-json"
+prompt_flag: "-p"
+prompt_flag_type: short
+default_model: "qwen3-coder"
+model_flag: "-m"
+timeout_seconds: 10
+stdin_threshold: 0
+completion_pattern: '"type":"result"'

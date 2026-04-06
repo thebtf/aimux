@@ -12,11 +12,12 @@ import (
 // Each participant sees all previous responses (non-blinded).
 type SequentialDialog struct {
 	executor types.Executor
+	resolver types.CLIResolver
 }
 
 // NewSequentialDialog creates a dialog strategy.
-func NewSequentialDialog(executor types.Executor) *SequentialDialog {
-	return &SequentialDialog{executor: executor}
+func NewSequentialDialog(executor types.Executor, resolver types.CLIResolver) *SequentialDialog {
+	return &SequentialDialog{executor: executor, resolver: resolver}
 }
 
 // Name returns the strategy name.
@@ -44,13 +45,7 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 
 			prompt := buildDialogPrompt(params.Prompt, history, cli)
 
-			result, err := d.executor.Run(ctx, types.SpawnArgs{
-				CLI:            cli,
-				Command:        cli,
-				Args:           []string{"-p", prompt},
-				CWD:            params.CWD,
-				TimeoutSeconds: params.Timeout,
-			})
+			result, err := d.executor.Run(ctx, resolveOrFallback(d.resolver, cli, prompt, params.CWD, params.Timeout))
 			if err != nil {
 				return nil, fmt.Errorf("dialog turn %d (%s) failed: %w", totalTurns, cli, err)
 			}

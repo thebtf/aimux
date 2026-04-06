@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -22,6 +21,7 @@ import (
 	"github.com/thebtf/aimux/pkg/logger"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/prompt"
+	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 	"github.com/thebtf/aimux/pkg/session"
@@ -63,13 +63,16 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		executor: selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
 	}
 
+	// Initialize CLI resolver for profile-aware command resolution
+	cliResolver := resolve.NewProfileResolver(cfg.CLIProfiles)
+
 	// Initialize orchestrator with all strategies
 	s.orchestrator = orch.New(log,
-		orch.NewPairCoding(s.executor, s.executor),
-		orch.NewSequentialDialog(s.executor),
-		orch.NewParallelConsensus(s.executor),
-		orch.NewStructuredDebate(s.executor),
-		orch.NewAuditPipeline(s.executor),
+		orch.NewPairCoding(s.executor, s.executor, cliResolver),
+		orch.NewSequentialDialog(s.executor, cliResolver),
+		orch.NewParallelConsensus(s.executor, cliResolver),
+		orch.NewStructuredDebate(s.executor, cliResolver),
+		orch.NewAuditPipeline(s.executor, cliResolver),
 	)
 
 	// Initialize prompt engine with built-in and project prompts.d/
@@ -555,8 +558,8 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 
 	args := types.SpawnArgs{
 		CLI:            cli,
-		Command:        profile.Command.Base,
-		Args:           buildArgs(profile, model, effort, readOnly, prompt),
+		Command:        resolve.CommandBinary(profile.Command.Base),
+		Args:           resolve.BuildPromptArgs(profile, model, effort, readOnly, prompt),
 		CWD:            cwd,
 		TimeoutSeconds: timeoutSec,
 	}
@@ -564,7 +567,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	// Stdin piping for long prompts (Windows 8191 char limit)
 	if profile.StdinThreshold > 0 && len(prompt) > profile.StdinThreshold {
 		args.Stdin = prompt
-		args.Args = buildArgs(profile, model, effort, readOnly, "") // empty prompt — piped via stdin
+		args.Args = resolve.BuildPromptArgs(profile, model, effort, readOnly, "") // empty prompt — piped via stdin
 		s.log.Info("exec: stdin piping activated (prompt=%d chars, threshold=%d)", len(prompt), profile.StdinThreshold)
 	}
 
@@ -896,8 +899,8 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 
 		args := types.SpawnArgs{
 			CLI:            cli,
-			Command:        profile.Command.Base,
-			Args:           buildArgs(profile, pref.Model, pref.ReasoningEffort, readOnly, fullPrompt),
+			Command:        resolve.CommandBinary(profile.Command.Base),
+			Args:           resolve.BuildPromptArgs(profile, pref.Model, pref.ReasoningEffort, readOnly, fullPrompt),
 			CWD:            cwd,
 			TimeoutSeconds: profile.TimeoutSeconds,
 		}
@@ -1228,38 +1231,6 @@ func (s *Server) handleBackgroundPrompt(ctx context.Context, request mcp.GetProm
 }
 
 // --- Helpers ---
-
-// buildArgs constructs CLI arguments from profile and parameters.
-func buildArgs(profile *config.CLIProfile, model, effort string, readOnly bool, prompt string) []string {
-	var args []string
-
-	if profile.Features.Headless && profile.Name == "codex" {
-		args = append(args, "--full-auto")
-	}
-
-	if readOnly && len(profile.ReadOnlyFlags) > 0 {
-		args = append(args, profile.ReadOnlyFlags...)
-	}
-
-	if model != "" && profile.ModelFlag != "" {
-		args = append(args, profile.ModelFlag, model)
-	}
-
-	if effort != "" && profile.Reasoning != nil {
-		if profile.Reasoning.FlagValueTemplate != "" {
-			val := strings.ReplaceAll(profile.Reasoning.FlagValueTemplate, "%s", effort)
-			args = append(args, profile.Reasoning.Flag, val)
-		} else {
-			args = append(args, profile.Reasoning.Flag, effort)
-		}
-	}
-
-	if prompt != "" && profile.PromptFlag != "" {
-		args = append(args, profile.PromptFlag, prompt)
-	}
-
-	return args
-}
 
 // injectBootstrap prepends role-specific prompt from prompts.d/ if available.
 // Falls back to original prompt if no template found for the role.

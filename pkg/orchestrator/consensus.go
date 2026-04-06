@@ -14,11 +14,12 @@ import (
 // Optional synthesis turn combines all opinions.
 type ParallelConsensus struct {
 	executor types.Executor
+	resolver types.CLIResolver
 }
 
 // NewParallelConsensus creates a consensus strategy.
-func NewParallelConsensus(executor types.Executor) *ParallelConsensus {
-	return &ParallelConsensus{executor: executor}
+func NewParallelConsensus(executor types.Executor, resolver types.CLIResolver) *ParallelConsensus {
+	return &ParallelConsensus{executor: executor, resolver: resolver}
 }
 
 // Name returns the strategy name.
@@ -51,13 +52,7 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 		go func(idx int, cli string) {
 			defer wg.Done()
 
-			result, err := c.executor.Run(ctx, types.SpawnArgs{
-				CLI:            cli,
-				Command:        cli,
-				Args:           []string{"-p", params.Prompt},
-				CWD:            params.CWD,
-				TimeoutSeconds: params.Timeout,
-			})
+			result, err := c.executor.Run(ctx, resolveOrFallback(c.resolver, cli, params.Prompt, params.CWD, params.Timeout))
 
 			if err != nil {
 				results[idx] = opinionResult{CLI: cli, Err: err}
@@ -94,13 +89,7 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 				"Synthesize these into a consensus. Identify agreements, disagreements, and provide a final recommendation.",
 			params.Prompt, content)
 
-		synthResult, err := c.executor.Run(ctx, types.SpawnArgs{
-			CLI:            successCLIs[0], // Use first participant as synthesizer
-			Command:        successCLIs[0],
-			Args:           []string{"-p", synthPrompt},
-			CWD:            params.CWD,
-			TimeoutSeconds: params.Timeout,
-		})
+		synthResult, err := c.executor.Run(ctx, resolveOrFallback(c.resolver, successCLIs[0], synthPrompt, params.CWD, params.Timeout))
 		if err == nil {
 			content += "\n\n---\n\n## Synthesis\n\n" + synthResult.Content
 			turns++

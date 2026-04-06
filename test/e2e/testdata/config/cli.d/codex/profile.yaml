@@ -1,0 +1,34 @@
+# Codex emulator profile for e2e testing — uses testcli binary
+name: codex
+binary: testcli
+display_name: "Codex (emulated)"
+
+features:
+  streaming: false
+  headless: true
+  read_only: false
+  session_resume: false
+  json: true
+  jsonl: true
+  stdin_pipe: true
+
+output_format: jsonl
+
+command:
+  base: "testcli codex --json --full-auto"
+
+prompt_flag: ""
+prompt_flag_type: positional
+default_model: "gpt-5.3-codex"
+model_flag: "-m"
+timeout_seconds: 10
+stdin_threshold: 6000
+completion_pattern: '"type":"turn.completed"'
+read_only_flags:
+  - "--sandbox"
+  - "read-only"
+
+reasoning:
+  flag: "-c"
+  flag_value_template: "model_reasoning_effort=\"{level}\""
+  levels: ["low", "medium", "high"]

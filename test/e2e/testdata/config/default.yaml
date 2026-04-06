@@ -1,4 +1,4 @@
-# E2E test config — uses echo as mock CLI
+# E2E test config — uses echo-cli for basic tests, testcli emulators for JSONL tests
 server:
   log_level: error
   log_file: /dev/null
@@ -20,9 +20,9 @@ roles:
   default:
     cli: echo-cli
   coding:
-    cli: echo-cli
+    cli: codex
   codereview:
-    cli: echo-cli
+    cli: gemini
   thinkdeep:
     cli: echo-cli
 

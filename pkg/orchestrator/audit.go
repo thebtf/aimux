@@ -14,11 +14,12 @@ import (
 // Three modes: quick (scan only), standard (scan + validate), deep (scan + validate + investigate).
 type AuditPipeline struct {
 	executor types.Executor
+	resolver types.CLIResolver
 }
 
 // NewAuditPipeline creates an audit pipeline strategy.
-func NewAuditPipeline(executor types.Executor) *AuditPipeline {
-	return &AuditPipeline{executor: executor}
+func NewAuditPipeline(executor types.Executor, resolver types.CLIResolver) *AuditPipeline {
+	return &AuditPipeline{executor: executor, resolver: resolver}
 }
 
 // Name returns the strategy name.
@@ -131,13 +132,7 @@ func (a *AuditPipeline) scan(ctx context.Context, params types.StrategyParams, p
 					"Severities: CRITICAL, HIGH, MEDIUM, LOW",
 				cat)
 
-			result, err := a.executor.Run(ctx, types.SpawnArgs{
-				CLI:            cli,
-				Command:        cli,
-				Args:           []string{"-p", prompt},
-				CWD:            params.CWD,
-				TimeoutSeconds: params.Timeout,
-			})
+			result, err := a.executor.Run(ctx, resolveOrFallback(a.resolver, cli, prompt, params.CWD, params.Timeout))
 
 			if err != nil {
 				results[idx] = scanResult{err: err}
@@ -180,13 +175,7 @@ func (a *AuditPipeline) validate(ctx context.Context, params types.StrategyParam
 		sb.WriteString(fmt.Sprintf("%d. [%s] %s — %s (%s:%d)\n", i+1, f.Severity, f.Rule, f.Message, f.File, f.Line))
 	}
 
-	result, err := a.executor.Run(ctx, types.SpawnArgs{
-		CLI:            cli,
-		Command:        cli,
-		Args:           []string{"-p", sb.String()},
-		CWD:            params.CWD,
-		TimeoutSeconds: params.Timeout,
-	})
+	result, err := a.executor.Run(ctx, resolveOrFallback(a.resolver, cli, sb.String(), params.CWD, params.Timeout))
 	if err != nil {
 		return nil, err
 	}

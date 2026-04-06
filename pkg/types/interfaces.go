@@ -50,6 +50,13 @@ type Strategy interface {
 	Execute(ctx context.Context, params StrategyParams) (*StrategyResult, error)
 }
 
+// CLIResolver resolves CLI spawn arguments from profile data.
+// Passed to orchestrator strategy constructors for profile-aware command resolution.
+// When nil, strategies fall back to legacy behavior (Command=cli, Args=["-p", prompt]).
+type CLIResolver interface {
+	ResolveSpawnArgs(cli string, prompt string) (SpawnArgs, error)
+}
+
 // StrategyParams is the input for orchestrator strategies.
 type StrategyParams struct {
 	Prompt    string         `json:"prompt"`

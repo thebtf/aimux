@@ -1,0 +1,21 @@
+# Cline emulator profile for e2e testing
+name: cline
+binary: testcli
+display_name: "Cline (emulated)"
+features:
+  streaming: false
+  headless: true
+  read_only: false
+  session_resume: false
+  json: true
+  jsonl: true
+  stdin_pipe: true
+output_format: text
+command:
+  base: "testcli cline"
+prompt_flag: ""
+prompt_flag_type: positional
+default_model: "claude-sonnet-4-6"
+model_flag: "--model"
+timeout_seconds: 10
+stdin_threshold: 0

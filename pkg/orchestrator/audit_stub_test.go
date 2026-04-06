@@ -20,7 +20,7 @@ func TestAuditStub_ScannerPromptContainsStubRules(t *testing.T) {
 			"FINDING: [CRITICAL] STUB-PASSTHROUGH — params built then discarded (server.go:456)\n",
 	}
 
-	audit := orchestrator.NewAuditPipeline(scannerMock)
+	audit := orchestrator.NewAuditPipeline(scannerMock, nil)
 
 	_, err := audit.Execute(context.Background(), types.StrategyParams{
 		Prompt: "Audit codebase",
@@ -67,7 +67,7 @@ func TestAuditStub_FindingsContainStubRuleIDs(t *testing.T) {
 		},
 	}
 
-	audit := orchestrator.NewAuditPipeline(scannerMock)
+	audit := orchestrator.NewAuditPipeline(scannerMock, nil)
 
 	result, err := audit.Execute(context.Background(), types.StrategyParams{
 		Prompt: "Audit codebase",
@@ -104,7 +104,7 @@ func TestAuditStub_CleanCodeZeroFindings(t *testing.T) {
 		},
 	}
 
-	audit := orchestrator.NewAuditPipeline(scannerMock)
+	audit := orchestrator.NewAuditPipeline(scannerMock, nil)
 
 	result, err := audit.Execute(context.Background(), types.StrategyParams{
 		Prompt: "Audit codebase",

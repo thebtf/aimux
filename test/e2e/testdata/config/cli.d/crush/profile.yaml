@@ -1,0 +1,25 @@
+# Crush emulator profile for e2e testing — uses testcli binary
+name: crush
+binary: testcli
+display_name: "Crush (emulated)"
+
+features:
+  streaming: false
+  headless: true
+  read_only: false
+  session_resume: false
+  json: false
+  jsonl: false
+  stdin_pipe: true
+
+output_format: text
+
+command:
+  base: "testcli crush"
+
+prompt_flag: ""
+prompt_flag_type: positional
+default_model: ""
+model_flag: ""
+timeout_seconds: 10
+stdin_threshold: 0

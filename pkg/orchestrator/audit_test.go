@@ -19,7 +19,7 @@ func newTestLogger(t *testing.T) *logger.Logger {
 
 func TestAuditPipeline_Name(t *testing.T) {
 	mock := &mockExecutor{runResult: nil, runErr: nil}
-	audit := orchestrator.NewAuditPipeline(mock)
+	audit := orchestrator.NewAuditPipeline(mock, nil)
 
 	if audit.Name() != "audit" {
 		t.Errorf("Name = %q, want audit", audit.Name())
