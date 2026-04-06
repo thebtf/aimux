@@ -1,0 +1,31 @@
+# Crush CLI profile
+name: crush
+binary: crush
+display_name: "Crush"
+
+features:
+  streaming: false
+  headless: true
+  read_only: false
+  session_resume: true
+  json: false
+  jsonl: false
+  stdin_pipe: true
+
+output_format: text
+
+# Crush requires "run" subcommand. Prompt is positional.
+command:
+  base: "crush run"
+
+prompt_flag: ""
+prompt_flag_type: "positional"
+
+default_model: ""
+model_flag: "--model"
+
+timeout_seconds: 600
+
+stdin_threshold: 6000
+
+read_only_flags: []
