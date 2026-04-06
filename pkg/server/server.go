@@ -15,6 +15,7 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
+	"github.com/thebtf/aimux/pkg/hooks"
 	inv "github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
@@ -48,6 +49,7 @@ type Server struct {
 	orchestrator *orch.Orchestrator
 	agentReg     *agents.Registry
 	promptEng    *prompt.Engine
+	hooks        *hooks.Registry
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -88,6 +90,10 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 
 	// Initialize think patterns
 	patterns.RegisterAll()
+
+	// Initialize hooks registry with built-in telemetry
+	s.hooks = hooks.NewRegistry()
+	s.hooks.RegisterAfter("builtin:telemetry", hooks.NewTelemetryHook())
 
 	// Initialize agent registry
 	s.agentReg = agents.NewRegistry()
@@ -721,6 +727,20 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args t
 	parsed, cliSessionID := parser.ParseContent(result.Content, outputFormat)
 	if cliSessionID != "" {
 		result.CLISessionID = cliSessionID
+	}
+
+	// Validate turn content quality
+	validation := executor.ValidateTurnContent(parsed, "", result.ExitCode)
+	if !validation.Valid {
+		s.jobs.FailJob(jobID, types.NewExecutorError(validation.Errors[0], nil, "validation"))
+		s.sessions.Update(sessionID, func(sess *session.Session) {
+			sess.Status = types.SessionStatusFailed
+		})
+		s.log.Warn("exec validation failed: job=%s errors=%v", jobID, validation.Errors)
+		return
+	}
+	if len(validation.Warnings) > 0 {
+		s.log.Warn("exec warnings: job=%s warnings=%v", jobID, validation.Warnings)
 	}
 
 	s.jobs.CompleteJob(jobID, parsed, result.ExitCode)
