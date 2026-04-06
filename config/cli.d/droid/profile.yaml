@@ -14,16 +14,14 @@ features:
 
 output_format: json
 
+# Droid requires "exec" subcommand for non-interactive mode.
+# Prompt is positional: droid exec --output-format json "prompt"
 command:
-  base: "droid"
-  args_template: >-
-    {{if .Model}}--model {{.Model}}{{end}}
-    {{if .ReasoningEffort}}-r {{.ReasoningEffort}}{{end}}
-    --output-format json
-    -p "{{.Prompt}}"
+  base: "droid exec"
 
-prompt_flag: "-p"
-prompt_flag_type: "short"
+# Prompt is positional (last argument). There is NO -p flag.
+prompt_flag: ""
+prompt_flag_type: "positional"
 
 default_model: ""
 model_flag: "--model"
@@ -36,4 +34,7 @@ timeout_seconds: 600
 
 stdin_threshold: 6000
 
+# Default mode is read-only (no flag needed). --auto enables writes.
 read_only_flags: []
+
+headless_flags: ["--output-format", "json"]

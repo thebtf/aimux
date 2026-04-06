@@ -14,20 +14,21 @@ features:
 
 output_format: jsonl
 
-# Command templates with feature flag resolution
+# Command: "codex exec" for non-interactive mode (not bare "codex" which starts TUI)
 command:
-  base: "codex"
+  base: "codex exec"
   args_template: >-
     {{if .Headless}}--full-auto{{end}}
     {{if .ReadOnly}}--sandbox read-only{{end}}
     {{if .Model}}-m {{.Model}}{{end}}
     {{if .ReasoningEffort}}-c model_reasoning_effort="{{.ReasoningEffort}}"{{end}}
     {{if .SessionResume}}exec resume {{.SessionID}}{{end}}
-    -p "{{.Prompt}}"
+    "{{.Prompt}}"
 
-# Prompt flag for headless mode
-prompt_flag: "-p"
-prompt_flag_type: "short"
+# Codex uses positional prompt (last argument), NOT -p flag
+# (-p in codex means config profile selector, not prompt)
+prompt_flag: ""
+prompt_flag_type: "positional"
 
 # Default model (passed via -m when input.model not set)
 default_model: ""

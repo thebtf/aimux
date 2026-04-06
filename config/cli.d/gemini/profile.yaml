@@ -31,4 +31,4 @@ timeout_seconds: 600
 
 stdin_threshold: 6000
 
-read_only_flags: []
+read_only_flags: ["--approval-mode", "plan"]

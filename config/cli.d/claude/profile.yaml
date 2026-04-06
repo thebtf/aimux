@@ -6,7 +6,7 @@ display_name: "Claude (Anthropic)"
 features:
   streaming: true
   headless: true
-  read_only: false
+  read_only: true
   session_resume: true
   json: true
   jsonl: false
@@ -14,22 +14,29 @@ features:
 
 output_format: json
 
+# Claude uses -p/--print as headless mode flag (NOT prompt).
+# Prompt is a positional argument: claude -p --output-format json "prompt"
 command:
   base: "claude"
-  args_template: >-
-    {{if .Model}}--model {{.Model}}{{end}}
-    {{if .SessionResume}}--continue {{.SessionID}}{{end}}
-    --output-format json
-    -p "{{.Prompt}}"
 
-prompt_flag: "-p"
-prompt_flag_type: "short"
+# Prompt is positional (last argument). -p means "print mode" (headless), NOT prompt.
+prompt_flag: ""
+prompt_flag_type: "positional"
 
 default_model: ""
 model_flag: "--model"
+
+# Reasoning effort: --effort [low|medium|high|max]
+reasoning:
+  flag: "--effort"
+  levels: [low, medium, high, max]
 
 timeout_seconds: 600
 
 stdin_threshold: 6000
 
-read_only_flags: ["--disallowedTools"]
+# Read-only via permission-mode plan
+read_only_flags: ["--permission-mode", "plan"]
+
+# Headless mode: -p/--print enables non-interactive output
+headless_flags: ["-p", "--output-format", "json"]

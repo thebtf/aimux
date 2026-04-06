@@ -14,16 +14,15 @@ features:
 
 output_format: json
 
+# OpenCode requires "run" subcommand for non-interactive mode.
+# Prompt is positional: opencode run --format json "message"
+# WARNING: -p in opencode means --password, NOT prompt!
 command:
-  base: "opencode"
-  args_template: >-
-    {{if .Model}}--model {{.Model}}{{end}}
-    {{if .ReasoningEffort}}--variant {{.ReasoningEffort}}{{end}}
-    --output-format json
-    -p "{{.Prompt}}"
+  base: "opencode run"
 
-prompt_flag: "-p"
-prompt_flag_type: "short"
+# Prompt is positional (last argument).
+prompt_flag: ""
+prompt_flag_type: "positional"
 
 default_model: ""
 model_flag: "--model"
@@ -37,3 +36,5 @@ timeout_seconds: 600
 stdin_threshold: 6000
 
 read_only_flags: []
+
+headless_flags: ["--format", "json"]
