@@ -434,3 +434,249 @@ func TestE2E_TestCLI_CodexStdinPipe(t *testing.T) {
 		t.Errorf("response doesn't reflect stdin content: %s", text)
 	}
 }
+
+// --- Phase 2: Claude Tests ---
+
+// TestE2E_TestCLI_ClaudeStreamJSON verifies testcli claude produces valid stream-json NDJSON.
+func TestE2E_TestCLI_ClaudeStreamJSON(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "claude", "-p", "direct claude test", "--output-format", "stream-json")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli claude: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected at least 3 NDJSON lines, got %d", len(lines))
+	}
+
+	// First line should be content_block_delta (NO init event — key difference from gemini)
+	var firstEvt map[string]any
+	json.Unmarshal([]byte(lines[0]), &firstEvt)
+	if firstEvt["type"] != "content_block_delta" {
+		t.Errorf("first event type = %v, want content_block_delta", firstEvt["type"])
+	}
+	delta, _ := firstEvt["delta"].(map[string]any)
+	if delta == nil {
+		t.Error("content_block_delta missing 'delta' field")
+	}
+	if delta["type"] != "text_delta" {
+		t.Errorf("delta.type = %v, want text_delta", delta["type"])
+	}
+
+	// Last line should be result
+	var lastEvt map[string]any
+	json.Unmarshal([]byte(lines[len(lines)-1]), &lastEvt)
+	if lastEvt["type"] != "result" {
+		t.Errorf("last event type = %v, want result", lastEvt["type"])
+	}
+	if lastEvt["model"] == nil {
+		t.Error("result missing model")
+	}
+}
+
+// TestE2E_TestCLI_ClaudeBufferedJSON verifies claude JSON buffering trap.
+func TestE2E_TestCLI_ClaudeBufferedJSON(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "claude", "-p", "buffered test", "--output-format", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli claude json: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("not valid JSON: %v\noutput: %s", err, out)
+	}
+
+	if result["content"] == nil {
+		t.Error("missing content in buffered JSON")
+	}
+	if result["stop_reason"] != "end_turn" {
+		t.Errorf("stop_reason = %v, want end_turn", result["stop_reason"])
+	}
+}
+
+// TestE2E_Claude_ThroughAimux verifies claude execution through aimux server.
+func TestE2E_Claude_ThroughAimux(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "exec",
+		"arguments": map[string]any{
+			"prompt": "test claude through aimux",
+			"cli":    "claude",
+		},
+	}))
+
+	resp, err := readResponse(reader, 15*time.Second)
+	if err != nil {
+		t.Fatalf("claude exec: %v", err)
+	}
+
+	text := extractToolText(t, resp)
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+
+	status, _ := data["status"].(string)
+	if status != "completed" {
+		t.Errorf("status = %v, want completed (full: %v)", status, data)
+	}
+
+	content, _ := data["content"].(string)
+	if content == "" {
+		t.Logf("full data: %v", data)
+		t.Error("missing content in claude response")
+	}
+}
+
+// --- Phase 2: Goose Tests ---
+
+// TestE2E_TestCLI_GooseStreamJSON verifies testcli goose produces valid stream-json JSONL.
+func TestE2E_TestCLI_GooseStreamJSON(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "goose", "-t", "direct goose test", "--output-format", "stream-json")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli goose: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 JSONL lines, got %d: %v", len(lines), lines)
+	}
+
+	// Event 1: start
+	var startEvt map[string]any
+	json.Unmarshal([]byte(lines[0]), &startEvt)
+	if startEvt["type"] != "start" {
+		t.Errorf("first event type = %v, want start", startEvt["type"])
+	}
+
+	// Event 2: message
+	var msgEvt map[string]any
+	json.Unmarshal([]byte(lines[1]), &msgEvt)
+	if msgEvt["type"] != "message" {
+		t.Errorf("second event type = %v, want message", msgEvt["type"])
+	}
+	if msgEvt["role"] != "assistant" {
+		t.Errorf("message role = %v, want assistant", msgEvt["role"])
+	}
+
+	// Event 3: done with usage
+	var doneEvt map[string]any
+	json.Unmarshal([]byte(lines[2]), &doneEvt)
+	if doneEvt["type"] != "done" {
+		t.Errorf("third event type = %v, want done", doneEvt["type"])
+	}
+	if doneEvt["usage"] == nil {
+		t.Error("done event missing usage")
+	}
+}
+
+// TestE2E_Goose_ThroughAimux verifies goose execution through aimux server.
+func TestE2E_Goose_ThroughAimux(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "exec",
+		"arguments": map[string]any{
+			"prompt": "test goose through aimux",
+			"cli":    "goose",
+		},
+	}))
+
+	resp, err := readResponse(reader, 15*time.Second)
+	if err != nil {
+		t.Fatalf("goose exec: %v", err)
+	}
+
+	text := extractToolText(t, resp)
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+
+	if data["status"] != "completed" {
+		t.Errorf("status = %v, want completed", data["status"])
+	}
+}
+
+// --- Phase 2: Crush Tests ---
+
+// TestE2E_TestCLI_CrushOutput verifies testcli crush produces plain text output.
+func TestE2E_TestCLI_CrushOutput(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "crush", "direct crush test")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli crush: %v", err)
+	}
+
+	output := strings.TrimSpace(string(out))
+	if !strings.Contains(output, "Crush response to:") {
+		t.Errorf("unexpected output: %s", output)
+	}
+	if !strings.Contains(output, "direct crush test") {
+		t.Errorf("output doesn't contain prompt: %s", output)
+	}
+}
+
+// TestE2E_Crush_ThroughAimux verifies crush execution through aimux server.
+func TestE2E_Crush_ThroughAimux(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "exec",
+		"arguments": map[string]any{
+			"prompt": "test crush through aimux",
+			"cli":    "crush",
+		},
+	}))
+
+	resp, err := readResponse(reader, 15*time.Second)
+	if err != nil {
+		t.Fatalf("crush exec: %v", err)
+	}
+
+	text := extractToolText(t, resp)
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+
+	if data["status"] != "completed" {
+		t.Errorf("status = %v, want completed", data["status"])
+	}
+
+	content, _ := data["content"].(string)
+	if !strings.Contains(content, "Crush response") {
+		t.Logf("content: %s", content)
+		// Crush outputs plain text — should be captured
+	}
+}
+
+// TestE2E_TestCLI_CrushStdinPrepend verifies crush reads stdin and prepends to prompt.
+func TestE2E_TestCLI_CrushStdinPrepend(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "crush", "summarize this")
+	cmd.Stdin = strings.NewReader("context from stdin")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli crush stdin: %v", err)
+	}
+
+	output := strings.TrimSpace(string(out))
+	// Crush prepends stdin to prompt, so both should be in the response
+	if !strings.Contains(output, "context from stdin") {
+		t.Errorf("output missing stdin content: %s", output)
+	}
+}

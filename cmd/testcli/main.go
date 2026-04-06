@@ -8,6 +8,9 @@
 // Supported CLIs:
 //   codex  — Rust-style JSONL (item.completed events)
 //   gemini — Node-style JSONL (init/message/result events)
+//   claude — Bun-style NDJSON (content_block_delta events)
+//   goose  — Rust-style JSONL + 100ms OTEL delay
+//   crush  — Go-style incremental stdout
 package main
 
 import (
@@ -18,7 +21,7 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: testcli <cli> [flags] [prompt]")
-		fmt.Fprintln(os.Stderr, "supported CLIs: codex, gemini")
+		fmt.Fprintln(os.Stderr, "supported CLIs: codex, gemini, claude, goose, crush")
 		os.Exit(1)
 	}
 
@@ -32,6 +35,12 @@ func main() {
 		exitCode = runCodex()
 	case "gemini":
 		exitCode = runGemini()
+	case "claude":
+		exitCode = runClaude()
+	case "goose":
+		exitCode = runGoose()
+	case "crush":
+		exitCode = runCrush()
 	default:
 		fmt.Fprintf(os.Stderr, "testcli: unknown CLI %q\n", subcmd)
 		exitCode = 1

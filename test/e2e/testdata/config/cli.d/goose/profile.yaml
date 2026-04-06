@@ -1,0 +1,26 @@
+# Goose emulator profile for e2e testing — uses testcli binary
+name: goose
+binary: testcli
+display_name: "Goose (emulated)"
+
+features:
+  streaming: false
+  headless: true
+  read_only: false
+  session_resume: false
+  json: true
+  jsonl: true
+  stdin_pipe: false
+
+output_format: jsonl
+
+command:
+  base: "testcli goose --output-format stream-json"
+
+prompt_flag: "-t"
+prompt_flag_type: short
+default_model: "gpt-4.1"
+model_flag: "--model"
+timeout_seconds: 10
+stdin_threshold: 0
+completion_pattern: '"type":"done"'
