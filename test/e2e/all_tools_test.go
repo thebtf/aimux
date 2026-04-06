@@ -350,11 +350,14 @@ func TestE2E_Investigate_Start(t *testing.T) {
 		"topic":  "test investigation",
 	})
 	data := extractToolJSON(t, resp)
-	if data["status"] != "started" {
-		t.Errorf("status = %v, want started", data["status"])
-	}
 	if data["session_id"] == nil {
 		t.Error("missing session_id")
+	}
+	if data["topic"] != "test investigation" {
+		t.Errorf("topic = %v, want 'test investigation'", data["topic"])
+	}
+	if data["coverage_areas"] == nil {
+		t.Error("missing coverage_areas")
 	}
 }
 

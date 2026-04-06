@@ -15,6 +15,7 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
+	inv "github.com/thebtf/aimux/pkg/investigate"
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
@@ -240,20 +241,45 @@ func (s *Server) registerTools() {
 	// investigate tool
 	s.mcp.AddTool(
 		mcp.NewTool("investigate",
-			mcp.WithDescription("Iterative convergent investigation with domain specialization"),
+			mcp.WithDescription("Structured deep investigation — catches wrong assumptions before they become wrong decisions. "+
+				"Flow: start(domain?) → (finding + assess) × N → report. "+
+				"Stops only when BOTH: convergence ≥ 1.0 AND coverage ≥ 80%."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: start, finding, assess, report, status, list, recall"),
 				mcp.Enum("start", "finding", "assess", "report", "status", "list", "recall"),
 			),
 			mcp.WithString("topic",
-				mcp.Description("Investigation topic (required for start)"),
+				mcp.Description("Investigation topic (required for start, recall)"),
 			),
 			mcp.WithString("session_id",
-				mcp.Description("Investigation session ID"),
+				mcp.Description("Investigation session ID (required for finding, assess, report, status)"),
 			),
 			mcp.WithString("domain",
-				mcp.Description("Domain: generic, security, performance, code-quality, architecture, debugging"),
+				mcp.Description("Domain: generic, debugging. Loads domain-specific coverage areas and methods."),
+			),
+			mcp.WithString("description",
+				mcp.Description("Finding description (required for action=finding)"),
+			),
+			mcp.WithString("source",
+				mcp.Description("Finding source — tool + location (required for action=finding)"),
+			),
+			mcp.WithString("severity",
+				mcp.Description("Finding severity (required for action=finding)"),
+				mcp.Enum("P0", "P1", "P2", "P3"),
+			),
+			mcp.WithString("confidence",
+				mcp.Description("Finding confidence level (optional, default VERIFIED)"),
+				mcp.Enum("VERIFIED", "INFERRED", "STALE", "BLOCKED", "UNKNOWN"),
+			),
+			mcp.WithString("coverage_area",
+				mcp.Description("Which coverage area this finding covers (optional for action=finding)"),
+			),
+			mcp.WithString("corrects",
+				mcp.Description("Finding ID this corrects — creates a Correction chain (optional for action=finding)"),
+			),
+			mcp.WithString("cwd",
+				mcp.Description("Working directory for report file save (optional for action=report)"),
 			),
 		),
 		s.handleInvestigate,
@@ -1043,24 +1069,162 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if topic == "" {
 			return mcp.NewToolResultError("topic required for start"), nil
 		}
-		domain := request.GetString("domain", "generic")
+		domainName := request.GetString("domain", "")
+		if domainName != "" && inv.GetDomain(domainName) == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("unknown domain %q; valid: %v", domainName, inv.DomainNames())), nil
+		}
 
 		sess := s.sessions.Create("investigate", types.SessionModeOnceStateful, "")
+		state := inv.CreateInvestigation(sess.ID, topic, domainName)
+
 		result := map[string]any{
-			"session_id": sess.ID,
-			"topic":      topic,
-			"domain":     domain,
-			"status":     "started",
-			"message":    "Investigation started. Use finding action to add findings, assess to check convergence.",
+			"session_id":     sess.ID,
+			"topic":          state.Topic,
+			"domain":         state.Domain,
+			"coverage_areas": state.CoverageAreas,
+			"guidance": fmt.Sprintf("Begin investigation [%s domain]. Recommended first area: %s. "+
+				"Read implementations, not descriptions. Then call finding action.", state.Domain, state.CoverageAreas[0]),
+		}
+		if domainName == "" {
+			result["available_domains"] = inv.DomainNames()
 		}
 		data, _ := json.Marshal(result)
 		return mcp.NewToolResultText(string(data)), nil
 
-	case "status", "list", "recall":
-		return mcp.NewToolResultText(fmt.Sprintf(`{"action":"%s","status":"ok"}`, action)), nil
+	case "finding":
+		sessionID := request.GetString("session_id", "")
+		if sessionID == "" {
+			return mcp.NewToolResultError("session_id required for finding"), nil
+		}
+		desc := request.GetString("description", "")
+		if desc == "" {
+			return mcp.NewToolResultError("description required for finding"), nil
+		}
+		source := request.GetString("source", "")
+		if source == "" {
+			return mcp.NewToolResultError("source required for finding"), nil
+		}
+		severity := request.GetString("severity", "P2")
+		confidence := request.GetString("confidence", "")
+
+		input := inv.FindingInput{
+			Description:  desc,
+			Severity:     inv.Severity(severity),
+			Source:        source,
+			Confidence:   inv.Confidence(confidence),
+			CoverageArea: request.GetString("coverage_area", ""),
+			Corrects:     request.GetString("corrects", ""),
+		}
+
+		finding, correction, findErr := inv.AddFinding(sessionID, input)
+		if findErr != nil {
+			return mcp.NewToolResultError(findErr.Error()), nil
+		}
+
+		result := map[string]any{
+			"finding_id": finding.ID,
+			"hint":       "Continue investigating, then call assess to check convergence + coverage.",
+		}
+		if correction != nil {
+			result["correction"] = map[string]any{
+				"corrected":      correction.OriginalID,
+				"original_claim": correction.OriginalClaim,
+				"new_claim":      correction.CorrectedClaim,
+			}
+		}
+		data, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(data)), nil
+
+	case "assess":
+		sessionID := request.GetString("session_id", "")
+		if sessionID == "" {
+			return mcp.NewToolResultError("session_id required for assess"), nil
+		}
+		assessResult, assessErr := inv.Assess(sessionID)
+		if assessErr != nil {
+			return mcp.NewToolResultError(assessErr.Error()), nil
+		}
+		data, _ := json.Marshal(assessResult)
+		return mcp.NewToolResultText(string(data)), nil
+
+	case "report":
+		sessionID := request.GetString("session_id", "")
+		if sessionID == "" {
+			return mcp.NewToolResultError("session_id required for report"), nil
+		}
+		state := inv.GetInvestigation(sessionID)
+		if state == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("investigation %q not found", sessionID)), nil
+		}
+
+		report := inv.GenerateReport(state)
+
+		result := map[string]any{
+			"report":           report,
+			"findings_count":   len(state.Findings),
+			"corrections_count": len(state.Corrections),
+			"iterations":       state.Iteration,
+		}
+
+		cwd := request.GetString("cwd", "")
+		if cwd != "" {
+			filepath, saveErr := inv.SaveReport(cwd, state.Topic, report)
+			if saveErr == nil {
+				result["saved_to"] = filepath
+			}
+		}
+
+		inv.DeleteInvestigation(sessionID)
+		data, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(data)), nil
+
+	case "status":
+		sessionID := request.GetString("session_id", "")
+		if sessionID == "" {
+			return mcp.NewToolResultError("session_id required for status"), nil
+		}
+		state := inv.GetInvestigation(sessionID)
+		if state == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("investigation %q not found", sessionID)), nil
+		}
+		var unchecked []string
+		for _, a := range state.CoverageAreas {
+			if !state.CoverageChecked[a] {
+				unchecked = append(unchecked, a)
+			}
+		}
+		result := map[string]any{
+			"topic":              state.Topic,
+			"iteration":         state.Iteration,
+			"findings_count":    len(state.Findings),
+			"corrections_count": len(state.Corrections),
+			"coverage_unchecked": unchecked,
+			"last_activity":     state.LastActivityAt,
+		}
+		data, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(data)), nil
+
+	case "list":
+		active := inv.ListInvestigations()
+		data, _ := json.Marshal(map[string]any{
+			"active_investigations": active,
+			"active_count":          len(active),
+		})
+		return mcp.NewToolResultText(string(data)), nil
+
+	case "recall":
+		topic := request.GetString("topic", "")
+		if topic == "" {
+			return mcp.NewToolResultError("topic required for recall"), nil
+		}
+		data, _ := json.Marshal(map[string]any{
+			"found":   false,
+			"message": fmt.Sprintf("Recall by topic %q — use list action to see available reports.", topic),
+		})
+		return mcp.NewToolResultText(string(data)), nil
 
 	default:
-		return mcp.NewToolResultText(fmt.Sprintf(`{"action":"%s","status":"acknowledged"}`, action)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
 	}
 }
 

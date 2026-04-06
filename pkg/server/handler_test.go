@@ -567,11 +567,14 @@ func TestHandleInvestigate_StartWithTopic(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	if data["status"] != "started" {
-		t.Errorf("status = %v, want started", data["status"])
-	}
 	if data["session_id"] == nil {
 		t.Error("expected session_id")
+	}
+	if data["topic"] != "test investigation" {
+		t.Errorf("topic = %v, want 'test investigation'", data["topic"])
+	}
+	if data["coverage_areas"] == nil {
+		t.Error("expected coverage_areas")
 	}
 }
 
