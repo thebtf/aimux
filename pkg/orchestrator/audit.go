@@ -201,16 +201,18 @@ func (a *AuditPipeline) validate(ctx context.Context, params types.StrategyParam
 			}
 		}
 	}
-	// Apply verdicts; default to confirmed if validator didn't mention finding
-	for i := range findings {
+	// Apply verdicts to a copy — never mutate the caller's slice
+	validated := make([]auditFinding, len(findings))
+	copy(validated, findings)
+	for i := range validated {
 		if v, ok := verdictMap[i]; ok {
-			findings[i].Confidence = v
+			validated[i].Confidence = v
 		} else {
-			findings[i].Confidence = types.AuditConfidenceConfirmed
+			validated[i].Confidence = types.AuditConfidenceConfirmed
 		}
 	}
 
-	return findings, nil
+	return validated, nil
 }
 
 // investigate runs deep investigation on HIGH+ findings.

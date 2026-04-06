@@ -16,6 +16,7 @@ func testProfiles() map[string]*config.CLIProfile {
 				Base: "codex",
 			},
 			Features:          types.CLIFeatures{Headless: true},
+			HeadlessFlags:     []string{"--full-auto"},
 			PromptFlag:        "-p",
 			StdinThreshold:    6000,
 			CompletionPattern: `turn\.completed`,

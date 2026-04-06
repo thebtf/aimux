@@ -111,6 +111,7 @@ type CLIProfile struct {
 	StdinThreshold int             `yaml:"stdin_threshold"`
 	CompletionPattern string       `yaml:"completion_pattern,omitempty"`
 	ReadOnlyFlags []string         `yaml:"read_only_flags"`
+	HeadlessFlags []string         `yaml:"headless_flags,omitempty"`
 }
 
 // CommandConfig holds command template configuration.

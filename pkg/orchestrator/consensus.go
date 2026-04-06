@@ -89,10 +89,12 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 				"Synthesize these into a consensus. Identify agreements, disagreements, and provide a final recommendation.",
 			params.Prompt, content)
 
-		synthResult, err := c.executor.Run(ctx, resolveOrFallback(c.resolver, successCLIs[0], synthPrompt, params.CWD, params.Timeout))
-		if err == nil {
+		synthResult, synthErr := c.executor.Run(ctx, resolveOrFallback(c.resolver, successCLIs[0], synthPrompt, params.CWD, params.Timeout))
+		if synthErr == nil {
 			content += "\n\n---\n\n## Synthesis\n\n" + synthResult.Content
 			turns++
+		} else {
+			content += "\n\n---\n\n## Synthesis\n\n[synthesis failed: " + synthErr.Error() + "]"
 		}
 	}
 

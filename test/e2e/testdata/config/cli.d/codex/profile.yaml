@@ -28,6 +28,9 @@ read_only_flags:
   - "--sandbox"
   - "read-only"
 
+headless_flags:
+  - "--full-auto"
+
 reasoning:
   flag: "-c"
   flag_value_template: "model_reasoning_effort=\"{level}\""

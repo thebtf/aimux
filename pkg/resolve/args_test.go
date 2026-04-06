@@ -57,8 +57,9 @@ func TestBuildPromptArgs_PositionalPrompt(t *testing.T) {
 		Command: config.CommandConfig{
 			Base: "codex",
 		},
-		Features:  types.CLIFeatures{Headless: true},
-		PromptFlag: "",
+		Features:      types.CLIFeatures{Headless: true},
+		HeadlessFlags: []string{"--full-auto"},
+		PromptFlag:    "",
 	}
 
 	args := BuildPromptArgs(profile, "", "", false, "hello world")
@@ -101,13 +102,14 @@ func TestBuildPromptArgs_MultiWordBase(t *testing.T) {
 		Command: config.CommandConfig{
 			Base: "testcli codex --json",
 		},
-		Features:  types.CLIFeatures{Headless: true},
-		PromptFlag: "",
+		Features:      types.CLIFeatures{Headless: true},
+		HeadlessFlags: []string{"--full-auto"},
+		PromptFlag:    "",
 	}
 
 	args := BuildPromptArgs(profile, "", "", false, "prompt")
 
-	// base args + --full-auto (codex headless) + positional prompt
+	// base args + --full-auto (headless) + positional prompt
 	assertSliceEqual(t, args, []string{"codex", "--json", "--full-auto", "prompt"})
 }
 
@@ -150,8 +152,9 @@ func TestBuildPromptArgs_WithReasoningTemplate(t *testing.T) {
 		Command: config.CommandConfig{
 			Base: "codex",
 		},
-		Features:  types.CLIFeatures{Headless: true},
-		PromptFlag: "-p",
+		Features:      types.CLIFeatures{Headless: true},
+		HeadlessFlags: []string{"--full-auto"},
+		PromptFlag:    "-p",
 		Reasoning: &config.ReasoningConfig{
 			Flag:              "-c",
 			FlagValueTemplate: `model_reasoning_effort="%s"`,
@@ -171,6 +174,7 @@ func TestBuildPromptArgs_ReadOnly(t *testing.T) {
 			Base: "codex",
 		},
 		Features:      types.CLIFeatures{Headless: true},
+		HeadlessFlags: []string{"--full-auto"},
 		PromptFlag:    "-p",
 		ReadOnlyFlags: []string{"--sandbox", "read-only"},
 	}
@@ -195,20 +199,19 @@ func TestBuildPromptArgs_EmptyPrompt(t *testing.T) {
 	assertSliceEqual(t, args, []string{})
 }
 
-func TestBuildPromptArgs_HeadlessOnlyCodex(t *testing.T) {
-	// Headless flag is only added for codex, not other CLIs
+func TestBuildPromptArgs_HeadlessNoFlags(t *testing.T) {
+	// Headless=true but no HeadlessFlags configured → no extra flags added
 	profile := &config.CLIProfile{
 		Name: "gemini",
 		Command: config.CommandConfig{
 			Base: "gemini",
 		},
-		Features:  types.CLIFeatures{Headless: true},
+		Features:   types.CLIFeatures{Headless: true},
 		PromptFlag: "-p",
 	}
 
 	args := BuildPromptArgs(profile, "", "", false, "hello")
 
-	// No --full-auto because name != "codex"
 	assertSliceEqual(t, args, []string{"-p", "hello"})
 }
 
