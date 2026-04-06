@@ -1075,31 +1075,25 @@ func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (
 
 	sessionID := request.GetString("session_id", "")
 
-	// Pass through any structured params from the raw arguments
+	// Pass through structured, numeric, and boolean params from the raw arguments
 	if args, ok := request.Params.Arguments.(map[string]any); ok {
-		for _, key := range []string{
+		forwardKeys := []string{
+			// Structured
 			"criteria", "options", "components", "subProblems", "dependencies",
 			"risks", "stakeholders", "entities", "relationships", "rules",
 			"constraints", "states", "events", "transitions", "transformations",
 			"elements", "claims", "biases", "uncertainties", "cognitiveProcesses",
 			"parameters", "argument", "contribution", "entry", "hypothesisUpdate",
-		} {
-			if v, exists := args[key]; exists {
-				input[key] = v
-			}
-		}
-		// Numeric params
-		for _, key := range []string{
+			// Numeric
 			"confidence", "thoughtNumber", "totalThoughts", "currentDepth",
 			"maxDepth", "iterations", "revisesThought", "branchFromThought",
-		} {
+			// Boolean
+			"isRevision",
+		}
+		for _, key := range forwardKeys {
 			if v, exists := args[key]; exists {
 				input[key] = v
 			}
-		}
-		// Boolean params
-		if v, exists := args["isRevision"]; exists {
-			input["isRevision"] = v
 		}
 	}
 
@@ -1149,7 +1143,10 @@ func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (
 		response["computed_fields"] = thinkResult.ComputedFields
 	}
 
-	data, _ := json.Marshal(response)
+	data, err := json.Marshal(response)
+	if err != nil {
+		return mcp.NewToolResultError("internal error: failed to marshal response"), nil
+	}
 	return mcp.NewToolResultText(string(data)), nil
 }
 

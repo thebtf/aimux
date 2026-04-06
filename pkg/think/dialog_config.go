@@ -1,6 +1,9 @@
 package think
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // dialogConfigs holds per-pattern dialog configuration. 12 patterns have configs;
 // 5 are solo-only (think, sequential_thinking, recursive_thinking, visual_reasoning, stochastic_algorithm).
@@ -179,9 +182,7 @@ func GetDialogPatterns() []string {
 func interpolateTemplate(template string, input map[string]any) string {
 	result := template
 	for key, val := range input {
-		if s, ok := val.(string); ok {
-			result = strings.ReplaceAll(result, "{"+key+"}", s)
-		}
+		result = strings.ReplaceAll(result, "{"+key+"}", fmt.Sprintf("%v", val))
 	}
 	return result
 }

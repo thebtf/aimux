@@ -149,10 +149,8 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 }
 
 func nextStage(current string) string {
-	for i, s := range stageOrder {
-		if s == current && i+1 < len(stageOrder) {
-			return "scientific_method"
-		}
+	if current == stageOrder[len(stageOrder)-1] {
+		return ""
 	}
 	return "scientific_method"
 }

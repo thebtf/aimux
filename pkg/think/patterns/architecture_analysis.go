@@ -6,6 +6,8 @@ import (
 	think "github.com/thebtf/aimux/pkg/think"
 )
 
+const highCouplingThreshold = 2
+
 type architectureAnalysisPattern struct{}
 
 // NewArchitectureAnalysisPattern returns the "architecture_analysis" pattern handler.
@@ -81,7 +83,7 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 	// Detect high coupling: components referenced by 2+ others.
 	var highlyCoupled []map[string]any
 	for name, count := range depCount {
-		if count >= 2 {
+		if count >= highCouplingThreshold {
 			highlyCoupled = append(highlyCoupled, map[string]any{
 				"component":  name,
 				"dependents": count,

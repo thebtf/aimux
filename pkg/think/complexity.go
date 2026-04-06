@@ -5,6 +5,22 @@ import (
 	"reflect"
 )
 
+// Complexity scoring weights and thresholds (ported from v2).
+const (
+	textLengthWeight      = 0.3
+	subItemCountWeight    = 0.3
+	structuralDepthWeight = 0.2
+	patternBiasWeight     = 0.2
+
+	textLengthDivisor     = 500.0  // Characters before score reaches 100
+	subItemMultiplier     = 10     // Score per array item
+	structuralDepthFactor = 25     // Score per nesting level
+	maxMeasureRecursion   = 5      // Max depth for measuring nesting
+	maxItemsPerLevel      = 10     // Max items scanned per nesting level
+	defaultThreshold      = 60     // Default solo/consensus threshold
+	soloOnlyBias          = -50    // Bias for patterns without dialog config
+)
+
 // Text fields scanned for length scoring.
 var textFields = []string{
 	"problem", "issue", "decision", "topic", "task", "thought",
@@ -27,7 +43,7 @@ var arrayFields = []string{
 // Default threshold is 60.
 func CalculateComplexity(pattern string, input map[string]any, threshold int) ComplexityScore {
 	if threshold <= 0 {
-		threshold = 60
+		threshold = defaultThreshold
 	}
 
 	textLen := scoreTextLength(input)
@@ -35,7 +51,7 @@ func CalculateComplexity(pattern string, input map[string]any, threshold int) Co
 	depth := scoreStructuralDepth(input)
 	bias := getPatternBias(pattern)
 
-	rawScore := float64(textLen)*0.3 + float64(subItems)*0.3 + float64(depth)*0.2 + float64(bias)*0.2
+	rawScore := float64(textLen)*textLengthWeight + float64(subItems)*subItemCountWeight + float64(depth)*structuralDepthWeight + float64(bias)*patternBiasWeight
 	total := clamp(0, 100, int(math.Round(rawScore)))
 
 	rec := "solo"
@@ -64,7 +80,7 @@ func scoreTextLength(input map[string]any) int {
 			}
 		}
 	}
-	score := int(math.Round(float64(maxLen) / 500.0 * 100.0))
+	score := int(math.Round(float64(maxLen) / textLengthDivisor * 100.0))
 	return min(100, score)
 }
 
@@ -76,7 +92,7 @@ func scoreSubItemCount(input map[string]any) int {
 			totalItems += countArrayItems(val)
 		}
 	}
-	score := totalItems * 10
+	score := totalItems * subItemMultiplier
 	return min(100, score)
 }
 
@@ -84,12 +100,12 @@ func scoreSubItemCount(input map[string]any) int {
 func scoreStructuralDepth(input map[string]any) int {
 	maxDepth := 0
 	for _, val := range input {
-		d := measureDepth(val, 0, 5)
+		d := measureDepth(val, 0, maxMeasureRecursion)
 		if d > maxDepth {
 			maxDepth = d
 		}
 	}
-	score := maxDepth * 25
+	score := maxDepth * structuralDepthFactor
 	return min(100, score)
 }
 
@@ -98,14 +114,14 @@ func scoreStructuralDepth(input map[string]any) int {
 func getPatternBias(pattern string) int {
 	cfg := GetDialogConfig(pattern)
 	if cfg == nil {
-		return -50
+		return soloOnlyBias
 	}
 	return cfg.ComplexityBias
 }
 
 // measureDepth recursively measures the nesting depth of a value.
 // maxRecursion caps recursion; maxItems limits items scanned per level.
-func measureDepth(val any, currentDepth, maxRecursion int) int {
+func measureDepth(val any, currentDepth int, maxRecursion int) int {
 	if currentDepth >= maxRecursion {
 		return currentDepth
 	}
@@ -121,7 +137,7 @@ func measureDepth(val any, currentDepth, maxRecursion int) int {
 		count := 0
 		iter := rv.MapRange()
 		for iter.Next() {
-			if count >= 10 {
+			if count >= maxItemsPerLevel {
 				break
 			}
 			d := measureDepth(iter.Value().Interface(), currentDepth+1, maxRecursion)
@@ -135,8 +151,8 @@ func measureDepth(val any, currentDepth, maxRecursion int) int {
 	case reflect.Slice, reflect.Array:
 		maxD := currentDepth
 		limit := rv.Len()
-		if limit > 10 {
-			limit = 10
+		if limit > maxItemsPerLevel {
+			limit = maxItemsPerLevel
 		}
 		for i := 0; i < limit; i++ {
 			d := measureDepth(rv.Index(i).Interface(), currentDepth+1, maxRecursion)

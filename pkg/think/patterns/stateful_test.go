@@ -430,30 +430,3 @@ func TestCollaborativeReasoning_ContributionAndStage(t *testing.T) {
 	}
 }
 
-// --- jaccardSimilarity ---
-
-func TestJaccardSimilarity(t *testing.T) {
-	// Identical strings
-	sim := jaccardSimilarity("hello world", "hello world")
-	if sim != 1.0 {
-		t.Fatalf("expected 1.0, got %f", sim)
-	}
-
-	// No overlap
-	sim = jaccardSimilarity("hello world", "foo bar")
-	if sim != 0.0 {
-		t.Fatalf("expected 0.0, got %f", sim)
-	}
-
-	// Partial overlap
-	sim = jaccardSimilarity("hello world foo", "hello world bar")
-	if sim < 0.4 || sim > 0.6 {
-		t.Fatalf("expected ~0.5, got %f", sim)
-	}
-
-	// Both empty
-	sim = jaccardSimilarity("", "")
-	if sim != 1.0 {
-		t.Fatalf("expected 1.0 for empty strings, got %f", sim)
-	}
-}

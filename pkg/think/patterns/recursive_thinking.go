@@ -6,6 +6,8 @@ import (
 	think "github.com/thebtf/aimux/pkg/think"
 )
 
+const defaultMaxRecursionDepth = 10.0
+
 type recursiveThinkingPattern struct{}
 
 // NewRecursiveThinkingPattern returns the "recursive_thinking" pattern handler.
@@ -53,7 +55,7 @@ func (p *recursiveThinkingPattern) Handle(validInput map[string]any, sessionID s
 	if v, ok := validInput["currentDepth"].(float64); ok {
 		currentDepth = v
 	}
-	maxDepth := 10.0
+	maxDepth := defaultMaxRecursionDepth
 	if v, ok := validInput["maxDepth"].(float64); ok {
 		maxDepth = v
 	}

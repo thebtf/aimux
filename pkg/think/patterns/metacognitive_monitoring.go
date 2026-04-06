@@ -6,6 +6,11 @@ import (
 	think "github.com/thebtf/aimux/pkg/think"
 )
 
+const (
+	overconfidenceThreshold    = 0.8 // Confidence level that triggers warning
+	minClaimsForHighConfidence = 3   // Minimum claims needed to justify high confidence
+)
+
 type metacognitiveMonitoringPattern struct{}
 
 // NewMetacognitiveMonitoringPattern returns the "metacognitive_monitoring" pattern handler.
@@ -71,7 +76,7 @@ func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessi
 	}
 
 	overconfidenceWarning := ""
-	if confidence > 0.8 && claimsCount < 3 {
+	if confidence > overconfidenceThreshold && claimsCount < minClaimsForHighConfidence {
 		overconfidenceWarning = fmt.Sprintf(
 			"High confidence (%.2f) with few supporting claims (%d). Consider gathering more evidence.",
 			confidence, claimsCount,

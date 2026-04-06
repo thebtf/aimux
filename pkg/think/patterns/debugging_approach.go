@@ -7,6 +7,8 @@ import (
 	think "github.com/thebtf/aimux/pkg/think"
 )
 
+const pivotSuggestionThreshold = 3 // Suggest different approach after this many refuted hypotheses
+
 // knownMethods maps debugging approach names to their descriptions.
 var knownMethods = map[string]string{
 	"binary_search":   "Narrow the problem space by testing the midpoint",
@@ -180,7 +182,7 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 		"refutedCount":      refutedCount,
 	}
 
-	if refutedCount >= 3 {
+	if refutedCount >= pivotSuggestionThreshold {
 		data["suggestion"] = "3+ hypotheses refuted — consider trying a fundamentally different approach"
 	}
 
