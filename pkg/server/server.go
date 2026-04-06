@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -22,6 +21,7 @@ import (
 	"github.com/thebtf/aimux/pkg/logger"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/prompt"
+	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 	"github.com/thebtf/aimux/pkg/session"
@@ -555,8 +555,8 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 
 	args := types.SpawnArgs{
 		CLI:            cli,
-		Command:        commandBinary(profile.Command.Base),
-		Args:           buildArgs(profile, model, effort, readOnly, prompt),
+		Command:        resolve.CommandBinary(profile.Command.Base),
+		Args:           resolve.BuildPromptArgs(profile, model, effort, readOnly, prompt),
 		CWD:            cwd,
 		TimeoutSeconds: timeoutSec,
 	}
@@ -564,7 +564,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	// Stdin piping for long prompts (Windows 8191 char limit)
 	if profile.StdinThreshold > 0 && len(prompt) > profile.StdinThreshold {
 		args.Stdin = prompt
-		args.Args = buildArgs(profile, model, effort, readOnly, "") // empty prompt — piped via stdin
+		args.Args = resolve.BuildPromptArgs(profile, model, effort, readOnly, "") // empty prompt — piped via stdin
 		s.log.Info("exec: stdin piping activated (prompt=%d chars, threshold=%d)", len(prompt), profile.StdinThreshold)
 	}
 
@@ -896,8 +896,8 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 
 		args := types.SpawnArgs{
 			CLI:            cli,
-			Command:        profile.Command.Base,
-			Args:           buildArgs(profile, pref.Model, pref.ReasoningEffort, readOnly, fullPrompt),
+			Command:        resolve.CommandBinary(profile.Command.Base),
+			Args:           resolve.BuildPromptArgs(profile, pref.Model, pref.ReasoningEffort, readOnly, fullPrompt),
 			CWD:            cwd,
 			TimeoutSeconds: profile.TimeoutSeconds,
 		}
@@ -1228,67 +1228,6 @@ func (s *Server) handleBackgroundPrompt(ctx context.Context, request mcp.GetProm
 }
 
 // --- Helpers ---
-
-// commandBinary extracts the binary name from command.base (first word).
-// Supports multi-word command bases like "testcli codex --json" where only
-// the first word is the binary and the rest are base args (handled by buildArgs).
-func commandBinary(base string) string {
-	if i := strings.IndexByte(base, ' '); i > 0 {
-		return base[:i]
-	}
-	return base
-}
-
-// commandBaseArgs extracts extra args from command.base (all words after the first).
-// For "testcli codex --json" returns ["codex", "--json"].
-// For "echo" returns nil.
-func commandBaseArgs(base string) []string {
-	parts := strings.Fields(base)
-	if len(parts) <= 1 {
-		return nil
-	}
-	return parts[1:]
-}
-
-// buildArgs constructs CLI arguments from profile and parameters.
-func buildArgs(profile *config.CLIProfile, model, effort string, readOnly bool, prompt string) []string {
-	// Prepend any extra args from command.base (e.g., "testcli codex" → ["codex"])
-	baseArgs := commandBaseArgs(profile.Command.Base)
-	args := append([]string{}, baseArgs...)
-
-	if profile.Features.Headless && profile.Name == "codex" {
-		args = append(args, "--full-auto")
-	}
-
-	if readOnly && len(profile.ReadOnlyFlags) > 0 {
-		args = append(args, profile.ReadOnlyFlags...)
-	}
-
-	if model != "" && profile.ModelFlag != "" {
-		args = append(args, profile.ModelFlag, model)
-	}
-
-	if effort != "" && profile.Reasoning != nil {
-		if profile.Reasoning.FlagValueTemplate != "" {
-			val := strings.ReplaceAll(profile.Reasoning.FlagValueTemplate, "%s", effort)
-			args = append(args, profile.Reasoning.Flag, val)
-		} else {
-			args = append(args, profile.Reasoning.Flag, effort)
-		}
-	}
-
-	if prompt != "" {
-		if profile.PromptFlag != "" {
-			// Flag-based prompt: -p "prompt" (gemini, claude, qwen)
-			args = append(args, profile.PromptFlag, prompt)
-		} else {
-			// Positional prompt: prompt as last argument (codex, echo)
-			args = append(args, prompt)
-		}
-	}
-
-	return args
-}
 
 // injectBootstrap prepends role-specific prompt from prompts.d/ if available.
 // Falls back to original prompt if no template found for the role.
