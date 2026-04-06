@@ -24,6 +24,7 @@ type ServerConfig struct {
 	DefaultAsync          bool   `yaml:"default_async"`
 	DefaultTimeoutSeconds int    `yaml:"default_timeout_seconds"`
 
+	Transport TransportConfig `yaml:"transport"`
 	Audit     AuditConfig     `yaml:"audit"`
 	Pair      PairConfig      `yaml:"pair"`
 	Consensus ConsensusConfig `yaml:"consensus"`
@@ -76,6 +77,15 @@ type ResearchConfig struct {
 type ThinkConfig struct {
 	AutoConsensusThreshold int `yaml:"auto_consensus_threshold"`
 	DefaultDialogMaxTurns  int `yaml:"default_dialog_max_turns"`
+}
+
+// TransportConfig holds transport selection settings.
+type TransportConfig struct {
+	Type     string `yaml:"type"`      // "stdio" (default), "sse", "http"
+	Port     string `yaml:"port"`      // ":8080" for SSE/HTTP
+	Endpoint string `yaml:"endpoint"`  // "/mcp" for HTTP
+	TLSCert  string `yaml:"tls_cert"`  // Path to TLS certificate
+	TLSKey   string `yaml:"tls_key"`   // Path to TLS key
 }
 
 // CircuitBreakerConfig holds circuit breaker settings.

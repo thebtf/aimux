@@ -127,6 +127,20 @@ func (s *Server) ServeStdio() error {
 	return server.ServeStdio(s.mcp)
 }
 
+// ServeSSE starts the MCP server with Server-Sent Events transport.
+func (s *Server) ServeSSE(addr string) error {
+	s.log.Info("MCP server starting on SSE at %s (aimux v%s)", addr, serverVersion)
+	sseServer := server.NewSSEServer(s.mcp)
+	return sseServer.Start(addr)
+}
+
+// ServeHTTP starts the MCP server with StreamableHTTP transport.
+func (s *Server) ServeHTTP(addr string, opts ...server.StreamableHTTPOption) error {
+	s.log.Info("MCP server starting on HTTP at %s (aimux v%s)", addr, serverVersion)
+	httpServer := server.NewStreamableHTTPServer(s.mcp, opts...)
+	return httpServer.Start(addr)
+}
+
 // --- Tool Registration ---
 
 func (s *Server) registerTools() {
