@@ -296,22 +296,11 @@ func parseReportFilename(name string) (topic, date string) {
 	core := strings.TrimPrefix(name, "investigate-")
 	core = strings.TrimSuffix(core, ".md")
 
-	// Date is the last part after the last 'T' that looks like a timestamp
-	// Format: {slug}-{YYYY-MM-DDT...}
-	// Find the date portion: look for pattern YYYY-MM-DD
-	for i := len(core) - 1; i >= 10; i-- {
-		if core[i-10:i-6] == "-" || (i >= 19 && core[i-19] >= '2') {
-			// Try to find date start: 4 digits, dash, 2 digits, dash, 2 digits
-			candidate := findDateStart(core)
-			if candidate >= 0 {
-				topic = strings.TrimRight(core[:candidate], "-")
-				date = core[candidate:]
-				// Convert dashes back to colons for display
-				topic = strings.ReplaceAll(topic, "-", " ")
-				return
-			}
-		}
-		break
+	if candidate := findDateStart(core); candidate >= 0 {
+		topic = strings.TrimRight(core[:candidate], "-")
+		date = core[candidate:]
+		topic = strings.ReplaceAll(topic, "-", " ")
+		return topic, date
 	}
 
 	topic = strings.ReplaceAll(core, "-", " ")

@@ -1301,7 +1301,10 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 
 	case "list":
 		active := inv.ListInvestigations()
-		cwd, _ := os.Getwd()
+		cwd := request.GetString("cwd", "")
+		if cwd == "" {
+			cwd, _ = os.Getwd()
+		}
 		savedReports, _ := inv.ListReports(cwd)
 		data, _ := json.Marshal(map[string]any{
 			"active_investigations": active,
@@ -1316,7 +1319,10 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if topic == "" {
 			return mcp.NewToolResultError("topic required for recall"), nil
 		}
-		cwd, _ := os.Getwd()
+		cwd := request.GetString("cwd", "")
+		if cwd == "" {
+			cwd, _ = os.Getwd()
+		}
 		result, err := inv.RecallReport(cwd, topic)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("recall error: %v", err)), nil
