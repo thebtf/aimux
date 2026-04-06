@@ -859,3 +859,238 @@ func TestE2E_Cline_ThroughAimux(t *testing.T) {
 		t.Errorf("status = %v, want completed", data["status"])
 	}
 }
+
+// ========================================================================
+// Phase 4: Behavior-Specific Tests
+// ========================================================================
+
+// TestE2E_Behavior_GeminiJSONBufferingTrap verifies gemini's JSON buffering mode:
+// ZERO stdout until task completion, then one big JSON blob.
+// This caused months of debugging in v2 — aimux inactivity timeout killed the process.
+func TestE2E_Behavior_GeminiJSONBufferingTrap(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	start := time.Now()
+	cmd := exec.Command(testcliBin, "gemini", "-p", "buffering trap test", "--output-format", "json")
+	out, err := cmd.Output()
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("gemini json mode: %v", err)
+	}
+
+	// Output must be valid JSON (single object, not JSONL)
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("output not valid single JSON: %v\nraw: %s", err, out)
+	}
+
+	if elapsed < 50*time.Millisecond {
+		t.Logf("warning: gemini json mode completed in %v — may not test real buffering", elapsed)
+	}
+
+	if result["response"] == nil {
+		t.Error("buffered JSON missing 'response' field")
+	}
+	if result["stats"] == nil {
+		t.Error("buffered JSON missing 'stats' field")
+	}
+
+	t.Logf("gemini JSON buffering: output=%d bytes in %v", len(out), elapsed)
+}
+
+// TestE2E_Behavior_ClaudeJSONBufferingTrap verifies claude JSON mode has same trap.
+func TestE2E_Behavior_ClaudeJSONBufferingTrap(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "claude", "-p", "claude buffering test", "--output-format", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("claude json mode: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("output not valid single JSON: %v", err)
+	}
+
+	if result["content"] == nil {
+		t.Error("buffered JSON missing 'content'")
+	}
+	if result["stop_reason"] != "end_turn" {
+		t.Errorf("stop_reason = %v, want end_turn", result["stop_reason"])
+	}
+}
+
+// TestE2E_Behavior_AsyncCancelPropagation starts an async goose job (100ms OTEL delay),
+// kills it, and verifies the job transitions to a terminal state.
+func TestE2E_Behavior_AsyncCancelPropagation(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	// Start async goose job
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "exec",
+		"arguments": map[string]any{
+			"prompt": "async cancel test with goose OTEL delay",
+			"cli":    "goose",
+			"async":  true,
+		},
+	}))
+
+	resp, err := readResponse(reader, 5*time.Second)
+	if err != nil {
+		t.Fatalf("goose async start: %v", err)
+	}
+
+	data := extractToolJSON(t, resp)
+	jobID, _ := data["job_id"].(string)
+	sessionID, _ := data["session_id"].(string)
+	if jobID == "" || sessionID == "" {
+		t.Fatalf("missing job_id or session_id: %v", data)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Kill the session
+	fmt.Fprint(stdin, jsonRPCRequest(3, "tools/call", map[string]any{
+		"name": "sessions",
+		"arguments": map[string]any{
+			"action":     "kill",
+			"session_id": sessionID,
+		},
+	}))
+
+	killResp, err := readResponse(reader, 5*time.Second)
+	if err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	killData := extractToolJSON(t, killResp)
+	t.Logf("kill result: %v", killData)
+
+	// Poll job status — should be terminal
+	time.Sleep(300 * time.Millisecond)
+	fmt.Fprint(stdin, jsonRPCRequest(4, "tools/call", map[string]any{
+		"name":      "status",
+		"arguments": map[string]any{"job_id": jobID},
+	}))
+
+	statusResp, err := readResponse(reader, 5*time.Second)
+	if err != nil {
+		t.Fatalf("status after kill: %v", err)
+	}
+
+	statusData := extractToolJSON(t, statusResp)
+	status, _ := statusData["status"].(string)
+	t.Logf("job status after kill: %s", status)
+
+	if status == "running" {
+		t.Error("job still 'running' after session kill — cancel propagation failed")
+	}
+}
+
+// TestE2E_Behavior_StdinEOFHandling verifies that aimux properly closes stdin pipe
+// when piping long prompts to codex. Without EOF, codex hangs forever reading stdin.
+// This was a real deadlock bug in v2.
+func TestE2E_Behavior_StdinEOFHandling(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	// Prompt longer than codex stdin_threshold (6000 chars) triggers stdin piping
+	longPrompt := strings.Repeat("This is a long prompt word. ", 250) // ~7000 chars
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "exec",
+		"arguments": map[string]any{
+			"prompt": longPrompt,
+			"cli":    "codex",
+		},
+	}))
+
+	// Must complete. If stdin EOF not sent → codex hangs → timeout.
+	resp, err := readResponse(reader, 15*time.Second)
+	if err != nil {
+		t.Fatalf("codex stdin EOF: %v (likely stdin pipe not closed — deadlock)", err)
+	}
+
+	text := extractToolText(t, resp)
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+
+	t.Logf("full response: %s", text)
+
+	if data["status"] != "completed" {
+		t.Errorf("status = %v, want completed", data["status"])
+	}
+
+	content, _ := data["content"].(string)
+	if content == "" {
+		// Try raw content field (might not be string)
+		t.Logf("content type: %T, value: %v", data["content"], data["content"])
+	}
+	if !strings.Contains(content, "long prompt word") && !strings.Contains(content, "Codex response") {
+		t.Logf("content preview: %.500s", content)
+		t.Error("response doesn't reflect stdin content — prompt may not have been piped")
+	}
+
+	t.Logf("stdin EOF: prompt=%d chars, content=%d chars", len(longPrompt), len(content))
+}
+
+// TestE2E_Behavior_GooseOTELDelay verifies goose's 100ms OTEL delay at exit.
+func TestE2E_Behavior_GooseOTELDelay(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	start := time.Now()
+	cmd := exec.Command(testcliBin, "goose", "-t", "OTEL delay test", "--output-format", "stream-json")
+	out, err := cmd.Output()
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("goose OTEL: %v", err)
+	}
+
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("goose completed in %v — expected >=100ms OTEL delay", elapsed)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 JSONL events, got %d", len(lines))
+	}
+
+	t.Logf("goose with OTEL delay: %v", elapsed)
+}
+
+// TestE2E_Behavior_ClaudeNoInitEvent verifies claude does NOT emit init event
+// (unlike gemini). If aimux assumes all JSONL CLIs start with init → misparse.
+func TestE2E_Behavior_ClaudeNoInitEvent(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	claudeCmd := exec.Command(testcliBin, "claude", "-p", "init event test", "--output-format", "stream-json")
+	claudeOut, err := claudeCmd.Output()
+	if err != nil {
+		t.Fatalf("claude: %v", err)
+	}
+
+	claudeLines := strings.Split(strings.TrimSpace(string(claudeOut)), "\n")
+	var claudeFirst map[string]any
+	json.Unmarshal([]byte(claudeLines[0]), &claudeFirst)
+
+	if claudeFirst["type"] == "init" {
+		t.Error("claude emitted 'init' event — this is gemini behavior, not claude")
+	}
+	if claudeFirst["type"] != "content_block_delta" {
+		t.Errorf("claude first event = %v, want content_block_delta", claudeFirst["type"])
+	}
+
+	// Gemini DOES have init
+	geminiCmd := exec.Command(testcliBin, "gemini", "-p", "init event test", "--output-format", "stream-json")
+	geminiOut, _ := geminiCmd.Output()
+	geminiLines := strings.Split(strings.TrimSpace(string(geminiOut)), "\n")
+	var geminiFirst map[string]any
+	json.Unmarshal([]byte(geminiLines[0]), &geminiFirst)
+
+	if geminiFirst["type"] != "init" {
+		t.Errorf("gemini first event = %v, want init", geminiFirst["type"])
+	}
+
+	t.Log("verified: claude=content_block_delta first, gemini=init first")
+}

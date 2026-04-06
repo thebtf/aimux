@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor/pipeline"
@@ -73,6 +74,11 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+
+	// Pipe stdin if provided (e.g., long prompts exceeding CLI's stdin threshold)
+	if args.Stdin != "" {
+		cmd.Stdin = strings.NewReader(args.Stdin)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, types.NewExecutorError(
