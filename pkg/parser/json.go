@@ -10,6 +10,7 @@ type JSONResponse struct {
 	Content   string `json:"content,omitempty"`
 	Text      string `json:"text,omitempty"`
 	Response  string `json:"response,omitempty"`
+	Result    string `json:"result,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
 	ExitCode  int    `json:"exit_code,omitempty"`
 	// Stats fields (varies by CLI)
@@ -34,7 +35,8 @@ func ParseJSON(output string) (*JSONResponse, error) {
 }
 
 // ExtractContent gets the text content from a JSON response.
-// Tries content, text, response fields in order.
+// Tries content, text, response, result fields in order.
+// Claude uses "result" field for the answer text.
 func ExtractContent(resp *JSONResponse) string {
 	if resp == nil {
 		return ""
@@ -45,7 +47,10 @@ func ExtractContent(resp *JSONResponse) string {
 	if resp.Text != "" {
 		return resp.Text
 	}
-	return resp.Response
+	if resp.Response != "" {
+		return resp.Response
+	}
+	return resp.Result
 }
 
 // FindOutermostJSON finds the outermost JSON object in a string.

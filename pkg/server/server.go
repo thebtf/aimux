@@ -20,6 +20,7 @@ import (
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
 	"github.com/thebtf/aimux/pkg/logger"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
+	"github.com/thebtf/aimux/pkg/parser"
 	"github.com/thebtf/aimux/pkg/prompt"
 	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
@@ -579,7 +580,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		}
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
-		go s.executeJob(jobCtx, job.ID, sess.ID, args, cb)
+		go s.executeJob(jobCtx, job.ID, sess.ID, args, cb, profile.OutputFormat)
 
 		result := map[string]any{
 			"job_id":     job.ID,
@@ -590,7 +591,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultText(string(data)), nil
 	}
 
-	s.executeJob(ctx, job.ID, sess.ID, args, cb)
+	s.executeJob(ctx, job.ID, sess.ID, args, cb, profile.OutputFormat)
 
 	j := s.jobs.Get(job.ID)
 	if j == nil {
@@ -640,8 +641,8 @@ func (s *Server) executePairCoding(ctx context.Context, jobID, sessionID string,
 	s.log.Info("pair_coding complete: job=%s turns=%d", jobID, stratResult.Turns)
 }
 
-// executeJob runs a CLI process and updates job/session state.
-func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args types.SpawnArgs, cb *executor.CircuitBreaker) {
+// executeJob runs a CLI process, parses output, and updates job/session state.
+func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args types.SpawnArgs, cb *executor.CircuitBreaker, outputFormat string) {
 	s.jobs.StartJob(jobID, 0)
 	s.sessions.Update(sessionID, func(sess *session.Session) {
 		sess.Status = types.SessionStatusRunning
@@ -670,12 +671,18 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args t
 		return
 	}
 
-	s.jobs.CompleteJob(jobID, result.Content, result.ExitCode)
+	// Parse CLI output according to profile format (FR-1, FR-2, FR-3)
+	parsed, cliSessionID := parser.ParseContent(result.Content, outputFormat)
+	if cliSessionID != "" {
+		result.CLISessionID = cliSessionID
+	}
+
+	s.jobs.CompleteJob(jobID, parsed, result.ExitCode)
 	s.sessions.Update(sessionID, func(sess *session.Session) {
 		sess.Status = types.SessionStatusCompleted
 		sess.Turns++
 	})
-	s.log.Info("exec complete: job=%s exit=%d len=%d", jobID, result.ExitCode, len(result.Content))
+	s.log.Info("exec complete: job=%s exit=%d raw=%d parsed=%d", jobID, result.ExitCode, len(result.Content), len(parsed))
 }
 
 func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -916,7 +923,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			}
 			jobCtx, jobCancel := context.WithCancel(context.Background())
 			s.jobs.RegisterCancel(job.ID, jobCancel)
-			go s.executeJob(jobCtx, job.ID, sess.ID, args, cb)
+			go s.executeJob(jobCtx, job.ID, sess.ID, args, cb, profile.OutputFormat)
 			data, _ := json.Marshal(map[string]any{
 				"agent":      agentName,
 				"job_id":     job.ID,
@@ -926,7 +933,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultText(string(data)), nil
 		}
 
-		s.executeJob(ctx, job.ID, sess.ID, args, cb)
+		s.executeJob(ctx, job.ID, sess.ID, args, cb, profile.OutputFormat)
 
 		j := s.jobs.Get(job.ID)
 		if j == nil {
