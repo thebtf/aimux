@@ -1,9 +1,11 @@
 package investigate
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -238,4 +240,212 @@ func SaveReport(cwd, topic, report string) (string, error) {
 	}
 
 	return fpath, nil
+}
+
+// ReportEntry describes a saved investigation report on disk.
+type ReportEntry struct {
+	Filename string `json:"filename"`
+	Topic    string `json:"topic"`
+	Date     string `json:"date"`
+	Size     int64  `json:"size"`
+}
+
+// ListReports scans .agent/reports/ for investigate-*.md files.
+// Returns entries sorted by date descending (newest first).
+func ListReports(cwd string) ([]ReportEntry, error) {
+	dir := filepath.Join(cwd, ".agent", "reports")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read reports dir: %w", err)
+	}
+
+	var reports []ReportEntry
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "investigate-") || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		topic, date := parseReportFilename(name)
+		reports = append(reports, ReportEntry{
+			Filename: name,
+			Topic:    topic,
+			Date:     date,
+			Size:     info.Size(),
+		})
+	}
+
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].Date > reports[j].Date
+	})
+
+	return reports, nil
+}
+
+// parseReportFilename extracts topic and date from investigate-{slug}-{date}.md.
+func parseReportFilename(name string) (topic, date string) {
+	// Remove prefix "investigate-" and suffix ".md"
+	core := strings.TrimPrefix(name, "investigate-")
+	core = strings.TrimSuffix(core, ".md")
+
+	if candidate := findDateStart(core); candidate >= 0 {
+		topic = strings.TrimRight(core[:candidate], "-")
+		date = core[candidate:]
+		topic = strings.ReplaceAll(topic, "-", " ")
+		return topic, date
+	}
+
+	topic = strings.ReplaceAll(core, "-", " ")
+	return topic, ""
+}
+
+// findDateStart finds the index where a YYYY-MM-DD date pattern starts.
+func findDateStart(s string) int {
+	// Look for pattern: digit digit digit digit - digit digit - digit digit T
+	for i := 0; i <= len(s)-10; i++ {
+		if s[i] >= '2' && s[i] <= '9' && // year starts with 2-9
+			isDigit(s[i+1]) && isDigit(s[i+2]) && isDigit(s[i+3]) &&
+			s[i+4] == '-' &&
+			isDigit(s[i+5]) && isDigit(s[i+6]) &&
+			s[i+7] == '-' &&
+			isDigit(s[i+8]) && isDigit(s[i+9]) {
+			// Verify it's preceded by a dash or is at start
+			if i == 0 || s[i-1] == '-' {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func isDigit(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
+// RecallResult holds a matched report for the recall action.
+type RecallResult struct {
+	Filename string `json:"filename"`
+	Topic    string `json:"topic"`
+	Date     string `json:"date"`
+	Content  string `json:"content"`
+}
+
+const contentSearchLines = 50 // Number of lines to scan during content-based recall
+
+// RecallReport finds a report matching the topic query.
+// First tries slug/topic substring match (case-insensitive), then falls back to
+// content search (first 50 lines). Returns the newest match, or nil if no match.
+func RecallReport(cwd, topicQuery string) (*RecallResult, error) {
+	if topicQuery == "" {
+		return nil, fmt.Errorf("topic query is required")
+	}
+
+	reports, err := ListReports(cwd)
+	if err != nil {
+		return nil, err
+	}
+
+	query := strings.ToLower(topicQuery)
+
+	// Phase 1: topic/slug substring match (already sorted newest-first)
+	for _, r := range reports {
+		if strings.Contains(strings.ToLower(r.Topic), query) ||
+			strings.Contains(strings.ToLower(r.Filename), query) {
+			return readReportContent(cwd, r)
+		}
+	}
+
+	// Phase 2: content search (first N lines of each report)
+	dir := filepath.Join(cwd, ".agent", "reports")
+	for _, r := range reports {
+		if matchesContent(filepath.Join(dir, r.Filename), query) {
+			return readReportContent(cwd, r)
+		}
+	}
+
+	return nil, nil
+}
+
+// readReportContent reads the full content of a report file.
+func readReportContent(cwd string, entry ReportEntry) (*RecallResult, error) {
+	fpath := filepath.Join(cwd, ".agent", "reports", entry.Filename)
+	content, err := os.ReadFile(fpath)
+	if err != nil {
+		return nil, fmt.Errorf("read report %s: %w", entry.Filename, err)
+	}
+
+	return &RecallResult{
+		Filename: entry.Filename,
+		Topic:    entry.Topic,
+		Date:     entry.Date,
+		Content:  string(content),
+	}, nil
+}
+
+// matchesContent checks if a query appears in the first N lines of a file.
+func matchesContent(fpath, query string) bool {
+	f, err := os.Open(fpath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	lineCount := 0
+	for scanner.Scan() && lineCount < contentSearchLines {
+		if strings.Contains(strings.ToLower(scanner.Text()), query) {
+			return true
+		}
+		lineCount++
+	}
+	return false
+}
+
+// CleanupExpiredReports removes investigate reports older than maxAgeDays.
+// Returns the count of deleted files.
+func CleanupExpiredReports(cwd string, maxAgeDays int) (int, error) {
+	if maxAgeDays <= 0 {
+		maxAgeDays = 180
+	}
+
+	dir := filepath.Join(cwd, ".agent", "reports")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read reports dir: %w", err)
+	}
+
+	cutoff := time.Now().Add(-time.Duration(maxAgeDays) * 24 * time.Hour)
+	deleted := 0
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "investigate-") || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		if info.ModTime().Before(cutoff) {
+			fpath := filepath.Join(dir, name)
+			if err := os.Remove(fpath); err == nil {
+				deleted++
+			}
+		}
+	}
+
+	return deleted, nil
 }
