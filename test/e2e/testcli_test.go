@@ -680,3 +680,182 @@ func TestE2E_TestCLI_CrushStdinPrepend(t *testing.T) {
 		t.Errorf("output missing stdin content: %s", output)
 	}
 }
+
+// --- Phase 3: Standalone Tests ---
+
+func TestE2E_TestCLI_AiderOutput(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "aider", "--message", "test aider")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli aider: %v", err)
+	}
+
+	output := strings.TrimSpace(string(out))
+	if !strings.Contains(output, "Aider response to: test aider") {
+		t.Errorf("unexpected output: %s", output)
+	}
+}
+
+func TestE2E_TestCLI_QwenStreamJSON(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "qwen", "-p", "test qwen", "--output-format", "stream-json")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli qwen: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 4 {
+		t.Fatalf("expected at least 4 JSONL lines, got %d", len(lines))
+	}
+
+	// Qwen uses gemini format — first line should be init
+	var initEvt map[string]any
+	json.Unmarshal([]byte(lines[0]), &initEvt)
+	if initEvt["type"] != "init" {
+		t.Errorf("first event type = %v, want init", initEvt["type"])
+	}
+
+	// Last line should be result
+	var resultEvt map[string]any
+	json.Unmarshal([]byte(lines[len(lines)-1]), &resultEvt)
+	if resultEvt["type"] != "result" {
+		t.Errorf("last event type = %v, want result", resultEvt["type"])
+	}
+}
+
+func TestE2E_TestCLI_GptmeOutput(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "gptme", "-n", "test gptme", "--non-interactive")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli gptme: %v", err)
+	}
+
+	output := strings.TrimSpace(string(out))
+	if !strings.Contains(output, "Gptme response to: test gptme") {
+		t.Errorf("unexpected output: %s", output)
+	}
+}
+
+func TestE2E_TestCLI_ClineJSON(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "cline", "--json", "test cline")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli cline: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 NDJSON lines, got %d: %v", len(lines), lines)
+	}
+
+	// Message event
+	var msgEvt map[string]any
+	json.Unmarshal([]byte(lines[0]), &msgEvt)
+	if msgEvt["type"] != "message" {
+		t.Errorf("first event type = %v, want message", msgEvt["type"])
+	}
+
+	// Completion event
+	var compEvt map[string]any
+	json.Unmarshal([]byte(lines[1]), &compEvt)
+	if compEvt["type"] != "completion" {
+		t.Errorf("second event type = %v, want completion", compEvt["type"])
+	}
+}
+
+func TestE2E_TestCLI_ContinueOutput(t *testing.T) {
+	testcliBin := buildTestCLI(t)
+
+	cmd := exec.Command(testcliBin, "continue", "-p", "test continue")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("testcli continue: %v", err)
+	}
+
+	output := strings.TrimSpace(string(out))
+	if !strings.Contains(output, "Continue response to: test continue") {
+		t.Errorf("unexpected output: %s", output)
+	}
+}
+
+// --- Phase 3: Through-aimux Tests ---
+
+func TestE2E_Aider_ThroughAimux(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "exec",
+		"arguments": map[string]any{
+			"prompt": "test aider via aimux",
+			"cli":    "aider",
+		},
+	}))
+
+	resp, err := readResponse(reader, 15*time.Second)
+	if err != nil {
+		t.Fatalf("aider exec: %v", err)
+	}
+
+	text := extractToolText(t, resp)
+	var data map[string]any
+	json.Unmarshal([]byte(text), &data)
+	if data["status"] != "completed" {
+		t.Errorf("status = %v, want completed", data["status"])
+	}
+}
+
+func TestE2E_Qwen_ThroughAimux(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "exec",
+		"arguments": map[string]any{
+			"prompt": "test qwen via aimux",
+			"cli":    "qwen",
+		},
+	}))
+
+	resp, err := readResponse(reader, 15*time.Second)
+	if err != nil {
+		t.Fatalf("qwen exec: %v", err)
+	}
+
+	text := extractToolText(t, resp)
+	var data map[string]any
+	json.Unmarshal([]byte(text), &data)
+	if data["status"] != "completed" {
+		t.Errorf("status = %v, want completed", data["status"])
+	}
+}
+
+func TestE2E_Cline_ThroughAimux(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "exec",
+		"arguments": map[string]any{
+			"prompt": "test cline via aimux",
+			"cli":    "cline",
+		},
+	}))
+
+	resp, err := readResponse(reader, 15*time.Second)
+	if err != nil {
+		t.Fatalf("cline exec: %v", err)
+	}
+
+	text := extractToolText(t, resp)
+	var data map[string]any
+	json.Unmarshal([]byte(text), &data)
+	if data["status"] != "completed" {
+		t.Errorf("status = %v, want completed", data["status"])
+	}
+}

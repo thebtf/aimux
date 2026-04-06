@@ -1,0 +1,21 @@
+# Aider emulator profile for e2e testing
+name: aider
+binary: testcli
+display_name: "Aider (emulated)"
+features:
+  streaming: false
+  headless: true
+  read_only: false
+  session_resume: false
+  json: false
+  jsonl: false
+  stdin_pipe: false
+output_format: text
+command:
+  base: "testcli aider --no-auto-commits --no-dirty-commits --no-auto-test --no-auto-lint"
+prompt_flag: "--message"
+prompt_flag_type: long
+default_model: "gpt-4.1"
+model_flag: "--model"
+timeout_seconds: 10
+stdin_threshold: 0

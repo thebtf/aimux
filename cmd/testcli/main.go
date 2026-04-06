@@ -11,6 +11,11 @@
 //   claude — Bun-style NDJSON (content_block_delta events)
 //   goose  — Rust-style JSONL + 100ms OTEL delay
 //   crush  — Go-style incremental stdout
+//   aider  — Python-style plain text (rich Console)
+//   qwen   — Node-style JSONL (gemini fork + SIGTERM)
+//   gptme  — Python-style plain text + stdin code block
+//   cline  — Node-style NDJSON + drainStdout
+//   continue — Node-style with console intercept
 package main
 
 import (
@@ -21,7 +26,7 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: testcli <cli> [flags] [prompt]")
-		fmt.Fprintln(os.Stderr, "supported CLIs: codex, gemini, claude, goose, crush")
+		fmt.Fprintln(os.Stderr, "supported CLIs: codex, gemini, claude, goose, crush, aider, qwen, gptme, cline, continue")
 		os.Exit(1)
 	}
 
@@ -41,6 +46,16 @@ func main() {
 		exitCode = runGoose()
 	case "crush":
 		exitCode = runCrush()
+	case "aider":
+		exitCode = runAider()
+	case "qwen":
+		exitCode = runQwen()
+	case "gptme":
+		exitCode = runGptme()
+	case "cline":
+		exitCode = runCline()
+	case "continue":
+		exitCode = runContinue()
 	default:
 		fmt.Fprintf(os.Stderr, "testcli: unknown CLI %q\n", subcmd)
 		exitCode = 1
