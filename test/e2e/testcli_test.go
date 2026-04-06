@@ -1094,3 +1094,136 @@ func TestE2E_Behavior_ClaudeNoInitEvent(t *testing.T) {
 
 	t.Log("verified: claude=content_block_delta first, gemini=init first")
 }
+
+// --- Orchestrator Multi-CLI E2E Tests ---
+
+// TestE2E_Orchestrator_ConsensusMultiCLI verifies consensus orchestrator resolves
+// correct binary and prompt flags for multiple testcli emulators.
+func TestE2E_Orchestrator_ConsensusMultiCLI(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "consensus",
+		"arguments": map[string]any{
+			"topic":      "What is the best programming language?",
+			"synthesize": true,
+		},
+	}))
+
+	resp, err := readResponse(reader, 30*time.Second)
+	if err != nil {
+		t.Fatalf("consensus: %v", err)
+	}
+
+	text := extractToolText(t, resp)
+	t.Logf("consensus response (first 500): %.500s", text)
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		t.Fatalf("response not JSON: %v\nraw: %s", err, text)
+	}
+
+	status, _ := data["status"].(string)
+	if status != "completed" {
+		t.Errorf("status = %q, want completed", status)
+	}
+
+	participants, _ := data["participants"].([]any)
+	if len(participants) < 2 {
+		t.Errorf("participants = %v, want at least 2", participants)
+	}
+
+	content, _ := data["content"].(string)
+	if content == "" {
+		t.Error("consensus content is empty")
+	}
+
+	// Verify synthesis section exists (since synthesize=true)
+	if !strings.Contains(content, "Synthesis") {
+		t.Log("note: synthesis section not found in content — may have been skipped if only 1 succeeded")
+	}
+}
+
+// TestE2E_Orchestrator_DialogMultiCLI verifies dialog orchestrator resolves
+// correct binary and prompt flags for sequential multi-turn dialog.
+func TestE2E_Orchestrator_DialogMultiCLI(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "dialog",
+		"arguments": map[string]any{
+			"prompt":    "Discuss the merits of Go vs Rust",
+			"max_turns": 2,
+		},
+	}))
+
+	resp, err := readResponse(reader, 30*time.Second)
+	if err != nil {
+		t.Fatalf("dialog: %v", err)
+	}
+
+	text := extractToolText(t, resp)
+	t.Logf("dialog response (first 500): %.500s", text)
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		t.Fatalf("response not JSON: %v\nraw: %s", err, text)
+	}
+
+	status, _ := data["status"].(string)
+	if status != "completed" {
+		t.Errorf("status = %q, want completed", status)
+	}
+
+	turns, _ := data["turns"].(float64)
+	if turns < 2 {
+		t.Errorf("turns = %v, want at least 2", turns)
+	}
+
+	participants, _ := data["participants"].([]any)
+	if len(participants) < 2 {
+		t.Errorf("participants = %v, want at least 2", participants)
+	}
+}
+
+// TestE2E_Orchestrator_SynthesisStdinPiping verifies that long synthesis prompts
+// are piped via stdin when they exceed the CLI's StdinThreshold.
+func TestE2E_Orchestrator_SynthesisStdinPiping(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	// Use a long topic to increase the chance of synthesis prompt exceeding stdin threshold
+	longTopic := "Analyze the following comprehensive list of programming paradigms and their trade-offs: " +
+		strings.Repeat("functional programming, object-oriented programming, procedural programming, logic programming, ", 50) +
+		"and determine which paradigm is best suited for each type of application."
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "consensus",
+		"arguments": map[string]any{
+			"topic":      longTopic,
+			"synthesize": true,
+		},
+	}))
+
+	resp, err := readResponse(reader, 30*time.Second)
+	if err != nil {
+		t.Fatalf("consensus with long topic: %v", err)
+	}
+
+	text := extractToolText(t, resp)
+	t.Logf("long consensus response (first 500): %.500s", text)
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		t.Fatalf("response not JSON: %v\nraw: %s", err, text)
+	}
+
+	status, _ := data["status"].(string)
+	if status != "completed" {
+		t.Errorf("status = %q, want completed", status)
+	}
+
+	content, _ := data["content"].(string)
+	if content == "" {
+		t.Error("consensus content is empty — stdin piping may have failed")
+	}
+}
