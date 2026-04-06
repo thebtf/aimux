@@ -52,11 +52,31 @@ func run() error {
 	// Initialize role router
 	router := routing.NewRouter(cfg.Roles, enabled)
 
-	// Create and start MCP server
+	// Create MCP server
 	srv := aimuxServer.New(cfg, log, registry, router)
 
-	log.Info("aimux v%s ready — serving MCP on stdio", version)
-	return srv.ServeStdio()
+	// Select transport: env var MCP_TRANSPORT overrides config
+	transport := cfg.Server.Transport.Type
+	if envTransport := os.Getenv("MCP_TRANSPORT"); envTransport != "" {
+		transport = envTransport
+	}
+
+	port := cfg.Server.Transport.Port
+	if port == "" {
+		port = ":8080"
+	}
+
+	switch transport {
+	case "sse":
+		log.Info("aimux v%s ready — serving MCP on SSE at %s", version, port)
+		return srv.ServeSSE(port)
+	case "http", "streamablehttp":
+		log.Info("aimux v%s ready — serving MCP on HTTP at %s", version, port)
+		return srv.ServeHTTP(port)
+	default:
+		log.Info("aimux v%s ready — serving MCP on stdio", version)
+		return srv.ServeStdio()
+	}
 }
 
 func findConfigDir() string {
