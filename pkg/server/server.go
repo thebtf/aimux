@@ -16,6 +16,8 @@ import (
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
 	inv "github.com/thebtf/aimux/pkg/investigate"
+	"github.com/thebtf/aimux/pkg/think"
+	"github.com/thebtf/aimux/pkg/think/patterns"
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
@@ -83,6 +85,9 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	if err := s.promptEng.Load(); err != nil {
 		log.Warn("prompt engine load: %v", err)
 	}
+
+	// Initialize think patterns
+	patterns.RegisterAll()
 
 	// Initialize agent registry
 	s.agentReg = agents.NewRegistry()
@@ -220,20 +225,35 @@ func (s *Server) registerTools() {
 	// think tool
 	s.mcp.AddTool(
 		mcp.NewTool("think",
-			mcp.WithDescription("Structured thinking patterns for analysis and reasoning"),
+			mcp.WithDescription("Structured thinking with 17 patterns. Stateless: think, critical_thinking, "+
+				"decision_framework, problem_decomposition, mental_model, metacognitive_monitoring, recursive_thinking, "+
+				"domain_modeling, architecture_analysis, stochastic_algorithm, temporal_thinking, visual_reasoning. "+
+				"Stateful (pass session_id): sequential_thinking, scientific_method, debugging_approach, "+
+				"structured_argumentation, collaborative_reasoning."),
 			mcp.WithString("pattern",
 				mcp.Required(),
-				mcp.Description("Thinking pattern: critical_thinking, decision_framework, problem_decomposition, scientific_method, debugging_approach, sequential_thinking, etc."),
+				mcp.Description("Pattern name"),
+				mcp.Enum("think", "critical_thinking", "sequential_thinking", "scientific_method",
+					"decision_framework", "problem_decomposition", "debugging_approach", "mental_model",
+					"metacognitive_monitoring", "structured_argumentation", "collaborative_reasoning",
+					"recursive_thinking", "domain_modeling", "architecture_analysis", "stochastic_algorithm",
+					"temporal_thinking", "visual_reasoning"),
 			),
-			mcp.WithString("issue",
-				mcp.Description("The issue or question to think about"),
-			),
-			mcp.WithString("topic",
-				mcp.Description("Topic for analysis"),
-			),
-			mcp.WithString("session_id",
-				mcp.Description("Session ID for stateful patterns"),
-			),
+			mcp.WithString("issue", mcp.Description("Issue to analyze (critical_thinking, debugging_approach)")),
+			mcp.WithString("topic", mcp.Description("Topic (structured_argumentation, collaborative_reasoning)")),
+			mcp.WithString("thought", mcp.Description("Thought text (think, sequential_thinking)")),
+			mcp.WithString("session_id", mcp.Description("Session ID for stateful patterns")),
+			mcp.WithString("decision", mcp.Description("Decision to evaluate (decision_framework)")),
+			mcp.WithString("problem", mcp.Description("Problem to analyze (problem_decomposition, mental_model, recursive_thinking)")),
+			mcp.WithString("task", mcp.Description("Task for metacognitive monitoring")),
+			mcp.WithString("modelName", mcp.Description("Mental model name (mental_model)")),
+			mcp.WithString("approachName", mcp.Description("Debugging method name (debugging_approach)")),
+			mcp.WithString("domainName", mcp.Description("Domain name (domain_modeling)")),
+			mcp.WithString("timeFrame", mcp.Description("Time frame (temporal_thinking)")),
+			mcp.WithString("operation", mcp.Description("Visual operation (visual_reasoning)")),
+			mcp.WithString("algorithmType", mcp.Description("Algorithm type: mdp, mcts, bandit, bayesian, hmm")),
+			mcp.WithString("problemDefinition", mcp.Description("Problem definition (stochastic_algorithm)")),
+			mcp.WithString("stage", mcp.Description("Stage (scientific_method, collaborative_reasoning)")),
 		),
 		s.handleThink,
 	)
@@ -1027,31 +1047,106 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 // --- Think Handler ---
 
 func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	pattern, err := request.RequireString("pattern")
+	patternName, err := request.RequireString("pattern")
 	if err != nil {
 		return mcp.NewToolResultError("pattern is required"), nil
 	}
 
-	issue := request.GetString("issue", "")
-	topic := request.GetString("topic", "")
-
-	input := issue
-	if input == "" {
-		input = topic
-	}
-	if input == "" {
-		input = pattern
+	handler := think.GetPattern(patternName)
+	if handler == nil {
+		return mcp.NewToolResultError(fmt.Sprintf("unknown pattern %q; available: %v", patternName, think.GetAllPatterns())), nil
 	}
 
-	// Think is in-process (solo mode) — no external CLI call
-	result := map[string]any{
-		"pattern": pattern,
-		"input":   input,
-		"output":  fmt.Sprintf("Thinking with pattern '%s' about: %s", pattern, input),
-		"mode":    "solo",
+	// Build input map from all optional MCP params
+	input := make(map[string]any)
+	optionalStrings := []string{
+		"issue", "topic", "thought", "decision", "problem", "task",
+		"modelName", "approachName", "domainName", "timeFrame", "operation",
+		"observation", "question", "hypothesis", "experiment", "analysis",
+		"conclusion", "algorithmType", "problemDefinition", "baseCase",
+		"recursiveCase", "convergenceCheck", "diagramType", "description",
+		"methodology", "knowledgeAssessment", "result", "stage", "branchId",
+	}
+	for _, key := range optionalStrings {
+		if v := request.GetString(key, ""); v != "" {
+			input[key] = v
+		}
 	}
 
-	data, _ := json.Marshal(result)
+	sessionID := request.GetString("session_id", "")
+
+	// Pass through structured, numeric, and boolean params from the raw arguments
+	if args, ok := request.Params.Arguments.(map[string]any); ok {
+		forwardKeys := []string{
+			// Structured
+			"criteria", "options", "components", "subProblems", "dependencies",
+			"risks", "stakeholders", "entities", "relationships", "rules",
+			"constraints", "states", "events", "transitions", "transformations",
+			"elements", "claims", "biases", "uncertainties", "cognitiveProcesses",
+			"parameters", "argument", "contribution", "entry", "hypothesisUpdate",
+			// Numeric
+			"confidence", "thoughtNumber", "totalThoughts", "currentDepth",
+			"maxDepth", "iterations", "revisesThought", "branchFromThought",
+			// Boolean
+			"isRevision",
+		}
+		for _, key := range forwardKeys {
+			if v, exists := args[key]; exists {
+				input[key] = v
+			}
+		}
+	}
+
+	// Validate input
+	validInput, err := handler.Validate(input)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("validation error: %v", err)), nil
+	}
+
+	// Execute pattern handler
+	thinkResult, err := handler.Handle(validInput, sessionID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("pattern error: %v", err)), nil
+	}
+
+	// Compute complexity for mode recommendation
+	complexity := think.CalculateComplexity(patternName, input, 60)
+
+	// Build response with mode indicator
+	response := map[string]any{
+		"pattern":   thinkResult.Pattern,
+		"status":    thinkResult.Status,
+		"timestamp": thinkResult.Timestamp,
+		"data":      thinkResult.Data,
+		"mode":      complexity.Recommendation,
+		"complexity": map[string]any{
+			"total":      complexity.Total,
+			"threshold":  complexity.Threshold,
+			"components": map[string]any{
+				"textLength":      complexity.TextLength,
+				"subItemCount":    complexity.SubItemCount,
+				"structuralDepth": complexity.StructuralDepth,
+				"patternBias":     complexity.PatternBias,
+			},
+		},
+	}
+	if thinkResult.SessionID != "" {
+		response["session_id"] = thinkResult.SessionID
+	}
+	if thinkResult.SuggestedNextPattern != "" {
+		response["suggestedNextPattern"] = thinkResult.SuggestedNextPattern
+	}
+	if thinkResult.Metadata != nil {
+		response["metadata"] = thinkResult.Metadata
+	}
+	if len(thinkResult.ComputedFields) > 0 {
+		response["computed_fields"] = thinkResult.ComputedFields
+	}
+
+	data, err := json.Marshal(response)
+	if err != nil {
+		return mcp.NewToolResultError("internal error: failed to marshal response"), nil
+	}
 	return mcp.NewToolResultText(string(data)), nil
 }
 
