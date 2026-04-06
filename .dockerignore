@@ -1,0 +1,7 @@
+.agent/
+.git/
+*.exe
+cover.out
+test/
+AGENTS.md
+CLAUDE.md

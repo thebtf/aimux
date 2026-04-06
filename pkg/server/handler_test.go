@@ -252,6 +252,80 @@ func TestHandleStatus_NonexistentJob(t *testing.T) {
 	}
 }
 
+func TestHandleStatus_ExistingJob(t *testing.T) {
+	srv := testServer(t)
+
+	// Create a job manually and transition through lifecycle
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 0)
+	srv.jobs.CompleteJob(job.ID, "test output", 0)
+
+	req := makeRequest("status", map[string]any{
+		"job_id": job.ID,
+	})
+
+	result, err := srv.handleStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["status"] != "completed" {
+		t.Errorf("status = %v, want completed", data["status"])
+	}
+	if data["content"] != "test output" {
+		t.Errorf("content = %v, want 'test output'", data["content"])
+	}
+}
+
+func TestHandleStatus_PollWarning(t *testing.T) {
+	srv := testServer(t)
+
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+
+	req := makeRequest("status", map[string]any{
+		"job_id": job.ID,
+	})
+
+	// Poll 3 times to trigger warning
+	for i := 0; i < 3; i++ {
+		srv.handleStatus(context.Background(), req)
+	}
+
+	result, err := srv.handleStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["warning"] == nil {
+		t.Error("expected poll warning after 3+ polls")
+	}
+}
+
+func TestHandleSessions_InfoExisting(t *testing.T) {
+	srv := testServer(t)
+
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+
+	req := makeRequest("sessions", map[string]any{
+		"action":     "info",
+		"session_id": sess.ID,
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["session"] == nil {
+		t.Error("expected session field in info response")
+	}
+}
+
 // --- Sessions Handler ---
 
 func TestHandleSessions_List(t *testing.T) {
@@ -501,6 +575,91 @@ func TestHandleInvestigate_StartWithTopic(t *testing.T) {
 	}
 }
 
+// --- Chains ---
+
+func TestDefaultChains(t *testing.T) {
+	chains := DefaultChains()
+	if len(chains) == 0 {
+		t.Fatal("expected non-empty chains")
+	}
+}
+
+func TestGetRecommendedNext_Exec(t *testing.T) {
+	next := GetRecommendedNext("exec")
+	if len(next) == 0 {
+		t.Error("expected recommendations for exec")
+	}
+	if next[0] != "status" {
+		t.Errorf("first recommendation for exec = %q, want 'status'", next[0])
+	}
+}
+
+func TestGetRecommendedNext_Unknown(t *testing.T) {
+	next := GetRecommendedNext("nonexistent")
+	if next != nil {
+		t.Errorf("expected nil for unknown tool, got %v", next)
+	}
+}
+
+// --- Progress Bridge ---
+
+func TestNewProgressBridge(t *testing.T) {
+	b := NewProgressBridge(10)
+	if b.interval != 10*1e9 { // 10 seconds in nanoseconds
+		t.Errorf("interval = %v, want 10s", b.interval)
+	}
+}
+
+func TestNewProgressBridge_DefaultInterval(t *testing.T) {
+	b := NewProgressBridge(0)
+	if b.interval != 15*1e9 { // default 15 seconds
+		t.Errorf("interval = %v, want 15s", b.interval)
+	}
+}
+
+func TestProgressBridge_Forward_ContextCancel(t *testing.T) {
+	b := NewProgressBridge(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan types.Event, 1)
+
+	done := make(chan struct{})
+	go func() {
+		b.Forward(ctx, ch, func(s string) {})
+		close(done)
+	}()
+
+	cancel()
+	<-done // should return immediately after cancel
+}
+
+func TestProgressBridge_Forward_ChannelClose(t *testing.T) {
+	b := NewProgressBridge(1)
+	ch := make(chan types.Event, 1)
+
+	done := make(chan struct{})
+	go func() {
+		b.Forward(context.Background(), ch, func(s string) {})
+		close(done)
+	}()
+
+	close(ch)
+	<-done // should return immediately after channel close
+}
+
+func TestProgressBridge_Forward_CompleteEvent(t *testing.T) {
+	b := NewProgressBridge(1)
+	ch := make(chan types.Event, 1)
+	ch <- types.Event{Type: types.EventTypeComplete}
+
+	done := make(chan struct{})
+	go func() {
+		b.Forward(context.Background(), ch, func(s string) {})
+		close(done)
+	}()
+
+	<-done // should return after complete event
+}
+
 // --- Bootstrap Injection ---
 
 func TestInjectBootstrap_NoTemplate(t *testing.T) {
@@ -535,5 +694,270 @@ func TestHandleExec_SessionResume_CompletedSession(t *testing.T) {
 
 	if !result.IsError {
 		t.Error("expected error for completed session")
+	}
+}
+
+// --- Sessions Handler: Get/Cancel ---
+
+func TestHandleSessions_MissingAction(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for missing action")
+	}
+}
+
+func TestHandleSessions_InfoMissingID(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{
+		"action": "info",
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for missing session_id")
+	}
+}
+
+func TestHandleSessions_InfoNonexistent(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{
+		"action":     "info",
+		"session_id": "nonexistent",
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for nonexistent session")
+	}
+}
+
+func TestHandleSessions_CancelMissingJobID(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{
+		"action": "cancel",
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for missing job_id on cancel")
+	}
+}
+
+func TestHandleSessions_KillMissingID(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{
+		"action": "kill",
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for missing session_id on kill")
+	}
+}
+
+func TestHandleSessions_GC(t *testing.T) {
+	srv := testServer(t)
+
+	// Create and complete a session
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	srv.sessions.Update(sess.ID, func(s *session.Session) {
+		s.Status = types.SessionStatusCompleted
+	})
+
+	req := makeRequest("sessions", map[string]any{
+		"action": "gc",
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	data := parseResult(t, result)
+	collected, _ := data["collected"].(float64)
+	if collected < 1 {
+		t.Errorf("collected = %v, want >= 1", collected)
+	}
+}
+
+func TestHandleSessions_InvalidAction(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{
+		"action": "invalid_action",
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for invalid action")
+	}
+}
+
+// --- Consensus: Insufficient CLIs ---
+
+func TestHandleConsensus_InsufficientCLIs(t *testing.T) {
+	srv := testServer(t)
+	// testServer has only 1 CLI (codex) — consensus requires 2
+	req := makeRequest("consensus", map[string]any{
+		"topic": "test topic",
+	})
+
+	result, err := srv.handleConsensus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleConsensus: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for insufficient CLIs")
+	}
+}
+
+// --- Dialog: Insufficient CLIs ---
+
+func TestHandleDialog_InsufficientCLIs(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("dialog", map[string]any{
+		"prompt": "test prompt",
+	})
+
+	result, err := srv.handleDialog(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleDialog: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for insufficient CLIs")
+	}
+}
+
+// --- Debate: Insufficient CLIs ---
+
+func TestHandleDebate_InsufficientCLIs(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("debate", map[string]any{
+		"topic": "test topic",
+	})
+
+	result, err := srv.handleDebate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleDebate: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for insufficient CLIs")
+	}
+}
+
+// --- Agents Handler: Find ---
+
+func TestHandleAgents_Find(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("agents", map[string]any{
+		"action": "find",
+		"prompt": "coding",
+	})
+
+	result, err := srv.handleAgents(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgents: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["query"] != "coding" {
+		t.Errorf("query = %v, want coding", data["query"])
+	}
+}
+
+func TestHandleAgents_FindMissingQuery(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("agents", map[string]any{
+		"action": "find",
+	})
+
+	result, err := srv.handleAgents(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgents: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for find without query")
+	}
+}
+
+func TestHandleAgents_InvalidAction(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("agents", map[string]any{
+		"action": "invalid",
+	})
+
+	result, err := srv.handleAgents(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgents: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for invalid action")
+	}
+}
+
+// --- Health Resource ---
+
+func TestHandleHealthResource(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.ReadResourceRequest{
+		Params: mcp.ReadResourceParams{
+			URI: "aimux://health",
+		},
+	}
+
+	contents, err := srv.handleHealthResource(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleHealthResource: %v", err)
+	}
+
+	if len(contents) == 0 {
+		t.Error("expected health resource content")
+	}
+}
+
+// --- DeepResearch: Missing Topic ---
+
+func TestHandleDeepresearch_MissingTopic(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("deepresearch", map[string]any{})
+
+	result, err := srv.handleDeepresearch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleDeepresearch: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for missing topic")
 	}
 }
