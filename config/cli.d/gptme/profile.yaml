@@ -1,0 +1,35 @@
+# gptme CLI profile
+name: gptme
+binary: gptme
+display_name: "gptme"
+
+features:
+  streaming: false
+  headless: true
+  read_only: false
+  session_resume: true
+  json: false
+  jsonl: false
+  stdin_pipe: false
+
+output_format: text
+
+# gptme uses default command with --non-interactive flag.
+# Prompt is positional (nargs=-1).
+command:
+  base: "gptme"
+
+prompt_flag: ""
+prompt_flag_type: "positional"
+
+default_model: ""
+model_flag: "--model"
+
+timeout_seconds: 600
+
+stdin_threshold: 0
+
+read_only_flags: []
+
+# --non-interactive + --no-confirm for headless operation
+headless_flags: ["--non-interactive", "--no-confirm"]

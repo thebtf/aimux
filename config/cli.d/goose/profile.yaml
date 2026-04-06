@@ -1,0 +1,34 @@
+# Goose CLI profile
+name: goose
+binary: goose
+display_name: "Goose (Block)"
+
+features:
+  streaming: true
+  headless: true
+  read_only: false
+  session_resume: true
+  json: true
+  jsonl: false
+  stdin_pipe: true
+
+output_format: json
+
+# Goose requires "run" subcommand for non-interactive mode.
+# Prompt via --text/-t flag.
+command:
+  base: "goose run"
+
+prompt_flag: "-t"
+prompt_flag_type: "short"
+
+default_model: ""
+model_flag: "--model"
+
+timeout_seconds: 600
+
+stdin_threshold: 6000
+
+read_only_flags: []
+
+headless_flags: ["--output-format", "json"]

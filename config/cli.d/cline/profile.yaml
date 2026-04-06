@@ -1,0 +1,39 @@
+# Cline CLI profile
+name: cline
+binary: cline
+display_name: "Cline"
+
+features:
+  streaming: false
+  headless: true
+  read_only: true
+  session_resume: true
+  json: true
+  jsonl: false
+  stdin_pipe: true
+
+output_format: text
+
+# Cline requires "task" subcommand. Prompt is positional (<prompt>).
+command:
+  base: "cline task"
+
+prompt_flag: ""
+prompt_flag_type: "positional"
+
+default_model: ""
+model_flag: "--model"
+
+reasoning:
+  flag: "--reasoning-effort"
+  levels: [none, low, medium, high, xhigh]
+
+timeout_seconds: 600
+
+stdin_threshold: 6000
+
+# --plan/-p for read-only mode
+read_only_flags: ["--plan"]
+
+# --act for auto-approve (headless)
+headless_flags: ["--act", "--json"]
