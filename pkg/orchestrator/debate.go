@@ -93,10 +93,12 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 				"Summarize key points from each side and give your recommendation.",
 			params.Prompt, content)
 
-		synthResult, err := d.executor.Run(ctx, resolveOrFallback(d.resolver, participants[0], synthPrompt, params.CWD, params.Timeout))
-		if err == nil {
+		synthResult, synthErr := d.executor.Run(ctx, resolveOrFallback(d.resolver, participants[0], synthPrompt, params.CWD, params.Timeout))
+		if synthErr == nil {
 			content += "\n\n---\n\n## Verdict\n\n" + synthResult.Content
 			totalTurns++
+		} else {
+			content += "\n\n---\n\n## Verdict\n\n[synthesis failed: " + synthErr.Error() + "]"
 		}
 	}
 

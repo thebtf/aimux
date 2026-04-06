@@ -37,8 +37,8 @@ func BuildPromptArgs(profile *config.CLIProfile, model, effort string, readOnly 
 	baseArgs := CommandBaseArgs(profile.Command.Base)
 	args := append([]string{}, baseArgs...)
 
-	if profile.Features.Headless && profile.Name == "codex" {
-		args = append(args, "--full-auto")
+	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
+		args = append(args, profile.HeadlessFlags...)
 	}
 
 	if readOnly && len(profile.ReadOnlyFlags) > 0 {
