@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 )
 
 // GenerateReport creates a markdown investigation report with all enhanced sections.
@@ -341,6 +343,7 @@ type RecallResult struct {
 const contentSearchLines = 50 // Number of lines to scan during content-based recall
 
 // RecallReport finds a report matching the topic query.
+// Searches .agent/reports/ (investigation reports) and .agent/deepresearch/ (cached research).
 // First tries slug/topic substring match (case-insensitive), then falls back to
 // content search (first 50 lines). Returns the newest match, or nil if no match.
 func RecallReport(cwd, topicQuery string) (*RecallResult, error) {
@@ -355,7 +358,7 @@ func RecallReport(cwd, topicQuery string) (*RecallResult, error) {
 
 	query := strings.ToLower(topicQuery)
 
-	// Phase 1: topic/slug substring match (already sorted newest-first)
+	// Phase 1: topic/slug substring match in investigation reports (already sorted newest-first)
 	for _, r := range reports {
 		if strings.Contains(strings.ToLower(r.Topic), query) ||
 			strings.Contains(strings.ToLower(r.Filename), query) {
@@ -363,7 +366,7 @@ func RecallReport(cwd, topicQuery string) (*RecallResult, error) {
 		}
 	}
 
-	// Phase 2: content search (first N lines of each report)
+	// Phase 2: content search in investigation reports (first N lines of each report)
 	dir := filepath.Join(cwd, ".agent", "reports")
 	for _, r := range reports {
 		if matchesContent(filepath.Join(dir, r.Filename), query) {
@@ -371,7 +374,34 @@ func RecallReport(cwd, topicQuery string) (*RecallResult, error) {
 		}
 	}
 
+	// Phase 3: search deepresearch disk cache
+	if dr := searchDeepresearchCache(cwd, query); dr != nil {
+		return dr, nil
+	}
+
 	return nil, nil
+}
+
+// searchDeepresearchCache scans .agent/deepresearch/ for entries matching query.
+// Returns the first match as a RecallResult, or nil if none found.
+func searchDeepresearchCache(cwd, query string) *RecallResult {
+	entries, err := deepresearch.LoadDiskEntries(cwd)
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+
+	for _, entry := range entries {
+		if strings.Contains(strings.ToLower(entry.Topic), query) ||
+			strings.Contains(strings.ToLower(entry.Content), query) {
+			return &RecallResult{
+				Filename: "deepresearch-cache",
+				Topic:    entry.Topic,
+				Date:     entry.CreatedAt.UTC().Format("2006-01-02T15-04-05"),
+				Content:  entry.Content,
+			}
+		}
+	}
+	return nil
 }
 
 // readReportContent reads the full content of a report file.

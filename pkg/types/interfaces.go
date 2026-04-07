@@ -77,4 +77,7 @@ type StrategyResult struct {
 	Participants []string       `json:"participants,omitempty"`
 	ReviewReport *ReviewReport  `json:"review_report,omitempty"`
 	Extra        map[string]any `json:"extra,omitempty"`
+	// TurnHistory is JSON-encoded []TurnEntry for dialog session resume.
+	// Populated by SequentialDialog after Execute completes.
+	TurnHistory []byte `json:"turn_history,omitempty"`
 }
