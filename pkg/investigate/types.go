@@ -106,6 +106,8 @@ type AssessResult struct {
 	AntiPatternWarnings []string         `json:"anti_pattern_warnings,omitempty"`
 	PatternHints        []PatternEntry   `json:"pattern_hints,omitempty"`
 	AdversarialPrompt   string           `json:"adversarial_prompt,omitempty"`
+	AutoDispatched      bool             `json:"auto_dispatched,omitempty"`
+	AutoDispatchResult  string           `json:"auto_dispatch_result,omitempty"`
 	Message             string           `json:"message"`
 }
 

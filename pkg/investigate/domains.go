@@ -1,5 +1,7 @@
 package investigate
 
+import "strings"
+
 // DefaultAngles are the investigation angles rotated per iteration (from v2).
 var DefaultAngles = []DomainAngle{
 	{Label: "file-level", Description: "Read code, understand structure, find basic issues", ThinkPattern: "problem_decomposition", ThinkParams: map[string]string{"problem": "{topic}"}},
@@ -95,10 +97,121 @@ var DebuggingDomain = DomainAlgorithm{
 	},
 }
 
+// SecurityDomain focuses on security vulnerabilities and threat modeling.
+var SecurityDomain = DomainAlgorithm{
+	Name:        "security",
+	Description: "Security investigation — vulnerabilities, threat modeling, attack surface, defense-in-depth",
+	CoverageAreas: []string{
+		"authentication", "authorization", "input_validation", "output_encoding",
+		"secrets_management", "dependency_vulnerabilities", "transport_security", "error_disclosure",
+	},
+	Patterns: []PatternEntry{
+		{Indicator: "Hardcoded secrets, API keys, or passwords in source code", Severity: SeverityP0, FixApproach: "Move to environment variables or a secrets manager. Rotate the exposed credential immediately."},
+		{Indicator: "SQL or command injection via unsanitized user input", Severity: SeverityP0, FixApproach: "Use parameterized queries or prepared statements. Never concatenate user input into queries."},
+		{Indicator: "Cross-site scripting (XSS) via unescaped output", Severity: SeverityP1, FixApproach: "Escape all user-controlled data before rendering. Use context-aware encoding (HTML, JS, URL)."},
+		{Indicator: "Path traversal via user-supplied file paths", Severity: SeverityP1, FixApproach: "Canonicalize paths and verify they remain within the allowed root before access."},
+		{Indicator: "CSRF missing or bypassable token", Severity: SeverityP1, FixApproach: "Enforce CSRF tokens on all state-changing requests. Validate origin and referrer headers."},
+		{Indicator: "Insecure deserialization of untrusted data", Severity: SeverityP1, FixApproach: "Validate type and schema before deserializing. Prefer safe formats (JSON with schema) over binary."},
+		{Indicator: "Broken authentication — weak session management or missing MFA", Severity: SeverityP0, FixApproach: "Use proven auth libraries. Enforce session expiry, secure cookie flags, and MFA for sensitive actions."},
+		{Indicator: "Excessive permissions granted to service or user role", Severity: SeverityP2, FixApproach: "Apply least-privilege principle. Audit IAM roles and DB grants against actual usage."},
+	},
+	Angles: []DomainAngle{
+		{Label: "attacker_perspective", Description: "Think like an attacker: what is the highest-value target? How would you chain vulnerabilities?", ThinkPattern: "mental_model", ThinkParams: map[string]string{"modelName": "inversion", "problem": "{topic}"}},
+		{Label: "compliance", Description: "Which regulatory requirements apply (OWASP, SOC2, GDPR, PCI)? Where are the gaps?", ThinkPattern: "structured_argumentation", ThinkParams: map[string]string{"claim": "{topic}", "context": "compliance requirements"}},
+		{Label: "defense_in_depth", Description: "If one control fails, what's the next layer? Where is there only one layer?", ThinkPattern: "problem_decomposition", ThinkParams: map[string]string{"problem": "{topic}"}},
+	},
+	AntiPatterns: []string{
+		"Security through obscurity is not security",
+		"Don't roll your own crypto or auth",
+		"A security review that finds nothing is more suspicious than one that finds issues",
+	},
+}
+
+// PerformanceDomain covers latency, throughput, and resource efficiency.
+var PerformanceDomain = DomainAlgorithm{
+	Name:        "performance",
+	Description: "Performance investigation — profiling, bottlenecks, allocation, concurrency, algorithmic complexity",
+	CoverageAreas: []string{
+		"cpu_hotspots", "memory_allocation", "io_bottlenecks", "database_queries",
+		"network_calls", "concurrency", "caching", "algorithm_complexity",
+	},
+	Patterns: []PatternEntry{
+		{Indicator: "N+1 query pattern — query inside loop", Severity: SeverityP1, FixApproach: "Batch queries or use eager loading. Fetch all needed data in one query outside the loop."},
+		{Indicator: "Unbounded collection growth — append without eviction", Severity: SeverityP1, FixApproach: "Add size limits, TTL eviction, or pagination. Profile memory growth under load."},
+		{Indicator: "Synchronous IO or blocking call in hot path", Severity: SeverityP2, FixApproach: "Move to async IO or off-thread processing. Use connection pooling and non-blocking APIs."},
+		{Indicator: "Missing database index on high-cardinality filter column", Severity: SeverityP2, FixApproach: "Add index on frequently filtered/sorted columns. Use EXPLAIN to verify query plan."},
+		{Indicator: "Goroutine or thread leak — launched without lifecycle management", Severity: SeverityP1, FixApproach: "Use context cancellation, WaitGroups, or worker pools. Track goroutine count under load."},
+		{Indicator: "Excessive per-request allocation causing GC pressure", Severity: SeverityP2, FixApproach: "Use sync.Pool for hot objects. Pre-allocate slices with known capacity. Profile with pprof."},
+	},
+	Angles: []DomainAngle{
+		{Label: "profiler_driven", Description: "Measure first — what does the profiler show? Never optimize a guess.", ThinkPattern: "debugging_approach", ThinkParams: map[string]string{"problem": "{topic}"}},
+		{Label: "big_o_analysis", Description: "What is the algorithmic complexity? Does it degrade with data size or concurrency?", ThinkPattern: "recursive_thinking", ThinkParams: map[string]string{"problem": "{topic}"}},
+		{Label: "user_experience", Description: "Where does latency hurt users most? P50 vs P99 — which matters here?", ThinkPattern: "mental_model", ThinkParams: map[string]string{"modelName": "second_order_thinking", "problem": "{topic}"}},
+	},
+	AntiPatterns: []string{
+		"Don't optimize without profiling first",
+		"Premature optimization is the root of all evil, but so is premature pessimization",
+	},
+}
+
+// ArchitectureDomain analyzes module boundaries, coupling, and structural decisions.
+var ArchitectureDomain = DomainAlgorithm{
+	Name:        "architecture",
+	Description: "Architecture investigation — module boundaries, coupling, dependency direction, abstraction quality",
+	CoverageAreas: []string{
+		"module_boundaries", "coupling_analysis", "dependency_direction", "abstraction_levels",
+		"data_flow", "error_propagation", "configuration", "extensibility",
+	},
+	Patterns: []PatternEntry{
+		{Indicator: "Circular dependencies between packages or modules", Severity: SeverityP1, FixApproach: "Extract shared interface or common package. Apply dependency inversion to break the cycle."},
+		{Indicator: "God object — single type/package doing too many things", Severity: SeverityP2, FixApproach: "Split by responsibility. Each package should have one clear reason to change."},
+		{Indicator: "Leaky abstraction — internal details exposed through public API", Severity: SeverityP2, FixApproach: "Define stable interfaces. Hide implementation details behind the interface boundary."},
+		{Indicator: "Layer violation — UI calling DB directly, or domain importing infrastructure", Severity: SeverityP1, FixApproach: "Enforce dependency direction: outer layers depend on inner layers, not vice versa."},
+	},
+	Angles: []DomainAngle{
+		{Label: "dependency_graph", Description: "Draw the actual dependency graph. Which nodes have the most in-edges? Which have cycles?", ThinkPattern: "architecture_analysis", ThinkParams: map[string]string{"target": "{topic}"}},
+		{Label: "clean_architecture", Description: "Do domain types appear in infrastructure code? Do use cases depend on frameworks?", ThinkPattern: "domain_modeling", ThinkParams: map[string]string{"domainName": "{topic}"}},
+		{Label: "evolution", Description: "How hard is it to add a new feature? Which change touches the most files?", ThinkPattern: "temporal_thinking", ThinkParams: map[string]string{"problem": "{topic}"}},
+	},
+	AntiPatterns: []string{
+		"Architecture is not documentation — it's the decisions that constrain the system",
+		"Every abstraction leaks — the question is whether the leak matters",
+	},
+}
+
+// ResearchDomain investigates papers, benchmarks, and prior art with scientific rigor.
+var ResearchDomain = DomainAlgorithm{
+	Name:        "research",
+	Description: "Research investigation — prior art, methodology, reproducibility, claims validation, practical applicability",
+	CoverageAreas: []string{
+		"prior_art", "methodology", "reproducibility", "limitations",
+		"comparisons", "novelty_claim", "implementation_gaps", "real_world_applicability",
+	},
+	Patterns: []PatternEntry{
+		{Indicator: "Cherry-picked benchmarks — favorable subset presented as representative", Severity: SeverityP2, FixApproach: "Reproduce full benchmark suite. Check what baselines were omitted and why."},
+		{Indicator: "Missing baselines — no comparison to obvious alternatives", Severity: SeverityP2, FixApproach: "Identify the standard baselines for this problem class. Demand or run the comparison."},
+		{Indicator: "Unreproducible results — missing code, data, or seeds", Severity: SeverityP1, FixApproach: "Request artifacts. If unavailable, treat claims as INFERRED not VERIFIED."},
+		{Indicator: "Overclaiming — conclusions exceed what the evidence supports", Severity: SeverityP2, FixApproach: "Separate what the experiment proved from what the authors concluded. Check scope of evaluation."},
+	},
+	Angles: []DomainAngle{
+		{Label: "replication", Description: "Can you reproduce the key result? What would it take? What's missing?", ThinkPattern: "scientific_method", ThinkParams: map[string]string{"observation": "{topic}"}},
+		{Label: "systematic_review", Description: "What does the broader literature say? Is this an outlier or consensus?", ThinkPattern: "structured_argumentation", ThinkParams: map[string]string{"claim": "{topic}", "context": "related literature"}},
+		{Label: "practical_impact", Description: "Does this work in production? At scale? With real users? Or only in the lab?", ThinkPattern: "decision_framework", ThinkParams: map[string]string{"decision": "{topic}", "options": "adopt, wait, reject"}},
+	},
+	AntiPatterns: []string{
+		"Absence of evidence is not evidence of absence",
+		"If you can't reproduce it, you don't understand it",
+	},
+}
+
 // domainRegistry maps domain names to algorithms.
 var domainRegistry = map[string]*DomainAlgorithm{
-	"generic":   &GenericDomain,
-	"debugging":  &DebuggingDomain,
+	"generic":      &GenericDomain,
+	"debugging":    &DebuggingDomain,
+	"security":     &SecurityDomain,
+	"performance":  &PerformanceDomain,
+	"architecture": &ArchitectureDomain,
+	"research":     &ResearchDomain,
 }
 
 // GetDomain returns the domain algorithm for the given name.
@@ -117,4 +230,48 @@ func DomainNames() []string {
 		names = append(names, k)
 	}
 	return names
+}
+
+// AutoDetectDomain scans a lowercased topic for keyword patterns and returns the
+// best-matching domain name. Priority order: security > performance > architecture >
+// debugging > research > generic (default).
+func AutoDetectDomain(topic string) string {
+	lower := strings.ToLower(topic)
+
+	securityKeywords := []string{"security", "auth", "injection", "xss", "owasp", "cve", "vulnerability", "exploit", "csrf", "secrets"}
+	for _, kw := range securityKeywords {
+		if strings.Contains(lower, kw) {
+			return "security"
+		}
+	}
+
+	performanceKeywords := []string{"slow", "latency", "memory", "cpu", "bottleneck", "performance", "leak", "allocation", "throughput", "benchmark"}
+	for _, kw := range performanceKeywords {
+		if strings.Contains(lower, kw) {
+			return "performance"
+		}
+	}
+
+	architectureKeywords := []string{"architecture", "coupling", "module", "dependency", "design", "abstraction", "layer", "boundary", "refactor"}
+	for _, kw := range architectureKeywords {
+		if strings.Contains(lower, kw) {
+			return "architecture"
+		}
+	}
+
+	debuggingKeywords := []string{"bug", "crash", "error", "fail", "panic", "nil", "race", "deadlock", "timeout", "exception"}
+	for _, kw := range debuggingKeywords {
+		if strings.Contains(lower, kw) {
+			return "debugging"
+		}
+	}
+
+	researchKeywords := []string{"research", "paper", "literature", "survey", "compare", "benchmark", "alternative", "evaluate"}
+	for _, kw := range researchKeywords {
+		if strings.Contains(lower, kw) {
+			return "research"
+		}
+	}
+
+	return "generic"
 }
