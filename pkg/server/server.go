@@ -498,6 +498,36 @@ func (s *Server) registerTools() {
 		s.handleAgents,
 	)
 
+	// agent tool — runs a discovered agent through any CLI
+	s.mcp.AddTool(
+		mcp.NewTool("agent",
+			mcp.WithDescription("Run a project agent through any CLI. Loads agent definition, "+
+				"injects system prompt, delegates to CLI in autonomous mode. "+
+				"The CLI IS the agent — it reads files, runs commands, edits code."),
+			mcp.WithString("agent",
+				mcp.Required(),
+				mcp.Description("Agent name from registry"),
+			),
+			mcp.WithString("prompt",
+				mcp.Required(),
+				mcp.Description("Task for the agent"),
+			),
+			mcp.WithString("cli",
+				mcp.Description("CLI override (default: from agent definition or role routing)"),
+			),
+			mcp.WithString("cwd",
+				mcp.Description("Working directory"),
+			),
+			mcp.WithBoolean("async",
+				mcp.Description("Run in background"),
+			),
+			mcp.WithNumber("timeout_seconds",
+				mcp.Description("Timeout override in seconds"),
+			),
+		),
+		s.handleAgentRun,
+	)
+
 	// deepresearch tool
 	s.mcp.AddTool(
 		mcp.NewTool("deepresearch",
@@ -1633,6 +1663,120 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError(fmt.Sprintf("debate failed: %v", err)), nil
 	}
 	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+// --- Agent Run Handler ---
+
+func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	agentName, err := request.RequireString("agent")
+	if err != nil {
+		return mcp.NewToolResultError("agent is required"), nil
+	}
+	prompt, err := request.RequireString("prompt")
+	if err != nil {
+		return mcp.NewToolResultError("prompt is required"), nil
+	}
+
+	agent, agentErr := s.agentReg.Get(agentName)
+	if agentErr != nil {
+		available := s.agentReg.List()
+		names := make([]string, len(available))
+		for i, a := range available {
+			names[i] = a.Name
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("agent %q not found; available: %v", agentName, names)), nil
+	}
+
+	// Resolve CLI: explicit param > agent meta > role routing > default
+	cli := request.GetString("cli", "")
+	if cli == "" {
+		if v, ok := agent.Meta["cli"]; ok && v != "" {
+			cli = v
+		}
+	}
+	if cli == "" {
+		role := agent.Role
+		if role == "" {
+			role = "default"
+		}
+		if pref, resolveErr := s.router.Resolve(role); resolveErr == nil && pref.CLI != "" {
+			cli = pref.CLI
+		}
+	}
+	if cli == "" {
+		cli = "codex"
+	}
+
+	cwd := request.GetString("cwd", "")
+	maxTurns := int(request.GetFloat("max_turns", 0))
+	async := request.GetBool("async", false)
+
+	cliResolver := resolve.NewProfileResolver(s.cfg.CLIProfiles)
+
+	runCfg := agents.RunConfig{
+		Agent:    agent,
+		CLI:      cli,
+		Prompt:   prompt,
+		CWD:      cwd,
+		MaxTurns: maxTurns,
+		Executor: s.executor,
+		Resolver: cliResolver,
+	}
+
+	if async {
+		if err := s.checkConcurrencyLimit(); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+		job := s.jobs.Create(sess.ID, cli)
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		s.jobs.RegisterCancel(job.ID, jobCancel)
+
+		go func() {
+			s.jobs.StartJob(job.ID, 0)
+			s.sessions.Update(sess.ID, func(sess *session.Session) {
+				sess.Status = types.SessionStatusRunning
+			})
+			result, runErr := agents.RunAgent(jobCtx, runCfg)
+			if runErr != nil {
+				s.jobs.FailJob(job.ID, types.NewExecutorError(runErr.Error(), runErr, "agent_run"))
+				s.sessions.Update(sess.ID, func(sess *session.Session) {
+					sess.Status = types.SessionStatusFailed
+				})
+				return
+			}
+			s.jobs.CompleteJob(job.ID, result.Content, 0)
+			s.sessions.Update(sess.ID, func(sess *session.Session) {
+				sess.Status = types.SessionStatusCompleted
+				sess.Turns = result.Turns
+			})
+		}()
+
+		data, _ := json.Marshal(map[string]any{
+			"agent":      agentName,
+			"cli":        cli,
+			"job_id":     job.ID,
+			"session_id": sess.ID,
+			"status":     "running",
+		})
+		return mcp.NewToolResultText(string(data)), nil
+	}
+
+	result, runErr := agents.RunAgent(ctx, runCfg)
+	if runErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("agent %q failed: %v", agentName, runErr)), nil
+	}
+
+	data, _ := json.Marshal(map[string]any{
+		"agent":       agentName,
+		"cli":         cli,
+		"status":      result.Status,
+		"turns":       result.Turns,
+		"content":     result.Content,
+		"duration_ms": result.DurationMS,
+		"turn_log":    result.TurnLog,
+	})
 	return mcp.NewToolResultText(string(data)), nil
 }
 
