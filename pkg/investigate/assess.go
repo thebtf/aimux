@@ -188,6 +188,22 @@ func Assess(sessionID string) (*AssessResult, error) {
 			coverage*100, strings.Join(unchecked, ", "))
 	}
 
+	// Auto-dispatch: execute suggested think call and add result as finding
+	var autoDispatched bool
+	var autoDispatchResult string
+	if recommendation == "CONTINUE" && suggestedThinkCall != "" {
+		pattern, params, parseErr := ParseSuggestedThinkCall(suggestedThinkCall)
+		if parseErr == nil {
+			thinkResult, dispatchErr := DispatchThinkCall(pattern, params)
+			if dispatchErr == nil {
+				autoDispatched = true
+				finding := ThinkFindingFromResult(thinkResult, sessionID)
+				AddFinding(sessionID, finding)
+				autoDispatchResult = fmt.Sprintf("think:%s returned %d data fields", pattern, len(thinkResult.Data))
+			}
+		}
+	}
+
 	// Advance iteration
 	NextIteration(sessionID)
 
@@ -208,6 +224,8 @@ func Assess(sessionID string) (*AssessResult, error) {
 		AntiPatternWarnings: antiPatternWarnings,
 		PatternHints:        patternHints,
 		AdversarialPrompt:   adversarialPrompt,
+		AutoDispatched:      autoDispatched,
+		AutoDispatchResult:  autoDispatchResult,
 		Message:             message,
 	}, nil
 }

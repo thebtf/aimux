@@ -1319,7 +1319,10 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			return mcp.NewToolResultError("topic required for start"), nil
 		}
 		domainName := request.GetString("domain", "")
-		if domainName != "" && inv.GetDomain(domainName) == nil {
+		if domainName == "" {
+			domainName = inv.AutoDetectDomain(topic)
+		}
+		if inv.GetDomain(domainName) == nil {
 			return mcp.NewToolResultError(fmt.Sprintf("unknown domain %q; valid: %v", domainName, inv.DomainNames())), nil
 		}
 
