@@ -121,6 +121,7 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		orch.NewParallelConsensus(s.executor, cliResolver),
 		orch.NewStructuredDebate(s.executor, cliResolver),
 		orch.NewAuditPipeline(s.executor, cliResolver),
+		orch.NewWorkflowStrategy(s.executor, cliResolver),
 	)
 
 	// Initialize prompt engine with built-in and project prompts.d/
@@ -547,6 +548,27 @@ func (s *Server) registerTools() {
 			),
 		),
 		s.handleDeepresearch,
+	)
+
+	// workflow tool
+	s.mcp.AddTool(
+		mcp.NewTool("workflow",
+			mcp.WithDescription("Execute a declarative multi-step pipeline. Each step can call exec, think, or investigate. Steps can reference previous step outputs via {{step_id.content}} templates."),
+			mcp.WithString("name",
+				mcp.Description("Workflow name (for logging)"),
+			),
+			mcp.WithString("steps",
+				mcp.Required(),
+				mcp.Description("JSON array of step definitions: [{id, tool, params, condition?, on_error?}]"),
+			),
+			mcp.WithString("input",
+				mcp.Description("Initial input text (available as {{input}} in templates)"),
+			),
+			mcp.WithBoolean("async",
+				mcp.Description("Run in background"),
+			),
+		),
+		s.handleWorkflow,
 	)
 }
 
@@ -1893,6 +1915,65 @@ func (s *Server) checkConcurrencyLimit() error {
 		return fmt.Errorf("max concurrent jobs reached (%d/%d) — wait for running jobs to complete", running, max)
 	}
 	return nil
+}
+
+// handleWorkflow executes a declarative multi-step pipeline as a single MCP call.
+func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	name := request.GetString("name", "workflow")
+	stepsJSON, err := request.RequireString("steps")
+	if err != nil {
+		return mcp.NewToolResultError("steps is required"), nil
+	}
+	input := request.GetString("input", "")
+	async := request.GetBool("async", false)
+
+	// Parse steps from JSON array string
+	var steps []orch.WorkflowStep
+	if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid steps JSON: %v", err)), nil
+	}
+
+	def := orch.WorkflowDefinition{
+		Name:  name,
+		Steps: steps,
+		Input: input,
+	}
+	defJSON, err := json.Marshal(def)
+	if err != nil {
+		return mcp.NewToolResultError("internal error: failed to marshal workflow definition"), nil
+	}
+
+	params := types.StrategyParams{
+		Extra: map[string]any{
+			"workflow": string(defJSON),
+		},
+	}
+
+	if async {
+		if err := s.checkConcurrencyLimit(); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		sess := s.sessions.Create("workflow", types.SessionModeOnceStateless, "")
+		job := s.jobs.Create(sess.ID, "workflow")
+		go func() {
+			s.jobs.StartJob(job.ID, 0)
+			result, stratErr := s.orchestrator.Execute(context.Background(), "workflow", params)
+			if stratErr != nil {
+				s.jobs.FailJob(job.ID, types.NewExecutorError(stratErr.Error(), stratErr, ""))
+				return
+			}
+			s.jobs.CompleteJob(job.ID, result.Content, 0)
+		}()
+		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": "running"})
+		return mcp.NewToolResultText(string(data)), nil
+	}
+
+	result, err := s.orchestrator.Execute(ctx, "workflow", params)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("workflow failed: %v", err)), nil
+	}
+	data, _ := json.Marshal(result)
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // selectBestExecutor returns the best available executor for the current platform.
