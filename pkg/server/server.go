@@ -698,6 +698,72 @@ func (s *Server) registerPrompts() {
 		),
 		s.handleWorkflowPrompt,
 	)
+
+	// aimux-review: targeted code review plan from git diff
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-review",
+			mcp.WithPromptDescription("Code review workflow — generates targeted review plan from git diff"),
+			mcp.WithArgument("scope",
+				mcp.ArgumentDescription("What to review: 'staged', 'branch', 'last-commit', or file paths"),
+			),
+		),
+		s.handleReviewPrompt,
+	)
+
+	// aimux-debug: structured debug workflow
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-debug",
+			mcp.WithPromptDescription("Debug workflow — structured investigation plan for any error or bug"),
+			mcp.WithArgument("error",
+				mcp.ArgumentDescription("Error message, symptom, or bug description to debug"),
+			),
+		),
+		s.handleDebugPrompt,
+	)
+
+	// aimux-consensus: multi-model consensus plan
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-consensus",
+			mcp.WithPromptDescription("Multi-model consensus — generates consensus or debate plan for a question"),
+			mcp.WithArgument("question",
+				mcp.ArgumentDescription("Question or decision to get multi-model consensus on"),
+			),
+		),
+		s.handleConsensusPrompt,
+	)
+
+	// aimux-audit: codebase audit plan
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-audit",
+			mcp.WithPromptDescription("Codebase audit — generates audit plan with quick/standard/deep modes"),
+			mcp.WithArgument("cwd",
+				mcp.ArgumentDescription("Directory to audit (defaults to current working directory)"),
+			),
+		),
+		s.handleAuditPrompt,
+	)
+
+	// aimux-agent: agent execution plan
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-agent",
+			mcp.WithPromptDescription("Agent execution — matches task to available agents and generates execution plan"),
+			mcp.WithArgument("task",
+				mcp.ArgumentDescription("Task description to match against available agents"),
+			),
+		),
+		s.handleAgentExecPrompt,
+	)
+
+	// aimux-research: research workflow with think patterns
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-research",
+			mcp.WithPromptDescription("Research workflow — multi-phase research plan using think patterns and investigation"),
+			mcp.WithArgument("topic",
+				mcp.ArgumentDescription("Research topic to investigate"),
+			),
+		),
+		s.handleResearchPrompt,
+	)
 }
 
 // --- Tool Handlers ---
@@ -2676,6 +2742,594 @@ func (s *Server) handleWorkflowPrompt(_ context.Context, request mcp.GetPromptRe
 				mcp.RoleAssistant,
 				mcp.NewTextContent(sb.String()),
 			),
+		},
+	), nil
+}
+
+func (s *Server) handleReviewPrompt(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	scope := "staged"
+	if args := request.Params.Arguments; args != nil {
+		if v, exists := args["scope"]; exists && v != "" {
+			scope = v
+		}
+	}
+
+	// P1: Dynamic data injection.
+	enabledCLIs := s.registry.EnabledCLIs()
+	reviewCLI := "gemini"
+	reviewPref, _ := s.router.Resolve("codereview")
+	if reviewPref.CLI != "" {
+		reviewCLI = reviewPref.CLI
+	}
+	codingCLI := "codex"
+	codingPref, _ := s.router.Resolve("coding")
+	if codingPref.CLI != "" {
+		codingCLI = codingPref.CLI
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Code Review Workflow\n\n")
+
+	// Live status.
+	sb.WriteString("## Live Status\n")
+	sb.WriteString(fmt.Sprintf("- **Review CLI:** %s (role=codereview)\n", reviewCLI))
+	sb.WriteString(fmt.Sprintf("- **Fix CLI:** %s (role=coding)\n", codingCLI))
+	sb.WriteString(fmt.Sprintf("- **Available CLIs (%d):** %s\n", len(enabledCLIs), strings.Join(enabledCLIs, ", ")))
+	sb.WriteString(fmt.Sprintf("- **Scope:** %s\n\n", scope))
+
+	// P3: Scale-decision table.
+	sb.WriteString("## Scale Decision\n\n")
+	sb.WriteString("| Change Size | Approach |\n")
+	sb.WriteString("|---|---|\n")
+	sb.WriteString("| 1-3 files, <100 lines | Quick: single exec(role=codereview) |\n")
+	sb.WriteString("| 4-10 files, 100-500 lines | Standard: exec review → think peer_review → fix |\n")
+	sb.WriteString("| 10+ files or 500+ lines | Deep: consensus(codereview) → investigate → phased fix |\n\n")
+
+	// P2: Hard-gate phased workflow.
+	sb.WriteString("## Workflow (hard gates)\n\n")
+
+	sb.WriteString("### Phase 1 — Gather diff (MANDATORY before any review)\n")
+	sb.WriteString("Read the actual diff yourself using your file/git tools. Do NOT skip to review without reading changes.\n\n")
+	switch scope {
+	case "last-commit":
+		sb.WriteString("```\nRun: git diff HEAD~1\n```\n\n")
+	case "branch":
+		sb.WriteString("```\nRun: git diff origin/HEAD...HEAD\n```\n\n")
+	case "staged":
+		sb.WriteString("```\nRun: git diff --cached\n```\n\n")
+	default:
+		sb.WriteString(fmt.Sprintf("```\nRun: git diff -- %s\n```\n\n", scope))
+	}
+	sb.WriteString("**GATE: Do NOT proceed to Phase 2 until you have read and understood every changed file.**\n\n")
+
+	sb.WriteString("### Phase 2 — Structured review\n")
+	sb.WriteString("```\nexec(role=\"codereview\", prompt=\"Review these changes for: security (input validation, auth, secrets), correctness (edge cases, nil, error handling), quality (naming, complexity, dead code). Diff context: <paste diff summary>\")\n```\n\n")
+	sb.WriteString("**GATE: Do NOT proceed to Phase 3 until review findings are documented.**\n\n")
+
+	sb.WriteString("### Phase 3 — Critical thinking\n")
+	sb.WriteString("```\nthink(pattern=\"peer_review\", artifact=\"<review findings>\")\n```\n\n")
+
+	sb.WriteString("### Phase 4 — Fix (only if issues found)\n")
+	sb.WriteString("```\nexec(role=\"coding\", prompt=\"Fix review findings: <findings>\")\n```\n\n")
+
+	// P4: Acceptance criteria.
+	sb.WriteString("## Acceptance Criteria\n")
+	sb.WriteString("- [ ] Every changed file read before review started\n")
+	sb.WriteString("- [ ] Security: no hardcoded secrets, no unvalidated input\n")
+	sb.WriteString("- [ ] Correctness: error paths handled, edge cases considered\n")
+	sb.WriteString("- [ ] Quality: no dead code introduced, naming consistent\n")
+
+	return mcp.NewGetPromptResult(
+		fmt.Sprintf("Code review plan: %s", scope),
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(sb.String())),
+		},
+	), nil
+}
+
+func (s *Server) handleDebugPrompt(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	errDesc := ""
+	if args := request.Params.Arguments; args != nil {
+		if v, exists := args["error"]; exists && v != "" {
+			errDesc = v
+		}
+	}
+
+	if errDesc == "" {
+		content := "# aimux Debug Workflow\n\nProvide an `error` argument to get a concrete, ready-to-execute debug plan.\n\n" +
+			"Example: `aimux-debug(error=\"panic: nil pointer dereference in handler.go:42\")`\n"
+		return mcp.NewGetPromptResult(
+			"Debug workflow guide",
+			[]mcp.PromptMessage{mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(content))},
+		), nil
+	}
+
+	// P1: Dynamic data.
+	debugCLI := "codex"
+	debugPref, _ := s.router.Resolve("debug")
+	if debugPref.CLI != "" {
+		debugCLI = debugPref.CLI
+	}
+	domainAlgo := inv.GetDomain("debugging")
+
+	// Check past debug reports.
+	cwd, _ := os.Getwd()
+	pastReports, _ := inv.ListReports(cwd)
+	var relatedReports []string
+	errLower := strings.ToLower(errDesc)
+	for _, r := range pastReports {
+		if strings.Contains(strings.ToLower(r.Topic), errLower) {
+			relatedReports = append(relatedReports, fmt.Sprintf("- %s (%s)", r.Topic, r.Date))
+		}
+		if len(relatedReports) >= 3 {
+			break
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Debug Plan: %s\n\n", errDesc))
+
+	// Live status.
+	sb.WriteString("## Live Status\n")
+	sb.WriteString(fmt.Sprintf("- **Debug CLI:** %s (role=debug)\n", debugCLI))
+	if len(relatedReports) > 0 {
+		sb.WriteString("- **Related past investigations:**\n")
+		for _, r := range relatedReports {
+			sb.WriteString(fmt.Sprintf("  %s\n", r))
+		}
+	}
+	sb.WriteString("\n")
+
+	// P3: Scale-decision.
+	sb.WriteString("## Scale Decision\n\n")
+	sb.WriteString("| Error Type | Approach |\n")
+	sb.WriteString("|---|---|\n")
+	sb.WriteString("| Known error, clear stack trace | Quick: think(debugging_approach) → exec(debug) |\n")
+	sb.WriteString("| Intermittent or multi-component | Standard: investigate(debugging) → think → fix |\n")
+	sb.WriteString("| Systemic, architectural, unknown | Deep: investigate(debugging) → consensus → phased fix |\n\n")
+
+	// P2: Hard-gate workflow.
+	sb.WriteString("## Workflow (hard gates)\n\n")
+
+	sb.WriteString("### Phase 1 — Reproduce & gather evidence (MANDATORY)\n")
+	sb.WriteString("Read error logs, stack traces, and relevant source code. Reproduce the error if possible.\n")
+	sb.WriteString("**PROHIBITED: Do NOT hypothesize causes before reading the actual error output and source code.**\n\n")
+
+	sb.WriteString("### Phase 2 — Structured investigation\n")
+	sb.WriteString(fmt.Sprintf("```\ninvestigate(action=\"start\", topic=%q, domain=\"debugging\")\n```\n", errDesc))
+	sb.WriteString("For each hypothesis, add a finding with evidence:\n")
+	sb.WriteString("```\ninvestigate(action=\"finding\", session_id=\"<id>\", description=\"<hypothesis + evidence>\", source=\"<file:line>\", severity=\"P0-P3\", confidence=\"VERIFIED\")\n```\n\n")
+	sb.WriteString("**GATE: Do NOT proceed to Phase 3 until at least 3 findings are recorded with VERIFIED evidence.**\n\n")
+
+	sb.WriteString("### Phase 3 — Root cause analysis\n")
+	sb.WriteString(fmt.Sprintf("```\nthink(pattern=\"debugging_approach\", issue=%q)\n```\n\n", errDesc))
+
+	sb.WriteString("### Phase 4 — Fix & verify\n")
+	sb.WriteString(fmt.Sprintf("```\nexec(role=\"debug\", prompt=\"Fix root cause: <from phase 3>. Error: %s\")\n```\n", errDesc))
+	sb.WriteString("**GATE: Verify fix by reproducing the original trigger. If error recurs, return to Phase 2.**\n\n")
+
+	// Domain methods.
+	if len(domainAlgo.Methods) > 0 {
+		sb.WriteString("## Debugging Methods\n")
+		for area, method := range domainAlgo.Methods {
+			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", area, method))
+		}
+		sb.WriteString("\n")
+	}
+
+	// P4: Acceptance criteria.
+	sb.WriteString("## Acceptance Criteria\n")
+	sb.WriteString("- [ ] Error reproduced and understood before fix attempted\n")
+	sb.WriteString("- [ ] Root cause identified (not just symptom suppressed)\n")
+	sb.WriteString("- [ ] Fix verified by reproducing original trigger\n")
+	sb.WriteString("- [ ] Regression test covers the failure mode\n")
+
+	return mcp.NewGetPromptResult(
+		fmt.Sprintf("Debug plan: %s", errDesc),
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(sb.String())),
+		},
+	), nil
+}
+
+func (s *Server) handleConsensusPrompt(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	question := ""
+	if args := request.Params.Arguments; args != nil {
+		if v, exists := args["question"]; exists && v != "" {
+			question = v
+		}
+	}
+
+	// P1: Dynamic data.
+	enabledCLIs := s.registry.EnabledCLIs()
+	cliCount := len(enabledCLIs)
+
+	if question == "" {
+		var sb strings.Builder
+		sb.WriteString("# aimux Multi-Model Consensus\n\n")
+		sb.WriteString("Provide a `question` argument to get a ready-to-execute consensus or debate plan.\n\n")
+		sb.WriteString(fmt.Sprintf("**Available CLIs (%d):** %s\n\n", cliCount, strings.Join(enabledCLIs, ", ")))
+		if cliCount < 2 {
+			sb.WriteString("**WARNING:** Consensus requires 2+ CLIs. Install additional AI CLIs to enable multi-model features.\n")
+		}
+		return mcp.NewGetPromptResult(
+			"Consensus guide",
+			[]mcp.PromptMessage{mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(sb.String()))},
+		), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Consensus Plan: %s\n\n", question))
+
+	// Live status.
+	sb.WriteString("## Live Status\n")
+	sb.WriteString(fmt.Sprintf("- **Available CLIs (%d):** %s\n", cliCount, strings.Join(enabledCLIs, ", ")))
+	if cliCount < 2 {
+		sb.WriteString("- **WARNING:** Need 2+ CLIs for consensus. Only exec(role=...) is available.\n")
+	}
+	sb.WriteString("\n")
+
+	// P3: Scale-decision.
+	sb.WriteString("## Scale Decision\n\n")
+	sb.WriteString("| Question Type | Tool | Why |\n")
+	sb.WriteString("|---|---|---|\n")
+	sb.WriteString("| Factual (\"what is best practice for X?\") | consensus | Aggregates knowledge, reduces hallucination |\n")
+	sb.WriteString("| Binary choice (\"X or Y?\") | debate(max_turns=3) | Adversarial arguments surface hidden tradeoffs |\n")
+	sb.WriteString("| Architecture (\"how should we design X?\") | debate(max_turns=5) | Deeper exploration, more turns for complex topics |\n")
+	sb.WriteString("| Validation (\"is this approach correct?\") | consensus(synthesize=true) | Quick convergence check |\n\n")
+
+	// Recommend based on question keywords.
+	lower := strings.ToLower(question)
+	recommended := "consensus"
+	reason := "general question — consensus aggregates multiple perspectives"
+	if strings.Contains(lower, " or ") || strings.Contains(lower, " vs ") || strings.Contains(lower, "should we") ||
+		strings.Contains(lower, "choose") || strings.Contains(lower, "which") {
+		recommended = "debate"
+		reason = "decision/comparison detected — debate surfaces adversarial tradeoffs"
+	}
+
+	sb.WriteString("## Recommended Execution\n\n")
+	sb.WriteString(fmt.Sprintf("Based on question analysis: **%s** (%s)\n\n", recommended, reason))
+
+	if recommended == "consensus" {
+		sb.WriteString(fmt.Sprintf("```\nconsensus(topic=%q, synthesize=true)\n```\n\n", question))
+		sb.WriteString("Alternative (if consensus disagrees):\n")
+		sb.WriteString(fmt.Sprintf("```\ndebate(topic=%q, max_turns=4)\n```\n", question))
+	} else {
+		sb.WriteString(fmt.Sprintf("```\ndebate(topic=%q, max_turns=4)\n```\n\n", question))
+		sb.WriteString("Alternative (for quick validation):\n")
+		sb.WriteString(fmt.Sprintf("```\nconsensus(topic=%q, synthesize=true)\n```\n", question))
+	}
+
+	return mcp.NewGetPromptResult(
+		fmt.Sprintf("Consensus plan: %s", question),
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(sb.String())),
+		},
+	), nil
+}
+
+func (s *Server) handleAuditPrompt(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	cwd, _ := os.Getwd()
+	if args := request.Params.Arguments; args != nil {
+		if v, exists := args["cwd"]; exists && v != "" {
+			cwd = v
+		}
+	}
+
+	// P1: Dynamic data.
+	enabledCLIs := s.registry.EnabledCLIs()
+	snap := s.metrics.Snapshot()
+
+	var sb strings.Builder
+	sb.WriteString("# Codebase Audit Workflow\n\n")
+
+	// Live status.
+	sb.WriteString("## Live Status\n")
+	sb.WriteString(fmt.Sprintf("- **Target:** %s\n", cwd))
+	sb.WriteString(fmt.Sprintf("- **Available CLIs (%d):** %s\n", len(enabledCLIs), strings.Join(enabledCLIs, ", ")))
+	sb.WriteString(fmt.Sprintf("- **Total requests so far:** %d\n\n", snap.TotalRequests))
+
+	// P3: Scale-decision.
+	sb.WriteString("## Scale Decision\n\n")
+	sb.WriteString("| Project Size | Recommended Mode | Time |\n")
+	sb.WriteString("|---|---|---|\n")
+	sb.WriteString("| Small (<50 files) | quick | ~30s, sync |\n")
+	sb.WriteString("| Medium (50-500 files) | standard | ~2min, async recommended |\n")
+	sb.WriteString("| Large (500+ files) | deep | ~5min+, async required |\n\n")
+
+	// P2: Hard-gate workflow.
+	sb.WriteString("## Workflow (hard gates)\n\n")
+
+	sb.WriteString("### Phase 1 — Run audit\n")
+	sb.WriteString(fmt.Sprintf("```\naudit(cwd=%q, mode=\"standard\")\n```\n", cwd))
+	sb.WriteString("For large projects, use async:\n")
+	sb.WriteString(fmt.Sprintf("```\naudit(cwd=%q, mode=\"deep\", async=true)\n```\n", cwd))
+	sb.WriteString("Then poll: `status(job_id=\"<from response>\")`\n\n")
+	sb.WriteString("**GATE: Do NOT interpret findings until audit completes. Partial results mislead.**\n\n")
+
+	sb.WriteString("### Phase 2 — Triage findings\n")
+	sb.WriteString("Read the audit output. Classify each finding:\n")
+	sb.WriteString("- **P0 (critical):** security vulnerabilities, data loss risks\n")
+	sb.WriteString("- **P1 (high):** correctness bugs, missing error handling\n")
+	sb.WriteString("- **P2 (medium):** code quality, maintainability\n")
+	sb.WriteString("- **P3 (low):** style, naming, minor cleanup\n\n")
+	sb.WriteString("**GATE: Do NOT start fixing until all findings are triaged and prioritized.**\n\n")
+
+	sb.WriteString("### Phase 3 — Investigate (if P0/P1 found)\n")
+	sb.WriteString(fmt.Sprintf("```\ninvestigate(action=\"start\", topic=\"audit findings for %s\", domain=\"security\")\n```\n", cwd))
+	sb.WriteString("Add each P0/P1 finding as an investigation finding for structured tracking.\n\n")
+
+	sb.WriteString("### Phase 4 — Fix by priority\n")
+	sb.WriteString("Fix P0 first, then P1. Use exec(role=\"coding\") for each fix batch.\n\n")
+
+	// P4: Acceptance criteria.
+	sb.WriteString("## Acceptance Criteria\n")
+	sb.WriteString("- [ ] All P0 findings resolved\n")
+	sb.WriteString("- [ ] All P1 findings resolved or documented as deferred\n")
+	sb.WriteString("- [ ] Fixes verified (tests pass, no regressions)\n")
+	sb.WriteString("- [ ] P2/P3 tracked in backlog if not fixed\n")
+
+	return mcp.NewGetPromptResult(
+		fmt.Sprintf("Audit plan: %s", cwd),
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(sb.String())),
+		},
+	), nil
+}
+
+func (s *Server) handleAgentExecPrompt(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	task := ""
+	if args := request.Params.Arguments; args != nil {
+		if v, exists := args["task"]; exists && v != "" {
+			task = v
+		}
+	}
+
+	// P1: Dynamic data.
+	allAgents := s.agentReg.List()
+	enabledCLIs := s.registry.EnabledCLIs()
+
+	if task == "" {
+		var sb strings.Builder
+		sb.WriteString("# aimux Agent Execution\n\n")
+		sb.WriteString("Provide a `task` argument to auto-match the best agent for your task.\n\n")
+		sb.WriteString(fmt.Sprintf("**Available CLIs (%d):** %s\n", len(enabledCLIs), strings.Join(enabledCLIs, ", ")))
+		if len(allAgents) > 0 {
+			sb.WriteString(fmt.Sprintf("**Discovered Agents (%d):**\n", len(allAgents)))
+			for _, a := range allAgents {
+				desc := a.Description
+				if desc == "" {
+					desc = "(no description)"
+				}
+				role := a.Role
+				if role == "" {
+					role = "default"
+				}
+				sb.WriteString(fmt.Sprintf("- **%s** [role=%s]: %s\n", a.Name, role, desc))
+			}
+		} else {
+			sb.WriteString("**Agents:** none discovered. Add AGENTS.md or .claude/agents/*.md files.\n")
+		}
+		return mcp.NewGetPromptResult(
+			"Agent execution guide",
+			[]mcp.PromptMessage{mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(sb.String()))},
+		), nil
+	}
+
+	// Score each agent by keyword overlap with the task.
+	taskLower := strings.ToLower(task)
+	taskWords := strings.Fields(taskLower)
+	type scored struct {
+		agent *agents.Agent
+		score int
+	}
+	var scored_ []scored
+	for _, a := range allAgents {
+		corpus := strings.ToLower(a.Description + " " + a.Name + " " + a.Role)
+		score := 0
+		for _, word := range taskWords {
+			if len(word) > 2 && strings.Contains(corpus, word) {
+				score++
+			}
+		}
+		if score > 0 {
+			scored_ = append(scored_, scored{agent: a, score: score})
+		}
+	}
+	// Sort by score descending (simple insertion — small N).
+	for i := 1; i < len(scored_); i++ {
+		for j := i; j > 0 && scored_[j].score > scored_[j-1].score; j-- {
+			scored_[j], scored_[j-1] = scored_[j-1], scored_[j]
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Agent Execution Plan: %s\n\n", task))
+
+	// Live status.
+	sb.WriteString("## Live Status\n")
+	sb.WriteString(fmt.Sprintf("- **Available CLIs (%d):** %s\n", len(enabledCLIs), strings.Join(enabledCLIs, ", ")))
+	sb.WriteString(fmt.Sprintf("- **Discovered Agents:** %d\n\n", len(allAgents)))
+
+	// P2: Hard gate — agent first, exec as fallback.
+	sb.WriteString("## Execution Priority (hard gate)\n\n")
+	sb.WriteString("**RULE: Always try agent tool FIRST. exec is the fallback, not the default.**\n\n")
+
+	if len(scored_) > 0 {
+		sb.WriteString("### Matched Agents (by keyword relevance)\n\n")
+		for i, s := range scored_ {
+			if i >= 3 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("%d. **%s** (score=%d, role=%s): %s\n", i+1, s.agent.Name, s.score, s.agent.Role, s.agent.Description))
+		}
+		sb.WriteString("\n")
+
+		best := scored_[0].agent
+		sb.WriteString("### Recommended Execution\n")
+		sb.WriteString(fmt.Sprintf("```\nagent(agent=%q, prompt=%q)\n```\n\n", best.Name, task))
+	} else if len(allAgents) > 0 {
+		sb.WriteString("### No keyword match found\n")
+		sb.WriteString("Available agents:\n")
+		for _, a := range allAgents {
+			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", a.Name, a.Description))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Fallback.
+	sb.WriteString("### Fallback: Direct CLI\n")
+	sb.WriteString("Only if no agent matches the task:\n")
+	role := "coding"
+	lower := strings.ToLower(task)
+	switch {
+	case strings.Contains(lower, "review") || strings.Contains(lower, "audit"):
+		role = "codereview"
+	case strings.Contains(lower, "debug") || strings.Contains(lower, "fix") || strings.Contains(lower, "bug"):
+		role = "debug"
+	case strings.Contains(lower, "test"):
+		role = "testgen"
+	case strings.Contains(lower, "plan") || strings.Contains(lower, "design"):
+		role = "planner"
+	case strings.Contains(lower, "research") || strings.Contains(lower, "analyze"):
+		role = "analyze"
+	}
+	sb.WriteString(fmt.Sprintf("```\nexec(role=%q, prompt=%q, async=true)\n```\n", role, task))
+
+	return mcp.NewGetPromptResult(
+		fmt.Sprintf("Agent plan: %s", task),
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(sb.String())),
+		},
+	), nil
+}
+
+func (s *Server) handleResearchPrompt(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	topic := ""
+	if args := request.Params.Arguments; args != nil {
+		if v, exists := args["topic"]; exists && v != "" {
+			topic = v
+		}
+	}
+
+	// P1: Dynamic data.
+	thinkPatterns := think.GetAllPatterns()
+	enabledCLIs := s.registry.EnabledCLIs()
+	hasDeepResearch := false
+	for _, cli := range enabledCLIs {
+		if cli == "gemini" {
+			hasDeepResearch = true
+			break
+		}
+	}
+
+	if topic == "" {
+		var sb strings.Builder
+		sb.WriteString("# aimux Research Workflow\n\n")
+		sb.WriteString("Provide a `topic` argument to get a multi-phase research plan.\n\n")
+		sb.WriteString(fmt.Sprintf("**Research think patterns:** literature_review, source_comparison, peer_review, replication_analysis, experimental_loop, research_synthesis\n"))
+		sb.WriteString(fmt.Sprintf("**All think patterns (%d):** %s\n", len(thinkPatterns), strings.Join(thinkPatterns, ", ")))
+		if hasDeepResearch {
+			sb.WriteString("**Deep research:** available via `deepresearch(topic=\"...\")` (Gemini)\n")
+		}
+		return mcp.NewGetPromptResult(
+			"Research workflow guide",
+			[]mcp.PromptMessage{mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(sb.String()))},
+		), nil
+	}
+
+	// Check past reports.
+	cwd, _ := os.Getwd()
+	pastReports, _ := inv.ListReports(cwd)
+	topicLower := strings.ToLower(topic)
+	var relatedReports []string
+	for _, r := range pastReports {
+		if strings.Contains(strings.ToLower(r.Topic), topicLower) ||
+			strings.Contains(strings.ToLower(r.Filename), strings.ReplaceAll(topicLower, " ", "-")) {
+			relatedReports = append(relatedReports, fmt.Sprintf("- %s (%s, %d bytes)", r.Topic, r.Date, r.Size))
+		}
+		if len(relatedReports) >= 5 {
+			break
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Research Plan: %s\n\n", topic))
+
+	// Live status.
+	sb.WriteString("## Live Status\n")
+	sb.WriteString(fmt.Sprintf("- **Available CLIs (%d):** %s\n", len(enabledCLIs), strings.Join(enabledCLIs, ", ")))
+	if hasDeepResearch {
+		sb.WriteString("- **Deep research (Gemini):** available\n")
+	}
+	if len(relatedReports) > 0 {
+		sb.WriteString("- **Related past research:**\n")
+		for _, r := range relatedReports {
+			sb.WriteString(fmt.Sprintf("  %s\n", r))
+		}
+	}
+	sb.WriteString("\n")
+
+	// P3: Scale-decision.
+	sb.WriteString("## Scale Decision\n\n")
+	sb.WriteString("| Research Depth | Approach |\n")
+	sb.WriteString("|---|---|\n")
+	sb.WriteString("| Quick lookup (known topic) | think(literature_review) → done |\n")
+	sb.WriteString("| Standard (compare approaches) | literature_review → source_comparison → synthesis |\n")
+	sb.WriteString("| Deep (novel question, multi-source) | Full 4-phase pipeline + deepresearch + investigation |\n\n")
+
+	// P2: Hard-gate phased workflow.
+	sb.WriteString("## Workflow (hard gates)\n\n")
+
+	sb.WriteString("### Phase 1 — Literature Review (MANDATORY)\n")
+	sb.WriteString(fmt.Sprintf("```\nthink(pattern=\"literature_review\", topic=%q)\n```\n", topic))
+	sb.WriteString("**GATE: Do NOT proceed to comparison until you have surveyed existing knowledge.**\n")
+	if len(relatedReports) > 0 {
+		sb.WriteString("**NOTE:** Past research exists (see above). Review it before duplicating effort.\n")
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("### Phase 2 — Source Comparison\n")
+	sb.WriteString(fmt.Sprintf("```\nthink(pattern=\"source_comparison\", topic=%q, sources=[\"<source1>\", \"<source2>\"])\n```\n", topic))
+	sb.WriteString("**GATE: Do NOT proceed to peer review until sources are compared side by side.**\n\n")
+
+	sb.WriteString("### Phase 3 — Adversarial Review\n")
+	sb.WriteString(fmt.Sprintf("```\nthink(pattern=\"peer_review\", artifact=\"Research findings on %s\")\n```\n", topic))
+	sb.WriteString("Challenge: What evidence would contradict these findings? What biases might exist?\n\n")
+
+	sb.WriteString("### Phase 4 — Synthesis\n")
+	sb.WriteString(fmt.Sprintf("```\nthink(pattern=\"research_synthesis\", topic=%q, findings=[\"<phase1>\", \"<phase2>\", \"<phase3>\"])\n```\n\n", topic))
+
+	if hasDeepResearch {
+		sb.WriteString("### Optional: Deep Research (Gemini)\n")
+		sb.WriteString("For complex topics requiring web-scale knowledge:\n")
+		sb.WriteString(fmt.Sprintf("```\ndeepresearch(topic=%q)\n```\n", topic))
+		sb.WriteString("Feed results into Phase 4 synthesis.\n\n")
+	}
+
+	// P5: Output protocol.
+	sb.WriteString("### As Automated Pipeline\n")
+	sb.WriteString("```json\n")
+	sb.WriteString(fmt.Sprintf("workflow(steps=[\n"))
+	sb.WriteString(fmt.Sprintf("  {\"id\": \"lit\", \"tool\": \"think\", \"params\": {\"pattern\": \"literature_review\", \"topic\": %q}},\n", topic))
+	sb.WriteString(fmt.Sprintf("  {\"id\": \"compare\", \"tool\": \"think\", \"params\": {\"pattern\": \"source_comparison\", \"topic\": %q, \"sources\": [\"{{lit.content}}\"]}},\n", topic))
+	sb.WriteString("  {\"id\": \"review\", \"tool\": \"think\", \"params\": {\"pattern\": \"peer_review\", \"artifact\": \"{{compare.content}}\"}},\n")
+	sb.WriteString(fmt.Sprintf("  {\"id\": \"synth\", \"tool\": \"think\", \"params\": {\"pattern\": \"research_synthesis\", \"topic\": %q, \"findings\": [\"{{lit.content}}\", \"{{compare.content}}\", \"{{review.content}}\"]}}\n", topic))
+	sb.WriteString(fmt.Sprintf("], input=%q)\n", topic))
+	sb.WriteString("```\n\n")
+
+	// P4: Acceptance criteria.
+	sb.WriteString("## Acceptance Criteria\n")
+	sb.WriteString("- [ ] Multiple independent sources consulted (not just one)\n")
+	sb.WriteString("- [ ] Contradictory evidence actively sought\n")
+	sb.WriteString("- [ ] Claims classified: VERIFIED (tool output) / INFERRED / STALE (model memory)\n")
+	sb.WriteString("- [ ] Synthesis actionable: concrete recommendations, not just summaries\n")
+
+	return mcp.NewGetPromptResult(
+		fmt.Sprintf("Research plan: %s", topic),
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(mcp.RoleAssistant, mcp.NewTextContent(sb.String())),
 		},
 	), nil
 }
