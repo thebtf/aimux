@@ -27,9 +27,15 @@ func (r *ProfileResolver) ResolveSpawnArgs(cli string, prompt string) (types.Spa
 
 	args := BuildPromptArgs(profile, "", "", false, prompt)
 
+	// Use resolved full path if available (found outside PATH by discovery)
+	command := CommandBinary(profile.Command.Base)
+	if profile.ResolvedPath != "" {
+		command = profile.ResolvedPath
+	}
+
 	sa := types.SpawnArgs{
 		CLI:               cli,
-		Command:           CommandBinary(profile.Command.Base),
+		Command:           command,
 		Args:              args,
 		CompletionPattern: profile.CompletionPattern,
 	}

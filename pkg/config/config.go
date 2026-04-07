@@ -122,6 +122,11 @@ type CLIProfile struct {
 	CompletionPattern string       `yaml:"completion_pattern,omitempty"`
 	ReadOnlyFlags []string         `yaml:"read_only_flags"`
 	HeadlessFlags []string         `yaml:"headless_flags,omitempty"`
+	SearchPaths   []string         `yaml:"search_paths,omitempty"`
+
+	// ResolvedPath is set at runtime by discovery — full path to the binary.
+	// Not serialized to YAML. Used by executor when binary is not in PATH.
+	ResolvedPath string `yaml:"-" json:"resolved_path,omitempty"`
 }
 
 // CommandConfig holds command template configuration.
