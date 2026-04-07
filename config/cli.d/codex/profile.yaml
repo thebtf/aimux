@@ -55,4 +55,4 @@ completion_pattern: "turn\\.completed"
 read_only_flags: ["--sandbox", "read-only"]
 
 # Headless mode flags (appended when features.headless is true)
-headless_flags: ["--full-auto"]
+headless_flags: ["--full-auto", "--json"]
