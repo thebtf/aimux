@@ -2,6 +2,7 @@
 name: cline
 binary: cline
 display_name: "Cline"
+capabilities: [coding, review]
 
 features:
   streaming: false

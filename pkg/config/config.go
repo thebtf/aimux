@@ -124,6 +124,10 @@ type CLIProfile struct {
 	HeadlessFlags []string         `yaml:"headless_flags,omitempty"`
 	SearchPaths   []string         `yaml:"search_paths,omitempty"`
 
+	// Capabilities lists what task types this CLI supports (e.g., coding, review, analysis).
+	// Used by the fallback router to find a capable substitute when the primary CLI fails.
+	Capabilities []string `yaml:"capabilities,omitempty"`
+
 	// ResolvedPath is set at runtime by discovery — full path to the binary.
 	// Not serialized to YAML. Used by executor when binary is not in PATH.
 	ResolvedPath string `yaml:"-" json:"resolved_path,omitempty"`

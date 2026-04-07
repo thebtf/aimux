@@ -2,6 +2,7 @@
 name: aider
 binary: aider
 display_name: "Aider"
+capabilities: [coding]
 
 features:
   streaming: true

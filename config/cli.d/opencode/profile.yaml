@@ -2,6 +2,7 @@
 name: opencode
 binary: opencode
 display_name: "OpenCode"
+capabilities: [coding, analysis]
 
 features:
   streaming: true

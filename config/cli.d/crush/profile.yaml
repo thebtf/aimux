@@ -2,6 +2,7 @@
 name: crush
 binary: crush
 display_name: "Crush"
+capabilities: [coding, analysis]
 
 features:
   streaming: false
