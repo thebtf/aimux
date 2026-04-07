@@ -4,7 +4,6 @@ package driver
 
 import (
 	"fmt"
-	"os/exec"
 	"sync"
 
 	"github.com/thebtf/aimux/pkg/config"
@@ -26,6 +25,7 @@ func NewRegistry(profiles map[string]*config.CLIProfile) *Registry {
 }
 
 // Probe checks which CLIs are actually installed and available.
+// Searches PATH, well-known directories, version managers, and profile search_paths.
 // Runs in parallel for fast startup (Constitution NFR-5: <2s).
 func (r *Registry) Probe() {
 	var wg sync.WaitGroup
@@ -35,9 +35,12 @@ func (r *Registry) Probe() {
 		go func(name string, profile *config.CLIProfile) {
 			defer wg.Done()
 
-			_, err := exec.LookPath(profile.Binary)
+			resolvedPath := DiscoverBinary(profile.Binary, profile.SearchPaths)
 			r.mu.Lock()
-			r.available[name] = err == nil
+			r.available[name] = resolvedPath != ""
+			if resolvedPath != "" {
+				profile.ResolvedPath = resolvedPath
+			}
 			r.mu.Unlock()
 		}(name, profile)
 	}
