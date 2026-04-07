@@ -162,7 +162,7 @@ func TestRunAgent_DefaultMaxTurns(t *testing.T) {
 		Agent:    makeAgent("x", "", ""),
 		CLI:      "codex",
 		Prompt:   "task",
-		MaxTurns: 0, // should default to DefaultMaxTurns (10)
+		MaxTurns: 0, // should default to DefaultMaxTurns (1) — single autonomous run
 		Executor: exec,
 		Resolver: &mockResolver{},
 	})
@@ -172,6 +172,35 @@ func TestRunAgent_DefaultMaxTurns(t *testing.T) {
 	}
 	if result.Turns != agents.DefaultMaxTurns {
 		t.Errorf("Turns = %d, want %d (DefaultMaxTurns)", result.Turns, agents.DefaultMaxTurns)
+	}
+}
+
+// TestRunAgent_SingleTurnDefault verifies that MaxTurns=0 defaults to 1
+// and the agent exits after one turn (single autonomous run).
+func TestRunAgent_SingleTurnDefault(t *testing.T) {
+	exec := &mockExecutor{
+		responses: []string{"Completed the work."},
+	}
+
+	result, err := agents.RunAgent(context.Background(), agents.RunConfig{
+		Agent:    makeAgent("worker", "Does the work", ""),
+		CLI:      "codex",
+		Prompt:   "do stuff",
+		MaxTurns: 0,
+		Executor: exec,
+		Resolver: &mockResolver{},
+	})
+
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	// DefaultMaxTurns is 1, response is non-empty and has no TASK_COMPLETE,
+	// so status is "max_turns" after exactly 1 turn.
+	if result.Turns != 1 {
+		t.Errorf("Turns = %d, want 1", result.Turns)
+	}
+	if exec.callCount != 1 {
+		t.Errorf("executor called %d times, want 1", exec.callCount)
 	}
 }
 
@@ -187,6 +216,7 @@ func TestRunAgent_SystemPromptFormat(t *testing.T) {
 		response: "TASK_COMPLETE",
 	}
 
+	// Agent with content: content IS the system prompt body.
 	agent := makeAgent("myagent", "Does stuff", "Always be helpful.")
 	_, err := agents.RunAgent(context.Background(), agents.RunConfig{
 		Agent:    agent,
@@ -199,20 +229,109 @@ func TestRunAgent_SystemPromptFormat(t *testing.T) {
 		t.Fatalf("RunAgent: %v", err)
 	}
 
+	// When Content is set, it IS the prompt body (no "You are X." preamble).
+	if !strings.Contains(capturedPrompt, "Always be helpful.") {
+		t.Error("system prompt missing agent content body")
+	}
+	// Task section must always be present.
+	if !strings.Contains(capturedPrompt, "## Task") {
+		t.Error("system prompt missing ## Task section")
+	}
+	if !strings.Contains(capturedPrompt, "write tests") {
+		t.Error("system prompt missing user task text")
+	}
+}
+
+// TestRunAgent_SystemPromptFallback verifies that agents without content
+// get a "You are X. Description." preamble.
+func TestRunAgent_SystemPromptFallback(t *testing.T) {
+	var capturedPrompt string
+	captureExec := &capturingExecutor{
+		capture: func(args types.SpawnArgs) {
+			if len(args.Args) >= 2 {
+				capturedPrompt = args.Args[len(args.Args)-1]
+			}
+		},
+		response: "TASK_COMPLETE",
+	}
+
+	agent := makeAgent("myagent", "Does stuff", "") // no content
+	_, err := agents.RunAgent(context.Background(), agents.RunConfig{
+		Agent:    agent,
+		CLI:      "codex",
+		Prompt:   "write tests",
+		Executor: captureExec,
+	})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+
 	if !strings.Contains(capturedPrompt, "You are myagent.") {
-		t.Errorf("system prompt missing agent name intro, got: %s", capturedPrompt[:min(200, len(capturedPrompt))])
+		t.Errorf("fallback prompt missing agent name intro, got: %s", capturedPrompt[:min(200, len(capturedPrompt))])
 	}
 	if !strings.Contains(capturedPrompt, "Does stuff") {
-		t.Error("system prompt missing description")
+		t.Error("fallback prompt missing description")
 	}
-	if !strings.Contains(capturedPrompt, "Always be helpful.") {
-		t.Error("system prompt missing agent content")
+	if !strings.Contains(capturedPrompt, "## Task") {
+		t.Error("fallback prompt missing ## Task section")
 	}
-	if !strings.Contains(capturedPrompt, agents.CompletionSignal) {
-		t.Error("system prompt missing TASK_COMPLETE instruction")
+}
+
+// TestRunAgent_SystemPromptCWD verifies that cwd is included in the Context section.
+func TestRunAgent_SystemPromptCWD(t *testing.T) {
+	var capturedPrompt string
+	captureExec := &capturingExecutor{
+		capture: func(args types.SpawnArgs) {
+			if len(args.Args) >= 2 {
+				capturedPrompt = args.Args[len(args.Args)-1]
+			}
+		},
+		response: "TASK_COMPLETE",
 	}
-	if !strings.Contains(capturedPrompt, "Task: write tests") {
-		t.Error("system prompt missing user task")
+
+	agent := makeAgent("coder", "", "")
+	_, err := agents.RunAgent(context.Background(), agents.RunConfig{
+		Agent:    agent,
+		CLI:      "codex",
+		Prompt:   "build it",
+		CWD:      "/home/user/project",
+		Executor: captureExec,
+	})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+
+	if !strings.Contains(capturedPrompt, "Working directory: /home/user/project") {
+		t.Error("system prompt missing working directory in Context section")
+	}
+}
+
+// TestRunAgent_AgentWithRole verifies that RunConfig accepts a role field on the agent
+// and that the CLI resolution path works (role is on the Agent struct, resolution
+// happens in the server layer; runner itself does not use role, just CLI).
+func TestRunAgent_AgentWithRole(t *testing.T) {
+	exec := &mockExecutor{
+		responses: []string{"TASK_COMPLETE"},
+	}
+
+	a := &agents.Agent{
+		Name:    "analyst",
+		Role:    "codereview",
+		Content: "Review the code carefully.",
+	}
+
+	result, err := agents.RunAgent(context.Background(), agents.RunConfig{
+		Agent:    a,
+		CLI:      "codex",
+		Prompt:   "review this",
+		Executor: exec,
+		Resolver: &mockResolver{},
+	})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Errorf("Status = %q, want completed", result.Status)
 	}
 }
 

@@ -337,9 +337,10 @@ func (s *Server) registerTools() {
 	// think tool
 	s.mcp.AddTool(
 		mcp.NewTool("think",
-			mcp.WithDescription("Structured thinking with 17 patterns. Stateless: think, critical_thinking, "+
+			mcp.WithDescription("Structured thinking with 23 patterns. Stateless: think, critical_thinking, "+
 				"decision_framework, problem_decomposition, mental_model, metacognitive_monitoring, recursive_thinking, "+
-				"domain_modeling, architecture_analysis, stochastic_algorithm, temporal_thinking, visual_reasoning. "+
+				"domain_modeling, architecture_analysis, stochastic_algorithm, temporal_thinking, visual_reasoning, "+
+				"source_comparison, literature_review, peer_review, replication_analysis, experimental_loop, research_synthesis. "+
 				"Stateful (pass session_id): sequential_thinking, scientific_method, debugging_approach, "+
 				"structured_argumentation, collaborative_reasoning."),
 			mcp.WithString("pattern",
@@ -349,7 +350,9 @@ func (s *Server) registerTools() {
 					"decision_framework", "problem_decomposition", "debugging_approach", "mental_model",
 					"metacognitive_monitoring", "structured_argumentation", "collaborative_reasoning",
 					"recursive_thinking", "domain_modeling", "architecture_analysis", "stochastic_algorithm",
-					"temporal_thinking", "visual_reasoning"),
+					"temporal_thinking", "visual_reasoning",
+					"source_comparison", "literature_review", "peer_review",
+					"replication_analysis", "experimental_loop", "research_synthesis"),
 			),
 			mcp.WithString("issue", mcp.Description("Issue to analyze (critical_thinking, debugging_approach)")),
 			mcp.WithString("topic", mcp.Description("Topic (structured_argumentation, collaborative_reasoning)")),
@@ -366,6 +369,9 @@ func (s *Server) registerTools() {
 			mcp.WithString("algorithmType", mcp.Description("Algorithm type: mdp, mcts, bandit, bayesian, hmm")),
 			mcp.WithString("problemDefinition", mcp.Description("Problem definition (stochastic_algorithm)")),
 			mcp.WithString("stage", mcp.Description("Stage (scientific_method, collaborative_reasoning)")),
+			mcp.WithString("artifact", mcp.Description("Artifact to review (peer_review)")),
+			mcp.WithString("claim", mcp.Description("Claim to analyze (replication_analysis)")),
+			mcp.WithString("hypothesis", mcp.Description("Hypothesis to test (experimental_loop)")),
 		),
 		s.handleThink,
 	)
@@ -1511,6 +1517,7 @@ func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (
 		"conclusion", "algorithmType", "problemDefinition", "baseCase",
 		"recursiveCase", "convergenceCheck", "diagramType", "description",
 		"methodology", "knowledgeAssessment", "result", "stage", "branchId",
+		"artifact", "claim",
 	}
 	for _, key := range optionalStrings {
 		if v := request.GetString(key, ""); v != "" {
@@ -1982,6 +1989,14 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 	maxTurns := int(request.GetFloat("max_turns", 0))
 	async := request.GetBool("async", false)
 
+	// Agent frontmatter overrides for model, effort, timeout
+	model := agent.Model
+	effort := agent.Effort
+	timeoutSeconds := agent.Timeout
+	if ts := int(request.GetFloat("timeout_seconds", 0)); ts > 0 {
+		timeoutSeconds = ts
+	}
+
 	cliResolver := resolve.NewProfileResolver(s.cfg.CLIProfiles)
 
 	runCfg := agents.RunConfig{
@@ -1990,6 +2005,9 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		Prompt:   prompt,
 		CWD:      cwd,
 		MaxTurns: maxTurns,
+		Timeout:  timeoutSeconds,
+		Model:    model,
+		Effort:   effort,
 		Executor: s.executor,
 		Resolver: cliResolver,
 	}

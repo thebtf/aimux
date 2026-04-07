@@ -15,7 +15,10 @@ import (
 type Agent struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description,omitempty"`
-	Role        string            `json:"role,omitempty"`
+	Role        string            `json:"role,omitempty" yaml:"role,omitempty"`
+	Model       string            `json:"model,omitempty" yaml:"model,omitempty"`
+	Effort      string            `json:"effort,omitempty" yaml:"effort,omitempty"`
+	Timeout     int               `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	Domain      string            `json:"domain,omitempty"`
 	Source      string            `json:"source"` // file path or source identifier
 	Content     string            `json:"content,omitempty"`
@@ -173,6 +176,14 @@ func parseFrontmatter(agent *Agent, content string) {
 			agent.Description = val
 		case "role":
 			agent.Role = val
+		case "model":
+			agent.Model = val
+		case "effort":
+			agent.Effort = val
+		case "timeout":
+			if n, err := fmt.Sscanf(val, "%d", &agent.Timeout); n != 1 || err != nil {
+				agent.Timeout = 0
+			}
 		case "domain":
 			agent.Domain = val
 		}
