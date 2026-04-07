@@ -239,7 +239,9 @@ func (s *Server) registerTools() {
 	// exec tool
 	s.mcp.AddTool(
 		mcp.NewTool("exec",
-			mcp.WithDescription("Execute a prompt via an AI coding CLI"),
+			mcp.WithDescription("Execute a prompt via an AI coding CLI. "+
+				"Use role= for automatic CLI routing (coding→codex, codereview→gemini, debug→codex, secaudit→codex, analyze→gemini, refactor→codex, testgen→codex, docgen→codex, planner→codex, thinkdeep→codex). "+
+				"Use async=true for long tasks (>30s) — returns job_id immediately, poll with status tool."),
 			mcp.WithString("prompt",
 				mcp.Required(),
 				mcp.Description("The prompt to send to the CLI"),
@@ -337,8 +339,11 @@ func (s *Server) registerTools() {
 	// think tool
 	s.mcp.AddTool(
 		mcp.NewTool("think",
-			mcp.WithDescription("Structured thinking with 23 patterns. Stateless: think, critical_thinking, "+
-				"decision_framework, problem_decomposition, mental_model, metacognitive_monitoring, recursive_thinking, "+
+			mcp.WithDescription("23 reasoning patterns. "+
+				"Top patterns: decision_framework (structured tradeoff analysis), problem_decomposition (break down complexity), "+
+				"debugging_approach (systematic trace + fix), peer_review (simulate review with objections), "+
+				"research_synthesis (group findings, assess evidence). "+
+				"Stateless: think, critical_thinking, decision_framework, problem_decomposition, mental_model, metacognitive_monitoring, recursive_thinking, "+
 				"domain_modeling, architecture_analysis, stochastic_algorithm, temporal_thinking, visual_reasoning, "+
 				"source_comparison, literature_review, peer_review, replication_analysis, experimental_loop, research_synthesis. "+
 				"Stateful (pass session_id): sequential_thinking, scientific_method, debugging_approach, "+
@@ -380,6 +385,7 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(
 		mcp.NewTool("investigate",
 			mcp.WithDescription("Structured deep investigation — catches wrong assumptions before they become wrong decisions. "+
+				"Auto-detects domain (security/performance/architecture/debugging/research) from topic keywords if not specified. "+
 				"Flow: start(domain?) → (finding + assess) × N → report. "+
 				"Stops only when BOTH: convergence ≥ 1.0 AND coverage ≥ 80%."),
 			mcp.WithString("action",
@@ -611,6 +617,36 @@ func (s *Server) registerPrompts() {
 			),
 		),
 		s.handleBackgroundPrompt,
+	)
+
+	// aimux-guide: comprehensive decision-making guide for all 13 tools
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-guide",
+			mcp.WithPromptDescription("Complete guide to aimux tools — when and how to use each of the 13 MCP tools, role routing, think patterns, investigation flow, workflows"),
+		),
+		s.handleGuidePrompt,
+	)
+
+	// aimux-investigate: structured investigation protocol with convergence tracking
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-investigate",
+			mcp.WithPromptDescription("Investigation protocol — structured deep analysis with convergence tracking"),
+			mcp.WithArgument("topic",
+				mcp.ArgumentDescription("What to investigate"),
+			),
+		),
+		s.handleInvestigatePrompt,
+	)
+
+	// aimux-workflow: declarative multi-step pipeline builder
+	s.mcp.AddPrompt(
+		mcp.NewPrompt("aimux-workflow",
+			mcp.WithPromptDescription("Build declarative multi-step execution pipelines"),
+			mcp.WithArgument("goal",
+				mcp.ArgumentDescription("What the workflow should accomplish"),
+			),
+		),
+		s.handleWorkflowPrompt,
 	)
 }
 
@@ -2123,6 +2159,267 @@ func (s *Server) handleBackgroundPrompt(ctx context.Context, request mcp.GetProm
 			mcp.NewPromptMessage(
 				mcp.RoleAssistant,
 				mcp.NewTextContent(instructions),
+			),
+		},
+	), nil
+}
+
+func (s *Server) handleGuidePrompt(_ context.Context, _ mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	content := `# aimux — AI CLI Multiplexer Guide
+
+## Why aimux?
+You have access to 12 AI coding CLIs through one MCP interface.
+Instead of choosing which CLI to call, tell aimux WHAT you need — it routes to the right tool.
+Role-based routing: say role="codereview" and the best review CLI is selected automatically.
+If a CLI fails (rate limit, timeout), aimux automatically retries with the next capable CLI.
+
+## Tool Selection — "I need to..."
+
+| I need to... | Use | Key params |
+|---|---|---|
+| Run a prompt on an AI CLI | exec | prompt, role, cli, async |
+| Get consensus from multiple models | consensus | topic, synthesize |
+| Have models debate a decision | debate | topic, max_turns |
+| Multi-turn discussion between CLIs | dialog | prompt, max_turns |
+| Structured reasoning/analysis | think | pattern (23 options) |
+| Deep investigation with tracking | investigate | action, topic, domain |
+| Run a codebase audit | audit | cwd, mode (quick/standard/deep) |
+| Execute a project agent | agent | agent (name), prompt |
+| Chain multiple steps | workflow | steps (JSON), input |
+| Check async job status | status | job_id |
+| Manage sessions | sessions | action |
+| Discover available agents | agents | action (list/find) |
+| Deep research via Gemini | deepresearch | topic |
+
+## Roles (exec tool)
+coding → codex (code generation, TDD)
+codereview → gemini (code review, analysis)
+debug → codex (debugging, tracing)
+secaudit → codex (security audit, OWASP)
+analyze → gemini (holistic analysis)
+refactor → codex (refactoring)
+testgen → codex (test generation)
+docgen → codex (documentation)
+planner → codex (planning, architecture)
+thinkdeep → codex (deep analysis)
+
+## Think Patterns (23 total)
+
+### Core (17):
+think, critical_thinking, sequential_thinking, scientific_method,
+decision_framework, problem_decomposition, debugging_approach, mental_model,
+metacognitive_monitoring, structured_argumentation, collaborative_reasoning,
+recursive_thinking, domain_modeling, architecture_analysis, stochastic_algorithm,
+temporal_thinking, visual_reasoning
+
+### Research (6):
+source_comparison — compare multiple sources, find agreements/disagreements
+literature_review — systematic review of papers/findings
+peer_review — simulate review with objections and revision plan
+replication_analysis — assess replication feasibility and risks
+experimental_loop — stateful hypothesis→test→measure→iterate (use session_id)
+research_synthesis — group findings, assess evidence, produce conclusions
+
+## Investigation Flow
+1. investigate(action="start", topic="...", domain="auto") → session_id + coverage areas
+2. investigate(action="finding", session_id, description, source, severity, confidence) × N
+3. investigate(action="assess", session_id) → convergence, coverage, recommendation
+4. investigate(action="report", session_id, cwd) → saved markdown report
+5. investigate(action="recall", topic="...") → find past reports
+
+Domains: generic, debugging, security, performance, architecture, research
+(auto-detected from topic keywords if not specified)
+
+## Workflow Example
+{"steps": [
+  {"id": "analyze", "tool": "exec", "params": {"role": "analyze", "prompt": "{{input}}"}},
+  {"id": "review", "tool": "think", "params": {"pattern": "peer_review", "artifact": "{{analyze.content}}"}},
+  {"id": "fix", "tool": "exec", "params": {"role": "coding", "prompt": "Fix: {{review.content}}"}, "condition": "{{review.content}} contains 'revision'"}
+]}
+
+## Common Patterns
+
+### Quick delegation
+exec(role="coding", prompt="implement X", cwd="/project")
+
+### Multi-model validation
+consensus(topic="is approach X correct?", synthesize=true)
+
+### Investigation before fixing
+investigate(start) → findings → assess → report → THEN fix
+
+### Background heavy task
+exec(prompt="...", cli="codex", async=true) → status(job_id) to poll
+
+## Anti-Patterns
+- DON'T specify cli when role is enough — let routing pick the best CLI
+- DON'T use sync exec for codex tasks >30s — use async=true
+- DON'T skip investigate for complex bugs — jumping to fix wastes time
+- DON'T call think without a pattern — every call needs pattern= param
+- DON'T run consensus with 1 CLI — needs 2+ for meaningful comparison`
+
+	return mcp.NewGetPromptResult(
+		"aimux tool guide",
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(
+				mcp.RoleAssistant,
+				mcp.NewTextContent(content),
+			),
+		},
+	), nil
+}
+
+func (s *Server) handleInvestigatePrompt(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	topic := ""
+	if args := request.Params.Arguments; args != nil {
+		if t, exists := args["topic"]; exists && t != "" {
+			topic = t
+		}
+	}
+
+	content := `# aimux Investigation Protocol
+
+## Purpose
+Structured deep investigation with convergence tracking — catches wrong assumptions before they become wrong decisions.
+
+## Step-by-Step Flow
+
+### 1. Start investigation
+investigate(action="start", topic="<your topic>", domain="auto")
+Returns: session_id, coverage areas, initial hypotheses
+Domain is auto-detected from topic keywords (security/performance/architecture/debugging/research/generic).
+
+### 2. Add findings (repeat until convergence)
+investigate(action="finding", session_id="<id>",
+  description="what you found",
+  source="where you found it (file, log, test, doc)",
+  severity="low|medium|high|critical",
+  confidence=0.0-1.0)
+
+### 3. Assess after each batch of findings
+investigate(action="assess", session_id="<id>")
+Returns: convergence score (0.0-1.0), coverage %, recommendation
+STOP only when BOTH convergence ≥ 1.0 AND coverage ≥ 80%.
+
+### 4. Generate report
+investigate(action="report", session_id="<id>", cwd="/project")
+Saves markdown report to .agent/reports/investigation-<topic>.md
+
+### 5. Recall past investigations
+investigate(action="recall", topic="<search terms>")
+Find previous investigation reports by topic similarity.
+
+## Source Citation Rules
+- Always cite where evidence came from (file path, line, log timestamp)
+- Distinguish: VERIFIED (tool output) vs INFERRED (reasoning) vs STALE (assumption)
+- High-confidence findings: direct evidence, reproducible
+- Low-confidence: circumstantial, single data point
+
+## When to Investigate
+- Bug with unknown root cause (don't guess — investigate)
+- Security concern (domain="security" for OWASP coverage)
+- Performance regression (domain="performance")
+- Architecture decision with multiple options (domain="architecture")
+- Before any structural refactor (understand what you're changing)`
+
+	if topic != "" {
+		content = fmt.Sprintf("# Investigation: %s\n\n%s", topic, content)
+	}
+
+	return mcp.NewGetPromptResult(
+		"Investigation protocol",
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(
+				mcp.RoleAssistant,
+				mcp.NewTextContent(content),
+			),
+		},
+	), nil
+}
+
+func (s *Server) handleWorkflowPrompt(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	goal := ""
+	if args := request.Params.Arguments; args != nil {
+		if g, exists := args["goal"]; exists && g != "" {
+			goal = g
+		}
+	}
+
+	content := `# aimux Workflow Builder
+
+## Purpose
+Chain multiple tool calls into a declarative pipeline. Each step can reference outputs from previous steps.
+
+## Step Schema
+{
+  "id": "step_name",         // unique ID, referenced by later steps
+  "tool": "exec|think|investigate|consensus",
+  "params": { ... },         // tool parameters
+  "condition": "...",        // optional — skip step if false
+  "on_error": "stop|skip|retry"  // default: stop
+}
+
+## Template Interpolation
+- {{input}} — workflow-level input string
+- {{step_id.content}} — text output of a previous step
+- {{step_id.status}} — "success" | "error" of a previous step
+- Conditions: "{{step_id.content}} contains 'keyword'"
+
+## Example 1 — Analyze → Review → Fix
+{"steps": [
+  {"id": "analyze", "tool": "exec",
+    "params": {"role": "analyze", "prompt": "Analyze this code: {{input}}"}},
+  {"id": "review", "tool": "think",
+    "params": {"pattern": "peer_review", "artifact": "{{analyze.content}}"}},
+  {"id": "fix", "tool": "exec",
+    "params": {"role": "coding", "prompt": "Fix issues: {{review.content}}"},
+    "condition": "{{review.content}} contains 'revision'"}
+]}
+
+## Example 2 — Security Audit Pipeline
+{"steps": [
+  {"id": "audit", "tool": "audit",
+    "params": {"cwd": "{{input}}", "mode": "standard"}},
+  {"id": "report", "tool": "think",
+    "params": {"pattern": "research_synthesis", "artifact": "{{audit.content}}"}},
+  {"id": "fix_plan", "tool": "exec",
+    "params": {"role": "planner", "prompt": "Create fix plan from: {{report.content}}"}}
+]}
+
+## Example 3 — Multi-model Validation
+{"steps": [
+  {"id": "propose", "tool": "exec",
+    "params": {"role": "planner", "prompt": "Design approach for: {{input}}"}},
+  {"id": "validate", "tool": "consensus",
+    "params": {"topic": "{{propose.content}}", "synthesize": true}},
+  {"id": "implement", "tool": "exec",
+    "params": {"role": "coding", "prompt": "Implement: {{validate.content}}"},
+    "condition": "{{validate.content}} contains 'approved'"}
+]}
+
+## Error Handling
+- "on_error": "stop" (default) — abort pipeline on failure
+- "on_error": "skip" — skip failed step, continue pipeline
+- "on_error": "retry" — retry once before failing
+
+## Calling the Workflow Tool
+workflow(
+  name="my-pipeline",
+  steps="<JSON array>",
+  input="<initial input string>",
+  async=false  // set true for long pipelines
+)`
+
+	if goal != "" {
+		content = fmt.Sprintf("# Workflow Goal: %s\n\n%s", goal, content)
+	}
+
+	return mcp.NewGetPromptResult(
+		"Workflow builder guide",
+		[]mcp.PromptMessage{
+			mcp.NewPromptMessage(
+				mcp.RoleAssistant,
+				mcp.NewTextContent(content),
 			),
 		},
 	), nil

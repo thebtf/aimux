@@ -2,9 +2,9 @@
 
 [![Go](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-462%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-528%20passing-brightgreen)](test/)
 [![Go Report Card](https://goreportcard.com/badge/github.com/thebtf/aimux)](https://goreportcard.com/report/github.com/thebtf/aimux)
-[![MCP Tools](https://img.shields.io/badge/MCP-11%20tools-blueviolet)](https://modelcontextprotocol.io)
+[![MCP Tools](https://img.shields.io/badge/MCP-13%20tools-blueviolet)](https://modelcontextprotocol.io)
 [![CLIs](https://img.shields.io/badge/CLIs-12-orange)](config/cli.d/)
 
 # aimux
