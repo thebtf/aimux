@@ -3001,6 +3001,11 @@ func (s *Server) handleConsensusPrompt(_ context.Context, request mcp.GetPromptR
 		sb.WriteString(fmt.Sprintf("```\nconsensus(topic=%q, synthesize=true)\n```\n", question))
 	}
 
+	sb.WriteString("\n## Acceptance Criteria\n")
+	sb.WriteString("- [ ] Multiple models contributed (not just one CLI)\n")
+	sb.WriteString("- [ ] Disagreements surfaced and addressed\n")
+	sb.WriteString("- [ ] Final recommendation is actionable, not \"it depends\"\n")
+
 	return mcp.NewGetPromptResult(
 		fmt.Sprintf("Consensus plan: %s", question),
 		[]mcp.PromptMessage{
@@ -3158,11 +3163,11 @@ func (s *Server) handleAgentExecPrompt(_ context.Context, request mcp.GetPromptR
 
 	if len(scored_) > 0 {
 		sb.WriteString("### Matched Agents (by keyword relevance)\n\n")
-		for i, s := range scored_ {
+		for i, entry := range scored_ {
 			if i >= 3 {
 				break
 			}
-			sb.WriteString(fmt.Sprintf("%d. **%s** (score=%d, role=%s): %s\n", i+1, s.agent.Name, s.score, s.agent.Role, s.agent.Description))
+			sb.WriteString(fmt.Sprintf("%d. **%s** (score=%d, role=%s): %s\n", i+1, entry.agent.Name, entry.score, entry.agent.Role, entry.agent.Description))
 		}
 		sb.WriteString("\n")
 
@@ -3195,7 +3200,12 @@ func (s *Server) handleAgentExecPrompt(_ context.Context, request mcp.GetPromptR
 	case strings.Contains(lower, "research") || strings.Contains(lower, "analyze"):
 		role = "analyze"
 	}
-	sb.WriteString(fmt.Sprintf("```\nexec(role=%q, prompt=%q, async=true)\n```\n", role, task))
+	sb.WriteString(fmt.Sprintf("```\nexec(role=%q, prompt=%q, async=true)\n```\n\n", role, task))
+
+	sb.WriteString("## Acceptance Criteria\n")
+	sb.WriteString("- [ ] Agent tool attempted before falling back to exec\n")
+	sb.WriteString("- [ ] Task completed with verifiable output (not just \"done\")\n")
+	sb.WriteString("- [ ] async=true used for tasks >30s\n")
 
 	return mcp.NewGetPromptResult(
 		fmt.Sprintf("Agent plan: %s", task),
@@ -3310,8 +3320,8 @@ func (s *Server) handleResearchPrompt(_ context.Context, request mcp.GetPromptRe
 
 	// P5: Output protocol.
 	sb.WriteString("### As Automated Pipeline\n")
-	sb.WriteString("```json\n")
-	sb.WriteString(fmt.Sprintf("workflow(steps=[\n"))
+	sb.WriteString("```\n")
+	sb.WriteString("workflow(steps=[\n")
 	sb.WriteString(fmt.Sprintf("  {\"id\": \"lit\", \"tool\": \"think\", \"params\": {\"pattern\": \"literature_review\", \"topic\": %q}},\n", topic))
 	sb.WriteString(fmt.Sprintf("  {\"id\": \"compare\", \"tool\": \"think\", \"params\": {\"pattern\": \"source_comparison\", \"topic\": %q, \"sources\": [\"{{lit.content}}\"]}},\n", topic))
 	sb.WriteString("  {\"id\": \"review\", \"tool\": \"think\", \"params\": {\"pattern\": \"peer_review\", \"artifact\": \"{{compare.content}}\"}},\n")
