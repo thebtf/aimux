@@ -1,12 +1,31 @@
-🌐 [English](README.md) | **Русский**
+﻿🌐 [English](README.md) | **Русский**
 
-[![CI](https://img.shields.io/github/actions/workflow/status/thebtf/aimux/ci.yml?branch=master&label=CI)](https://github.com/thebtf/aimux/actions) [![Version](https://img.shields.io/github/v/tag/thebtf/aimux?label=version&sort=semver)](https://github.com/thebtf/aimux/releases) [![Go](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go)](https://go.dev) [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![MCP Tools](https://img.shields.io/badge/MCP-11%20tools-blueviolet)](https://modelcontextprotocol.io) [![CLIs](https://img.shields.io/badge/CLIs-12-orange)](config/cli.d/)
+[![Go](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-462%20passing-brightgreen)](test/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/thebtf/aimux)](https://goreportcard.com/report/github.com/thebtf/aimux)
+[![MCP Tools](https://img.shields.io/badge/MCP-11%20tools-blueviolet)](https://modelcontextprotocol.io)
+[![CLIs](https://img.shields.io/badge/CLIs-12-orange)](config/cli.d/)
 
 # aimux
 
-**Один MCP-сервер. Все AI-инструменты для разработки. Никакого переключения контекста.**
+**Один MCP-сервер. 12 AI-инструментов для разработки. Ноль переключений контекста.**
 
-Современная AI-разработка требует жонглировать десятком инструментов — Codex для генерации, Claude для ревью, Gemini для анализа, Aider для inline-правок. aimux — это MCP-мультиплексор, который автоматически направляет запросы к нужному инструменту, оркестрирует многомодельные рабочие процессы и сохраняет сессии между перезапусками — всё через единый stdio-транспорт, с которым уже умеет работать ваш редактор. Хватит управлять CLI. Пора шипать.
+---
+
+## Проблема
+
+У вас есть Codex для генерации кода, Claude для рассуждений, Gemini для анализа, Aider для правки файлов на лету. Каждый живёт в отдельном терминале со своими флагами, форматом вывода и состоянием сессии. Переключение между ними означает копирование промптов, потерю контекста и ручное управление десятком процессов.
+
+## Решение
+
+aimux — это единый бинарный MCP-сервер, который предоставляет доступ ко всем 12 CLI через один унифицированный интерфейс. Ваш редактор делает один JSON-RPC вызов. aimux направляет его к нужному инструменту, оркестрирует многомодельные пайплайны, нормализует вывод и сохраняет сессии в SQLite — всё через stdio-транспорт, который уже понимает каждый MCP-клиент.
+
+## Почему лучше
+
+Один бинарь, ноль зависимостей от внешних рантаймов, 462 теста, 3 транспорта. Маршрутизация по ролям направляет промпты `codereview` к модели, заточенной под код-ревью, промпты `debug` — к модели, лучшей в трассировке, а `secaudit` — к модели, обученной на паттернах уязвимостей, без необходимости указывать имя CLI. Пять стратегий оркестрации позволяют нескольким моделям дискутировать, аудировать код или писать его в паре. Результат поставляется как статический Go-бинарь: собрал один раз — копируй куда угодно.
+
+---
 
 ## Архитектура
 
@@ -14,26 +33,28 @@
 graph TD
     Client["MCP Client\n(Claude Code / IDE)"]
 
-    subgraph aimux["aimux (single binary)"]
-        Router["Role Router\n14 roles"]
-        Orchestrator["Orchestration Engine"]
-        Executor["Executor Backend\nConPTY · PTY · Pipe"]
-        DB[(SQLite\nSession Store)]
+    subgraph aimux["aimux — single binary"]
+        Router["Role Router\n17 roles"]
+        Orchestrator["Orchestration Engine\n5 strategies"]
+        Executor["Executor\nConPTY · PTY · Pipe"]
+        DB[(SQLite\nWAL sessions)]
+        Metrics["Metrics Collector\nper-CLI latency + errors"]
 
         Router --> Orchestrator
         Orchestrator --> Executor
         Executor --> DB
+        Executor --> Metrics
     end
 
     subgraph Strategies["Orchestration Strategies"]
-        PC[PairCoding]
-        SD[SequentialDialog]
-        PC2[ParallelConsensus]
-        DB2[StructuredDebate]
-        AP[AuditPipeline]
+        PC[Pair Coding]
+        SD[Sequential Dialog]
+        PC2[Parallel Consensus]
+        DB2[Structured Debate]
+        AP[Audit Pipeline]
     end
 
-    subgraph CLIs["AI CLI Layer"]
+    subgraph CLIs["AI CLI Layer (12)"]
         codex[codex]
         gemini[gemini]
         claude[claude]
@@ -48,209 +69,256 @@ graph TD
         opencode[opencode]
     end
 
-    Client -->|"MCP JSON-RPC\n(stdio)"| Router
+    Client -->|"MCP JSON-RPC\n(stdio / SSE / HTTP)"| Router
     Orchestrator --> Strategies
     Executor --> CLIs
 ```
 
-## Что нового в v3
-
-- **Переписан на Go** — один статический бинарник без Node runtime, Python-окружения и npm. `go build` — и готово к деплою.
-- **Profile-aware command resolution** — у каждого CLI есть `profile.yaml`, описывающий точный бинарник, флаги, порог stdin и формат вывода. Никаких захардкоженных `-p prompt`.
-- **Конвейер парсеров JSONL/JSON/text** — структурированный вывод всех 12 CLI нормализуется в единый response envelope.
-- **12 поддерживаемых CLI** — к исходным 10 добавлены Droid и OpenCode.
-- **306 тестов, 62 e2e** — реальные MCP round-trip по stdio; mutation testing через gremlins с порогом 75%.
-- **ConPTY executor** — полноценная PTY-эмуляция на Windows без WSL для CLI, требующих терминал.
-
-## Возможности
-
-**Оркестрирует многомодельные рабочие процессы** — стратегии PairCoding, SequentialDialog, ParallelConsensus, StructuredDebate и AuditPipeline компонуют CLI в конвейеры, недоступные ни одному инструменту в одиночку.
-
-**Маршрутизация по роли** — 14 семантических ролей (`coding`, `codereview`, `thinkdeep`, `secaudit`, `debug`, `planner`, `analyze`, `refactor`, `testgen`, `docgen`, `tracer`, `precommit`, `challenge`, `default`), каждая привязана к наиболее подходящему CLI. Настраивается в `default.yaml`.
-
-**Сохраняет сессии** — хранилище на SQLite переживает перезапуски. Возобновите сессию Codex по ID, отмените зависший job или вычистите устаревшие сессии — всё через инструмент `sessions`.
-
-**Асинхронное выполнение** — запустите долгий job, опрашивайте `status`, забирайте результат когда готово. Circuit breaker на каждый CLI предотвращает каскадные сбои.
-
-**Парсит любой формат вывода** — JSONL (Codex), JSON (Claude, Gemini, Goose, Continue, Droid, OpenCode) и plain text (Aider, Crush, GPTMe, Cline) нормализуются перед отдачей клиенту.
-
-**Deep research** — `deepresearch` делегирует запросы Google Gemini API для многоэтапного исследования с указанием источников.
-
-**Структурированное мышление** — `think` предоставляет 17 паттернов рассуждения (chain-of-thought, tree-of-thought, devil's advocate, SWOT, pre-mortem и др.) — как в одиночном режиме, так и в многомодельном консенсусе.
-
-**Обнаружение агентов** — `agents` запрашивает реестр Loom Agents и может вызывать их напрямую.
+---
 
 ## Быстрый старт
 
-**Шаг 1 — Сборка**
-
-```bash
-go build -o aimux ./cmd/aimux/
-```
-
-**Шаг 2 — Добавить в Claude Code**
-
-```json
-{
-  "mcpServers": {
-    "aimux": {
-      "command": "/path/to/aimux",
-      "args": [],
-      "env": {}
-    }
-  }
-}
-```
-
-**Шаг 3 — Проверить**
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./aimux
-```
-
-В ответе должны быть перечислены все 11 инструментов.
-
-## Установка
-
-### Требования
-
-- Go 1.25+ (`go version`)
-- Хотя бы один из поддерживаемых AI CLI, установленный и доступный в `$PATH` (например, `codex`, `claude`, `gemini`)
-
-### Из исходников (go install)
+**Шаг 1 — Установка**
 
 ```bash
 go install github.com/thebtf/aimux/cmd/aimux@latest
 ```
 
-### Сборка из исходников
+**Шаг 2 — Подключение к Claude Code**
 
-```bash
-git clone https://github.com/thebtf/aimux.git
-cd aimux
-go build -o aimux ./cmd/aimux/
-# Бинарник находится в ./aimux — переместите в любое место на $PATH
+Добавьте в `~/.claude.json` (или в конфиг вашего MCP-клиента):
+
+```json
+{
+  "mcpServers": {
+    "aimux": {
+      "command": "aimux",
+      "args": []
+    }
+  }
+}
 ```
 
-### Docker
+**Шаг 3 — Проверка**
 
 ```bash
-# Сборка
-docker build -t aimux .
-
-# Запуск (stdio transport — проброс через docker)
-docker run -i aimux
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | aimux
 ```
 
-Docker-образ копирует `config/` в `/etc/aimux/config` и автоматически устанавливает `AIMUX_CONFIG_DIR=/etc/aimux/config`.
+В ответе вы должны увидеть все 11 инструментов. aimux автоматически определяет, какие CLI установлены в `$PATH` — активными становятся только найденные.
 
-### Проверка
+---
 
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}' | ./aimux
-# Ожидается: { "result": { "resources": [{ "uri": "aimux://health", ... }] } }
+## Возможности
+
+### Маршрутизация и выполнение
+
+- **Маршрутизация по роли, а не по имени** — 17 семантических ролей (`coding`, `codereview`, `debug`, `secaudit`, `analyze`, `refactor`, `testgen`, `planner`, `thinkdeep`, ...) каждая сопоставляется с лучшим CLI, моделью и усилием рассуждения для данной задачи
+- **Прямой вызов любого CLI** — обходите маршрутизацию и вызывайте любой из 12 CLI по имени с полным контролем над моделью, флагами и сессией
+- **Асинхронный запуск, опрос по ID** — запускайте долгие задачи в фоне, опрашивайте `status` по готовности, не блокируя редактор
+- **Сохранение сессий между перезапусками** — хранилище сессий на базе SQLite с WAL-восстановлением; возобновляйте сессию Codex по ID
+- **Circuit breaker для каждого CLI** — 3 последовательных сбоя открывают цепь; период восстановления предотвращает каскадные отказы
+
+### Стратегии оркестрации
+
+- **Pair coding** — ведущий CLI пишет код, проверяющий CLI критикует каждый раунд; настраиваемое количество раундов и ролей
+- **Sequential dialog** — два CLI поочерёдно отвечают до N ходов; полезен для итеративного уточнения
+- **Parallel consensus** — все участвующие CLI получают один и тот же промпт независимо (вслепую); опционально синтезируются в один авторитетный ответ
+- **Structured debate** — один CLI аргументирует «за», другой «против», фиксированное количество ходов; опциональный синтез выносит вердикт
+- **Audit pipeline** — параллельные сканеры собирают находки, валидатор перепроверяет ложноположительные срабатывания, исследователь углубляется в подтверждённые проблемы; структурированный отчёт на выходе
+
+### Рассуждение и исследование
+
+- **17 паттернов мышления** — chain-of-thought, tree-of-thought, «адвокат дьявола», SWOT, pre-mortem, научный метод, первые принципы и ещё 10; запускаются отдельно или в многомодельном консенсусе
+- **Конвергентное расследование** — итеративное углублённое исследование с 5-уровневой оценкой уверенности, отслеживанием конвергенции, накоплением находок и вспоминанием из предыдущих запусков
+- **Глубокое исследование** — делегирует Google Gemini API для многошагового обоснованного поиска с указанием источников
+
+### Качество и надёжность
+
+- **Хуки до/после** — запускайте скрипты или команды до и после каждого выполнения CLI с защитой по таймауту
+- **Валидатор ходов** — перехватывает пустой вывод, ответы с превышением лимита запросов и отказы до того, как они дойдут до клиента
+- **Quality gate** — логика повтора, эскалации или остановки для каждого участника не даёт многоходовой оркестрации деградировать
+- **17 ролевых промптов** — составные системные промпты, загружаемые из `config/prompts.d/` для каждой роли
+
+### Наблюдаемость
+
+- **Метрики по каждому CLI** — количество запросов, перцентили задержки и частота ошибок, доступные через `aimux://metrics`
+- **Health-ресурс** — `aimux://health` возвращает аптайм сервера, активные задачи и состояния circuit breaker
+- **3 транспорта** — stdio (по умолчанию, без настройки), SSE и StreamableHTTP для сетевых клиентов
+
+---
+
+## Поддерживаемые CLI
+
+| CLI | Бинарь | Стиль промпта | Формат вывода | Примечания |
+|-----|--------|--------------|---------------|-----------|
+| codex | `codex` | positional | JSONL | Возобновление сессии, флаги усилия рассуждения |
+| gemini | `gemini` | флаг `-p` | JSON | Глубокое исследование через Gemini API |
+| claude | `claude` | positional / `-p` headless | JSON | |
+| qwen | `qwen` | флаг `-p` | JSON | |
+| aider | `aider` | флаг `--message` | text | Правка файлов на лету |
+| goose | `goose` | флаг `-t` | JSON | Подкоманда `goose run` |
+| crush | `crush` | positional | text | Подкоманда `crush run` |
+| gptme | `gptme` | positional | text | |
+| cline | `cline` | positional | text | Подкоманда `cline task` |
+| continue | `cn` | positional / `-p` headless | JSON | |
+| droid | `droid` | positional | JSON | Подкоманда `droid exec` |
+| opencode | `opencode` | positional | JSON | Подкоманда `opencode run` |
+
+aimux автоматически определяет установленные CLI при запуске через проверку наличия бинарей. Неустановленные CLI пропускаются — сервер стартует с тем, что доступно.
+
+---
+
+## Справочник MCP-инструментов
+
+| Инструмент | Что делает | Ключевые параметры |
+|-----------|-----------|-------------------|
+| `exec` | Выполняет промпт через любой CLI с маршрутизацией по роли | `prompt`, `cli`, `role`, `model`, `async`, `session_id` |
+| `status` | Проверяет статус асинхронной задачи и получает вывод | `job_id` |
+| `sessions` | Управляет жизненным циклом сессий: list, info, cancel, kill, gc, health | `action`, `session_id` |
+| `consensus` | Параллельные независимые мнения от нескольких CLI с опциональным синтезом | `prompt`, `clis`, `blinded`, `synthesize` |
+| `dialog` | Последовательное многоходовое обсуждение между двумя CLI | `prompt`, `cli_a`, `cli_b`, `max_turns` |
+| `debate` | Состязательная структурированная дискуссия с вердиктом | `topic`, `pro_cli`, `con_cli`, `synthesize` |
+| `audit` | Многоагентный аудит кодовой базы: scan → validate → investigate | `path`, `mode`, `focus` |
+| `deepresearch` | Глубокое исследование через Google Gemini с вложениями и кешированием | `topic`, `output_format`, `model`, `force` |
+| `think` | 17 структурированных паттернов рассуждения, одиночных или многомодельных | `prompt`, `pattern`, `clis`, `consensus` |
+| `investigate` | Глубокое расследование с отслеживанием конвергенции и вспоминанием | `question`, `domain`, `max_iterations` |
+| `agents` | Обнаружение и вызов агентов проекта из реестра | `action`, `agent_id`, `prompt` |
+
+### MCP-ресурсы
+
+| URI | Содержимое |
+|-----|-----------|
+| `aimux://health` | Здоровье сервера, активные задачи, состояния circuit breaker |
+| `aimux://metrics` | Количество запросов, задержка, частота ошибок по каждому CLI |
+
+### MCP-промпты
+
+| Промпт | Назначение |
+|--------|-----------|
+| `background` | Шаблон для отправки промптов фоновых задач |
+
+---
+
+## Примеры использования
+
+### Маршрутизация по роли (рекомендуется)
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "exec",
+    "arguments": {
+      "prompt": "Refactor this function to use early returns",
+      "role": "refactor"
+    }
+  }
+}
 ```
+
+aimux разрешает `refactor` в настроенный CLI и модель — указывать CLI явно не нужно.
+
+### Асинхронный запуск с опросом позже
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "exec",
+    "arguments": {
+      "prompt": "Audit all authentication code for OWASP Top 10 issues",
+      "role": "secaudit",
+      "async": true
+    }
+  }
+}
+```
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "status",
+    "arguments": { "job_id": "job_01HXYZ..." }
+  }
+}
+```
+
+### Многомодельный консенсус
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "consensus",
+    "arguments": {
+      "prompt": "What is the best approach for distributed rate limiting?",
+      "clis": ["codex", "gemini", "claude"],
+      "blinded": true,
+      "synthesize": true
+    }
+  }
+}
+```
+
+### Состязательная дискуссия
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "debate",
+    "arguments": {
+      "topic": "Should this service use event sourcing or CRUD?",
+      "pro_cli": "codex",
+      "con_cli": "gemini",
+      "synthesize": true
+    }
+  }
+}
+```
+
+### Структурированное рассуждение
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "think",
+    "arguments": {
+      "prompt": "Should we migrate this monolith to microservices?",
+      "pattern": "premortem",
+      "clis": ["codex", "gemini"],
+      "consensus": true
+    }
+  }
+}
+```
+
+---
 
 ## Конфигурация
 
 ### Конфигурация сервера (`config/default.yaml`)
 
-Файл конфигурации ищется в `AIMUX_CONFIG_DIR` (переменная окружения) или в `./config/` рядом с бинарником. Переопределения для конкретного проекта — в `{cwd}/.aimux/config.yaml`.
+aimux ищет конфиг в `AIMUX_CONFIG_DIR` (переменная окружения) или в `./config/` рядом с бинарём. Переопределения для конкретного проекта помещаются в `{cwd}/.aimux/config.yaml`.
 
 ```yaml
 server:
-  log_level: info                    # debug | info | warn | error
+  log_level: info                      # debug | info | warn | error
   log_file: ~/.config/aimux/aimux.log
   db_path: ~/.config/aimux/sessions.db
-  max_concurrent_jobs: 10            # глобальный лимит параллельных jobs
-  session_ttl_hours: 24              # сессии старше этого значения удаляются GC
-  gc_interval_seconds: 300           # как часто запускается GC
-  progress_interval_seconds: 15      # интервал heartbeat для async jobs
-  default_async: false               # запускать все jobs асинхронно по умолчанию
-  default_timeout_seconds: 300       # таймаут на job
+  max_concurrent_jobs: 10
+  session_ttl_hours: 24
+  default_timeout_seconds: 300
 
-  audit:
-    scanner_role: codereview
-    validator_role: analyze
-    default_mode: standard           # standard | deep | quick
-    parallel_scanners: 3
-    scanner_timeout_seconds: 600
-    validator_timeout_seconds: 300
-
-  pair:
-    driver_role: coding
-    reviewer_role: codereview
-    max_rounds: 3
-    driver_timeout_seconds: 300
-    reviewer_timeout_seconds: 180
-
-  consensus:
-    default_blinded: true            # модели не видят ответы друг друга
-    default_synthesize: false        # выполнять проход синтеза после консенсуса
-    max_turns: 8
-    timeout_per_turn_seconds: 180
-
-  debate:
-    default_synthesize: true
-    max_turns: 6
-    timeout_per_turn_seconds: 180
-
-  research:
-    default_synthesize: true
-    timeout_per_participant_seconds: 300
-
-  think:
-    auto_consensus_threshold: 60     # количество токенов, выше которого запускается консенсус
-    default_dialog_max_turns: 4
+  transport:
+    type: stdio                        # stdio | sse | http
+    port: :8080                        # используется транспортами sse и http
 ```
 
-### CLI-профили (`config/cli.d/{name}/profile.yaml`)
-
-Каждый CLI описывается профилем, который сообщает aimux, как именно его вызывать:
-
-```yaml
-name: codex
-binary: codex
-display_name: "Codex (OpenAI)"
-
-features:
-  streaming: true
-  headless: true
-  read_only: true
-  session_resume: true
-  jsonl: true
-  stdin_pipe: true
-
-output_format: jsonl
-
-command:
-  base: "codex exec"
-
-# Как передаётся prompt:
-#   positional — добавляется последним аргументом (codex, claude, crush, gptme, cline, continue, droid, opencode)
-#   flag       — через именованный флаг (gemini: -p, aider: --message, goose: -t, qwen: -p)
-prompt_flag: ""
-prompt_flag_type: "positional"
-
-model_flag: "-m"
-default_model: ""
-
-reasoning:
-  flag: "-c"
-  flag_value_template: 'model_reasoning_effort="{{.Level}}"'
-  levels: [low, medium, high, xhigh]
-
-timeout_seconds: 3600
-stdin_threshold: 6000              # передавать через stdin выше этого порога символов
-completion_pattern: "turn\\.completed"
-
-headless_flags: ["--full-auto"]
-read_only_flags: ["--sandbox", "read-only"]
-```
-
-### Маршрутизация по ролям
-
-В `config/default.yaml` каждой роли сопоставляется CLI, модель и уровень reasoning effort:
+### Маршрутизация по ролям (`config/default.yaml`)
 
 ```yaml
 roles:
@@ -271,150 +339,96 @@ roles:
     cli: codex
 ```
 
-Любую роль можно переопределить в runtime через переменные окружения `AIMUX_ROLE_{ROLE}_CLI` и `AIMUX_ROLE_{ROLE}_MODEL`.
+Переопределение любой роли в рантайме (формат `CLI:MODEL:EFFORT`):
+
+```bash
+AIMUX_ROLE_CODING=gemini:gemini-2.5-pro:high aimux
+```
+
+### Профили CLI (`config/cli.d/{name}/profile.yaml`)
+
+Каждый CLI описывается профилем, который точно указывает aimux, как его вызывать:
+
+```yaml
+name: codex
+binary: codex
+command:
+  base: "codex exec"
+prompt_flag_type: positional
+output_format: jsonl
+stdin_threshold: 6000          # pipe via stdin above this char count
+completion_pattern: "turn\\.completed"
+headless_flags: ["--full-auto"]
+```
 
 ### Circuit breaker
 
 ```yaml
 circuit_breaker:
-  failure_threshold: 3        # количество последовательных сбоев до размыкания цепи
-  cooldown_seconds: 300       # как долго цепь остаётся разомкнутой
-  half_open_max_calls: 1      # пробные вызовы в состоянии half-open
+  failure_threshold: 3         # последовательных сбоев до открытия цепи
+  cooldown_seconds: 300
+  half_open_max_calls: 1
 ```
 
-## Поддерживаемые CLI
+### Выбор транспорта
 
-| Name | Binary | Command | Prompt flag | Output format |
-|------|--------|---------|-------------|---------------|
-| codex | `codex` | `codex exec` | positional | jsonl |
-| gemini | `gemini` | `gemini` | `-p` | json |
-| claude | `claude` | `claude` | positional (`-p` = headless) | json |
-| qwen | `qwen` | `qwen` | `-p` | json |
-| aider | `aider` | `aider` | `--message` | text |
-| goose | `goose` | `goose run` | `-t` | json |
-| crush | `crush` | `crush run` | positional | text |
-| gptme | `gptme` | `gptme` | positional | text |
-| cline | `cline` | `cline task` | positional | text |
-| continue | `cn` | `cn` | positional (`-p` = headless) | json |
-| droid | `droid` | `droid exec` | positional | json |
-| opencode | `opencode` | `opencode run` | positional | json |
+```bash
+# SSE транспорт (сетевые клиенты)
+MCP_TRANSPORT=sse PORT=:8080 aimux
 
-## Справочник по MCP-инструментам
-
-| Tool | Описание | Основные параметры |
-|------|----------|--------------------|
-| `exec` | Выполнить prompt через любой CLI с маршрутизацией по роли | `prompt`, `cli`, `role`, `model`, `async`, `session_id` |
-| `status` | Проверить статус async job и получить вывод | `job_id` |
-| `sessions` | Управление сессиями: list, info, cancel, kill, gc, health | `action`, `session_id` |
-| `consensus` | Многомодельный blinded-консенсус с опциональным синтезом | `prompt`, `clis`, `blinded`, `synthesize` |
-| `dialog` | Последовательный многоходовой диалог между двумя CLI | `prompt`, `cli_a`, `cli_b`, `max_turns` |
-| `debate` | Структурированные дебаты с вынесением вердикта | `topic`, `pro_cli`, `con_cli`, `synthesize` |
-| `audit` | Многоагентный аудит кодовой базы: scan → validate → investigate | `path`, `mode`, `focus` |
-| `think` | 17 паттернов структурированного мышления (solo или multi-model) | `prompt`, `pattern`, `clis`, `consensus` |
-| `investigate` | Итеративное конвергентное расследование со специализацией по домену | `question`, `domain`, `max_iterations` |
-| `agents` | Обнаружение и запуск Loom Agents из реестра | `action`, `agent_id`, `prompt` |
-| `deepresearch` | Глубокое исследование через Google Gemini API с указанием источников | `query`, `depth`, `synthesize` |
-
-## Примеры использования
-
-### Выполнение prompt с маршрутизацией по роли
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "exec",
-    "arguments": {
-      "prompt": "Refactor this function to use early returns",
-      "role": "refactor"
-    }
-  }
-}
+# StreamableHTTP транспорт
+MCP_TRANSPORT=http PORT=:8080 aimux
 ```
 
-### Запуск async job и опрос результатов
+Оба сетевых транспорта по умолчанию привязываются к localhost.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/call",
-  "params": {
-    "name": "exec",
-    "arguments": {
-      "prompt": "Audit all authentication code for OWASP Top 10 issues",
-      "role": "secaudit",
-      "async": true
-    }
-  }
-}
+---
+
+## Установка
+
+### Требования
+
+- Go 1.25+ — `go version`
+- Хотя бы один поддерживаемый CLI, установленный в `$PATH` (например, `codex`, `claude`, `gemini`)
+
+### go install (рекомендуется)
+
+```bash
+go install github.com/thebtf/aimux/cmd/aimux@latest
 ```
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 3,
-  "method": "tools/call",
-  "params": {
-    "name": "status",
-    "arguments": {
-      "job_id": "job_01HXYZ..."
-    }
-  }
-}
+### Сборка из исходников
+
+```bash
+git clone https://github.com/thebtf/aimux.git
+cd aimux
+go build -o aimux ./cmd/aimux/
+# Скопируйте бинарь в любое место из $PATH
 ```
 
-### Многомодельный консенсус
+### Docker
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 4,
-  "method": "tools/call",
-  "params": {
-    "name": "consensus",
-    "arguments": {
-      "prompt": "What is the best approach for distributed rate limiting?",
-      "clis": ["codex", "gemini", "claude"],
-      "blinded": true,
-      "synthesize": true
-    }
-  }
-}
+```bash
+# Сборка
+docker build -t aimux .
+
+# Запуск с stdio-транспортом (pipe через docker)
+docker run -i aimux
+
+# Запуск с SSE-транспортом
+docker run -p 8080:8080 -e MCP_TRANSPORT=sse aimux
 ```
 
-### Структурированные дебаты
+Docker-образ автоматически копирует `config/` в `/etc/aimux/config`.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 5,
-  "method": "tools/call",
-  "params": {
-    "name": "debate",
-    "arguments": {
-      "topic": "Should this service use event sourcing or CRUD?",
-      "pro_cli": "codex",
-      "con_cli": "gemini",
-      "synthesize": true
-    }
-  }
-}
+### Проверка установки
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}' | aimux
+# Ожидаемый результат: { "result": { "resources": [{ "uri": "aimux://health", ... }] } }
 ```
 
-## Стратегии оркестрации
-
-**PairCoding** — driver CLI пишет реализацию, reviewer CLI критикует каждый раунд. Настраиваются количество раундов, роли driver/reviewer и таймауты. Финальный вывод содержит аннотированный diff.
-
-**SequentialDialog** — два CLI по очереди отвечают на вывод друг друга до `max_turns` обменов. Полезно для итеративного улучшения, где важно чередование точек зрения.
-
-**ParallelConsensus** — все участвующие CLI независимо получают один и тот же prompt (по умолчанию в режиме blinded). Их ответы сравниваются и по желанию синтезируются координатором в единый авторитетный ответ.
-
-**StructuredDebate** — один CLI отстаивает позицию «за», другой — «против», фиксированное число ходов. Опциональный проход синтеза выносит вердикт, взвешивая оба аргумента.
-
-**AuditPipeline** — трёхфазный конвейер: параллельные сканеры (роль `scanner_role`) формируют список находок, валидатор (роль `validator_role`) перепроверяет их на ложные срабатывания, инвестигатор углубляется в подтверждённые проблемы. Результаты объединяются в структурированный отчёт аудита.
+---
 
 ## Разработка
 
@@ -422,50 +436,55 @@ circuit_breaker:
 # Собрать всё
 go build ./...
 
-# Запустить все тесты (306 тестов, ~75с на Windows)
+# Запустить все 462 теста (~75 сек на Windows)
 go test ./... -timeout 300s
 
 # Юнит-тесты с покрытием
 go test ./pkg/... -cover
 
-# Только e2e тесты (62 теста, реальный MCP-протокол по stdio)
+# Только E2E-тесты (реальный MCP-протокол через stdio)
 go test ./test/e2e/ -v
-
-# PTY-тесты через WSL (Linux/Mac или WSL на Windows)
-go test ./pkg/executor/ -v -tags pty
 
 # Статический анализ
 go vet ./...
-
-# Сборка эмуляторов testcli (используются в e2e-наборе)
-go build -o testcli.exe ./cmd/testcli/
 ```
 
 ### Структура проекта
 
 ```
-cmd/aimux/        — точка входа MCP-сервера (stdio transport)
-cmd/testcli/      — 10 CLI-эмуляторов для e2e-тестирования
-pkg/server/       — обработчики MCP-инструментов (exec, status, sessions, dialog и др.)
-pkg/orchestrator/ — стратегии для нескольких CLI (consensus, debate, dialog, pair, audit)
-pkg/executor/     — исполнители процессов (ConPTY, PTY, Pipe)
-pkg/driver/       — загрузка CLI-профилей и реестр
-pkg/config/       — YAML-конфигурация
-pkg/session/      — хранение сессий/jobs в SQLite
-pkg/parser/       — парсеры вывода JSONL/JSON/text
-pkg/types/        — общие интерфейсы и типы
-config/cli.d/     — CLI-профили (отдельная директория на каждый CLI)
-config/prompts.d/ — компонуемые шаблоны промптов
+cmd/aimux/           точка входа — выбор транспорта и запуск сервера
+cmd/testcli/         10 эмуляторов CLI для e2e-тестов
+pkg/server/          MCP-обработчики для всех 11 инструментов, ресурсов и промптов
+pkg/orchestrator/    5 стратегий + управление контекстом + quality gate
+pkg/executor/        ConPTY / PTY / Pipe процесс-экзекуторы
+pkg/think/           17 паттернов рассуждения
+pkg/investigate/     система конвергентного расследования
+pkg/hooks/           хуки до/после выполнения с защитой по таймауту
+pkg/metrics/         потокобезопасный сборщик метрик по CLI
+pkg/session/         SQLite-персистентность с WAL и GC
+pkg/config/          загрузчик YAML-конфига + профили CLI
+pkg/driver/          определение бинарей CLI и реестр
+pkg/resolve/         разрешение команд с учётом профилей
+pkg/routing/         маршрутизация CLI по ролям
+pkg/prompt/          движок промптов с рекурсивной загрузкой директорий
+pkg/parser/          нормализатор вывода JSONL / JSON / text
+config/cli.d/        один profile.yaml на каждый CLI
+config/prompts.d/    составные шаблоны ролевых промптов
 ```
 
-### CI
+### Статистика
 
-- **ci.yml** — сборка и тесты при каждом push и PR
-- **mutation.yml** — еженедельное mutation testing через gremlins, требуемый порог kill rate — 75%
+- 13 314 строк реализации + 8 725 строк тестов = **22 039 итого**
+- **462 теста**, 0 падений
+- **26 пакетов**, ~73% взвешенное покрытие
+
+---
 
 ## Участие в разработке
 
-Руководство по участию, стиль кода и чеклист для PR — в [CONTRIBUTING.md](CONTRIBUTING.md).
+Смотрите [CONTRIBUTING.md](CONTRIBUTING.md) — руководство по участию, стиль кода и чеклист для пулл-реквестов.
+
+---
 
 ## Лицензия
 

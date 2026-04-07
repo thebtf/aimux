@@ -180,7 +180,7 @@ aimux auto-detects installed CLIs at startup via binary probing. Uninstalled CLI
 | `dialog` | Sequential multi-turn discussion between two CLIs | `prompt`, `cli_a`, `cli_b`, `max_turns` |
 | `debate` | Adversarial structured debate with verdict | `topic`, `pro_cli`, `con_cli`, `synthesize` |
 | `audit` | Multi-agent codebase audit: scan → validate → investigate | `path`, `mode`, `focus` |
-| `pair` | Driver/reviewer pair coding with diff-level review | `prompt`, `driver_cli`, `reviewer_cli`, `rounds` |
+| `deepresearch` | Deep research via Google Gemini with file attachments and caching | `topic`, `output_format`, `model`, `force` |
 | `think` | 17 structured reasoning patterns, solo or multi-model | `prompt`, `pattern`, `clis`, `consensus` |
 | `investigate` | Deep investigation with convergence tracking and recall | `question`, `domain`, `max_iterations` |
 | `agents` | Discover and invoke project agents from registry | `action`, `agent_id`, `prompt` |
@@ -339,10 +339,10 @@ roles:
     cli: codex
 ```
 
-Override any role at runtime:
+Override any role at runtime with colon-delimited format `CLI:MODEL:EFFORT`:
 
 ```bash
-AIMUX_ROLE_CODING_CLI=gemini AIMUX_ROLE_CODING_MODEL=gemini-2.5-pro aimux
+AIMUX_ROLE_CODING=gemini:gemini-2.5-pro:high aimux
 ```
 
 ### CLI profiles (`config/cli.d/{name}/profile.yaml`)

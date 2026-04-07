@@ -2,7 +2,7 @@
 # Usage: docker build -t aimux . && docker run -i aimux
 
 # Stage 1: Build static binary
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git
 
