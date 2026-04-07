@@ -1,4 +1,4 @@
-// Package patterns provides the 17 thinking pattern implementations.
+// Package patterns provides the 23 thinking pattern implementations.
 package patterns
 
 import (
@@ -9,7 +9,7 @@ import (
 
 var registerOnce sync.Once
 
-// RegisterAll registers all 17 thinking patterns with the global registry.
+// RegisterAll registers all 23 thinking patterns with the global registry.
 // Safe to call multiple times — registration happens only once.
 func RegisterAll() {
 	registerOnce.Do(func() {
@@ -35,4 +35,10 @@ func registerAll() {
 	think.RegisterPattern(NewStochasticAlgorithmPattern())
 	think.RegisterPattern(NewTemporalThinkingPattern())
 	think.RegisterPattern(NewVisualReasoningPattern())
+	think.RegisterPattern(NewSourceComparisonPattern())
+	think.RegisterPattern(NewLiteratureReviewPattern())
+	think.RegisterPattern(NewPeerReviewPattern())
+	think.RegisterPattern(NewReplicationAnalysisPattern())
+	think.RegisterPattern(NewExperimentalLoopPattern())
+	think.RegisterPattern(NewResearchSynthesisPattern())
 }
