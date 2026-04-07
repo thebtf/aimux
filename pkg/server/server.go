@@ -38,6 +38,55 @@ import (
 
 const serverVersion = "3.0.0-dev"
 
+// aimuxInstructions is delivered to every MCP client on connect via server.WithInstructions().
+// This replaces the need for an external SKILL.md file — the server documents itself.
+const aimuxInstructions = `aimux — AI CLI Multiplexer (13 MCP tools, 12 CLIs, 23 think patterns)
+
+One MCP server that routes prompts to 12 AI coding CLIs with role-based routing,
+multi-model orchestration, structured reasoning, and deep investigation.
+
+## Tool Selection — "I need to..."
+
+| I need to...                         | Tool        | Key params                            |
+|--------------------------------------|-------------|---------------------------------------|
+| Run a prompt on an AI CLI            | exec        | prompt, role, cli, async              |
+| Get consensus from multiple models   | consensus   | topic, synthesize                     |
+| Have models debate a decision        | debate      | topic, max_turns                      |
+| Multi-turn discussion between CLIs   | dialog      | prompt, max_turns                     |
+| Structured reasoning/analysis        | think       | pattern (23 options)                  |
+| Deep investigation with tracking     | investigate | action, topic, domain                 |
+| Run a codebase audit                 | audit       | cwd, mode (quick/standard/deep)       |
+| Execute a project agent              | agent       | agent (name), prompt                  |
+| Chain multiple steps declaratively   | workflow    | steps (JSON), input                   |
+| Check async job status               | status      | job_id                                |
+| Manage sessions                      | sessions    | action (list/health/gc/cancel)        |
+| Discover available agents            | agents      | action (list/find)                    |
+| Deep research via Gemini             | deepresearch| topic                                 |
+
+## Roles (exec tool) — don't pick CLI manually, use role=
+coding → codex | codereview → gemini | debug → codex | secaudit → codex
+analyze → gemini | refactor → codex | testgen → codex | planner → codex
+If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable CLI.
+
+## Think Patterns (23) — use think tool with pattern=
+Core: think, critical_thinking, sequential_thinking, scientific_method,
+decision_framework, problem_decomposition, debugging_approach, mental_model,
+metacognitive_monitoring, structured_argumentation, collaborative_reasoning,
+recursive_thinking, domain_modeling, architecture_analysis, stochastic_algorithm,
+temporal_thinking, visual_reasoning
+Research: source_comparison, literature_review, peer_review,
+replication_analysis, experimental_loop (stateful), research_synthesis
+
+## Investigation — start → finding → assess → report → recall
+Domains auto-detected from topic: security, performance, architecture,
+debugging, research, generic. Cross-tool dispatch: assess auto-runs think.
+
+## Anti-Patterns
+- Don't specify cli= when role= is enough — let routing pick the best CLI
+- Don't use sync exec for tasks >30s — use async=true
+- Don't skip investigate for complex bugs — jumping to fix wastes time
+- Don't run consensus with 1 CLI — needs 2+ for comparison`
+
 // Server holds all dependencies for the MCP server.
 type Server struct {
 	cfg          *config.Config
@@ -155,6 +204,7 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		server.WithPromptCapabilities(true),
 		server.WithLogging(),
 		server.WithRecovery(),
+		server.WithInstructions(aimuxInstructions),
 	)
 
 	s.registerTools()
