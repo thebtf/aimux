@@ -54,6 +54,7 @@ func run() error {
 
 	// Create MCP server
 	srv := aimuxServer.New(cfg, log, registry, router)
+	defer srv.Shutdown()
 
 	// Select transport: env var MCP_TRANSPORT overrides config
 	transport := cfg.Server.Transport.Type
