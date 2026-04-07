@@ -1029,7 +1029,19 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 	switch action {
 	case "list":
 		agentList := s.agentReg.List()
-		data, _ := json.Marshal(map[string]any{"agents": agentList, "count": len(agentList)})
+		// Return summaries without full content (content can be 500KB+ total)
+		summaries := make([]map[string]any, len(agentList))
+		for i, a := range agentList {
+			summaries[i] = map[string]any{
+				"name":        a.Name,
+				"description": a.Description,
+				"role":        a.Role,
+				"domain":      a.Domain,
+				"source":      a.Source,
+				"tools":       a.Tools,
+			}
+		}
+		data, _ := json.Marshal(map[string]any{"agents": summaries, "count": len(summaries)})
 		return mcp.NewToolResultText(string(data)), nil
 
 	case "find":
