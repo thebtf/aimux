@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -40,8 +41,17 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 	remainingTurns := maxTurns * len(participants)
 	responseHint := budget / max(remainingTurns, 1)
 
+	// Load prior turn history for session resume.
 	var history []turnEntry
-	totalTurns := 0
+	if raw, ok := params.Extra["prior_turns"]; ok {
+		switch v := raw.(type) {
+		case []byte:
+			_ = json.Unmarshal(v, &history)
+		case string:
+			_ = json.Unmarshal([]byte(v), &history)
+		}
+	}
+	totalTurns := len(history) // continue numbering from prior session
 
 	for turn := 0; turn < maxTurns; turn++ {
 		for _, cli := range participants {
@@ -60,11 +70,13 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 						sb.WriteString(fmt.Sprintf("## %s (turn %d)\n\n%s\n\n", h.CLI, h.Turn, h.Content))
 					}
 					sb.WriteString(fmt.Sprintf("## Error at turn %d (%s)\n\n%s\n", totalTurns, cli, err.Error()))
+					historyJSON, _ := json.Marshal(history)
 					return &types.StrategyResult{
 						Content:      sb.String(),
 						Status:       "partial",
 						Turns:        totalTurns - 1,
 						Participants: participants,
+						TurnHistory:  historyJSON,
 					}, nil
 				}
 				return nil, fmt.Errorf("dialog turn %d (%s) failed: %w", totalTurns, cli, err)
@@ -84,11 +96,13 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 		sb.WriteString(fmt.Sprintf("## %s (turn %d)\n\n%s\n\n", h.CLI, h.Turn, h.Content))
 	}
 
+	historyJSON, _ := json.Marshal(history)
 	return &types.StrategyResult{
 		Content:      sb.String(),
 		Status:       "completed",
 		Turns:        totalTurns,
 		Participants: participants,
+		TurnHistory:  historyJSON,
 	}, nil
 }
 

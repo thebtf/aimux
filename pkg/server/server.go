@@ -1223,18 +1223,90 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("dialog requires at least 2 CLIs"), nil
 	}
 
+	sessionID := request.GetString("session_id", "")
+	cwd := request.GetString("cwd", "")
+
 	params := types.StrategyParams{
 		Prompt:   prompt,
 		CLIs:     enabled[:2],
 		MaxTurns: int(request.GetFloat("max_turns", 6)),
+		CWD:      cwd,
+	}
+
+	// Session resume: load prior turn history from existing session job.
+	if sessionID != "" {
+		existing := s.sessions.Get(sessionID)
+		if existing == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("session %q not found", sessionID)), nil
+		}
+		if cwd == "" {
+			params.CWD = existing.CWD
+		}
+		// Find prior turn history from the most recent completed job for this session.
+		priorTurns := s.findDialogTurnHistory(existing.ID)
+		if len(priorTurns) > 0 {
+			params.Extra = map[string]any{"prior_turns": priorTurns}
+		}
+		s.log.Info("dialog: resuming session=%s with %d prior bytes of turn history", sessionID, len(priorTurns))
+	}
+
+	// Create or reuse session for persistence.
+	var sess *session.Session
+	if sessionID != "" {
+		sess = s.sessions.Get(sessionID)
+	}
+	if sess == nil {
+		sess = s.sessions.Create("dialog", types.SessionModeOnceStateful, params.CWD)
+		s.sessions.Update(sess.ID, func(ss *session.Session) {
+			ss.Status = types.SessionStatusRunning
+		})
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "dialog", params)
 	if err != nil {
+		s.sessions.Update(sess.ID, func(ss *session.Session) {
+			ss.Status = types.SessionStatusFailed
+		})
 		return mcp.NewToolResultError(fmt.Sprintf("dialog failed: %v", err)), nil
 	}
-	data, _ := json.Marshal(result)
+
+	// Persist turn history in a job so it can be recalled on resume.
+	// Job content stores the JSON turn history; full dialog text is returned directly.
+	job := s.jobs.Create(sess.ID, "dialog")
+	s.jobs.StartJob(job.ID, 0)
+	turnContent := ""
+	if len(result.TurnHistory) > 0 {
+		turnContent = string(result.TurnHistory)
+	}
+	s.jobs.CompleteJob(job.ID, turnContent, 0)
+
+	s.sessions.Update(sess.ID, func(ss *session.Session) {
+		ss.Status = types.SessionStatusCompleted
+		ss.Turns = result.Turns
+	})
+
+	data, _ := json.Marshal(map[string]any{
+		"session_id":   sess.ID,
+		"status":       result.Status,
+		"turns":        result.Turns,
+		"content":      result.Content,
+		"participants": result.Participants,
+	})
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// findDialogTurnHistory scans jobs for the most recent dialog turn history
+// stored as JSON in job.Content for the given session.
+func (s *Server) findDialogTurnHistory(sessionID string) []byte {
+	jobs := s.jobs.ListBySession(sessionID)
+	// Walk in reverse to find the most recent completed dialog job with content.
+	for i := len(jobs) - 1; i >= 0; i-- {
+		j := jobs[i]
+		if j.Status == types.JobStatusCompleted && j.Content != "" {
+			return []byte(j.Content)
+		}
+	}
+	return nil
 }
 
 // --- Agents Handler ---
@@ -1800,6 +1872,15 @@ func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch failed: %v", researchErr)), nil
 	}
 	defer client.Close()
+
+	// Persist result to disk so investigate recall can cross-search it.
+	if !cacheHit {
+		cwd := request.GetString("cwd", "")
+		if cwd == "" {
+			cwd, _ = os.Getwd()
+		}
+		_ = deepresearch.SaveEntryToDisk(cwd, topic, outputFormat, model, nil, content)
+	}
 
 	result := map[string]any{
 		"topic":   topic,
