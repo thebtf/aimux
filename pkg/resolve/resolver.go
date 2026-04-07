@@ -20,12 +20,19 @@ func NewProfileResolver(profiles map[string]*config.CLIProfile) *ProfileResolver
 // ResolveSpawnArgs resolves complete SpawnArgs from CLI profile and prompt.
 // Returns error if CLI profile is not found.
 func (r *ProfileResolver) ResolveSpawnArgs(cli string, prompt string) (types.SpawnArgs, error) {
+	return r.ResolveSpawnArgsWithOpts(cli, prompt, "", "")
+}
+
+// ResolveSpawnArgsWithOpts resolves SpawnArgs with optional model and effort overrides.
+// When model or effort are non-empty they are passed to BuildPromptArgs so the
+// appropriate CLI flags are included. Implements types.ModelledCLIResolver.
+func (r *ProfileResolver) ResolveSpawnArgsWithOpts(cli string, prompt string, model string, effort string) (types.SpawnArgs, error) {
 	profile, ok := r.profiles[cli]
 	if !ok {
 		return types.SpawnArgs{}, fmt.Errorf("CLI %q not configured", cli)
 	}
 
-	args := BuildPromptArgs(profile, "", "", false, prompt)
+	args := BuildPromptArgs(profile, model, effort, false, prompt)
 
 	// Use resolved full path if available (found outside PATH by discovery)
 	command := CommandBinary(profile.Command.Base)
@@ -43,7 +50,7 @@ func (r *ProfileResolver) ResolveSpawnArgs(cli string, prompt string) (types.Spa
 	// Stdin piping for long prompts (Windows 8191 char limit)
 	if profile.StdinThreshold > 0 && len(prompt) > profile.StdinThreshold {
 		sa.Stdin = prompt
-		sa.Args = BuildPromptArgs(profile, "", "", false, "")
+		sa.Args = BuildPromptArgs(profile, model, effort, false, "")
 	}
 
 	return sa, nil

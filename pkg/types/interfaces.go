@@ -57,6 +57,14 @@ type CLIResolver interface {
 	ResolveSpawnArgs(cli string, prompt string) (SpawnArgs, error)
 }
 
+// ModelledCLIResolver extends CLIResolver with model and effort overrides.
+// Implementations that support per-agent model/effort selection implement this
+// optional interface; callers check via type assertion.
+type ModelledCLIResolver interface {
+	CLIResolver
+	ResolveSpawnArgsWithOpts(cli string, prompt string, model string, effort string) (SpawnArgs, error)
+}
+
 // StrategyParams is the input for orchestrator strategies.
 type StrategyParams struct {
 	Prompt    string         `json:"prompt"`
