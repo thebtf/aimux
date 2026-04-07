@@ -213,31 +213,62 @@ func (s *pipeSession) Send(ctx context.Context, prompt string) (*types.Result, e
 	}
 
 	// Read response with inactivity timeout (500ms without new data = response complete).
-	// Pipes return partial reads — cannot use buffer-fill as completion signal.
+	// A single long-running reader goroutine owns its buffer — no shared-slice data race.
+	// On timeout/cancel we close stdout to unblock the blocking Read call.
+	const inactivityTimeout = 500 * time.Millisecond
+
+	type chunk struct {
+		data []byte
+		err  error
+	}
+	readCh := make(chan chunk, 16)
+
+	// Single reader goroutine — owns its own tmp buffer exclusively.
+	go func() {
+		tmp := make([]byte, 4096)
+		for {
+			n, readErr := s.stdout.Read(tmp)
+			if n > 0 {
+				cp := make([]byte, n)
+				copy(cp, tmp[:n])
+				readCh <- chunk{data: cp}
+			}
+			if readErr != nil {
+				readCh <- chunk{err: readErr}
+				return
+			}
+		}
+	}()
+
 	var buf bytes.Buffer
-	tmp := make([]byte, 4096)
-	inactivityTimeout := 500 * time.Millisecond
-	readCh := make(chan readResult, 1)
+	timer := time.NewTimer(inactivityTimeout)
+	defer timer.Stop()
 
 	for {
-		go func() {
-			n, err := s.stdout.Read(tmp)
-			readCh <- readResult{n, err}
-		}()
-
 		select {
-		case r := <-readCh:
-			if r.n > 0 {
-				buf.Write(tmp[:r.n])
+		case c := <-readCh:
+			if len(c.data) > 0 {
+				buf.Write(c.data)
+				// Reset inactivity timer — more data may be coming.
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(inactivityTimeout)
 			}
-			if r.err != nil {
+			if c.err != nil {
+				// Pipe closed or EOF — reader goroutine has exited.
 				goto done
 			}
-			// Got data — reset inactivity timer, continue reading
-		case <-time.After(inactivityTimeout):
-			// No data for 500ms — response complete
+		case <-timer.C:
+			// No data for 500ms — treat as end of response.
+			// Close stdout to unblock the reader goroutine so it exits cleanly.
+			_ = s.stdout.Close()
 			goto done
 		case <-ctx.Done():
+			_ = s.stdout.Close()
 			goto done
 		}
 	}
@@ -247,11 +278,6 @@ done:
 		Content:    buf.String(),
 		DurationMS: time.Since(start).Milliseconds(),
 	}, nil
-}
-
-type readResult struct {
-	n   int
-	err error
 }
 
 func (s *pipeSession) Stream(ctx context.Context, prompt string) (<-chan types.Event, error) {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -52,6 +54,8 @@ type Server struct {
 	promptEng    *prompt.Engine
 	hooks        *hooks.Registry
 	metrics      *metrics.Collector
+	store        *session.Store
+	gcCancel     context.CancelFunc
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -71,6 +75,41 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		executor: selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
 	}
 	s.metrics = metrics.New()
+
+	// Initialize SQLite persistence and WAL recovery
+	dbPath := config.ExpandPath(cfg.Server.DBPath)
+	if dbPath != "" {
+		store, err := session.NewStore(dbPath)
+		if err != nil {
+			log.Warn("SQLite persistence unavailable: %v (continuing in-memory only)", err)
+		} else {
+			s.store = store
+			log.Info("SQLite persistence enabled: %s", dbPath)
+
+			// Recover state from WAL if exists
+			walPath := dbPath + ".wal.log"
+			if err := session.RecoverFromWAL(walPath, s.sessions, s.jobs); err != nil {
+				log.Warn("WAL recovery: %v", err)
+			}
+
+			// Start periodic snapshot (every 30s)
+			go s.runSnapshotLoop(store)
+		}
+	}
+
+	// Start GC reaper for expired sessions
+	gcCtx, gcCancel := context.WithCancel(context.Background())
+	s.gcCancel = gcCancel
+	ttl := cfg.Server.SessionTTLHours
+	if ttl <= 0 {
+		ttl = 24
+	}
+	gcInterval := cfg.Server.GCIntervalSeconds
+	if gcInterval <= 0 {
+		gcInterval = 300
+	}
+	gc := session.NewGCReaper(s.sessions, s.jobs, log, ttl)
+	go gc.Run(gcCtx, time.Duration(gcInterval)*time.Second)
 
 	// Initialize CLI resolver for profile-aware command resolution
 	cliResolver := resolve.NewProfileResolver(cfg.CLIProfiles)
@@ -131,17 +170,66 @@ func (s *Server) ServeStdio() error {
 }
 
 // ServeSSE starts the MCP server with Server-Sent Events transport.
+// WARNING: No authentication is applied. Bind to localhost unless you add auth middleware.
 func (s *Server) ServeSSE(addr string) error {
+	addr = ensureLocalhostBinding(addr)
 	s.log.Info("MCP server starting on SSE at %s (aimux v%s)", addr, serverVersion)
+	if !isLocalhostAddr(addr) {
+		s.log.Warn("SSE transport bound to non-localhost address %s — no authentication is configured", addr)
+	}
 	sseServer := server.NewSSEServer(s.mcp)
 	return sseServer.Start(addr)
 }
 
 // ServeHTTP starts the MCP server with StreamableHTTP transport.
+// WARNING: No authentication is applied. Bind to localhost unless you add auth middleware.
 func (s *Server) ServeHTTP(addr string, opts ...server.StreamableHTTPOption) error {
+	addr = ensureLocalhostBinding(addr)
 	s.log.Info("MCP server starting on HTTP at %s (aimux v%s)", addr, serverVersion)
+	if !isLocalhostAddr(addr) {
+		s.log.Warn("HTTP transport bound to non-localhost address %s — no authentication is configured", addr)
+	}
 	httpServer := server.NewStreamableHTTPServer(s.mcp, opts...)
 	return httpServer.Start(addr)
+}
+
+// ensureLocalhostBinding defaults to localhost if only a port is specified (e.g., ":8080" → "127.0.0.1:8080").
+func ensureLocalhostBinding(addr string) string {
+	if len(addr) > 0 && addr[0] == ':' {
+		return "127.0.0.1" + addr
+	}
+	return addr
+}
+
+// isLocalhostAddr checks if the address is bound to localhost/127.0.0.1.
+func isLocalhostAddr(addr string) bool {
+	return strings.HasPrefix(addr, "127.0.0.1") || strings.HasPrefix(addr, "localhost") || strings.HasPrefix(addr, "[::1]")
+}
+
+// runSnapshotLoop periodically saves in-memory state to SQLite.
+func (s *Server) runSnapshotLoop(store *session.Store) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if err := store.SnapshotAll(s.sessions, s.jobs); err != nil {
+			s.log.Warn("snapshot failed: %v", err)
+		}
+	}
+}
+
+// Shutdown stops background services (GC reaper, snapshot) and closes persistence.
+func (s *Server) Shutdown() {
+	if s.gcCancel != nil {
+		s.gcCancel()
+	}
+	if s.store != nil {
+		// Final snapshot before close
+		if err := s.store.SnapshotAll(s.sessions, s.jobs); err != nil {
+			s.log.Warn("final snapshot failed: %v", err)
+		}
+		s.store.Close()
+	}
 }
 
 // --- Tool Registration ---
@@ -1072,6 +1160,9 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 	}
 
 	if async {
+		if err := s.checkConcurrencyLimit(); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		sess := s.sessions.Create("audit", types.SessionModeOnceStateless, cwd)
 		job := s.jobs.Create(sess.ID, "audit")
 		go func() {

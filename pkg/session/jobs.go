@@ -125,6 +125,13 @@ func (m *JobManager) CompleteJob(id, content string, exitCode int) bool {
 	j.ExitCode = exitCode
 	j.PID = 0
 	j.CompletedAt = &now
+
+	// Clean up cancel func to prevent memory leak
+	if cancel, ok := m.cancels[id]; ok {
+		cancel()
+		delete(m.cancels, id)
+	}
+
 	return true
 }
 
@@ -142,6 +149,13 @@ func (m *JobManager) FailJob(id string, err *types.TypedError) bool {
 	j.Error = err
 	j.PID = 0
 	j.CompletedAt = &now
+
+	// Clean up cancel func to prevent memory leak
+	if cancel, ok := m.cancels[id]; ok {
+		cancel()
+		delete(m.cancels, id)
+	}
+
 	return true
 }
 
