@@ -2,6 +2,7 @@
 name: goose
 binary: goose
 display_name: "Goose (Block)"
+capabilities: [coding, debugging]
 
 features:
   streaming: true

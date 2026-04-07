@@ -2,6 +2,7 @@
 name: droid
 binary: droid
 display_name: "Droid"
+capabilities: [coding]
 
 features:
   streaming: true

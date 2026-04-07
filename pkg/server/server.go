@@ -799,7 +799,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		}
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
-		go s.executeJob(jobCtx, job.ID, sess.ID, args, cb, profile.OutputFormat)
+		go s.executeJob(jobCtx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
 		result := map[string]any{
 			"job_id":     job.ID,
@@ -810,7 +810,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultText(string(data)), nil
 	}
 
-	s.executeJob(ctx, job.ID, sess.ID, args, cb, profile.OutputFormat)
+	s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
 	j := s.jobs.Get(job.ID)
 	if j == nil {
@@ -861,65 +861,232 @@ func (s *Server) executePairCoding(ctx context.Context, jobID, sessionID string,
 }
 
 // executeJob runs a CLI process, parses output, and updates job/session state.
-func (s *Server) executeJob(ctx context.Context, jobID, sessionID string, args types.SpawnArgs, cb *executor.CircuitBreaker, outputFormat string) {
+// When role is non-empty the router's fallback list is consulted on transient
+// failures (rate limit, auth error, connection error) — up to 2 additional CLIs
+// are tried before giving up.
+func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, args types.SpawnArgs, cb *executor.CircuitBreaker, outputFormat string) {
 	s.jobs.StartJob(jobID, 0)
 	s.sessions.Update(sessionID, func(sess *session.Session) {
 		sess.Status = types.SessionStatusRunning
 	})
 
-	result, err := s.executor.Run(ctx, args)
+	// Build the ordered list of CLIs to try. The primary (args.CLI) is always
+	// first; fallbacks from the router follow (max 2 additional attempts).
+	candidates := s.buildFallbackCandidates(role, args.CLI, cb)
 
-	if err != nil {
-		cb.RecordFailure(false)
-		s.metrics.RecordRequest(args.CLI, 0, true)
-		s.jobs.FailJob(jobID, types.NewExecutorError(err.Error(), err, ""))
+	var (
+		lastErr        *types.TypedError
+		lastValidation *executor.TurnValidation
+	)
+
+	for attempt, cand := range candidates {
+		currentArgs := args
+		currentArgs.CLI = cand.CLI
+		currentCB := s.breakers.Get(cand.CLI)
+
+		// Resolve profile for the candidate CLI to get correct output format.
+		currentFormat := outputFormat
+		if cand.CLI != args.CLI {
+			if p, err := s.registry.Get(cand.CLI); err == nil {
+				currentFormat = p.OutputFormat
+				// Rebuild args with the candidate profile so flags/binary are correct.
+				currentArgs = s.rebuildArgsForCLI(args, p)
+			}
+		}
+
+		result, err := s.executor.Run(ctx, currentArgs)
+
+		if err != nil {
+			currentCB.RecordFailure(false)
+			s.metrics.RecordRequest(cand.CLI, 0, true)
+			lastErr = types.NewExecutorError(err.Error(), err, "")
+			s.log.Warn("exec failed: job=%s cli=%s attempt=%d error=%v", jobID, cand.CLI, attempt+1, err)
+			if attempt < len(candidates)-1 && isRetriableError(err.Error()) {
+				s.log.Info("exec: cli=%s failed (retriable), trying fallback", cand.CLI)
+				continue
+			}
+			s.jobs.FailJob(jobID, lastErr)
+			s.sessions.Update(sessionID, func(sess *session.Session) {
+				sess.Status = types.SessionStatusFailed
+			})
+			s.log.Error("exec failed (no more fallbacks): job=%s error=%v", jobID, err)
+			return
+		}
+
+		currentCB.RecordSuccess()
+
+		if result.Error != nil {
+			s.metrics.RecordRequest(cand.CLI, 0, true)
+			lastErr = result.Error
+			s.log.Warn("exec partial: job=%s cli=%s attempt=%d error=%v", jobID, cand.CLI, attempt+1, result.Error)
+			if attempt < len(candidates)-1 && isRetriableError(result.Error.Error()) {
+				currentCB.RecordFailure(false)
+				s.log.Info("exec: cli=%s partial error (retriable), trying fallback", cand.CLI)
+				continue
+			}
+			s.jobs.FailJob(jobID, result.Error)
+			s.sessions.Update(sessionID, func(sess *session.Session) {
+				sess.Status = types.SessionStatusFailed
+			})
+			return
+		}
+
+		// Parse CLI output according to profile format (FR-1, FR-2, FR-3)
+		parsed, cliSessionID := parser.ParseContent(result.Content, currentFormat)
+		if cliSessionID != "" {
+			result.CLISessionID = cliSessionID
+		}
+
+		// Validate turn content quality
+		validation := executor.ValidateTurnContent(parsed, "", result.ExitCode)
+		if !validation.Valid {
+			s.metrics.RecordRequest(cand.CLI, 0, true)
+			lastValidation = &validation
+			s.log.Warn("exec validation failed: job=%s cli=%s attempt=%d errors=%v", jobID, cand.CLI, attempt+1, validation.Errors)
+			if attempt < len(candidates)-1 && isRetriableValidationError(validation.Errors) {
+				currentCB.RecordFailure(false)
+				s.log.Info("exec: cli=%s validation failed (retriable), trying fallback", cand.CLI)
+				continue
+			}
+			s.jobs.FailJob(jobID, types.NewExecutorError(validation.Errors[0], nil, "validation"))
+			s.sessions.Update(sessionID, func(sess *session.Session) {
+				sess.Status = types.SessionStatusFailed
+			})
+			return
+		}
+
+		if len(validation.Warnings) > 0 {
+			s.log.Warn("exec warnings: job=%s cli=%s warnings=%v", jobID, cand.CLI, validation.Warnings)
+		}
+
+		s.metrics.RecordRequest(cand.CLI, result.DurationMS, false)
+		s.jobs.CompleteJob(jobID, parsed, result.ExitCode)
 		s.sessions.Update(sessionID, func(sess *session.Session) {
-			sess.Status = types.SessionStatusFailed
+			sess.Status = types.SessionStatusCompleted
+			sess.Turns++
 		})
-		s.log.Error("exec failed: job=%s error=%v", jobID, err)
+		s.log.Info("exec complete: job=%s cli=%s attempt=%d exit=%d raw=%d parsed=%d",
+			jobID, cand.CLI, attempt+1, result.ExitCode, len(result.Content), len(parsed))
 		return
 	}
 
-	cb.RecordSuccess()
-
-	if result.Error != nil {
-		s.metrics.RecordRequest(args.CLI, 0, true)
-		s.jobs.FailJob(jobID, result.Error)
-		s.sessions.Update(sessionID, func(sess *session.Session) {
-			sess.Status = types.SessionStatusFailed
-		})
-		s.log.Warn("exec partial: job=%s error=%v", jobID, result.Error)
-		return
+	// All candidates exhausted — surface the last known error.
+	finalErr := lastErr
+	if finalErr == nil && lastValidation != nil {
+		finalErr = types.NewExecutorError(lastValidation.Errors[0], nil, "validation")
 	}
-
-	// Parse CLI output according to profile format (FR-1, FR-2, FR-3)
-	parsed, cliSessionID := parser.ParseContent(result.Content, outputFormat)
-	if cliSessionID != "" {
-		result.CLISessionID = cliSessionID
+	if finalErr == nil {
+		finalErr = types.NewExecutorError("all fallback CLIs exhausted", nil, "fallback")
 	}
-
-	// Validate turn content quality
-	validation := executor.ValidateTurnContent(parsed, "", result.ExitCode)
-	if !validation.Valid {
-		s.metrics.RecordRequest(args.CLI, 0, true)
-		s.jobs.FailJob(jobID, types.NewExecutorError(validation.Errors[0], nil, "validation"))
-		s.sessions.Update(sessionID, func(sess *session.Session) {
-			sess.Status = types.SessionStatusFailed
-		})
-		s.log.Warn("exec validation failed: job=%s errors=%v", jobID, validation.Errors)
-		return
-	}
-	if len(validation.Warnings) > 0 {
-		s.log.Warn("exec warnings: job=%s warnings=%v", jobID, validation.Warnings)
-	}
-
-	s.metrics.RecordRequest(args.CLI, result.DurationMS, false)
-	s.jobs.CompleteJob(jobID, parsed, result.ExitCode)
+	s.jobs.FailJob(jobID, finalErr)
 	s.sessions.Update(sessionID, func(sess *session.Session) {
-		sess.Status = types.SessionStatusCompleted
-		sess.Turns++
+		sess.Status = types.SessionStatusFailed
 	})
-	s.log.Info("exec complete: job=%s exit=%d raw=%d parsed=%d", jobID, result.ExitCode, len(result.Content), len(parsed))
+	s.log.Error("exec: all fallbacks failed: job=%s error=%v", jobID, finalErr)
+}
+
+// buildFallbackCandidates returns an ordered list of CLIs to try for a job.
+// The primary is always first. When role is non-empty, up to 2 additional
+// capable CLIs are appended (those whose circuit breakers allow requests).
+func (s *Server) buildFallbackCandidates(role, primaryCLI string, primaryCB *executor.CircuitBreaker) []types.RolePreference {
+	const maxFallbacks = 2
+
+	primary := types.RolePreference{CLI: primaryCLI}
+
+	if role == "" {
+		return []types.RolePreference{primary}
+	}
+
+	all := s.router.ResolveWithFallback(role)
+
+	// Ensure primary is always first even if router returned a different order.
+	ordered := make([]types.RolePreference, 0, 1+maxFallbacks)
+	ordered = append(ordered, primary)
+
+	added := 0
+	for _, pref := range all {
+		if pref.CLI == primaryCLI || added >= maxFallbacks {
+			continue
+		}
+		// Only include CLIs whose breakers allow requests.
+		if s.breakers.Get(pref.CLI).Allow() {
+			ordered = append(ordered, pref)
+			added++
+		}
+	}
+
+	return ordered
+}
+
+// rebuildArgsForCLI creates a new SpawnArgs using the fallback CLI's profile
+// binary and command — preserving prompt, CWD, timeout, and stdin from the
+// original args. Flags are rebuilt via resolve so they match the new profile.
+func (s *Server) rebuildArgsForCLI(orig types.SpawnArgs, profile *config.CLIProfile) types.SpawnArgs {
+	rebuilt := types.SpawnArgs{
+		CLI:            profile.Name,
+		Command:        resolve.CommandBinary(profile.Command.Base),
+		Args:           resolve.BuildPromptArgs(profile, "", "", false, orig.Stdin),
+		CWD:            orig.CWD,
+		TimeoutSeconds: orig.TimeoutSeconds,
+		Stdin:          orig.Stdin,
+	}
+	// Extract the prompt from original args: if Stdin was used as the prompt
+	// (stdin piping mode), keep it; otherwise try to recover from Args.
+	if orig.Stdin == "" {
+		// Prompt was embedded in args — use the last positional arg as prompt.
+		prompt := extractPromptFromArgs(orig.Args)
+		rebuilt.Args = resolve.BuildPromptArgs(profile, "", "", false, prompt)
+	}
+	return rebuilt
+}
+
+// extractPromptFromArgs returns the last non-flag argument from an args slice,
+// which is where positional prompts are placed by resolve.BuildPromptArgs.
+func extractPromptFromArgs(args []string) string {
+	for i := len(args) - 1; i >= 0; i-- {
+		if !strings.HasPrefix(args[i], "-") {
+			return args[i]
+		}
+	}
+	return ""
+}
+
+// isRetriableError returns true for transient infrastructure errors where a
+// different CLI might succeed (rate limits, auth failures, connection errors).
+func isRetriableError(msg string) bool {
+	lower := strings.ToLower(msg)
+	retriable := []string{
+		"rate limit",
+		"rate_limit",
+		"quota exceeded",
+		"quota_exceeded",
+		"429",
+		"authentication",
+		"auth",
+		"connection refused",
+		"connection timeout",
+		"etimedout",
+		"econnrefused",
+		"enotfound",
+		"dns resolution",
+	}
+	for _, pattern := range retriable {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRetriableValidationError returns true when validation errors indicate a
+// transient infrastructure problem rather than a permanent content issue.
+func isRetriableValidationError(errors []string) bool {
+	for _, e := range errors {
+		if isRetriableError(e) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1172,7 +1339,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			}
 			jobCtx, jobCancel := context.WithCancel(context.Background())
 			s.jobs.RegisterCancel(job.ID, jobCancel)
-			go s.executeJob(jobCtx, job.ID, sess.ID, args, cb, profile.OutputFormat)
+			go s.executeJob(jobCtx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 			data, _ := json.Marshal(map[string]any{
 				"agent":      agentName,
 				"job_id":     job.ID,
@@ -1182,7 +1349,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultText(string(data)), nil
 		}
 
-		s.executeJob(ctx, job.ID, sess.ID, args, cb, profile.OutputFormat)
+		s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
 		j := s.jobs.Get(job.ID)
 		if j == nil {

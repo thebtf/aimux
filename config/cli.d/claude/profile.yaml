@@ -2,6 +2,7 @@
 name: claude
 binary: claude
 display_name: "Claude (Anthropic)"
+capabilities: [coding, review, analysis, debugging, planning, research]
 
 features:
   streaming: true

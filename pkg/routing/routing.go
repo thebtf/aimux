@@ -4,8 +4,10 @@ package routing
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
+	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -39,6 +41,7 @@ var AdvisoryRoles = map[string]bool{
 type Router struct {
 	defaults    map[string]types.RolePreference
 	enabledCLIs map[string]bool
+	profiles    map[string]*config.CLIProfile
 }
 
 // NewRouter creates a router with configured defaults and enabled CLIs.
@@ -52,6 +55,13 @@ func NewRouter(defaults map[string]types.RolePreference, enabledCLIs []string) *
 		defaults:    defaults,
 		enabledCLIs: enabled,
 	}
+}
+
+// NewRouterWithProfiles creates a router that can use capability-based fallback.
+func NewRouterWithProfiles(defaults map[string]types.RolePreference, enabledCLIs []string, profiles map[string]*config.CLIProfile) *Router {
+	r := NewRouter(defaults, enabledCLIs)
+	r.profiles = profiles
+	return r
 }
 
 // Resolve finds the best CLI+model+effort for a given role.
@@ -95,6 +105,72 @@ func IsAdvisory(role string) bool {
 // isEnabled checks if a CLI is in the enabled set.
 func (r *Router) isEnabled(cli string) bool {
 	return r.enabledCLIs[cli]
+}
+
+// ResolveWithFallback returns an ordered list of CLIs to try for a role.
+// The primary CLI (from Resolve) comes first. Fallbacks are sorted so that
+// CLIs whose Capabilities list contains the role name come before others.
+// CLIs that are not enabled are excluded entirely.
+func (r *Router) ResolveWithFallback(role string) []types.RolePreference {
+	// Primary
+	primary, err := r.Resolve(role)
+	if err != nil {
+		// No primary available; still build the fallback list from all enabled CLIs.
+		primary = types.RolePreference{}
+	}
+
+	type candidate struct {
+		pref         types.RolePreference
+		hasCapability bool
+	}
+
+	var fallbacks []candidate
+	for cli := range r.enabledCLIs {
+		if cli == primary.CLI {
+			continue // will be prepended as primary
+		}
+		hasCapability := r.cliHasCapability(cli, role)
+		fallbacks = append(fallbacks, candidate{
+			pref:         types.RolePreference{CLI: cli},
+			hasCapability: hasCapability,
+		})
+	}
+
+	// Stable sort: capability-matching CLIs first, then the rest. Within each
+	// group, sort by name for deterministic ordering in tests.
+	sort.SliceStable(fallbacks, func(i, j int) bool {
+		if fallbacks[i].hasCapability != fallbacks[j].hasCapability {
+			return fallbacks[i].hasCapability // capability-match goes first
+		}
+		return fallbacks[i].pref.CLI < fallbacks[j].pref.CLI
+	})
+
+	result := make([]types.RolePreference, 0, 1+len(fallbacks))
+	if primary.CLI != "" {
+		result = append(result, primary)
+	}
+	for _, c := range fallbacks {
+		result = append(result, c.pref)
+	}
+	return result
+}
+
+// cliHasCapability checks whether a CLI's profile declares the given capability.
+// Returns false when profiles are not loaded or the CLI has no profile.
+func (r *Router) cliHasCapability(cli, capability string) bool {
+	if r.profiles == nil {
+		return false
+	}
+	profile, ok := r.profiles[cli]
+	if !ok {
+		return false
+	}
+	for _, cap := range profile.Capabilities {
+		if cap == capability {
+			return true
+		}
+	}
+	return false
 }
 
 // parseEnvPreference parses "cli:model:effort" format from env vars.

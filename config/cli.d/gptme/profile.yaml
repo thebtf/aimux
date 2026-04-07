@@ -2,6 +2,7 @@
 name: gptme
 binary: gptme
 display_name: "gptme"
+capabilities: [coding, analysis]
 
 features:
   streaming: false

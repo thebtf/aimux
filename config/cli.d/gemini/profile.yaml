@@ -2,6 +2,7 @@
 name: gemini
 binary: gemini
 display_name: "Gemini (Google)"
+capabilities: [analysis, review, research, debugging]
 
 features:
   streaming: true

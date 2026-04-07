@@ -2,6 +2,7 @@
 name: codex
 binary: codex
 display_name: "Codex (OpenAI)"
+capabilities: [coding, review, analysis, debugging, planning]
 
 features:
   streaming: true

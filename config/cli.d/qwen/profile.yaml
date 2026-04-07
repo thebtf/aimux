@@ -2,6 +2,7 @@
 name: qwen
 binary: qwen
 display_name: "Qwen (Alibaba)"
+capabilities: [coding, review, analysis]
 
 features:
   streaming: true

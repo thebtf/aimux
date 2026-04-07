@@ -2,6 +2,7 @@
 name: continue
 binary: cn
 display_name: "Continue"
+capabilities: [coding, review, analysis]
 
 features:
   streaming: false
