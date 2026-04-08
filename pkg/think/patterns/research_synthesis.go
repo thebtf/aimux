@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -19,6 +20,15 @@ func (p *researchSynthesisPattern) Description() string {
 }
 
 func (p *researchSynthesisPattern) Validate(input map[string]any) (map[string]any, error) {
+	// Parse JSON string params from MCP schema
+	if s, ok := input["findings"].(string); ok && s != "" {
+		var parsed []any
+		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+			return nil, fmt.Errorf("findings: invalid JSON: %w", err)
+		}
+		input["findings"] = parsed
+	}
+
 	topicRaw, ok := input["topic"]
 	if !ok {
 		return nil, fmt.Errorf("missing required field: topic")

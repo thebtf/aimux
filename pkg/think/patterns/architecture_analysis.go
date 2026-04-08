@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"encoding/json"
 	"fmt"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -20,6 +21,15 @@ func (p *architectureAnalysisPattern) Description() string {
 }
 
 func (p *architectureAnalysisPattern) Validate(input map[string]any) (map[string]any, error) {
+	// Parse JSON string params from MCP schema
+	if s, ok := input["components"].(string); ok && s != "" {
+		var parsed []any
+		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+			return nil, fmt.Errorf("components: invalid JSON: %w", err)
+		}
+		input["components"] = parsed
+	}
+
 	componentsRaw, ok := input["components"]
 	if !ok {
 		return nil, fmt.Errorf("missing required field: components")
