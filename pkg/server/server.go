@@ -46,47 +46,59 @@ const aimuxInstructions = `aimux — AI CLI Multiplexer (13 MCP tools, 12 CLIs, 
 One MCP server that routes prompts to 12 AI coding CLIs with role-based routing,
 multi-model orchestration, structured reasoning, and deep investigation.
 
+## Skill-Based Workflows (MCP Prompts)
+
+aimux provides deep workflow skills as MCP prompts. Each skill is a multi-phase
+orchestration guide with hard gates, exact tool parameters, and cross-skill routing.
+
+| Skill Prompt | Purpose |
+|---|---|
+| aimux-debug | 5-phase debug: reproduce → investigate → root-cause → fix → verify |
+| aimux-review | Code review with CLI-adaptive consensus/peer_review fallback |
+| aimux-audit | Codebase audit with P0-P3 triage routing to debug/security/review |
+| aimux-security | 10-category security checklist with investigate integration |
+| aimux-research | 4-phase pipeline: literature → comparison → adversarial → synthesis |
+| aimux-consensus | Multi-model consensus with "consensus ≠ correctness" warning |
+| aimux-investigate | Investigation protocol with domain auto-detect and convergence |
+| aimux-delegate | Delegation decision tree: task size → routing (direct/exec/agent) |
+| aimux-tdd | TDD workflow: RED gate → GREEN gate → IMPROVE → coverage |
+| aimux-workflow | Declarative multi-step pipeline builder |
+| aimux-agent-exec | Agent-first execution: match task → agent, exec as fallback |
+| aimux-guide | Complete reference: tools, roles, patterns |
+| aimux-background | Background async execution with role routing |
+
+Use these prompts for structured guidance. Each injects live data (your CLIs, metrics,
+past reports) and adapts to your environment.
+
 ## Tool Selection — "I need to..."
 
-| I need to...                         | Tool        | Key params                            |
-|--------------------------------------|-------------|---------------------------------------|
-| Run a prompt on an AI CLI            | exec        | prompt, role, cli, async              |
-| Get consensus from multiple models   | consensus   | topic, synthesize                     |
-| Have models debate a decision        | debate      | topic, max_turns                      |
-| Multi-turn discussion between CLIs   | dialog      | prompt, max_turns                     |
-| Structured reasoning/analysis        | think       | pattern (23 options)                  |
-| Deep investigation with tracking     | investigate | action, topic, domain                 |
-| Run a codebase audit                 | audit       | cwd, mode (quick/standard/deep)       |
-| Execute a project agent              | agent       | agent (name), prompt                  |
-| Chain multiple steps declaratively   | workflow    | steps (JSON), input                   |
-| Check async job status               | status      | job_id                                |
-| Manage sessions                      | sessions    | action (list/health/gc/cancel)        |
-| Discover available agents            | agents      | action (list/find)                    |
-| Deep research via Gemini             | deepresearch| topic                                 |
+| I need to... | Tool | Key params |
+|---|---|---|
+| Run a prompt on an AI CLI | exec | prompt, role, cli, async |
+| Get consensus from multiple models | consensus | topic, synthesize |
+| Have models debate a decision | debate | topic, max_turns |
+| Multi-turn discussion between CLIs | dialog | prompt, max_turns |
+| Structured reasoning/analysis | think | pattern (23 options) |
+| Deep investigation with tracking | investigate | action, topic, domain |
+| Run a codebase audit | audit | cwd, mode (quick/standard/deep) |
+| Execute a project agent | agent | agent (name), prompt |
+| Chain multiple steps declaratively | workflow | steps (JSON), input |
+| Check async job status | status | job_id |
+| Manage sessions | sessions | action (list/health/gc/cancel) |
+| Discover available agents | agents | action (list/find) |
+| Deep research via Gemini | deepresearch | topic |
 
 ## Roles (exec tool) — don't pick CLI manually, use role=
 coding → codex | codereview → gemini | debug → codex | secaudit → codex
 analyze → gemini | refactor → codex | testgen → codex | planner → codex
 If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable CLI.
 
-## Think Patterns (23) — use think tool with pattern=
-Core: think, critical_thinking, sequential_thinking, scientific_method,
-decision_framework, problem_decomposition, debugging_approach, mental_model,
-metacognitive_monitoring, structured_argumentation, collaborative_reasoning,
-recursive_thinking, domain_modeling, architecture_analysis, stochastic_algorithm,
-temporal_thinking, visual_reasoning
-Research: source_comparison, literature_review, peer_review,
-replication_analysis, experimental_loop (stateful), research_synthesis
-
-## Investigation — start → finding → assess → report → recall
-Domains auto-detected from topic: security, performance, architecture,
-debugging, research, generic. Cross-tool dispatch: assess auto-runs think.
-
 ## Anti-Patterns
 - Don't specify cli= when role= is enough — let routing pick the best CLI
 - Don't use sync exec for tasks >30s — use async=true
 - Don't skip investigate for complex bugs — jumping to fix wastes time
-- Don't run consensus with 1 CLI — needs 2+ for comparison`
+- Don't run consensus with 1 CLI — needs 2+ for comparison
+- Don't call exec for tasks an agent can handle — use aimux-agent-exec first`
 
 // Server holds all dependencies for the MCP server.
 type Server struct {
