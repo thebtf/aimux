@@ -237,6 +237,9 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		server.WithInstructions(aimuxInstructions),
 	)
 
+	// Enable sampling capability — allows think patterns to request LLM calls from the client.
+	s.mcp.EnableSampling()
+
 	s.registerTools()
 	s.registerResources()
 	s.registerPrompts()

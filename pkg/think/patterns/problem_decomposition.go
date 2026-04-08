@@ -1,16 +1,25 @@
 package patterns
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
 
-type problemDecompositionPattern struct{}
+type problemDecompositionPattern struct {
+	sampling think.SamplingProvider
+}
 
 // NewProblemDecompositionPattern returns the "problem_decomposition" pattern handler.
 func NewProblemDecompositionPattern() think.PatternHandler { return &problemDecompositionPattern{} }
+
+// SetSampling injects the sampling provider. Implements think.SamplingAwareHandler.
+func (p *problemDecompositionPattern) SetSampling(provider think.SamplingProvider) {
+	p.sampling = provider
+}
 
 func (p *problemDecompositionPattern) Name() string { return "problem_decomposition" }
 
@@ -61,6 +70,18 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 		methodology = v
 	}
 
+	// When subProblems is absent/empty and a sampling provider is available,
+	// ask the LLM to decompose the problem and derive subProblems + dependencies.
+	subProblemsProvided := countSlice("subProblems") > 0
+	if !subProblemsProvided && p.sampling != nil {
+		generated, err := p.generateDecomposition(problem)
+		if err == nil && generated != nil {
+			// Merge generated data into validInput so the rest of Handle uses it.
+			validInput = mergeGenerated(validInput, generated)
+		}
+		// On error: fall through silently — graceful degradation.
+	}
+
 	data := map[string]any{
 		"problem":          problem,
 		"methodology":      methodology,
@@ -87,6 +108,56 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 	}
 
 	return think.MakeThinkResult("problem_decomposition", data, sessionID, nil, "", []string{"totalComponents"}), nil
+}
+
+// samplingDecomposition is the JSON shape we ask the LLM to return.
+type samplingDecomposition struct {
+	SubProblems  []map[string]any `json:"subProblems"`
+	Dependencies []map[string]any `json:"dependencies"`
+}
+
+// generateDecomposition calls the sampling provider to auto-decompose problem.
+// Returns nil, error on any failure so the caller can gracefully degrade.
+func (p *problemDecompositionPattern) generateDecomposition(problem string) (*samplingDecomposition, error) {
+	prompt := fmt.Sprintf(
+		`Decompose this problem into 3-7 sub-problems with dependencies. `+
+			`Problem: %s. `+
+			`Return JSON: {"subProblems": [{"id": "sp1", "description": "..."}], `+
+			`"dependencies": [{"from": "sp1", "to": "sp2"}]}`,
+		problem,
+	)
+	messages := []think.SamplingMessage{
+		{Role: "user", Content: prompt},
+	}
+	raw, err := p.sampling.RequestSampling(context.Background(), messages, 2000)
+	if err != nil {
+		return nil, err
+	}
+	var result samplingDecomposition
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil, fmt.Errorf("sampling JSON parse failed: %w", err)
+	}
+	return &result, nil
+}
+
+// mergeGenerated returns a new validInput map with subProblems and dependencies
+// populated from the sampling result (preserves existing keys unchanged).
+func mergeGenerated(base map[string]any, generated *samplingDecomposition) map[string]any {
+	out := make(map[string]any, len(base)+2)
+	for k, v := range base {
+		out[k] = v
+	}
+	subProblems := make([]any, len(generated.SubProblems))
+	for i, sp := range generated.SubProblems {
+		subProblems[i] = sp
+	}
+	deps := make([]any, len(generated.Dependencies))
+	for i, d := range generated.Dependencies {
+		deps[i] = d
+	}
+	out["subProblems"] = subProblems
+	out["dependencies"] = deps
+	return out
 }
 
 // dagEdge represents a directed edge from → to in the dependency graph.

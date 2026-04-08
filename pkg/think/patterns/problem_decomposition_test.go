@@ -1,8 +1,22 @@
 package patterns
 
 import (
+	"context"
+	"errors"
 	"testing"
+
+	think "github.com/thebtf/aimux/pkg/think"
 )
+
+// mockSamplingProvider is a test double for think.SamplingProvider.
+type mockSamplingProvider struct {
+	response string
+	err      error
+}
+
+func (m *mockSamplingProvider) RequestSampling(_ context.Context, _ []think.SamplingMessage, _ int) (string, error) {
+	return m.response, m.err
+}
 
 // TestProblemDecomp_AcyclicDAG verifies that a simple 3-node, 2-edge acyclic graph
 // produces the correct topological order with no cycle detected.
@@ -155,5 +169,120 @@ func TestExtractDagDependencies_InvalidReturnsNil(t *testing.T) {
 	edges := extractDagDependencies(deps)
 	if edges != nil {
 		t.Errorf("expected nil for invalid input, got %v", edges)
+	}
+}
+
+// TestProblemDecomp_SamplingDecompose verifies that when no subProblems are
+// provided but a SamplingProvider is set, the pattern calls the LLM, parses
+// the JSON response, and runs DAG analysis on the generated data.
+func TestProblemDecomp_SamplingDecompose(t *testing.T) {
+	samplingResp := `{
+		"subProblems": [
+			{"id": "sp1", "description": "Define requirements"},
+			{"id": "sp2", "description": "Design architecture"},
+			{"id": "sp3", "description": "Implement core"}
+		],
+		"dependencies": [
+			{"from": "sp1", "to": "sp2"},
+			{"from": "sp2", "to": "sp3"}
+		]
+	}`
+
+	p := &problemDecompositionPattern{}
+	p.SetSampling(&mockSamplingProvider{response: samplingResp})
+
+	input := map[string]any{"problem": "build a new feature"}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-sampling")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	// DAG analysis must have run on the LLM-generated data.
+	dagVal, hasDag := result.Data["dag"]
+	if !hasDag {
+		t.Fatal("expected 'dag' key in output when sampling provides subProblems and dependencies")
+	}
+	dag, ok := dagVal.(map[string]any)
+	if !ok {
+		t.Fatalf("expected dag to be map[string]any, got %T", dagVal)
+	}
+	if dag["hasCycle"] != false {
+		t.Errorf("expected acyclic graph, got hasCycle=%v", dag["hasCycle"])
+	}
+	order, ok := dag["topologicalOrder"].([]string)
+	if !ok || len(order) == 0 {
+		t.Errorf("expected non-empty topologicalOrder, got %v", dag["topologicalOrder"])
+	}
+	// Verify sp1 precedes sp2 and sp2 precedes sp3.
+	pos := map[string]int{}
+	for i, n := range order {
+		pos[n] = i
+	}
+	if pos["sp1"] >= pos["sp2"] {
+		t.Errorf("sp1 must precede sp2 in topological order, got %v", order)
+	}
+	if pos["sp2"] >= pos["sp3"] {
+		t.Errorf("sp2 must precede sp3 in topological order, got %v", order)
+	}
+	// Counts must reflect the generated data.
+	if result.Data["subProblemCount"] != 3 {
+		t.Errorf("expected subProblemCount=3, got %v", result.Data["subProblemCount"])
+	}
+}
+
+// TestProblemDecomp_SamplingFailure verifies that when the SamplingProvider
+// returns an error, Handle gracefully degrades to a basic result with no DAG.
+func TestProblemDecomp_SamplingFailure(t *testing.T) {
+	p := &problemDecompositionPattern{}
+	p.SetSampling(&mockSamplingProvider{err: errors.New("sampling unavailable")})
+
+	input := map[string]any{"problem": "complex problem"}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-sampling-fail")
+	if err != nil {
+		t.Fatalf("Handle must not return error on sampling failure, got: %v", err)
+	}
+	// No DAG — sampling failed, graceful degradation.
+	if _, hasDag := result.Data["dag"]; hasDag {
+		t.Error("expected no 'dag' key when sampling fails")
+	}
+	if result.Data["subProblemCount"] != 0 {
+		t.Errorf("expected subProblemCount=0 on sampling failure, got %v", result.Data["subProblemCount"])
+	}
+}
+
+// TestProblemDecomp_NoSampling verifies that when SetSampling is never called,
+// Handle behaves exactly as before: no DAG when subProblems are absent.
+func TestProblemDecomp_NoSampling(t *testing.T) {
+	p := &problemDecompositionPattern{} // no SetSampling call
+
+	input := map[string]any{
+		"problem":     "plan a migration",
+		"risks":       []any{"data loss"},
+		"methodology": "iterative",
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-no-sampling")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if _, hasDag := result.Data["dag"]; hasDag {
+		t.Error("expected no 'dag' key when sampling is not configured")
+	}
+	if result.Data["subProblemCount"] != 0 {
+		t.Errorf("expected subProblemCount=0 without sampling, got %v", result.Data["subProblemCount"])
+	}
+	if result.Data["riskCount"] != 1 {
+		t.Errorf("expected riskCount=1, got %v", result.Data["riskCount"])
 	}
 }
