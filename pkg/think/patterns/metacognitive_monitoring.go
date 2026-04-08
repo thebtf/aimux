@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"math"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -71,8 +72,10 @@ func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessi
 	processesCount := countSlice("cognitiveProcesses")
 
 	confidence := 0.0
+	hasConfidence := false
 	if v, ok := validInput["confidence"].(float64); ok {
 		confidence = v
+		hasConfidence = true
 	}
 
 	overconfidenceWarning := ""
@@ -84,7 +87,7 @@ func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessi
 	}
 
 	data := map[string]any{
-		"task":                    task,
+		"task":                   task,
 		"claimsCount":            claimsCount,
 		"biasesCount":            biasesCount,
 		"uncertaintiesCount":     uncertaintiesCount,
@@ -92,5 +95,52 @@ func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessi
 		"confidence":             confidence,
 		"overconfidenceWarning":  overconfidenceWarning,
 	}
-	return think.MakeThinkResult("metacognitive_monitoring", data, sessionID, nil, "", []string{"overconfidenceWarning"}), nil
+
+	computed := []string{"overconfidenceWarning"}
+
+	if hasConfidence {
+		cal := computeMetacogCalibration(confidence, uncertaintiesCount, biasesCount, claimsCount)
+		data["calibratedConfidence"] = cal.calibratedConfidence
+		data["overconfident"] = cal.overconfident
+		data["adjustmentReason"] = cal.adjustmentReason
+		computed = append(computed, "calibratedConfidence", "overconfident", "adjustmentReason")
+	}
+
+	return think.MakeThinkResult("metacognitive_monitoring", data, sessionID, nil, "", computed), nil
 }
+
+type metacogCalibration struct {
+	calibratedConfidence float64
+	overconfident        bool
+	adjustmentReason     string
+}
+
+func computeMetacogCalibration(rawConfidence float64, uncertaintyCount, biasCount, claimsCount int) metacogCalibration {
+	uncertaintyPenalty := math.Min(float64(uncertaintyCount)*0.05, 0.3)
+	biasPenalty := math.Min(float64(biasCount)*0.1, 0.3)
+	calibrated := math.Max(0, math.Min(1, rawConfidence-uncertaintyPenalty-biasPenalty))
+
+	overconfident := claimsCount < minClaimsForHighConfidence && calibrated > overconfidenceThreshold
+
+	parts := []string{}
+	if uncertaintyPenalty > 0 {
+		parts = append(parts, fmt.Sprintf("-%.2f uncertainty", uncertaintyPenalty))
+	}
+	if biasPenalty > 0 {
+		parts = append(parts, fmt.Sprintf("-%.2f bias", biasPenalty))
+	}
+	if overconfident {
+		parts = append(parts, "flagged overconfident: <3 claims with high confidence")
+	}
+	reason := "no adjustments applied"
+	if len(parts) > 0 {
+		reason = joinStrings(parts, "; ")
+	}
+
+	return metacogCalibration{
+		calibratedConfidence: calibrated,
+		overconfident:        overconfident,
+		adjustmentReason:     reason,
+	}
+}
+

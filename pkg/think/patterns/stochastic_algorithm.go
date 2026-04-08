@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"math"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -80,5 +81,92 @@ func (p *stochasticAlgorithmPattern) Handle(validInput map[string]any, sessionID
 		"iterations":        iterations,
 		"analysisPrompt":    fmt.Sprintf("Apply %s (%s) to: %s", algType, description, problemDef),
 	}
+
+	// Bandit + Bayesian: compute EV/variance when outcomes are provided in parameters.
+	if algType == "bandit" || algType == "bayesian" {
+		if params, ok := validInput["parameters"].(map[string]any); ok {
+			if ev := computeExpectedValue(params); ev != nil {
+				data["expectedValue"] = ev.expectedValue
+				data["variance"] = ev.variance
+				data["standardDeviation"] = ev.standardDeviation
+				data["dominantOutcome"] = ev.dominantOutcome
+			}
+		}
+	}
+
 	return think.MakeThinkResult("stochastic_algorithm", data, sessionID, nil, "", nil), nil
+}
+
+// outcome is a single probabilistic result with a weight and payoff.
+type outcome struct {
+	probability float64
+	value       float64
+}
+
+type expectedValueResult struct {
+	expectedValue    float64
+	variance         float64
+	standardDeviation float64
+	dominantOutcome  map[string]any
+}
+
+// computeExpectedValue parses parameters.outcomes and computes EV, variance, stddev, and dominant outcome.
+// Returns nil if outcomes are absent or malformed.
+func computeExpectedValue(parameters map[string]any) *expectedValueResult {
+	raw, ok := parameters["outcomes"]
+	if !ok {
+		return nil
+	}
+	slice, ok := raw.([]any)
+	if !ok || len(slice) == 0 {
+		return nil
+	}
+
+	outcomes := make([]outcome, 0, len(slice))
+	for _, item := range slice {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil
+		}
+		p, err := toFloat64(m["probability"])
+		if err != nil {
+			return nil
+		}
+		v, err := toFloat64(m["value"])
+		if err != nil {
+			return nil
+		}
+		outcomes = append(outcomes, outcome{probability: p, value: v})
+	}
+
+	// EV = Σ p·v
+	ev := 0.0
+	for _, o := range outcomes {
+		ev += o.probability * o.value
+	}
+
+	// Variance = Σ p·(v - EV)²
+	variance := 0.0
+	for _, o := range outcomes {
+		diff := o.value - ev
+		variance += o.probability * diff * diff
+	}
+
+	// Dominant outcome = argmax(p·v)
+	dominant := outcomes[0]
+	for _, o := range outcomes[1:] {
+		if o.probability*o.value > dominant.probability*dominant.value {
+			dominant = o
+		}
+	}
+
+	return &expectedValueResult{
+		expectedValue:    ev,
+		variance:         variance,
+		standardDeviation: math.Sqrt(variance),
+		dominantOutcome: map[string]any{
+			"probability": dominant.probability,
+			"value":       dominant.value,
+		},
+	}
 }

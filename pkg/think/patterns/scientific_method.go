@@ -20,6 +20,101 @@ var (
 	}
 )
 
+// validateEntryLink enforces lifecycle chain rules:
+//   - prediction MUST link to a hypothesis entry
+//   - experiment MUST link to a prediction entry
+//   - result     MUST link to an experiment entry
+func validateEntryLink(entryType, linkedTo string, entries []any) error {
+	required := map[string]string{
+		"prediction": "hypothesis",
+		"experiment": "prediction",
+		"result":     "experiment",
+	}
+	requiredTargetType, needsLink := required[entryType]
+	if !needsLink {
+		return nil
+	}
+	if linkedTo == "" {
+		return fmt.Errorf("%s entry MUST include \"linkedTo\" pointing to a %s entry id", entryType, requiredTargetType)
+	}
+	for _, e := range entries {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if em["id"] == linkedTo {
+			if em["type"] != requiredTargetType {
+				return fmt.Errorf("%s entry \"linkedTo\" (%s) must reference a %s entry, got %v", entryType, linkedTo, requiredTargetType, em["type"])
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("%s entry \"linkedTo\" references non-existent entry: %s", entryType, linkedTo)
+}
+
+// findUntestedHypotheses returns descriptions of hypothesis entries that have no linked prediction.
+func findUntestedHypotheses(entries []any) []string {
+	var result []string
+	for _, e := range entries {
+		em, ok := e.(map[string]any)
+		if !ok || em["type"] != "hypothesis" {
+			continue
+		}
+		id := em["id"].(string)
+		linked := false
+		for _, e2 := range entries {
+			em2, ok := e2.(map[string]any)
+			if ok && em2["type"] == "prediction" && em2["linkedTo"] == id {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			result = append(result, fmt.Sprintf("[%s] %s", id, em["text"]))
+		}
+	}
+	return result
+}
+
+// findIncompleteExperiments returns descriptions of experiment entries that have no linked result.
+func findIncompleteExperiments(entries []any) []string {
+	var result []string
+	for _, e := range entries {
+		em, ok := e.(map[string]any)
+		if !ok || em["type"] != "experiment" {
+			continue
+		}
+		id := em["id"].(string)
+		linked := false
+		for _, e2 := range entries {
+			em2, ok := e2.(map[string]any)
+			if ok && em2["type"] == "result" && em2["linkedTo"] == id {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			result = append(result, fmt.Sprintf("[%s] %s", id, em["text"]))
+		}
+	}
+	return result
+}
+
+// countByType returns a count of entries per entry type.
+func countByType(entries []any) map[string]int {
+	counts := map[string]int{"hypothesis": 0, "prediction": 0, "experiment": 0, "result": 0}
+	for _, e := range entries {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, ok := em["type"].(string); ok {
+			counts[t]++
+		}
+	}
+	return counts
+}
+
 type scientificMethodPattern struct{}
 
 // NewScientificMethodPattern returns the "scientific_method" pattern handler.
@@ -94,15 +189,18 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 	if entryRaw, ok := validInput["entry"]; ok {
 		entry := entryRaw.(map[string]any)
 
-		// Validate linkedTo references an existing entry
-		if linkedTo, ok := entry["linkedTo"].(string); ok && linkedTo != "" {
+		// Enforce lifecycle chain linking rules
+		linkedTo, _ := entry["linkedTo"].(string)
+		if err := validateEntryLink(entry["type"].(string), linkedTo, entries); err != nil {
+			return nil, err
+		}
+		// For plain hypothesis entries, still verify linkedTo references an existing entry if provided
+		if entry["type"] == "hypothesis" && linkedTo != "" {
 			found := false
 			for _, e := range entries {
-				if em, ok := e.(map[string]any); ok {
-					if em["id"] == linkedTo {
-						found = true
-						break
-					}
+				if em, ok := e.(map[string]any); ok && em["id"] == linkedTo {
+					found = true
+					break
 				}
 			}
 			if !found {
@@ -133,11 +231,18 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 		"entries":           entries,
 	})
 
+	untestedHypotheses := findUntestedHypotheses(entries)
+	incompleteExperiments := findIncompleteExperiments(entries)
+	entryCount := countByType(entries)
+
 	data := map[string]any{
-		"stage":            stage,
-		"stageHistoryLen":  len(stageHistory),
-		"entriesCount":     len(entries),
-		"hypothesesCount":  len(hypothesesHistory),
+		"stage":                 stage,
+		"stageHistoryLen":       len(stageHistory),
+		"entriesCount":          len(entries),
+		"hypothesesCount":       len(hypothesesHistory),
+		"untestedHypotheses":    untestedHypotheses,
+		"incompleteExperiments": incompleteExperiments,
+		"entryCount":            entryCount,
 	}
 	if addedEntry != nil {
 		data["entry"] = addedEntry

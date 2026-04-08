@@ -237,6 +237,9 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		server.WithInstructions(aimuxInstructions),
 	)
 
+	// Enable sampling capability — allows think patterns to request LLM calls from the client.
+	s.mcp.EnableSampling()
+
 	s.registerTools()
 	s.registerResources()
 	s.registerPrompts()
@@ -1621,7 +1624,8 @@ func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (
 	if args, ok := request.Params.Arguments.(map[string]any); ok {
 		forwardKeys := []string{
 			// Structured
-			"criteria", "options", "components", "subProblems", "dependencies",
+			"criteria", "options", "components", "sources", "findings",
+			"subProblems", "dependencies",
 			"risks", "stakeholders", "entities", "relationships", "rules",
 			"constraints", "states", "events", "transitions", "transformations",
 			"elements", "claims", "biases", "uncertainties", "cognitiveProcesses",
