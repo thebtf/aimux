@@ -122,17 +122,32 @@ func (e *Engine) Load(embedded fs.FS, diskDir string) error {
 				return fmt.Errorf("read %s: %w", path, err)
 			}
 
-			meta, err := parseFrontmatter(raw)
-			if err != nil {
-				return fmt.Errorf("parse %s: %w", path, err)
-			}
-
-			meta.FilePath = path
-
 			base := d.Name() // e.g. "_helper.md" or "debug.md"
 			slug := strings.TrimSuffix(base, ".md")
 
-			meta.IsFragment = strings.HasPrefix(base, "_") || !meta.IsPrompt()
+			// Files in _fragments/ are raw templates without frontmatter.
+			isFragmentDir := strings.Contains(path, "_fragments/") || strings.Contains(path, "_fragments\\")
+			var meta *SkillMeta
+			if isFragmentDir {
+				meta = &SkillMeta{
+					Name:       slug,
+					Body:       string(raw),
+					IsFragment: true,
+				}
+			} else {
+				var parseErr error
+				meta, parseErr = parseFrontmatter(raw)
+				if parseErr != nil {
+					// Skip files without valid frontmatter (e.g. .gitkeep, _map.yaml).
+					log.Printf("skip %s: %v", path, parseErr)
+					return nil
+				}
+			}
+
+			meta.FilePath = path
+			if !isFragmentDir {
+				meta.IsFragment = strings.HasPrefix(base, "_") || !meta.IsPrompt()
+			}
 
 			if override {
 				if _, exists := skills[slug]; exists {
