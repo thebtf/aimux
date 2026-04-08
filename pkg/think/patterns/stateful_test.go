@@ -134,7 +134,7 @@ func TestScientificMethod_EntryLinking(t *testing.T) {
 	p := NewScientificMethodPattern()
 	sid := "sci-link-1"
 
-	// Create first entry
+	// hypothesis → prediction → experiment: valid chain
 	input1, _ := p.Validate(map[string]any{
 		"stage": "hypothesis",
 		"entry": map[string]any{"type": "hypothesis", "text": "the sky is blue"},
@@ -148,10 +148,10 @@ func TestScientificMethod_EntryLinking(t *testing.T) {
 		t.Fatalf("expected E-1, got %v", entry1["id"])
 	}
 
-	// Link second entry to first
+	// prediction must link to hypothesis
 	input2, _ := p.Validate(map[string]any{
-		"stage": "experiment",
-		"entry": map[string]any{"type": "experiment", "text": "test the sky", "linkedTo": "E-1"},
+		"stage": "hypothesis",
+		"entry": map[string]any{"type": "prediction", "text": "sky will look blue at noon", "linkedTo": "E-1"},
 	})
 	r2, err := p.Handle(input2, sid)
 	if err != nil {
@@ -162,12 +162,26 @@ func TestScientificMethod_EntryLinking(t *testing.T) {
 		t.Fatalf("expected linkedTo=E-1, got %v", entry2["linkedTo"])
 	}
 
-	// Try linking to non-existent entry
+	// experiment must link to prediction (E-2), not directly to hypothesis
 	input3, _ := p.Validate(map[string]any{
+		"stage": "experiment",
+		"entry": map[string]any{"type": "experiment", "text": "observe sky at noon", "linkedTo": "E-2"},
+	})
+	r3, err := p.Handle(input3, sid)
+	if err != nil {
+		t.Fatalf("handle 3: %v", err)
+	}
+	entry3 := r3.Data["entry"].(map[string]any)
+	if entry3["linkedTo"] != "E-2" {
+		t.Fatalf("expected linkedTo=E-2, got %v", entry3["linkedTo"])
+	}
+
+	// Try linking to non-existent entry
+	input4, _ := p.Validate(map[string]any{
 		"stage": "analysis",
 		"entry": map[string]any{"type": "result", "text": "result", "linkedTo": "E-999"},
 	})
-	_, err = p.Handle(input3, sid)
+	_, err = p.Handle(input4, sid)
 	if err == nil {
 		t.Fatal("expected error for linking to non-existent entry")
 	}

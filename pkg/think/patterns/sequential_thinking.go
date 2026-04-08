@@ -8,7 +8,16 @@ import (
 	think "github.com/thebtf/aimux/pkg/think"
 )
 
-const duplicateThoughtThreshold = 0.8 // Jaccard similarity above this triggers warning
+const (
+	duplicateThoughtThreshold     = 0.8 // Jaccard similarity above this triggers duplicate warning
+	contradictionSimilarityThresh = 0.6 // Jaccard similarity above this (with negation) triggers contradiction
+)
+
+// negationWords are words that, when present, signal a thought may contradict a prior one.
+var negationWords = []string{
+	"not", "wrong", "incorrect", "false", "disagree",
+	"contrary", "opposite", "however", "but actually",
+}
 
 type sequentialThinkingPattern struct{}
 
@@ -103,6 +112,7 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 	}
 
 	thoughtNumber, _ := validInput["thoughtNumber"].(int)
+	totalThoughts, _ := validInput["totalThoughts"].(int)
 	isRevision, _ := validInput["isRevision"].(bool)
 
 	entry := map[string]any{
@@ -120,18 +130,49 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 		branches[branchId] = entry
 	}
 
-	// Detect duplicate/similar thoughts
+	// Scan prior thoughts for similarity (duplicate warning) and contradiction detection.
 	currentThought, _ := validInput["thought"].(string)
-	var similarTo string
-	var similarity float64
+	currentLower := strings.ToLower(currentThought)
+
+	hasNegation := false
+	for _, word := range negationWords {
+		if strings.Contains(currentLower, word) {
+			hasNegation = true
+			break
+		}
+	}
+
+	var (
+		duplicateSimilarTo     string
+		duplicateSimilarity    float64
+		contradictionDetected  bool
+		contradictsWith        int
+		bestContradictionScore float64
+	)
+
 	for _, existing := range thoughts {
-		if m, ok := existing.(map[string]any); ok {
-			if prev, ok := m["thought"].(string); ok {
-				sim := jaccardSimilarity(prev, currentThought)
-				if sim > similarity {
-					similarity = sim
-					similarTo = prev
-				}
+		m, ok := existing.(map[string]any)
+		if !ok {
+			continue
+		}
+		prev, ok := m["thought"].(string)
+		if !ok {
+			continue
+		}
+		sim := jaccardSimilarity(prev, currentThought)
+
+		// Duplicate warning: very high similarity regardless of negation.
+		if sim > duplicateSimilarity {
+			duplicateSimilarity = sim
+			duplicateSimilarTo = prev
+		}
+
+		// Contradiction: negation present + similarity above lower threshold.
+		if hasNegation && sim > contradictionSimilarityThresh && sim > bestContradictionScore {
+			bestContradictionScore = sim
+			contradictionDetected = true
+			if n, ok := m["thoughtNumber"].(int); ok {
+				contradictsWith = n
 			}
 		}
 	}
@@ -144,23 +185,36 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 	})
 
 	hasBranches := len(branches) > 0
+	stage := determineStage(thoughtNumber, totalThoughts)
+
+	// suggestedNextPattern mirrors v2 behaviour: mental_model at the start,
+	// decision_framework at the end, nothing in the middle.
+	suggestedNext := "sequential_thinking"
+	if thoughtNumber == 1 && totalThoughts > 1 {
+		suggestedNext = "mental_model"
+	} else if thoughtNumber == totalThoughts && totalThoughts > 1 {
+		suggestedNext = "decision_framework"
+	}
 
 	data := map[string]any{
-		"thoughtEntry":    entry,
-		"totalInSession":  len(thoughts),
-		"totalThoughts":   validInput["totalThoughts"],
-		"hasBranches":     hasBranches,
+		"thoughtEntry":          entry,
+		"totalInSession":        len(thoughts),
+		"totalThoughts":         validInput["totalThoughts"],
+		"hasBranches":           hasBranches,
+		"stage":                 stage,
+		"contradictionDetected": contradictionDetected,
+		"contradictsWith":       contradictsWith,
 	}
 
-	if similarity >= duplicateThoughtThreshold {
+	if duplicateSimilarity >= duplicateThoughtThreshold {
 		data["duplicateWarning"] = fmt.Sprintf(
 			"This thought is %.0f%% similar to an existing thought: %q. Consider revising instead.",
-			similarity*100, similarTo,
+			duplicateSimilarity*100, duplicateSimilarTo,
 		)
-		data["similarity"] = similarity
+		data["similarity"] = duplicateSimilarity
 	}
 
-	return think.MakeThinkResult("sequential_thinking", data, sessionID, nil, "sequential_thinking", nil), nil
+	return think.MakeThinkResult("sequential_thinking", data, sessionID, nil, suggestedNext, nil), nil
 }
 
 // toInt converts a value to int, handling float64 from JSON unmarshalling.
@@ -214,4 +268,29 @@ func wordSet(s string) map[string]bool {
 		set[w] = true
 	}
 	return set
+}
+
+// determineStage maps (thoughtNumber, totalThoughts) to a named stage,
+// mirroring the v2 TypeScript implementation.
+func determineStage(thoughtNumber, totalThoughts int) string {
+	if totalThoughts <= 1 {
+		return "final"
+	}
+	if thoughtNumber == 1 {
+		return "initial"
+	}
+	if thoughtNumber == totalThoughts {
+		return "final"
+	}
+	if totalThoughts == 2 {
+		return "final" // only two thoughts: 1=initial (above), 2=final
+	}
+	progress := float64(thoughtNumber) / float64(totalThoughts)
+	if progress <= 0.33 {
+		return "initial"
+	}
+	if progress >= 0.67 {
+		return "final"
+	}
+	return "middle"
 }

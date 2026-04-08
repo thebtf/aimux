@@ -2,6 +2,8 @@ package patterns
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -68,5 +70,104 @@ func (p *temporalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		"constraintCount": constraintCount,
 		"totalComponents": stateCount + eventCount + transitionCount + constraintCount,
 	}
+
+	if events, ok := validInput["events"].([]any); ok && len(events) > 0 {
+		if tl := buildTimeline(events); tl != nil {
+			data["sortedEvents"] = tl.sortedEvents
+			data["totalTimespan"] = tl.totalTimespan
+			data["longestGap"] = tl.longestGap
+		}
+	}
+
 	return think.MakeThinkResult("temporal_thinking", data, sessionID, nil, "", []string{"totalComponents"}), nil
+}
+
+// timedEvent is an event with a resolved numeric timestamp.
+type timedEvent struct {
+	timestamp float64
+	raw       map[string]any
+}
+
+// timelineResult holds the computed timeline metrics.
+type timelineResult struct {
+	sortedEvents  []map[string]any
+	totalTimespan float64
+	longestGap    map[string]any
+}
+
+// buildTimeline extracts timestamps from events (via "time" or "timestamp" fields),
+// sorts them, and computes totalTimespan and longestGap.
+// Returns nil if any event lacks a parseable timestamp field.
+func buildTimeline(events []any) *timelineResult {
+	timed := make([]timedEvent, 0, len(events))
+	for _, e := range events {
+		ev, ok := e.(map[string]any)
+		if !ok {
+			return nil
+		}
+		ts, ok := extractTimestamp(ev)
+		if !ok {
+			return nil
+		}
+		timed = append(timed, timedEvent{timestamp: ts, raw: ev})
+	}
+
+	sort.Slice(timed, func(i, j int) bool {
+		return timed[i].timestamp < timed[j].timestamp
+	})
+
+	sorted := make([]map[string]any, len(timed))
+	for i, te := range timed {
+		sorted[i] = te.raw
+	}
+
+	totalTimespan := 0.0
+	if len(timed) > 1 {
+		totalTimespan = timed[len(timed)-1].timestamp - timed[0].timestamp
+	}
+
+	longestGap := map[string]any{"start": 0.0, "end": 0.0, "duration": 0.0}
+	for i := 1; i < len(timed); i++ {
+		duration := timed[i].timestamp - timed[i-1].timestamp
+		if duration > longestGap["duration"].(float64) {
+			longestGap = map[string]any{
+				"start":    timed[i-1].timestamp,
+				"end":      timed[i].timestamp,
+				"duration": duration,
+			}
+		}
+	}
+
+	return &timelineResult{
+		sortedEvents:  sorted,
+		totalTimespan: totalTimespan,
+		longestGap:    longestGap,
+	}
+}
+
+// extractTimestamp reads "time" or "timestamp" from an event map and returns
+// a float64 value. Accepts numeric values or strings parseable as float64.
+func extractTimestamp(ev map[string]any) (float64, bool) {
+	for _, field := range []string{"time", "timestamp"} {
+		v, exists := ev[field]
+		if !exists {
+			continue
+		}
+		switch val := v.(type) {
+		case float64:
+			return val, true
+		case float32:
+			return float64(val), true
+		case int:
+			return float64(val), true
+		case int64:
+			return float64(val), true
+		case string:
+			f, err := strconv.ParseFloat(val, 64)
+			if err == nil {
+				return f, true
+			}
+		}
+	}
+	return 0, false
 }

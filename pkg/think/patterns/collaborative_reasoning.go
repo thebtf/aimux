@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -121,14 +122,83 @@ func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessio
 		}
 	}
 
+	participation := computeParticipation(contributions)
+
 	topic := validInput["topic"].(string)
 	data := map[string]any{
-		"topic":             topic,
-		"currentStage":      currentStage,
-		"contributions":     contributions,
-		"contributionCount": len(contributions),
-		"stageProgress":     stageProgress,
+		"topic":                topic,
+		"currentStage":         currentStage,
+		"contributions":        contributions,
+		"contributionCount":    len(contributions),
+		"stageProgress":        stageProgress,
+		"contributionsPerPersona": participation.contributionsPerPersona,
+		"silentPersonas":       participation.silentPersonas,
+		"participationBalance": participation.participationBalance,
 	}
 
 	return think.MakeThinkResult("collaborative_reasoning", data, sessionID, nil, "", nil), nil
+}
+
+type participationResult struct {
+	contributionsPerPersona map[string]int
+	silentPersonas          []string
+	participationBalance    float64
+}
+
+// computeParticipation tallies contributions by persona, identifies silent personas (0 contributions),
+// and computes a balance score in [0,1]: 1 = perfectly equal, 0 = one persona has everything.
+// Formula: balance = 1 - deviation / (2 * total), where deviation = sum(|count_i - avg|).
+func computeParticipation(contributions []any) participationResult {
+	counts := map[string]int{}
+	for _, cRaw := range contributions {
+		c, ok := cRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		persona, ok := c["persona"].(string)
+		if !ok || persona == "" {
+			continue
+		}
+		counts[persona]++
+	}
+
+	numPersonas := len(counts)
+	if numPersonas == 0 {
+		return participationResult{
+			contributionsPerPersona: counts,
+			silentPersonas:          []string{},
+			participationBalance:    1.0,
+		}
+	}
+
+	total := 0
+	for _, v := range counts {
+		total += v
+	}
+
+	var silentPersonas []string
+	for persona, cnt := range counts {
+		if cnt == 0 {
+			silentPersonas = append(silentPersonas, persona)
+		}
+	}
+	if silentPersonas == nil {
+		silentPersonas = []string{}
+	}
+
+	balance := 1.0
+	if total > 0 && numPersonas > 1 {
+		avg := float64(total) / float64(numPersonas)
+		deviation := 0.0
+		for _, cnt := range counts {
+			deviation += math.Abs(float64(cnt) - avg)
+		}
+		balance = math.Max(0.0, 1.0-deviation/(2.0*float64(total)))
+	}
+
+	return participationResult{
+		contributionsPerPersona: counts,
+		silentPersonas:          silentPersonas,
+		participationBalance:    balance,
+	}
 }
