@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -19,6 +20,22 @@ func (p *decisionFrameworkPattern) Description() string {
 }
 
 func (p *decisionFrameworkPattern) Validate(input map[string]any) (map[string]any, error) {
+	// Parse JSON string params from MCP schema
+	if s, ok := input["criteria"].(string); ok && s != "" {
+		var parsed []any
+		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+			return nil, fmt.Errorf("criteria: invalid JSON: %w", err)
+		}
+		input["criteria"] = parsed
+	}
+	if s, ok := input["options"].(string); ok && s != "" {
+		var parsed []any
+		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+			return nil, fmt.Errorf("options: invalid JSON: %w", err)
+		}
+		input["options"] = parsed
+	}
+
 	decision, ok := input["decision"]
 	if !ok {
 		return nil, fmt.Errorf("missing required field: decision")

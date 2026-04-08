@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"encoding/json"
 	"fmt"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -18,6 +19,15 @@ func (p *sourceComparisonPattern) Description() string {
 }
 
 func (p *sourceComparisonPattern) Validate(input map[string]any) (map[string]any, error) {
+	// Parse JSON string params from MCP schema
+	if s, ok := input["sources"].(string); ok && s != "" {
+		var parsed []any
+		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+			return nil, fmt.Errorf("sources: invalid JSON: %w", err)
+		}
+		input["sources"] = parsed
+	}
+
 	topicRaw, ok := input["topic"]
 	if !ok {
 		return nil, fmt.Errorf("missing required field: topic")
