@@ -62,8 +62,9 @@ func scanMDDir(dir string, seen map[string]struct{}) {
 			continue
 		}
 		name := e.Name()
-		if strings.EqualFold(filepath.Ext(name), ".md") {
-			seen[strings.TrimSuffix(name, filepath.Ext(name))] = struct{}{}
+		ext := filepath.Ext(name)
+		if strings.EqualFold(ext, ".md") {
+			seen[strings.TrimSuffix(name, ext)] = struct{}{}
 		}
 	}
 }
@@ -101,4 +102,6 @@ func parseAgentsMD(path string, seen map[string]struct{}) {
 			}
 		}
 	}
+	// Discard scanner errors — partial reads are better than no reads.
+	_ = scanner.Err()
 }

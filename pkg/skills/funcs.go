@@ -6,7 +6,16 @@ import (
 )
 
 // SkillFuncMap returns a template.FuncMap with helper functions that operate on SkillData.
+// If data is nil, the returned functions return safe defaults (false, "", "unknown").
 func SkillFuncMap(data *SkillData) template.FuncMap {
+	if data == nil {
+		return template.FuncMap{
+			"CallerHasSkill": func(name string) bool { return false },
+			"JoinCLIs":       func() string { return "" },
+			"RoleFor":        func(role string) string { return "unknown" },
+			"HasCLI":         func(name string) bool { return false },
+		}
+	}
 	return template.FuncMap{
 		// CallerHasSkill reports whether the caller possesses the named skill (case-insensitive).
 		"CallerHasSkill": func(name string) bool {

@@ -52,6 +52,23 @@ func TestDiscoverCallerSkills_MissingDirs(t *testing.T) {
 	}
 }
 
+func TestDiscoverCallerSkills_ClaudeAgents(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"researcher.md", "planner.md"} {
+		if err := os.WriteFile(filepath.Join(agentsDir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := DiscoverCallerSkills(dir)
+	want := []string{"planner", "researcher"}
+	assertStringSlice(t, want, got)
+}
+
 func TestDiscoverCallerSkills_AGENTS_MD(t *testing.T) {
 	dir := t.TempDir()
 	content := "### reviewer\n### debugger\n"
@@ -61,6 +78,18 @@ func TestDiscoverCallerSkills_AGENTS_MD(t *testing.T) {
 
 	got := DiscoverCallerSkills(dir)
 	want := []string{"debugger", "reviewer"}
+	assertStringSlice(t, want, got)
+}
+
+func TestDiscoverCallerSkills_AGENTS_MD_BoldFormat(t *testing.T) {
+	dir := t.TempDir()
+	content := "- **architect**: designs systems\n- **tester**: writes tests\n"
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := DiscoverCallerSkills(dir)
+	want := []string{"architect", "tester"}
 	assertStringSlice(t, want, got)
 }
 

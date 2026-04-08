@@ -7,8 +7,6 @@ import (
 
 // ---- helpers ----------------------------------------------------------------
 
-func boolPtr(b bool) *bool { return &b }
-
 func makeMeta(name, desc string, related []string, isFragment bool) *SkillMeta {
 	return &SkillMeta{
 		Name:        name,

@@ -220,8 +220,10 @@ func TestEngineRenderMissingKey(t *testing.T) {
 func TestEngineRenderPanic(t *testing.T) {
 	fsys := fstest.MapFS{
 		"panic-skill.md": &fstest.MapFile{
-			// {{call .BadFunc}} panics because BadFunc is nil
-			Data: []byte("---\nname: panic-skill\ndescription: Panic test\n---\n{{call .BadFunc}}"),
+			// {{call (index .Args "fn")}} panics at runtime because text/template's
+			// reflect-based call panics when invoked on a non-func value (string).
+			// The deferred recover() in Render catches this and returns it as an error.
+			Data: []byte("---\nname: panic-skill\ndescription: Panic test\n---\n{{call (index .Args \"fn\")}}"),
 		},
 	}
 
@@ -230,7 +232,8 @@ func TestEngineRenderPanic(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	_, err := eng.Render("panic-skill", &SkillData{})
+	data := &SkillData{Args: map[string]string{"fn": "not-a-func"}}
+	_, err := eng.Render("panic-skill", data)
 	if err == nil {
 		t.Fatal("expected error from panicking template, got nil")
 	}
