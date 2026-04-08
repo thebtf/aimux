@@ -258,6 +258,101 @@ func TestProblemDecomp_SamplingFailure(t *testing.T) {
 	}
 }
 
+// TestProblemDecomp_AutoAnalysis_DomainTemplate verifies that when no subProblems or
+// dependencies are provided and no sampling provider is set, Handle uses the domain
+// template engine to produce suggestedSubProblems, suggestedDependencies, autoAnalysis,
+// and guidance fields.
+func TestProblemDecomp_AutoAnalysis_DomainTemplate(t *testing.T) {
+	p := &problemDecompositionPattern{} // no sampling
+
+	input := map[string]any{
+		"problem": "build an authentication system with jwt login",
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-auto")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	// suggestedSubProblems must be present and non-empty (auth template has 5 items).
+	ssp, ok := result.Data["suggestedSubProblems"].([]string)
+	if !ok || len(ssp) == 0 {
+		t.Errorf("expected non-empty suggestedSubProblems, got %v (%T)", result.Data["suggestedSubProblems"], result.Data["suggestedSubProblems"])
+	}
+
+	// autoAnalysis source must be "domain-template".
+	aa, ok := result.Data["autoAnalysis"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected autoAnalysis map, got %T", result.Data["autoAnalysis"])
+	}
+	if aa["source"] != "domain-template" {
+		t.Errorf("expected autoAnalysis.source=domain-template, got %v", aa["source"])
+	}
+
+	// guidance must be present.
+	if _, ok := result.Data["guidance"]; !ok {
+		t.Error("expected guidance field in result")
+	}
+}
+
+// TestProblemDecomp_AutoAnalysis_KeywordFallback verifies that when no domain template
+// matches, autoAnalysis.source is "keyword-analysis".
+func TestProblemDecomp_AutoAnalysis_KeywordFallback(t *testing.T) {
+	p := &problemDecompositionPattern{}
+
+	input := map[string]any{
+		"problem": "organize a birthday party for my cat",
+	}
+	validated, _ := p.Validate(input)
+	result, err := p.Handle(validated, "test-auto-fallback")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	aa, ok := result.Data["autoAnalysis"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected autoAnalysis map, got %T", result.Data["autoAnalysis"])
+	}
+	if aa["source"] != "keyword-analysis" {
+		t.Errorf("expected autoAnalysis.source=keyword-analysis, got %v", aa["source"])
+	}
+}
+
+// TestProblemDecomp_AutoAnalysis_BackwardCompat verifies that when subProblems ARE
+// provided, the existing behavior is preserved (no suggestedSubProblems).
+func TestProblemDecomp_AutoAnalysis_BackwardCompat(t *testing.T) {
+	p := &problemDecompositionPattern{}
+
+	input := map[string]any{
+		"problem":     "plan a feature",
+		"subProblems": []any{"design", "implement"},
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-compat")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	// suggestedSubProblems must NOT be present when user supplied subProblems.
+	if _, ok := result.Data["suggestedSubProblems"]; ok {
+		t.Error("suggestedSubProblems must not appear when subProblems are provided")
+	}
+	// Existing counts must still be correct.
+	if result.Data["subProblemCount"] != 2 {
+		t.Errorf("expected subProblemCount=2, got %v", result.Data["subProblemCount"])
+	}
+	// Guidance must still be present.
+	if _, ok := result.Data["guidance"]; !ok {
+		t.Error("expected guidance field in result")
+	}
+}
+
 // TestProblemDecomp_NoSampling verifies that when SetSampling is never called,
 // Handle behaves exactly as before: no DAG when subProblems are absent.
 func TestProblemDecomp_NoSampling(t *testing.T) {

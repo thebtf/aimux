@@ -80,12 +80,64 @@ func (p *domainModelingPattern) Handle(validInput map[string]any, sessionID stri
 		"totalComponents":   entityCount + relationshipCount + ruleCount + constraintCount,
 	}
 
+	// Auto-analysis: when entities are empty, derive suggestions from domain templates.
+	if entityCount == 0 {
+		_ = ExtractKeywords(domainName)
+		tmpl := MatchDomainTemplate(domainName)
+		var suggestedEntities []string
+		var suggestedRelationships []map[string]string
+		var autoSource string
+		if tmpl != nil && len(tmpl.Entities) > 0 {
+			suggestedEntities = tmpl.Entities
+			// Generate a simple chain of relationships for suggested entities.
+			for i := 0; i+1 < len(suggestedEntities); i++ {
+				suggestedRelationships = append(suggestedRelationships, map[string]string{
+					"from": suggestedEntities[i],
+					"to":   suggestedEntities[i+1],
+				})
+			}
+			autoSource = "domain-template"
+		} else {
+			autoSource = "keyword-analysis"
+		}
+		data["suggestedEntities"] = suggestedEntities
+		data["suggestedRelationships"] = suggestedRelationships
+		data["autoAnalysis"] = map[string]any{"source": autoSource}
+
+		// Run consistency analysis on suggested entities/relationships.
+		if len(suggestedEntities) > 0 {
+			sugEntAny := make([]any, len(suggestedEntities))
+			for i, e := range suggestedEntities {
+				sugEntAny[i] = e
+			}
+			sugRelAny := make([]any, len(suggestedRelationships))
+			for i, r := range suggestedRelationships {
+				sugRelAny[i] = map[string]any{"from": r["from"], "to": r["to"]}
+			}
+			orphans, dangling, consistent := validateEntityRelationships(sugEntAny, sugRelAny)
+			data["suggestedOrphanEntities"] = orphans
+			data["suggestedDanglingRelationships"] = dangling
+			data["suggestedConsistent"] = consistent
+		}
+	}
+
 	if entityCount > 0 || relationshipCount > 0 {
 		orphans, dangling, consistent := validateEntityRelationships(entities, relationships)
 		data["orphanEntities"] = orphans
 		data["danglingRelationships"] = dangling
 		data["consistent"] = consistent
 	}
+
+	// Guidance — always included.
+	data["guidance"] = BuildGuidance("domain_modeling",
+		func() string {
+			if entityCount > 0 {
+				return "full"
+			}
+			return "basic"
+		}(),
+		[]string{"entities", "relationships", "rules", "constraints"},
+	)
 
 	return think.MakeThinkResult("domain_modeling", data, sessionID, nil, "", []string{"totalComponents"}), nil
 }

@@ -47,6 +47,38 @@ func (p *temporalThinkingPattern) Validate(input map[string]any) (map[string]any
 	return out, nil
 }
 
+// defaultTemporalPhases returns generic project phases derived from common migration/project keywords.
+var defaultTemporalPhases = []string{"planning", "preparation", "execution", "validation", "cutover"}
+
+// suggestTemporalPhases derives phase suggestions from keywords extracted from the timeFrame string.
+// Returns sensible defaults when no specific pattern is detected.
+func suggestTemporalPhases(keywords []string) []string {
+	kwSet := make(map[string]struct{}, len(keywords))
+	for _, kw := range keywords {
+		kwSet[kw] = struct{}{}
+	}
+
+	// Migration/deployment projects.
+	for _, kw := range []string{"migration", "migrate", "upgrade", "deploy", "deployment"} {
+		if _, ok := kwSet[kw]; ok {
+			return []string{"planning", "preparation", "execution", "validation", "cutover"}
+		}
+	}
+	// Release / sprint cycle.
+	for _, kw := range []string{"release", "sprint", "iteration", "cycle"} {
+		if _, ok := kwSet[kw]; ok {
+			return []string{"planning", "development", "testing", "review", "release"}
+		}
+	}
+	// Research / discovery projects.
+	for _, kw := range []string{"research", "discovery", "analysis", "investigate"} {
+		if _, ok := kwSet[kw]; ok {
+			return []string{"scoping", "data-collection", "analysis", "synthesis", "reporting"}
+		}
+	}
+	return defaultTemporalPhases
+}
+
 func (p *temporalThinkingPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	timeFrame := validInput["timeFrame"].(string)
 
@@ -71,6 +103,17 @@ func (p *temporalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		"totalComponents": stateCount + eventCount + transitionCount + constraintCount,
 	}
 
+	// Auto-analysis: when events are empty, derive suggested phases from timeFrame keywords.
+	if eventCount == 0 {
+		keywords := ExtractKeywords(timeFrame)
+		phases := suggestTemporalPhases(keywords)
+		data["suggestedPhases"] = phases
+		data["autoAnalysis"] = map[string]any{
+			"source":   "keyword-analysis",
+			"keywords": keywords,
+		}
+	}
+
 	if events, ok := validInput["events"].([]any); ok && len(events) > 0 {
 		if tl := buildTimeline(events); tl != nil {
 			data["sortedEvents"] = tl.sortedEvents
@@ -78,6 +121,17 @@ func (p *temporalThinkingPattern) Handle(validInput map[string]any, sessionID st
 			data["longestGap"] = tl.longestGap
 		}
 	}
+
+	// Guidance — always included.
+	data["guidance"] = BuildGuidance("temporal_thinking",
+		func() string {
+			if eventCount > 0 {
+				return "full"
+			}
+			return "basic"
+		}(),
+		[]string{"events", "states", "transitions", "constraints"},
+	)
 
 	return think.MakeThinkResult("temporal_thinking", data, sessionID, nil, "", []string{"totalComponents"}), nil
 }
