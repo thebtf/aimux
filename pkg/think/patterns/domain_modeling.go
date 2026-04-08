@@ -48,11 +48,11 @@ func (p *domainModelingPattern) Validate(input map[string]any) (map[string]any, 
 func (p *domainModelingPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	domainName := validInput["domainName"].(string)
 
-	countSlice := func(key string) int {
+	getSlice := func(key string) []any {
 		if v, ok := validInput[key].([]any); ok {
-			return len(v)
+			return v
 		}
-		return 0
+		return nil
 	}
 
 	description := ""
@@ -60,10 +60,15 @@ func (p *domainModelingPattern) Handle(validInput map[string]any, sessionID stri
 		description = v
 	}
 
-	entityCount := countSlice("entities")
-	relationshipCount := countSlice("relationships")
-	ruleCount := countSlice("rules")
-	constraintCount := countSlice("constraints")
+	entities := getSlice("entities")
+	relationships := getSlice("relationships")
+	rules := getSlice("rules")
+	constraints := getSlice("constraints")
+
+	entityCount := len(entities)
+	relationshipCount := len(relationships)
+	ruleCount := len(rules)
+	constraintCount := len(constraints)
 
 	data := map[string]any{
 		"domainName":        domainName,
@@ -74,5 +79,111 @@ func (p *domainModelingPattern) Handle(validInput map[string]any, sessionID stri
 		"constraintCount":   constraintCount,
 		"totalComponents":   entityCount + relationshipCount + ruleCount + constraintCount,
 	}
+
+	if entityCount > 0 || relationshipCount > 0 {
+		orphans, dangling, consistent := validateEntityRelationships(entities, relationships)
+		data["orphanEntities"] = orphans
+		data["danglingRelationships"] = dangling
+		data["consistent"] = consistent
+	}
+
 	return think.MakeThinkResult("domain_modeling", data, sessionID, nil, "", []string{"totalComponents"}), nil
+}
+
+// danglingRelationship describes a relationship whose endpoints are not all in the entity set.
+type danglingRelationship struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+}
+
+// validateEntityRelationships checks entity/relationship consistency matching the v2 TypeScript logic.
+// It returns orphan entity names, dangling relationships, and a consistency boolean.
+func validateEntityRelationships(entities []any, relationships []any) (orphans []string, dangling []danglingRelationship, consistent bool) {
+	// Collect entity names from string elements or maps with a "name" key.
+	entityNames := make(map[string]struct{}, len(entities))
+	for _, e := range entities {
+		switch v := e.(type) {
+		case string:
+			entityNames[v] = struct{}{}
+		case map[string]any:
+			if name, ok := v["name"].(string); ok {
+				entityNames[name] = struct{}{}
+			}
+		}
+	}
+
+	connectedEntities := make(map[string]struct{})
+
+	for _, r := range relationships {
+		rel, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Support both "from"/"to" and "source"/"target" endpoint keys.
+		from, _ := coalesceString(rel, "from", "source")
+		to, _ := coalesceString(rel, "to", "target")
+		if from == "" || to == "" {
+			continue
+		}
+
+		var reasons []string
+		if _, exists := entityNames[from]; !exists {
+			reasons = append(reasons, fmt.Sprintf("%q not in entities", from))
+		}
+		if _, exists := entityNames[to]; !exists {
+			reasons = append(reasons, fmt.Sprintf("%q not in entities", to))
+		}
+
+		if len(reasons) > 0 {
+			dangling = append(dangling, danglingRelationship{
+				From:   from,
+				To:     to,
+				Reason: joinStrings(reasons, ", "),
+			})
+		} else {
+			connectedEntities[from] = struct{}{}
+			connectedEntities[to] = struct{}{}
+		}
+	}
+
+	for name := range entityNames {
+		if _, connected := connectedEntities[name]; !connected {
+			orphans = append(orphans, name)
+		}
+	}
+
+	// Return deterministic empty slices rather than nil so callers get []/[] not null.
+	if orphans == nil {
+		orphans = []string{}
+	}
+	if dangling == nil {
+		dangling = []danglingRelationship{}
+	}
+
+	consistent = len(dangling) == 0 && len(orphans) == 0
+	return orphans, dangling, consistent
+}
+
+// coalesceString returns the first non-empty string value found under any of the given keys.
+func coalesceString(m map[string]any, keys ...string) (string, bool) {
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && v != "" {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// joinStrings joins a slice of strings with sep (avoids importing strings package for a single call).
+func joinStrings(parts []string, sep string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	result := parts[0]
+	for _, p := range parts[1:] {
+		result += sep + p
+	}
+	return result
 }

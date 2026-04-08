@@ -72,42 +72,100 @@ func (p *architectureAnalysisPattern) Validate(input map[string]any) (map[string
 	return map[string]any{"components": normalized}, nil
 }
 
+// componentMetric holds Ca/Ce/instability for a single component.
+type componentMetric struct {
+	Component   string  `json:"component"`
+	Ca          int     `json:"ca"`
+	Ce          int     `json:"ce"`
+	Instability float64 `json:"instability"`
+}
+
 func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	components := validInput["components"].([]any)
 
-	// Build dependency reference counts.
-	depCount := make(map[string]int)
+	// ca[name] = afferent coupling — how many others depend on this component.
+	// ce[name] = efferent coupling — how many components this one depends on.
+	ca := make(map[string]int, len(components))
+	ce := make(map[string]int, len(components))
 	var componentNames []string
+
+	// Pass 1: register all names so ca entries are not clobbered in pass 2.
 	for _, c := range components {
 		m := c.(map[string]any)
 		name := m["name"].(string)
 		componentNames = append(componentNames, name)
-		deps := m["dependencies"].([]any)
+		ca[name] = 0
+	}
+
+	// Pass 2: count efferent (outgoing) and afferent (incoming) couplings.
+	for _, c := range components {
+		m := c.(map[string]any)
+		name := m["name"].(string)
+		deps, _ := m["dependencies"].([]any)
+		ce[name] = len(deps)
 		for _, d := range deps {
 			if ds, ok := d.(string); ok {
-				depCount[ds]++
+				ca[ds]++
 			}
 		}
 	}
 
-	// Detect high coupling: components referenced by 2+ others.
+	// Compute per-component metrics and detect high coupling.
+	metrics := make([]componentMetric, 0, len(components))
 	var highlyCoupled []map[string]any
-	for name, count := range depCount {
-		if count >= highCouplingThreshold {
+
+	for _, name := range componentNames {
+		caVal := ca[name]
+		ceVal := ce[name]
+		total := caVal + ceVal
+		instability := 0.0
+		if total > 0 {
+			instability = float64(ceVal) / float64(total)
+		}
+		metrics = append(metrics, componentMetric{
+			Component:   name,
+			Ca:          caVal,
+			Ce:          ceVal,
+			Instability: instability,
+		})
+		if caVal >= highCouplingThreshold {
 			highlyCoupled = append(highlyCoupled, map[string]any{
 				"component":  name,
-				"dependents": count,
+				"dependents": caVal,
 			})
 		}
 	}
 
-	// Importance: components with most dependents are most critical.
-	var importanceAnalysis []map[string]any
+	// Importance: sort by Ca descending (for informational ordering).
+	importanceAnalysis := make([]map[string]any, 0, len(componentNames))
 	for _, name := range componentNames {
 		importanceAnalysis = append(importanceAnalysis, map[string]any{
 			"component":  name,
-			"dependents": depCount[name],
+			"dependents": ca[name],
 		})
+	}
+
+	// mostUnstable = highest instability; mostDepended = highest Ca.
+	mostUnstable := componentNames[0]
+	mostDepended := componentNames[0]
+	for _, m := range metrics {
+		if m.Instability > metrics[indexOf(metrics, mostUnstable)].Instability {
+			mostUnstable = m.Component
+		}
+		if m.Ca > ca[mostDepended] {
+			mostDepended = m.Component
+		}
+	}
+
+	// Convert metrics to []any for MakeThinkResult.
+	metricsAny := make([]any, len(metrics))
+	for i, m := range metrics {
+		metricsAny[i] = map[string]any{
+			"component":   m.Component,
+			"ca":          m.Ca,
+			"ce":          m.Ce,
+			"instability": m.Instability,
+		}
 	}
 
 	data := map[string]any{
@@ -116,6 +174,19 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 		"highlyCoupled":      highlyCoupled,
 		"couplingDetected":   len(highlyCoupled) > 0,
 		"importanceAnalysis": importanceAnalysis,
+		"componentMetrics":   metricsAny,
+		"mostUnstable":       mostUnstable,
+		"mostDepended":       mostDepended,
 	}
 	return think.MakeThinkResult("architecture_analysis", data, sessionID, nil, "", []string{"highlyCoupled", "couplingDetected"}), nil
+}
+
+// indexOf returns the position of the named component in the metrics slice.
+func indexOf(metrics []componentMetric, name string) int {
+	for i, m := range metrics {
+		if m.Component == name {
+			return i
+		}
+	}
+	return 0
 }

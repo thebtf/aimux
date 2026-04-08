@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"sort"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -69,5 +70,202 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 		"stakeholderCount": countSlice("stakeholders"),
 		"totalComponents":  countSlice("subProblems") + countSlice("dependencies") + countSlice("risks") + countSlice("stakeholders"),
 	}
+
+	// DAG analysis — only when dependencies are provided as {from, to} objects.
+	if deps, ok := validInput["dependencies"].([]any); ok && len(deps) > 0 {
+		edges := extractDagDependencies(deps)
+		if edges != nil {
+			subProblems, _ := validInput["subProblems"].([]any)
+			result := analyzeDag(edges, subProblems)
+			data["dag"] = map[string]any{
+				"hasCycle":          result.hasCycle,
+				"cyclePath":         result.cyclePath,
+				"topologicalOrder":  result.topologicalOrder,
+				"orphanSubProblems": result.orphanSubProblems,
+			}
+		}
+	}
+
 	return think.MakeThinkResult("problem_decomposition", data, sessionID, nil, "", []string{"totalComponents"}), nil
+}
+
+// dagEdge represents a directed edge from → to in the dependency graph.
+type dagEdge struct{ from, to string }
+
+// dagResult holds the outcome of DAG analysis.
+type dagResult struct {
+	hasCycle          bool
+	cyclePath         []string
+	topologicalOrder  []string
+	orphanSubProblems []string
+}
+
+// extractDagDependencies parses a []any of {from, to} objects into []dagEdge.
+// Returns nil if the slice is empty or any element is not a valid {from, to} object.
+func extractDagDependencies(deps []any) []dagEdge {
+	if len(deps) == 0 {
+		return nil
+	}
+	edges := make([]dagEdge, 0, len(deps))
+	for _, d := range deps {
+		obj, ok := d.(map[string]any)
+		if !ok {
+			return nil
+		}
+		from, fromOK := obj["from"].(string)
+		to, toOK := obj["to"].(string)
+		if !fromOK || !toOK {
+			return nil
+		}
+		edges = append(edges, dagEdge{from: from, to: to})
+	}
+	return edges
+}
+
+// analyzeDag performs DFS cycle detection, Kahn's topological sort, and orphan
+// sub-problem detection on the provided directed graph.
+func analyzeDag(edges []dagEdge, subProblems []any) dagResult {
+	// Collect all node names from edges.
+	nodeSet := map[string]struct{}{}
+	for _, e := range edges {
+		nodeSet[e.from] = struct{}{}
+		nodeSet[e.to] = struct{}{}
+	}
+
+	// Build adjacency list.
+	adj := map[string][]string{}
+	for n := range nodeSet {
+		adj[n] = nil
+	}
+	for _, e := range edges {
+		adj[e.from] = append(adj[e.from], e.to)
+	}
+
+	// DFS cycle detection using white(0)/gray(1)/black(2) coloring.
+	const white, gray, black = 0, 1, 2
+	color := map[string]int{}
+	for n := range nodeSet {
+		color[n] = white
+	}
+
+	var cyclePath []string
+	var dfs func(node string, path []string) bool
+	dfs = func(node string, path []string) bool {
+		color[node] = gray
+		for _, neighbor := range adj[node] {
+			if color[neighbor] == gray {
+				// Found a back edge — record cycle path from the repeated node.
+				idx := -1
+				for i, p := range path {
+					if p == neighbor {
+						idx = i
+						break
+					}
+				}
+				cycle := make([]string, len(path)-idx+1)
+				copy(cycle, path[idx:])
+				cycle[len(cycle)-1] = neighbor
+				cyclePath = cycle
+				return true
+			}
+			if color[neighbor] == white {
+				if dfs(neighbor, append(path, neighbor)) {
+					return true
+				}
+			}
+		}
+		color[node] = black
+		return false
+	}
+
+	hasCycle := false
+	// Iterate in stable order so results are deterministic.
+	nodes := sortedKeys(nodeSet)
+	for _, n := range nodes {
+		if color[n] == white {
+			if dfs(n, []string{n}) {
+				hasCycle = true
+				break
+			}
+		}
+	}
+
+	// Kahn's topological sort — only when there is no cycle.
+	var topologicalOrder []string
+	if !hasCycle {
+		inDegree := map[string]int{}
+		for n := range nodeSet {
+			inDegree[n] = 0
+		}
+		for _, e := range edges {
+			inDegree[e.to]++
+		}
+		// Seed queue with zero-in-degree nodes in stable order.
+		queue := []string{}
+		for _, n := range nodes {
+			if inDegree[n] == 0 {
+				queue = append(queue, n)
+			}
+		}
+		order := make([]string, 0, len(nodeSet))
+		for len(queue) > 0 {
+			n := queue[0]
+			queue = queue[1:]
+			order = append(order, n)
+			neighbors := adj[n]
+			sort.Strings(neighbors) // stable order within adjacency list
+			for _, neighbor := range neighbors {
+				inDegree[neighbor]--
+				if inDegree[neighbor] == 0 {
+					queue = append(queue, neighbor)
+				}
+			}
+		}
+		topologicalOrder = order
+	}
+
+	// Orphan sub-problems: named in subProblems but not referenced in any edge.
+	subProblemNames := extractSubProblemNames(subProblems)
+	orphans := []string{}
+	for _, name := range subProblemNames {
+		if _, inGraph := nodeSet[name]; !inGraph {
+			orphans = append(orphans, name)
+		}
+	}
+
+	return dagResult{
+		hasCycle:          hasCycle,
+		cyclePath:         cyclePath,
+		topologicalOrder:  topologicalOrder,
+		orphanSubProblems: orphans,
+	}
+}
+
+// extractSubProblemNames resolves each sub-problem entry to a string name.
+// Accepts plain strings or objects with an "id" or "name" key.
+func extractSubProblemNames(subProblems []any) []string {
+	names := make([]string, 0, len(subProblems))
+	for _, s := range subProblems {
+		switch v := s.(type) {
+		case string:
+			names = append(names, v)
+		case map[string]any:
+			if id, ok := v["id"].(string); ok {
+				names = append(names, id)
+			} else if name, ok := v["name"].(string); ok {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
+// sortedKeys returns the keys of a map[string]struct{} in sorted order.
+func sortedKeys(m map[string]struct{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
