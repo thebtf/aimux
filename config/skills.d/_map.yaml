@@ -1,0 +1,153 @@
+# Skill Graph Map — source of truth for all skill interconnections
+# RULE (P19): No skill .md may be authored without its entry here first.
+# RULE (P20): Every skill MUST have non-empty escalates_to AND receives_from.
+
+skills:
+  debug:
+    description: "Structured debug workflow — reproduce, investigate, root-cause, fix, verify"
+    tools: [investigate, think, exec]
+    phases: [reproduce, investigate, root-cause, fix, verify]
+    related: [security, audit, review]
+    fragments: [evidence-table, verification-gate]
+    escalates_to: [consensus]
+    receives_from: [audit]
+
+  review:
+    description: "Code review with CLI-adaptive multi-phase gates"
+    tools: [exec, think, consensus]
+    phases: [gather-diff, review, critique, fix]
+    related: [security, audit, debug]
+    fragments: [evidence-table, priority-scoring]
+    escalates_to: [consensus, debate]
+    receives_from: [audit, delegate]
+
+  audit:
+    description: "Codebase audit — triage findings and route to specialist skills"
+    tools: [audit, investigate, exec]
+    phases: [scan, triage, investigate, fix]
+    related: [debug, security, review, investigate]
+    fragments: [evidence-table, priority-scoring]
+    escalates_to: [debug, security, review]
+    receives_from: [workflow]
+
+  security:
+    description: "10-category security checklist with investigate integration"
+    tools: [investigate, think, exec]
+    phases: [scan, classify, investigate, remediate, verify]
+    related: [audit, review, debug]
+    fragments: [verification-gate, evidence-table]
+    escalates_to: [consensus]
+    receives_from: [audit, debug]
+
+  research:
+    description: "4-phase research pipeline with integrity commandments"
+    tools: [think, investigate, deepresearch, exec]
+    phases: [literature, comparison, adversarial, synthesis]
+    related: [investigate, consensus]
+    fragments: [integrity-commandments, verification-gate]
+    escalates_to: [consensus]
+    receives_from: [investigate]
+
+  consensus:
+    description: "Multi-model consensus with 'consensus ≠ correctness' warning"
+    tools: [consensus, debate, think]
+    phases: [route, execute, verify]
+    related: [review, debug]
+    fragments: [verification-gate]
+    escalates_to: [investigate]
+    receives_from: [debug, security, research, review]
+
+  investigate:
+    description: "Investigation protocol — domain auto-detect, convergence tracking"
+    tools: [investigate, think]
+    phases: [start, gather, assess, report]
+    related: [debug, audit, research]
+    fragments: [evidence-table]
+    escalates_to: [research, consensus]
+    receives_from: [audit, debug]
+
+  guide:
+    description: "Complete guide to aimux tools, roles, patterns"
+    tools: [status, sessions]
+    phases: [status, routing, patterns]
+    related: [background, delegate]
+    fragments: [delegation-tree]
+    escalates_to: [delegate]
+    receives_from: [background]
+
+  workflow:
+    description: "Declarative multi-step pipeline builder"
+    tools: [workflow, exec, think]
+    phases: [analyze-goal, generate-pipeline, execute]
+    related: [delegate, guide]
+    fragments: [delegation-tree]
+    escalates_to: [audit]
+    receives_from: [delegate]
+
+  background:
+    description: "Background execution protocol with role routing"
+    tools: [exec, status]
+    phases: [route, execute, poll]
+    related: [guide, delegate]
+    fragments: []
+    escalates_to: [guide]
+    receives_from: [delegate]
+
+  agent-exec:
+    description: "Agent-first execution — match task to agents, exec as fallback"
+    tools: [agent, exec]
+    phases: [discover, match, execute]
+    related: [delegate, guide]
+    fragments: [delegation-tree]
+    escalates_to: [delegate]
+    receives_from: [guide]
+
+  delegate:
+    description: "Full delegation decision tree and QUICK format"
+    tools: [exec, agent, think]
+    phases: [classify, route, delegate, validate]
+    related: [agent-exec, review]
+    fragments: [delegation-tree]
+    escalates_to: [review]
+    receives_from: [guide, agent-exec, workflow]
+
+  tdd:
+    description: "TDD workflow with RED/GREEN/IMPROVE gates"
+    tools: [exec, think]
+    phases: [red, green, improve, coverage]
+    related: [review, debug]
+    fragments: [verification-gate]
+    escalates_to: [review]
+    receives_from: [delegate]
+
+fragments:
+  evidence-table:
+    description: "Verification evidence table — claim → requires → NOT sufficient"
+    used_by: [debug, review, audit, security, investigate]
+  verification-gate:
+    description: "Consensus ≠ correctness warning + evidence classification"
+    used_by: [debug, audit, security, research, consensus, tdd]
+  delegation-tree:
+    description: "Task complexity → delegation routing decision tree + QUICK format"
+    used_by: [guide, workflow, agent-exec, delegate]
+  priority-scoring:
+    description: "3-factor severity × impact × likelihood → P0-P4 scoring"
+    used_by: [audit, review]
+  integrity-commandments:
+    description: "6 feynman researcher commandments — never fabricate, URL or it didn't happen"
+    used_by: [research]
+
+tool_usage:
+  exec: [debug, review, audit, security, research, workflow, background, delegate, tdd]
+  think: [debug, review, security, research, consensus, workflow, delegate, tdd]
+  investigate: [debug, audit, security, research, investigate]
+  consensus: [consensus, review]
+  debate: [consensus]
+  audit: [audit]
+  agent: [agent-exec, delegate]
+  workflow: [workflow]
+  status: [guide, background]
+  sessions: [guide]
+  deepresearch: [research]
+  dialog: []
+  agents: []
