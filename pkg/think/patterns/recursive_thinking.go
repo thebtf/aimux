@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"math"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -60,24 +61,38 @@ func (p *recursiveThinkingPattern) Handle(validInput map[string]any, sessionID s
 		maxDepth = v
 	}
 
+	depthRemaining := math.Max(0, maxDepth-currentDepth)
+	depthPercentage := 0.0
+	if maxDepth > 0 {
+		depthPercentage = (currentDepth / maxDepth) * 100.0
+	}
+	isBaseCase := currentDepth >= maxDepth
+
 	depthWarning := ""
 	if currentDepth >= maxDepth {
 		depthWarning = fmt.Sprintf("Maximum recursion depth reached (%.0f/%.0f). Consider base case resolution.", currentDepth, maxDepth)
 	}
 
+	convergenceCheck, hasConvergence := validInput["convergenceCheck"].(string)
 	convergenceWarning := ""
-	if _, ok := validInput["convergenceCheck"]; !ok {
+	noConvergenceDefined := !hasConvergence || convergenceCheck == ""
+	if noConvergenceDefined && currentDepth > 3 {
+		convergenceWarning = "No convergence check at depth > 3"
+	} else if noConvergenceDefined {
 		convergenceWarning = "No convergence check defined. Risk of infinite recursion."
 	}
 
 	data := map[string]any{
-		"problem":             problem,
-		"currentDepth":        currentDepth,
-		"maxDepth":            maxDepth,
-		"depthWarning":        depthWarning,
-		"convergenceWarning":  convergenceWarning,
-		"hasBaseCase":         validInput["baseCase"] != nil,
-		"hasRecursiveCase":    validInput["recursiveCase"] != nil,
+		"problem":            problem,
+		"currentDepth":       currentDepth,
+		"maxDepth":           maxDepth,
+		"depthWarning":       depthWarning,
+		"convergenceWarning": convergenceWarning,
+		"hasBaseCase":        validInput["baseCase"] != nil,
+		"hasRecursiveCase":   validInput["recursiveCase"] != nil,
+		"depthRemaining":     depthRemaining,
+		"depthPercentage":    depthPercentage,
+		"isBaseCase":         isBaseCase,
 	}
-	return think.MakeThinkResult("recursive_thinking", data, sessionID, nil, "", []string{"depthWarning", "convergenceWarning"}), nil
+	return think.MakeThinkResult("recursive_thinking", data, sessionID, nil, "", []string{"depthWarning", "convergenceWarning", "depthRemaining", "depthPercentage", "isBaseCase"}), nil
 }

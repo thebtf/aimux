@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"math"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -55,7 +56,17 @@ func (p *mentalModelPattern) Validate(input map[string]any) (map[string]any, err
 		return nil, fmt.Errorf("field 'problem' must be a non-empty string")
 	}
 
-	return map[string]any{"modelName": mn, "problem": ps}, nil
+	out := map[string]any{"modelName": mn, "problem": ps}
+	if v, ok := input["steps"].([]any); ok {
+		out["steps"] = v
+	}
+	if v, ok := input["reasoning"].(string); ok {
+		out["reasoning"] = v
+	}
+	if v, ok := input["conclusion"].(string); ok {
+		out["conclusion"] = v
+	}
+	return out, nil
 }
 
 func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
@@ -71,12 +82,44 @@ func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string)
 
 	analysisPrompt := fmt.Sprintf("Apply the '%s' mental model (%s) to analyze: %s", modelName, description, problem)
 
-	data := map[string]any{
-		"modelName":      modelName,
-		"problem":        problem,
-		"known":          known,
-		"description":    description,
-		"analysisPrompt": analysisPrompt,
+	steps, _ := validInput["steps"].([]any)
+	reasoning, _ := validInput["reasoning"].(string)
+	conclusion, _ := validInput["conclusion"].(string)
+
+	totalTextLength := len(problem) + len(reasoning) + len(conclusion)
+	for _, s := range steps {
+		if str, ok := s.(string); ok {
+			totalTextLength += len(str)
+		}
 	}
-	return think.MakeThinkResult("mental_model", data, sessionID, nil, "", []string{"known", "description"}), nil
+	stepCount := len(steps)
+
+	completenessScore := math.Min(float64(totalTextLength)/1000.0, 1.0)
+	clarityScore := math.Min(float64(stepCount)/10.0, 1.0)
+	coherenceScore := (completenessScore + clarityScore) / 2.0
+
+	stepComplexity := float64(stepCount)
+	textComplexity := float64(totalTextLength) / 100.0
+	totalComplexity := stepComplexity + textComplexity
+
+	complexity := "low"
+	if totalComplexity > 10 {
+		complexity = "high"
+	} else if totalComplexity > 5 {
+		complexity = "medium"
+	}
+
+	data := map[string]any{
+		"modelName":         modelName,
+		"problem":           problem,
+		"known":             known,
+		"description":       description,
+		"analysisPrompt":    analysisPrompt,
+		"stepCount":         stepCount,
+		"completenessScore": completenessScore,
+		"clarityScore":      clarityScore,
+		"coherenceScore":    coherenceScore,
+		"complexity":        complexity,
+	}
+	return think.MakeThinkResult("mental_model", data, sessionID, nil, "", []string{"known", "description", "completenessScore", "clarityScore", "coherenceScore", "complexity"}), nil
 }

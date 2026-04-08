@@ -72,6 +72,13 @@ func (p *collaborativeReasoningPattern) Validate(input map[string]any) (map[stri
 		validated["contribution"] = validatedContrib
 	}
 
+	// Accept optional personas list for participation tracking.
+	if v, ok := input["personas"]; ok {
+		if personas, ok := v.([]any); ok {
+			validated["personas"] = personas
+		}
+	}
+
 	return validated, nil
 }
 
@@ -122,7 +129,16 @@ func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessio
 		}
 	}
 
-	participation := computeParticipation(contributions)
+	// Extract personas list if provided (enables silent persona detection).
+	var knownPersonas []string
+	if personas, ok := validInput["personas"].([]any); ok {
+		for _, p := range personas {
+			if s, ok := p.(string); ok {
+				knownPersonas = append(knownPersonas, s)
+			}
+		}
+	}
+	participation := computeParticipation(contributions, knownPersonas)
 
 	topic := validInput["topic"].(string)
 	data := map[string]any{
@@ -148,8 +164,14 @@ type participationResult struct {
 // computeParticipation tallies contributions by persona, identifies silent personas (0 contributions),
 // and computes a balance score in [0,1]: 1 = perfectly equal, 0 = one persona has everything.
 // Formula: balance = 1 - deviation / (2 * total), where deviation = sum(|count_i - avg|).
-func computeParticipation(contributions []any) participationResult {
+func computeParticipation(contributions []any, knownPersonas []string) participationResult {
 	counts := map[string]int{}
+
+	// Pre-seed with known personas so silent ones start at 0.
+	for _, p := range knownPersonas {
+		counts[p] = 0
+	}
+
 	for _, cRaw := range contributions {
 		c, ok := cRaw.(map[string]any)
 		if !ok {
