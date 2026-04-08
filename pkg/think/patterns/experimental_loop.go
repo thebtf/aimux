@@ -86,6 +86,11 @@ func (p *experimentalLoopPattern) Handle(validInput map[string]any, sessionID st
 		"iterationCount": iterationCount,
 	})
 
+	guidanceDepth := "enriched"
+	if len(experiments) <= 1 {
+		guidanceDepth = "basic"
+	}
+
 	data := map[string]any{
 		"hypothesis":      hypothesis,
 		"experimentCount": len(experiments),
@@ -93,6 +98,7 @@ func (p *experimentalLoopPattern) Handle(validInput map[string]any, sessionID st
 		"bestMetric":      newBestMetric,
 		"isImprovement":   isImprovement,
 		"suggestedAction": suggestedAction,
+		"guidance":        BuildGuidance("experimental_loop", guidanceDepth, []string{"observation", "result", "metric"}),
 	}
 	return think.MakeThinkResult("experimental_loop", data, sessionID, nil, "experimental_loop", nil), nil
 }

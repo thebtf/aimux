@@ -235,6 +235,11 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 	incompleteExperiments := findIncompleteExperiments(entries)
 	entryCount := countByType(entries)
 
+	guidanceDepth := "enriched"
+	if len(entries) == 0 {
+		guidanceDepth = "basic"
+	}
+
 	data := map[string]any{
 		"stage":                 stage,
 		"stageHistoryLen":       len(stageHistory),
@@ -243,6 +248,7 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 		"untestedHypotheses":    untestedHypotheses,
 		"incompleteExperiments": incompleteExperiments,
 		"entryCount":            entryCount,
+		"guidance":              BuildGuidance("scientific_method", guidanceDepth, []string{"entry", "hypothesis", "observation", "question", "analysis", "conclusion"}),
 	}
 	if addedEntry != nil {
 		data["entry"] = addedEntry

@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"strings"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -80,14 +81,50 @@ func (p *visualReasoningPattern) Handle(validInput map[string]any, sessionID str
 		data["elementsByType"] = stats.elementsByType
 		data["isolatedElements"] = stats.isolatedElements
 		data["density"] = stats.density
+	} else {
+		// No elements provided — derive suggestions from operation keywords.
+		keywords := ExtractKeywords(operation)
+		data["keywords"] = keywords
+		data["suggestedElements"] = suggestVisualElements(operation, keywords)
 	}
 
 	computed := []string{"totalComponents"}
 	if elementCount > 0 {
 		computed = append(computed, "elementsByType", "isolatedElements", "density")
+	} else {
+		computed = append(computed, "keywords", "suggestedElements")
 	}
 
+	data["guidance"] = BuildGuidance("visual_reasoning", "basic", []string{"elements", "relationships", "transformations", "diagramType"})
+
 	return think.MakeThinkResult("visual_reasoning", data, sessionID, nil, "", computed), nil
+}
+
+// suggestVisualElements returns starter elements based on operation type keywords.
+func suggestVisualElements(operation string, keywords []string) []string {
+	op := strings.ToLower(operation)
+	kwSet := make(map[string]bool, len(keywords))
+	for _, k := range keywords {
+		kwSet[k] = true
+	}
+
+	if strings.Contains(op, "layout") || kwSet["layout"] || kwSet["page"] || kwSet["grid"] {
+		return []string{"header", "sidebar", "content", "footer"}
+	}
+	if strings.Contains(op, "flow") || kwSet["flow"] || kwSet["process"] || kwSet["workflow"] {
+		return []string{"start", "step1", "decision", "step2", "end"}
+	}
+	if strings.Contains(op, "class") || kwSet["class"] || kwSet["uml"] || kwSet["object"] {
+		return []string{"Class", "Attribute", "Method", "Interface", "Relationship"}
+	}
+	if strings.Contains(op, "sequence") || kwSet["sequence"] || kwSet["message"] || kwSet["actor"] {
+		return []string{"Client", "Server", "Database", "Cache"}
+	}
+	if strings.Contains(op, "network") || kwSet["network"] || kwSet["node"] || kwSet["graph"] {
+		return []string{"NodeA", "NodeB", "NodeC", "Edge"}
+	}
+	// Default generic elements
+	return []string{"element1", "element2", "connector"}
 }
 
 type visualElementStats struct {

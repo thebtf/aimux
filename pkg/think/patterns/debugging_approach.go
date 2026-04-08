@@ -173,6 +173,11 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 		}
 	}
 
+	guidanceDepth := "enriched"
+	if len(hypotheses) == 0 {
+		guidanceDepth = "basic"
+	}
+
 	data := map[string]any{
 		"issue":             issue,
 		"methodDescription": methodDescription,
@@ -180,6 +185,7 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 		"hypothesisCount":   len(hypotheses),
 		"confirmedCount":    confirmedCount,
 		"refutedCount":      refutedCount,
+		"guidance":          BuildGuidance("debugging_approach", guidanceDepth, []string{"approachName", "hypothesis", "hypothesisUpdate"}),
 	}
 
 	if refutedCount >= pivotSuggestionThreshold {

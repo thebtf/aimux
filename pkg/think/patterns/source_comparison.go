@@ -118,6 +118,7 @@ func (p *sourceComparisonPattern) Handle(validInput map[string]any, sessionID st
 		"sourceCount":      len(sources),
 		"comparisonMatrix": matrix,
 		"overallConsensus": overallConsensus,
+		"guidance":         BuildGuidance("source_comparison", "full", []string{"topic", "sources"}),
 	}
 	return think.MakeThinkResult("source_comparison", data, sessionID, nil, "", nil), nil
 }

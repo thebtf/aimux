@@ -196,6 +196,11 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 		suggestedNext = "decision_framework"
 	}
 
+	guidanceDepth := "enriched"
+	if len(thoughts) <= 1 {
+		guidanceDepth = "basic"
+	}
+
 	data := map[string]any{
 		"thoughtEntry":          entry,
 		"totalInSession":        len(thoughts),
@@ -204,6 +209,7 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 		"stage":                 stage,
 		"contradictionDetected": contradictionDetected,
 		"contradictsWith":       contradictsWith,
+		"guidance":              BuildGuidance("sequential_thinking", guidanceDepth, []string{"thoughtNumber", "totalThoughts", "isRevision", "revisesThought", "branchFromThought", "branchId"}),
 	}
 
 	if duplicateSimilarity >= duplicateThoughtThreshold {

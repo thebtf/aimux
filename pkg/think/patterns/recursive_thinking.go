@@ -82,17 +82,39 @@ func (p *recursiveThinkingPattern) Handle(validInput map[string]any, sessionID s
 		convergenceWarning = "No convergence check defined. Risk of infinite recursion."
 	}
 
+	keywords := ExtractKeywords(problem)
+	recursiveStructureDetected := detectRecursiveStructure(keywords)
+
 	data := map[string]any{
-		"problem":            problem,
-		"currentDepth":       currentDepth,
-		"maxDepth":           maxDepth,
-		"depthWarning":       depthWarning,
-		"convergenceWarning": convergenceWarning,
-		"hasBaseCase":        validInput["baseCase"] != nil,
-		"hasRecursiveCase":   validInput["recursiveCase"] != nil,
-		"depthRemaining":     depthRemaining,
-		"depthPercentage":    depthPercentage,
-		"isBaseCase":         isBaseCase,
+		"problem":                   problem,
+		"currentDepth":              currentDepth,
+		"maxDepth":                  maxDepth,
+		"depthWarning":              depthWarning,
+		"convergenceWarning":        convergenceWarning,
+		"hasBaseCase":               validInput["baseCase"] != nil,
+		"hasRecursiveCase":          validInput["recursiveCase"] != nil,
+		"depthRemaining":            depthRemaining,
+		"depthPercentage":           depthPercentage,
+		"isBaseCase":                isBaseCase,
+		"keywords":                  keywords,
+		"recursiveStructureDetected": recursiveStructureDetected,
+		"guidance":                  BuildGuidance("recursive_thinking", "basic", []string{"baseCase", "recursiveCase", "convergenceCheck", "maxDepth"}),
 	}
 	return think.MakeThinkResult("recursive_thinking", data, sessionID, nil, "", []string{"depthWarning", "convergenceWarning", "depthRemaining", "depthPercentage", "isBaseCase"}), nil
+}
+
+// detectRecursiveStructure returns true when the problem text contains keywords
+// that suggest a naturally recursive or hierarchical data structure.
+func detectRecursiveStructure(keywords []string) bool {
+	signals := map[string]bool{
+		"nested": true, "recursive": true, "tree": true, "parse": true,
+		"hierarchy": true, "hierarchical": true, "graph": true, "node": true,
+		"children": true, "parent": true, "fractal": true, "self-similar": true,
+	}
+	for _, k := range keywords {
+		if signals[k] {
+			return true
+		}
+	}
+	return false
 }

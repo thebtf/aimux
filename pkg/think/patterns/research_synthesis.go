@@ -93,6 +93,7 @@ func (p *researchSynthesisPattern) Handle(validInput map[string]any, sessionID s
 		"synthesizedClaims": synthesizedClaims,
 		"overallConclusion": overallConclusion,
 		"openQuestions":     openQuestions,
+		"guidance":          BuildGuidance("research_synthesis", "full", []string{"topic", "findings"}),
 	}
 	return think.MakeThinkResult("research_synthesis", data, sessionID, nil, "", nil), nil
 }
