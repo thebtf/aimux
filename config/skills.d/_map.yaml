@@ -18,7 +18,7 @@ skills:
     phases: [gather-diff, review, critique, fix]
     related: [security, audit, debug]
     fragments: [evidence-table, priority-scoring]
-    escalates_to: [consensus, debate]
+    escalates_to: [consensus]
     receives_from: [audit, delegate]
 
   audit:
@@ -126,7 +126,7 @@ fragments:
     used_by: [debug, review, audit, security, investigate]
   verification-gate:
     description: "Consensus ≠ correctness warning + evidence classification"
-    used_by: [debug, audit, security, research, consensus, tdd]
+    used_by: [debug, security, research, consensus, review, tdd]
   delegation-tree:
     description: "Task complexity → delegation routing decision tree + QUICK format"
     used_by: [guide, workflow, agent-exec, delegate]

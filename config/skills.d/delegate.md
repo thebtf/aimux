@@ -81,7 +81,7 @@ exec(
 )
 ```
 
-Capture `job_id` for tracking.
+Capture `job_id` (for async polling via `status(job_id=...)`) and `session_id` (for session resume).
 
 For agent-first routing, try:
 ```
@@ -97,7 +97,7 @@ agent(
 
 **Goal:** 5-step post-delegation quality gate.
 
-After the delegated session completes:
+After the delegated session completes (poll with `status(job_id="{{"{{job_id}}"}}")`):
 
 1. **Check DONE WHEN** — did the output satisfy every verifiable outcome in the QUICK format?
 2. **Read changed files** — open each modified file and verify the implementation is real (not a stub).
@@ -105,7 +105,7 @@ After the delegated session completes:
 4. **Check scope** — did the implementation stay within CONSTRAINTS? Flag any overreach.
 5. **Code-review lite** — run a quick review:
    ```
-   exec(role="codereview", prompt="Lite review — scope check only: {{"{{job_id.content}}"}}")
+   exec(role="codereview", prompt="Lite review — scope check only: {{"{{delegation_output}}"}}")
    ```
 
 **GATE:** All 5 steps must pass before marking the delegation complete. "It compiled" is not sufficient.
@@ -114,9 +114,9 @@ After the delegated session completes:
 
 ## Session Resume
 
-For follow-up on a running or completed job:
+For follow-up on a completed session (different from job polling):
 ```
-exec(session_id="{{"{{job_id}}"}}" , prompt="<follow-up or correction prompt>")
+exec(session_id="{{"{{session_id}}"}}", prompt="<follow-up or correction prompt>")
 ```
 
 ---

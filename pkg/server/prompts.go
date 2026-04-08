@@ -133,6 +133,17 @@ func (s *Server) buildSkillData(req mcp.GetPromptRequest) *skills.SkillData {
 		}
 	}
 
+	// Discover caller's skills from CWD.
+	var callerSkills []string
+	if cwd, err := os.Getwd(); err == nil {
+		callerSkills = skills.DiscoverCallerSkills(cwd)
+	}
+
+	// Populate related skills from engine graph.
+	var relatedSkills []skills.RelatedSkill
+	// RelatedSkills are populated per-skill at render time by the engine,
+	// so we leave this empty here — the engine fills it in Render().
+
 	return &skills.SkillData{
 		EnabledCLIs:     enabledCLIs,
 		CLICount:        len(enabledCLIs),
@@ -144,6 +155,8 @@ func (s *Server) buildSkillData(req mcp.GetPromptRequest) *skills.SkillData {
 		PastReports:     pastReports,
 		Agents:          agentInfos,
 		ThinkPatterns:   thinkPatterns,
+		CallerSkills:    callerSkills,
+		RelatedSkills:   relatedSkills,
 		Args:            args,
 	}
 }

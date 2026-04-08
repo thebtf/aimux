@@ -63,7 +63,7 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 
 Use `think(pattern="...", ...)` for structured reasoning without running a full CLI session.
 
-{{range .ThinkPatterns}}- **{{.Name}}** — {{.Description}}
+{{range .ThinkPatterns}}- `{{.}}`
 {{end}}
 
 Quick picks:

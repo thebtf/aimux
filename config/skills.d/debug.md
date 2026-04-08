@@ -23,7 +23,7 @@ Before running any phase, classify the bug:
 
 | Signal | Mode | Approach |
 |--------|------|----------|
-| Known error with clear stack trace | **Quick** | Phase 1 → Phase 4, skip deep investigate |
+| Known error with clear stack trace | **Quick** | Phase 1 → Phase 3 (root cause) → Phase 4, skip deep investigate session |
 | Intermittent or hard to reproduce | **Standard** | All 5 phases, full investigate session |
 | Systemic / affects multiple modules | **Deep** | All 5 phases + consensus if {{.CLICount}} ≥ 2 |
 
@@ -54,7 +54,7 @@ investigate(action="start", topic="{{"{{.Args.error}}"}}", domain="debugging")
 
 After `investigate` returns a `session_id`, add findings:
 ```
-investigate(action="add_finding", session_id="{{"{{session_id}}"}}", finding="<what you observed>", source="<file:line or tool output>")
+investigate(action="finding", session_id="{{"{{session_id}}"}}", finding="<what you observed>", source="<file:line or tool output>")
 ```
 
 Assess when evidence converges:
@@ -129,7 +129,7 @@ consensus(topic="Root cause and fix for: {{"{{.Args.error}}"}}\nHypothesis: {{"{
 
 If Phase 5 fails → return to Phase 2 with the SAME `session_id`:
 ```
-investigate(action="add_finding", session_id="{{"{{session_id}}"}}", finding="Fix did not resolve: {{"{{new_output}}"}}", source="Phase 5 verification")
+investigate(action="finding", session_id="{{"{{session_id}}"}}", finding="Fix did not resolve: {{"{{new_output}}"}}", source="Phase 5 verification")
 ```
 
 ---

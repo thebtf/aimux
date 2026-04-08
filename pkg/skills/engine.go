@@ -243,3 +243,22 @@ func (e *Engine) Get(name string) *SkillMeta {
 	}
 	return m
 }
+
+// ValidateMap reads _map.yaml from loaded skills and validates consistency
+// between the map and the actual loaded skill templates.
+func (e *Engine) ValidateMap() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	mapMeta, ok := e.skills["_map"]
+	if !ok {
+		return []string{"_map.yaml not loaded — skip validation"}
+	}
+
+	gm, err := ParseGraphMap([]byte(mapMeta.Body))
+	if err != nil {
+		return []string{fmt.Sprintf("_map.yaml parse error: %v", err)}
+	}
+
+	return ValidateMap(gm, e.skills)
+}

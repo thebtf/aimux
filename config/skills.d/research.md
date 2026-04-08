@@ -51,7 +51,7 @@ Collect every relevant source. Tag each as: primary source / secondary source / 
 Compare sources side by side. Identify agreements, contradictions, gaps.
 
 ```
-think(pattern="source_comparison", topic="{{"{{.Args.topic}}"}}")
+think(pattern="source_comparison", topic="{{"{{.Args.topic}}"}}", sources="{{"{{phase1_sources_json}}"}}")
 ```
 
 For each pair of conflicting sources, record:
@@ -92,7 +92,7 @@ Challenge questions to answer:
 Produce the final research output.
 
 ```
-think(pattern="research_synthesis", topic="{{"{{.Args.topic}}"}}")
+think(pattern="research_synthesis", topic="{{"{{.Args.topic}}"}}", findings="{{"{{all_phase_findings_json}}"}}")
 ```
 
 {{if .HasGemini}}

@@ -130,7 +130,7 @@ status(job_id="{{"{{step_id.job_id}}"}}")
 |------|----------------|---------|
 | `exec` | role=coding/debug/analyze/codereview/testgen/planner | Implementation, review, analysis |
 | `think` | pattern=problem_decomposition/debugging_approach/... | Pure reasoning |
-| `investigate` | action=start/add_finding/assess/report | Structured evidence gathering |
+| `investigate` | action=start/finding/assess/report | Structured evidence gathering |
 | `consensus` | topic, synthesize=true | Multi-model agreement |
 | `audit` | cwd, mode=quick/standard/deep | Codebase-wide scan |
 | `agent` | agent=<name>, prompt | Invoke a named project agent |

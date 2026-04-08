@@ -1,6 +1,6 @@
 ### Priority Scoring
 
-**Formula:** Priority = Severity × Impact × Likelihood
+**Classification:** Priority based on Severity + Impact
 
 | Priority | Severity | Impact | Action |
 |----------|----------|--------|--------|

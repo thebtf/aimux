@@ -217,6 +217,12 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		s.skillEngine = nil
 	} else {
 		log.Info("skill engine loaded: %d skills", len(s.skillEngine.Skills()))
+		// Validate skill graph map if present.
+		if warnings := s.skillEngine.ValidateMap(); len(warnings) > 0 {
+			for _, w := range warnings {
+				log.Warn("skill map: %s", w)
+			}
+		}
 	}
 
 	// Create MCP server with capabilities

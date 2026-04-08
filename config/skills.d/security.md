@@ -77,7 +77,7 @@ investigate(action="start", topic="security findings in {{"{{.Args.scope}}"}}", 
 
 For each P0/P1 finding, add evidence:
 ```
-investigate(action="add_finding", session_id="{{"{{session_id}}"}}", finding="{{"{{finding_description}}"}}", source="{{"{{file_path}}:{{line_number}}}"}}")
+investigate(action="finding", session_id="{{"{{session_id}}"}}", finding="{{"{{finding_description}}"}}", source="{{"{{file_path}}:{{line_number}}}"}}")
 ```
 
 Assess blast radius:
