@@ -133,3 +133,30 @@ func TestPipeExecutor_Run_BadCommand(t *testing.T) {
 		t.Errorf("expected ExecutorError, got %T", err)
 	}
 }
+
+func TestPipeExecutor_Run_CancelReturnsPartialOutput(t *testing.T) {
+	e := pipe.New()
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// Output "line1", then sleep ~3s, then output "line2".
+	// Context cancels after 1s — we expect partial output containing "line1" but not "line2".
+	result, err := e.Run(ctx, types.SpawnArgs{
+		Command:        "cmd",
+		Args:           []string{"/c", "echo line1 && ping -n 4 127.0.0.1 >nul && echo line2"},
+		TimeoutSeconds: 30,
+	})
+
+	if err != nil {
+		t.Fatalf("expected result, got error: %v", err)
+	}
+	if !result.Partial {
+		t.Error("expected Partial=true")
+	}
+	if result.Content == "" {
+		t.Error("expected non-empty partial content")
+	}
+	if !strings.Contains(result.Content, "line1") {
+		t.Errorf("expected content to contain 'line1', got: %q", result.Content)
+	}
+}
