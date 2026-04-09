@@ -87,12 +87,13 @@ func scoreMatch(a *Agent, keyword string) int {
 // The second return value is the score of the selected agent.
 func AutoSelectAgent(registry *Registry, prompt string) (*Agent, int) {
 	keywords := ExtractKeywords(prompt)
-	if len(keywords) == 0 {
-		return fallback(registry), 0
-	}
 
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
+
+	if len(keywords) == 0 {
+		return fallbackLocked(registry), 0
+	}
 
 	type candidate struct {
 		agent *Agent
@@ -111,16 +112,13 @@ func AutoSelectAgent(registry *Registry, prompt string) (*Agent, int) {
 	}
 
 	if best.agent == nil || best.score == 0 {
-		return fallback(registry), 0
+		return fallbackLocked(registry), 0
 	}
 	return best.agent, best.score
 }
 
-// fallback returns the "implementer" built-in agent, or nil if it doesn't exist.
-func fallback(registry *Registry) *Agent {
-	a, ok := registry.agents["implementer"]
-	if !ok {
-		return nil
-	}
-	return a
+// fallbackLocked returns the "implementer" built-in agent.
+// Caller MUST hold registry.mu.RLock.
+func fallbackLocked(registry *Registry) *Agent {
+	return registry.agents["implementer"]
 }
