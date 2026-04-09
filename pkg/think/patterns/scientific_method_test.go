@@ -172,3 +172,97 @@ func TestScientific_StageProgression(t *testing.T) {
 		}
 	}
 }
+
+// TestScientific_PredictionWithoutHypothesis: submitting a prediction entry with empty session → error.
+func TestScientific_PredictionWithoutHypothesis(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "sci-pred-nohyp-1"
+
+	// Try to submit a prediction entry without any prior hypothesis in the session.
+	// The entry validation will catch missing linkedTo first — so we need to test
+	// the session-level gate by bypassing the linkedTo rule would require a hypothesis.
+	// Instead, directly validate a hypothesis entry without linkedTo but entry type=prediction
+	// is rejected by Validate. We test the Handle-level gate via a mock or by first adding
+	// a hypothesis entry and then trying to add prediction without linkedTo to a fresh session.
+	//
+	// Simplest valid path: pass a prediction entry that would link to a nonexistent hypothesis.
+	// But validateEntryLink fires first. The session-level gate fires BEFORE validateEntryLink.
+	//
+	// Build validInput manually to bypass Validate — Handle receives already-validated input.
+	validInput := map[string]any{
+		"stage": "hypothesis",
+		"entry": map[string]any{"type": "prediction", "text": "a prediction with no hypothesis in session"},
+	}
+	_, err := p.Handle(validInput, sid)
+	if err == nil {
+		t.Fatal("expected error when submitting prediction entry without a prior hypothesis in session")
+	}
+	if len(err.Error()) == 0 {
+		t.Fatal("expected non-empty error message")
+	}
+}
+
+// TestScientific_ExperimentWithoutPrediction: experiment entry with hypothesis but no prediction → error.
+func TestScientific_ExperimentWithoutPrediction(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "sci-exp-nopred-1"
+
+	// Add a hypothesis entry first (valid path through Validate+Handle).
+	inp1, err := p.Validate(map[string]any{
+		"stage": "hypothesis",
+		"entry": map[string]any{"type": "hypothesis", "text": "some hypothesis"},
+	})
+	if err != nil {
+		t.Fatalf("validate hypothesis: %v", err)
+	}
+	_, err = p.Handle(inp1, sid)
+	if err != nil {
+		t.Fatalf("hypothesis submission: %v", err)
+	}
+
+	// Now try to submit an experiment entry without any prediction in session.
+	// Pass validInput directly to test the session-level gate.
+	validInput := map[string]any{
+		"stage": "experiment",
+		"entry": map[string]any{"type": "experiment", "text": "run the test", "linkedTo": "E-1"},
+	}
+	_, err = p.Handle(validInput, sid)
+	if err == nil {
+		t.Fatal("expected error when submitting experiment entry without a prior prediction in session")
+	}
+}
+
+// TestScientific_CorrectChain: hypothesis entry → prediction entry → no STOP (correct sequence).
+func TestScientific_CorrectChain(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "sci-chain-correct-1"
+
+	// Step 1: add hypothesis entry.
+	inp1, err := p.Validate(map[string]any{
+		"stage": "hypothesis",
+		"entry": map[string]any{"type": "hypothesis", "text": "plants grow faster with more light"},
+	})
+	if err != nil {
+		t.Fatalf("validate hypothesis: %v", err)
+	}
+	_, err = p.Handle(inp1, sid)
+	if err != nil {
+		t.Fatalf("hypothesis: %v", err)
+	}
+
+	// Step 2: add prediction entry linked to hypothesis — should succeed.
+	inp2, err := p.Validate(map[string]any{
+		"stage": "hypothesis",
+		"entry": map[string]any{"type": "prediction", "text": "plants will be 20% taller", "linkedTo": "E-1"},
+	})
+	if err != nil {
+		t.Fatalf("validate prediction: %v", err)
+	}
+	_, err = p.Handle(inp2, sid)
+	if err != nil {
+		t.Fatalf("prediction: unexpected error: %v", err)
+	}
+}
