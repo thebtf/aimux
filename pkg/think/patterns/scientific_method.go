@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"maps"
 	"time"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -435,8 +436,6 @@ func nextStage(current string) string {
 // copyValidInput creates a shallow copy of the validInput map so we can mutate it safely.
 func copyValidInput(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }

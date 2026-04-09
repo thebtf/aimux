@@ -9,10 +9,6 @@ func makeEvent(ts float64, name string) map[string]any {
 	return map[string]any{"timestamp": ts, "name": name}
 }
 
-// makeTimeEvent builds an event map using the "time" field instead.
-func makeTimeEvent(ts float64, name string) map[string]any {
-	return map[string]any{"time": ts, "name": name}
-}
 
 func TestTemporal_Timeline(t *testing.T) {
 	p := NewTemporalThinkingPattern()

@@ -126,7 +126,7 @@ func buildAssumptions(method string) []string {
 	return assumptions
 }
 
-func assessFeasibility(requirements, risks, resources, constraints []any) (string, string) {
+func assessFeasibility(_ []any, risks, resources, constraints []any) (string, string) {
 	blockers := 0
 	for _, r := range risks {
 		if rs, ok := r.(string); ok && len(rs) > 0 {

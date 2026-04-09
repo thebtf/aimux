@@ -1,5 +1,12 @@
 # Roadmap: aimux v3 — Phase 2
 
+## Sprint 13: Think Tool — Full Pattern System
+**Status:** done
+**Goal:** Replace echo stub with real pattern execution. Port 17 think patterns from v2 TypeScript with session state, complexity scoring, and consensus mode. Think is 2nd most-used tool after exec — echo mode means agents get no value.
+**Depends:** none
+**Acceptance:** All 17 patterns produce real structured output, session state tracks multi-step patterns, complexity scoring auto-triggers consensus, all existing think tests pass + new pattern tests
+**Note:** Already implemented across previous sprints. 23 patterns (69 files, 13384 LOC) in pkg/think/. Spec was stale — written before implementation.
+
 ## Sprint 7: Investigate Enhancements
 **Status:** done
 **Goal:** Persona auto-selection by topic (map investigation topic to domain expert persona). Cross-tool invocation (investigate assess → auto-dispatch think/exec as sub-investigation). Deeper integration between investigate and think tools.
