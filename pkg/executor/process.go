@@ -34,6 +34,11 @@ func NewProcessManager() *ProcessManager {
 	return &ProcessManager{}
 }
 
+// SharedPM is the global ProcessManager tracking all spawned processes.
+// Used by executors for one-shot Run() calls so processes are tracked for
+// server shutdown cleanup. Session processes use pipe.SessionProcessManager().
+var SharedPM = NewProcessManager()
+
 // Spawn starts a process, sets up stdout/stderr pipes, and begins tracking it.
 // The provided cmd must not have Stdout/Stderr set — Spawn sets up the pipes itself.
 // Returns a ProcessHandle with PID > 0 on success.

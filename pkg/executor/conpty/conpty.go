@@ -67,14 +67,13 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		cmd.Stdin = strings.NewReader(args.Stdin)
 	}
 
-	// Control plane
-	pm := executor.NewProcessManager()
-	handle, err := pm.Spawn(cmd)
+	// Control plane: use shared PM for shutdown tracking
+	handle, err := executor.SharedPM.Spawn(cmd)
 	if err != nil {
 		return nil, types.NewExecutorError(
 			fmt.Sprintf("ConPTY start failed for %s", args.Command), err, "")
 	}
-	defer pm.Cleanup(handle)
+	defer executor.SharedPM.Cleanup(handle)
 
 	// Data plane (IOManager strips ANSI per line — no need for pipeline.StripANSI here)
 	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern, args.OnOutput)
@@ -103,12 +102,12 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		return &types.Result{Content: content, ExitCode: exitCode, DurationMS: time.Since(start).Milliseconds()}, nil
 
 	case <-iom.PatternMatched():
-		pm.Kill(handle)
+		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
 		return &types.Result{Content: iom.Collect(), ExitCode: 0, DurationMS: time.Since(start).Milliseconds()}, nil
 
 	case <-timerC:
-		pm.Kill(handle)
+		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
 		content := iom.Collect()
 		return &types.Result{
@@ -118,7 +117,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		}, nil
 
 	case <-ctx.Done():
-		pm.Kill(handle)
+		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
 		content := iom.Collect()
 		return &types.Result{

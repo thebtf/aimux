@@ -405,7 +405,9 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 
 // Shutdown stops background services (GC reaper, snapshot) and closes persistence.
 func (s *Server) Shutdown() {
-	// Kill all tracked session processes before closing persistence.
+	// Kill all tracked processes before closing persistence.
+	// SharedPM tracks one-shot Run() processes; SessionPM tracks persistent sessions.
+	executor.SharedPM.Shutdown()
 	if pm := pipeExec.SessionProcessManager(); pm != nil {
 		pm.Shutdown()
 	}
@@ -1134,15 +1136,14 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		sess.Status = types.SessionStatusRunning
 	})
 
-	// Wire live output: IOManager calls this after each line.
-	// 1. Updates job progress (for status polling)
-	// 2. Pushes MCP notification to client (for real-time display)
-	args.OnOutput = func(partial string) {
-		s.jobs.UpdateProgress(jobID, partial)
+	// Wire live output: IOManager calls this with each new line (not full buffer).
+	// 1. Appends line to job progress (for status polling — returns accumulated output)
+	// 2. Pushes MCP notification with just the new line (for real-time display)
+	args.OnOutput = func(line string) {
+		s.jobs.AppendProgress(jobID, line)
 		s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
 			"progressToken": jobID,
-			"progress":      len(partial),
-			"message":       partial,
+			"message":       line,
 		})
 	}
 
