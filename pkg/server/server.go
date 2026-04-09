@@ -133,6 +133,7 @@ type Server struct {
 	skillEngine  *skills.Engine
 	rateLimiter  *ratelimit.Limiter
 	authToken    string
+	projectDir   string // directory used for initial agent discovery
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -249,6 +250,7 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	s.agentReg = agents.NewRegistry()
 	// Discover agents from project and user directories
 	if cwd, err := os.Getwd(); err == nil {
+		s.projectDir = cwd
 		home, _ := os.UserHomeDir()
 		s.agentReg.Discover(cwd, home)
 	}
@@ -421,8 +423,10 @@ func (s *Server) registerTools() {
 	// exec tool
 	s.mcp.AddTool(
 		mcp.NewTool("exec",
-			mcp.WithDescription("Execute a prompt via an AI coding CLI. "+
-				"Use role= for automatic CLI routing (coding→codex, codereview→gemini, debug→codex, secaudit→codex, analyze→gemini, refactor→codex, testgen→codex, docgen→codex, planner→codex, thinkdeep→codex). "+
+			mcp.WithDescription("Execute a raw prompt on a specific CLI. "+
+				"Use agent tool instead for task-based work — it auto-selects the best agent. "+
+				"Use exec only when you need a specific CLI or low-level control. "+
+				"Use role= for CLI routing (coding→codex, codereview→gemini, debug→codex, secaudit→codex, analyze→gemini, refactor→codex, testgen→codex, docgen→codex, planner→codex, thinkdeep→codex). "+
 				"Use async=true for long tasks (>30s) — returns job_id immediately, poll with status tool."),
 			mcp.WithString("prompt",
 				mcp.Required(),
@@ -741,7 +745,10 @@ func (s *Server) registerTools() {
 	// agents tool
 	s.mcp.AddTool(
 		mcp.NewTool("agents",
-			mcp.WithDescription("Discover and run Loom Agents"),
+			mcp.WithDescription("PRIMARY tool for task execution. "+
+				"Routes tasks to the best agent automatically. "+
+				"Just provide a prompt — agent selection, CLI routing, and model configuration happen automatically. "+
+				"Actions: run (execute task), list (show agents), find (search agents)."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: list, run, info, find"),
@@ -1596,21 +1603,43 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		return marshalToolResult(agent)
 
 	case "run":
-		agentName := request.GetString("agent", "")
-		if agentName == "" {
-			return mcp.NewToolResultError("agent name required for run"), nil
-		}
-		agent, agentErr := s.agentReg.Get(agentName)
-		if agentErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
-		}
 		prompt := request.GetString("prompt", "")
+		if prompt == "" {
+			return mcp.NewToolResultError("prompt is required for run"), nil
+		}
+		cwd := request.GetString("cwd", "")
+
+		// Auto-discover agents from the caller's project directory if it differs
+		// from the initial discovery path. Additive — does not remove existing agents.
+		if cwd != "" && cwd != s.projectDir {
+			s.agentReg.Discover(cwd, "")
+		}
+
+		agentName := request.GetString("agent", "")
+		var agent *agents.Agent
+		if agentName == "" {
+			// Auto-select: score all registered agents against prompt keywords.
+			var score int
+			agent, score = agents.AutoSelectAgent(s.agentReg, prompt)
+			if agent == nil {
+				return mcp.NewToolResultError("no agents registered and no fallback available"), nil
+			}
+			agentName = agent.Name
+			keywords := agents.ExtractKeywords(prompt)
+			s.log.Info("agent auto-selected: %s (score: %d, keywords: %v)", agent.Name, score, keywords)
+		} else {
+			var agentErr error
+			agent, agentErr = s.agentReg.Get(agentName)
+			if agentErr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+			}
+		}
+
 		fullPrompt := agent.Content + "\n\n" + prompt
 		role := agent.Role
 		if role == "" {
 			role = "default"
 		}
-		cwd := request.GetString("cwd", "")
 
 		// Resolve CLI from agent role
 		cli := ""
