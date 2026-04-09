@@ -33,6 +33,7 @@ type JobManager struct {
 	jobs    map[string]*Job
 	cancels map[string]context.CancelFunc
 	mu      sync.RWMutex
+	store   *Store // optional — if set, jobs are persisted immediately on create/complete
 }
 
 // NewJobManager creates an empty job manager.
@@ -41,6 +42,14 @@ func NewJobManager() *JobManager {
 		jobs:    make(map[string]*Job),
 		cancels: make(map[string]context.CancelFunc),
 	}
+}
+
+// SetStore enables immediate persistence — every Create/Complete/Fail writes to SQLite.
+// Without this, jobs survive only until the next 30s snapshot interval.
+func (m *JobManager) SetStore(store *Store) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.store = store
 }
 
 // Create registers a new job for a session.
@@ -65,11 +74,24 @@ func (m *JobManager) Create(sessionID, cli string) *Job {
 	}
 
 	m.jobs[j.ID] = j
+
+	// Immediate persist — survive process restart between 30s snapshot intervals.
+	if m.store != nil {
+		_ = m.store.SnapshotJob(j)
+	}
+
 	return j
 }
 
 // Import inserts a job from recovery (WAL replay). Thread-safe.
 func (m *JobManager) Import(j *Job) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobs[j.ID] = j
+}
+
+// Restore adds a job directly to the in-memory store (for SQLite recovery).
+func (m *JobManager) Restore(j *Job) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.jobs[j.ID] = j
@@ -155,6 +177,10 @@ func (m *JobManager) CompleteJob(id, content string, exitCode int) bool {
 		delete(m.cancels, id)
 	}
 
+	if m.store != nil {
+		_ = m.store.SnapshotJob(j)
+	}
+
 	return true
 }
 
@@ -179,8 +205,13 @@ func (m *JobManager) FailJob(id string, err *types.TypedError) bool {
 		delete(m.cancels, id)
 	}
 
+	if m.store != nil {
+		_ = m.store.SnapshotJob(j)
+	}
+
 	return true
 }
+
 
 // IncrementPoll increments the poll counter for anti-polling detection.
 func (m *JobManager) IncrementPoll(id string) int {

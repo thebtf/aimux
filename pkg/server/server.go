@@ -179,6 +179,17 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 				log.Warn("WAL recovery: %v", err)
 			}
 
+			// Restore jobs from SQLite (survive process restarts)
+			if n, err := s.store.RestoreJobs(s.jobs); err != nil {
+				log.Warn("job restore failed: %v", err)
+			} else if n > 0 {
+				log.Info("restored %d jobs from SQLite", n)
+			}
+
+			// Enable immediate persistence — jobs written to SQLite on create/complete/fail.
+			// Survives process restart between 30s snapshot intervals.
+			s.jobs.SetStore(s.store)
+
 			// snapshot loop started below after gcCtx is created
 		}
 	}
