@@ -10,11 +10,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -33,66 +33,31 @@ func (e *Executor) Name() string { return "pipe" }
 func (e *Executor) Available() bool { return true }
 
 // Run executes a single prompt and returns the result.
+// Uses ProcessManager for lifecycle and IOManager for streaming I/O.
 func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
 	start := time.Now()
 
-	// Use exec.Command (NOT CommandContext) — we manage kill ourselves
-	// to correctly distinguish timeout vs cancel vs normal exit.
 	cmd := exec.Command(args.Command, args.Args...)
 	cmd.Dir = args.CWD
-
 	if len(args.Env) > 0 {
 		cmd.Env = mergeEnv(args.Env)
 	}
-
-	var stderr bytes.Buffer
-	stdout := &safeBuffer{}
-	cmd.Stdout = stdout
-	cmd.Stderr = &stderr
-
 	if args.Stdin != "" {
 		cmd.Stdin = strings.NewReader(args.Stdin)
 	}
 
-	if err := cmd.Start(); err != nil {
+	// Control plane: spawn process
+	pm := executor.NewProcessManager()
+	handle, err := pm.Spawn(cmd)
+	if err != nil {
 		return nil, types.NewExecutorError(
 			fmt.Sprintf("failed to start %s", args.Command), err, "")
 	}
+	defer pm.Cleanup(handle)
 
-	// Wait in background goroutine
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	// Completion pattern: poll stdout for pattern match (process may not exit after completing)
-	var patternDone <-chan struct{}
-	if args.CompletionPattern != "" {
-		re, reErr := regexp.Compile(args.CompletionPattern)
-		if reErr != nil {
-			// Invalid regex — skip pattern matching, process runs to natural exit
-			re = nil
-		}
-		if re != nil {
-			patternCh := make(chan struct{}, 1)
-			patternDone = patternCh
-			go func() {
-				ticker := time.NewTicker(100 * time.Millisecond)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ticker.C:
-						if re.MatchString(stdout.String()) {
-							patternCh <- struct{}{}
-							return
-						}
-					case <-done:
-						return // process exited, stop checking
-					}
-				}
-			}()
-		}
-	}
+	// Data plane: stream I/O
+	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern)
+	iom.StreamLines()
 
 	// Build optional timeout channel
 	var timerC <-chan time.Time
@@ -102,60 +67,69 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		timerC = timer.C
 	}
 
+	// 4-way select: process exit | pattern | timeout | cancel
 	select {
-	case waitErr := <-done:
-		// Process exited on its own
+	case waitErr := <-handle.Done:
+		iom.Drain(1 * time.Second)
+		content := iom.Collect()
 		exitCode := 0
 		if waitErr != nil {
 			if exitErr, ok := waitErr.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
 			} else {
 				return nil, types.NewExecutorError(
-					fmt.Sprintf("%s failed", args.Command), waitErr, stdout.String())
+					fmt.Sprintf("%s failed", args.Command), waitErr, content)
 			}
 		}
 		return &types.Result{
-			Content:    stdout.String(),
+			Content:    content,
 			ExitCode:   exitCode,
 			DurationMS: time.Since(start).Milliseconds(),
 		}, nil
 
-	case <-patternDone:
-		// Completion pattern matched — kill process and return output
-		_ = killProcess(cmd)
-		<-done
+	case <-iom.PatternMatched():
+		pm.Kill(handle)
+		iom.Drain(1 * time.Second)
 		return &types.Result{
-			Content:    stdout.String(),
+			Content:    iom.Collect(),
 			ExitCode:   0,
 			DurationMS: time.Since(start).Milliseconds(),
 		}, nil
 
 	case <-timerC:
-		// Timeout
-		_ = killProcess(cmd)
-		<-done // wait for goroutine to finish
+		pm.Kill(handle)
+		iom.Drain(1 * time.Second)
+		content := iom.Collect()
 		return &types.Result{
-			Content:    stdout.String(),
+			Content:    content,
 			ExitCode:   124,
 			Partial:    true,
 			DurationMS: time.Since(start).Milliseconds(),
 			Error: types.NewTimeoutError(
-				fmt.Sprintf("timed out after %ds", args.TimeoutSeconds),
-				stdout.String()),
+				fmt.Sprintf("timed out after %ds", args.TimeoutSeconds), content),
 		}, nil
 
 	case <-ctx.Done():
-		// Context cancelled
-		_ = killProcess(cmd)
-		<-done // wait for goroutine to finish
+		pm.Kill(handle)
+		iom.Drain(1 * time.Second)
+		content := iom.Collect()
 		return &types.Result{
-			Content:    stdout.String(),
+			Content:    content,
 			ExitCode:   130,
 			Partial:    true,
 			DurationMS: time.Since(start).Milliseconds(),
-			Error: types.NewExecutorError("cancelled", ctx.Err(), stdout.String()),
+			Error: types.NewExecutorError("cancelled", ctx.Err(), content),
 		}, nil
 	}
+}
+
+// sessionPM is the package-level ProcessManager for persistent sessions.
+// Server calls SessionProcessManager().Shutdown() on server shutdown.
+var sessionPM = executor.NewProcessManager()
+
+// SessionProcessManager returns the ProcessManager used for persistent sessions.
+func SessionProcessManager() *executor.ProcessManager {
+	return sessionPM
 }
 
 // Start begins a persistent session via stdin/stdout pipes.
@@ -167,17 +141,14 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 		cmd.Env = mergeEnv(args.Env)
 	}
 
+	// Stdin pipe must be created before Spawn (which calls cmd.Start internally).
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, types.NewExecutorError("failed to create stdin pipe", err, "")
 	}
 
-	stdout, err := cmd.StdoutPipe()
+	handle, err := sessionPM.Spawn(cmd)
 	if err != nil {
-		return nil, types.NewExecutorError("failed to create stdout pipe", err, "")
-	}
-
-	if err := cmd.Start(); err != nil {
 		return nil, types.NewExecutorError(
 			fmt.Sprintf("failed to start %s", args.Command), err, "")
 	}
@@ -185,7 +156,8 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 	return &pipeSession{
 		cmd:    cmd,
 		stdin:  stdin,
-		stdout: stdout,
+		stdout: handle.Stdout,
+		handle: handle,
 		ctx:    ctx,
 	}, nil
 }
@@ -195,6 +167,7 @@ type pipeSession struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
+	handle *executor.ProcessHandle
 	ctx    context.Context
 	mu     sync.Mutex
 }
@@ -299,25 +272,20 @@ func (s *pipeSession) Stream(ctx context.Context, prompt string) (<-chan types.E
 
 func (s *pipeSession) Close() error {
 	_ = s.stdin.Close()
-	return killProcess(s.cmd)
+	sessionPM.Kill(s.handle)
+	sessionPM.Cleanup(s.handle)
+	return nil
 }
 
 func (s *pipeSession) Alive() bool {
-	return s.cmd.ProcessState == nil
+	return sessionPM.IsAlive(s.handle)
 }
 
 func (s *pipeSession) PID() int {
-	if s.cmd.Process != nil {
-		return s.cmd.Process.Pid
+	if s.handle != nil {
+		return s.handle.PID
 	}
 	return 0
-}
-
-func killProcess(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	return cmd.Process.Kill()
 }
 
 func mergeEnv(extra map[string]string) []string {
@@ -328,27 +296,3 @@ func mergeEnv(extra map[string]string) []string {
 	return env
 }
 
-// safeBuffer is a goroutine-safe bytes.Buffer wrapper.
-// Solves BUG-001: concurrent reads (completion pattern polling) and writes (OS pipe).
-type safeBuffer struct {
-	buf bytes.Buffer
-	mu  sync.Mutex
-}
-
-func (sb *safeBuffer) Write(p []byte) (int, error) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.Write(p)
-}
-
-func (sb *safeBuffer) String() string {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.String()
-}
-
-func (sb *safeBuffer) Len() int {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.Len()
-}

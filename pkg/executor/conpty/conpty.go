@@ -7,7 +7,6 @@
 package conpty
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -16,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/thebtf/aimux/pkg/executor/pipeline"
+	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -54,42 +53,32 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	if !e.available {
 		return nil, types.NewExecutorError("ConPTY not available on this platform", nil, "")
 	}
-
 	start := time.Now()
 
-	// On Windows, use exec.Command — processes inherit the console
-	// which provides TTY-like behavior for most CLIs.
-	// True CreatePseudoConsole would give us isolated PTY per process,
-	// but exec.Command with console inheritance works for single-process use.
 	cmd := exec.Command(args.Command, args.Args...)
 	cmd.Dir = args.CWD
-
 	if len(args.Env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range args.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	// Pipe stdin if provided (e.g., long prompts exceeding CLI's stdin threshold)
 	if args.Stdin != "" {
 		cmd.Stdin = strings.NewReader(args.Stdin)
 	}
 
-	if err := cmd.Start(); err != nil {
+	// Control plane
+	pm := executor.NewProcessManager()
+	handle, err := pm.Spawn(cmd)
+	if err != nil {
 		return nil, types.NewExecutorError(
 			fmt.Sprintf("ConPTY start failed for %s", args.Command), err, "")
 	}
+	defer pm.Cleanup(handle)
 
-	// Wait in background
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
+	// Data plane (IOManager strips ANSI per line — no need for pipeline.StripANSI here)
+	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern)
+	iom.StreamLines()
 
 	var timerC <-chan time.Time
 	if args.TimeoutSeconds > 0 {
@@ -99,8 +88,9 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 
 	select {
-	case waitErr := <-done:
-		content := pipeline.StripANSI(stdout.String())
+	case waitErr := <-handle.Done:
+		iom.Drain(1 * time.Second)
+		content := iom.Collect()
 		exitCode := 0
 		if waitErr != nil {
 			if exitErr, ok := waitErr.(*exec.ExitError); ok {
@@ -110,33 +100,29 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 					fmt.Sprintf("%s failed", args.Command), waitErr, content)
 			}
 		}
-		return &types.Result{
-			Content:    content,
-			ExitCode:   exitCode,
-			DurationMS: time.Since(start).Milliseconds(),
-		}, nil
+		return &types.Result{Content: content, ExitCode: exitCode, DurationMS: time.Since(start).Milliseconds()}, nil
+
+	case <-iom.PatternMatched():
+		pm.Kill(handle)
+		iom.Drain(1 * time.Second)
+		return &types.Result{Content: iom.Collect(), ExitCode: 0, DurationMS: time.Since(start).Milliseconds()}, nil
 
 	case <-timerC:
-		cmd.Process.Kill()
-		<-done
-		content := pipeline.StripANSI(stdout.String())
+		pm.Kill(handle)
+		iom.Drain(1 * time.Second)
+		content := iom.Collect()
 		return &types.Result{
-			Content:    content,
-			ExitCode:   124,
-			Partial:    true,
+			Content: content, ExitCode: 124, Partial: true,
 			DurationMS: time.Since(start).Milliseconds(),
-			Error: types.NewTimeoutError(
-				fmt.Sprintf("ConPTY timed out after %ds", args.TimeoutSeconds), content),
+			Error: types.NewTimeoutError(fmt.Sprintf("ConPTY timed out after %ds", args.TimeoutSeconds), content),
 		}, nil
 
 	case <-ctx.Done():
-		cmd.Process.Kill()
-		<-done
-		content := pipeline.StripANSI(stdout.String())
+		pm.Kill(handle)
+		iom.Drain(1 * time.Second)
+		content := iom.Collect()
 		return &types.Result{
-			Content:    content,
-			ExitCode:   130,
-			Partial:    true,
+			Content: content, ExitCode: 130, Partial: true,
 			DurationMS: time.Since(start).Milliseconds(),
 			Error: types.NewExecutorError("ConPTY cancelled", ctx.Err(), content),
 		}, nil

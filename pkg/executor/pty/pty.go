@@ -4,10 +4,8 @@
 package pty
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -15,7 +13,7 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/thebtf/aimux/pkg/executor/pipeline"
+	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -43,12 +41,10 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	if !e.available {
 		return nil, types.NewExecutorError("PTY not available on this platform", nil, "")
 	}
-
 	start := time.Now()
 
 	cmd := exec.Command(args.Command, args.Args...)
 	cmd.Dir = args.CWD
-
 	if len(args.Env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range args.Env {
@@ -56,7 +52,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		}
 	}
 
-	// Start with PTY
+	// PTY spawning — pty.Start() manages the pseudo-terminal
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return nil, types.NewExecutorError(
@@ -64,7 +60,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 	defer ptmx.Close()
 
-	// Write stdin if provided
+	// Write stdin via PTY
 	if args.Stdin != "" {
 		go func() {
 			ptmx.Write([]byte(args.Stdin))
@@ -72,15 +68,11 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		}()
 	}
 
-	// Read output in background
-	var output bytes.Buffer
-	readDone := make(chan error, 1)
-	go func() {
-		_, err := io.Copy(&output, ptmx)
-		readDone <- err
-	}()
+	// Data plane: IOManager reads from ptmx (strips ANSI per line, checks pattern)
+	iom := executor.NewIOManager(ptmx, args.CompletionPattern)
+	iom.StreamLines()
 
-	// Wait for process with timeout
+	// Process exit tracking
 	procDone := make(chan error, 1)
 	go func() {
 		procDone <- cmd.Wait()
@@ -95,47 +87,42 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 
 	select {
 	case waitErr := <-procDone:
-		// Process exited — wait for read to finish
-		<-readDone
-
-		content := pipeline.StripANSI(output.String())
+		iom.Drain(1 * time.Second)
+		content := iom.Collect()
 		exitCode := 0
 		if waitErr != nil {
 			if exitErr, ok := waitErr.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
 			}
 		}
-		return &types.Result{
-			Content:    content,
-			ExitCode:   exitCode,
-			DurationMS: time.Since(start).Milliseconds(),
-		}, nil
+		return &types.Result{Content: content, ExitCode: exitCode, DurationMS: time.Since(start).Milliseconds()}, nil
+
+	case <-iom.PatternMatched():
+		_ = cmd.Process.Kill()
+		<-procDone
+		iom.Drain(1 * time.Second)
+		return &types.Result{Content: iom.Collect(), ExitCode: 0, DurationMS: time.Since(start).Milliseconds()}, nil
 
 	case <-timerC:
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		<-procDone
-		<-readDone
-		content := pipeline.StripANSI(output.String())
+		iom.Drain(1 * time.Second)
+		content := iom.Collect()
 		return &types.Result{
-			Content:    content,
-			ExitCode:   124,
-			Partial:    true,
+			Content: content, ExitCode: 124, Partial: true,
 			DurationMS: time.Since(start).Milliseconds(),
-			Error: types.NewTimeoutError(
-				fmt.Sprintf("PTY timed out after %ds", args.TimeoutSeconds), content),
+			Error:      types.NewTimeoutError(fmt.Sprintf("PTY timed out after %ds", args.TimeoutSeconds), content),
 		}, nil
 
 	case <-ctx.Done():
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		<-procDone
-		<-readDone
-		content := pipeline.StripANSI(output.String())
+		iom.Drain(1 * time.Second)
+		content := iom.Collect()
 		return &types.Result{
-			Content:    content,
-			ExitCode:   130,
-			Partial:    true,
+			Content: content, ExitCode: 130, Partial: true,
 			DurationMS: time.Since(start).Milliseconds(),
-			Error: types.NewExecutorError("PTY cancelled", ctx.Err(), content),
+			Error:      types.NewExecutorError("PTY cancelled", ctx.Err(), content),
 		}, nil
 	}
 }
