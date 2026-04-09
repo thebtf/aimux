@@ -23,7 +23,7 @@ func (s *Server) registerSkillPrompts() {
 	}
 	legacy := legacyPromptNames()
 	for _, meta := range s.skillEngine.Skills() {
-		promptName := "aimux-" + meta.Name
+		promptName := meta.Name
 		if legacy[promptName] {
 			s.log.Warn("skill prompt %q conflicts with legacy prompt — skipping (legacy takes precedence)", promptName)
 			continue

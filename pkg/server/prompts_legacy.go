@@ -21,7 +21,7 @@ import (
 func (s *Server) registerPrompts() {
 	// Background execution protocol prompt
 	s.mcp.AddPrompt(
-		mcp.NewPrompt("aimux-background",
+		mcp.NewPrompt("background",
 			mcp.WithPromptDescription("Step-by-step orchestration for running aimux CLI tasks in background"),
 			mcp.WithArgument("task_description",
 				mcp.ArgumentDescription("Description of the task to execute"),
@@ -32,7 +32,7 @@ func (s *Server) registerPrompts() {
 
 	// aimux-guide: comprehensive decision-making guide for all 13 tools
 	s.mcp.AddPrompt(
-		mcp.NewPrompt("aimux-guide",
+		mcp.NewPrompt("guide",
 			mcp.WithPromptDescription("Complete guide to aimux tools — when and how to use each of the 13 MCP tools, role routing, think patterns, investigation flow, workflows"),
 		),
 		s.handleGuidePrompt,
@@ -40,7 +40,7 @@ func (s *Server) registerPrompts() {
 
 	// aimux-investigate: structured investigation protocol with convergence tracking
 	s.mcp.AddPrompt(
-		mcp.NewPrompt("aimux-investigate",
+		mcp.NewPrompt("investigate",
 			mcp.WithPromptDescription("Investigation protocol — structured deep analysis with convergence tracking"),
 			mcp.WithArgument("topic",
 				mcp.ArgumentDescription("What to investigate"),
@@ -51,7 +51,7 @@ func (s *Server) registerPrompts() {
 
 	// aimux-workflow: declarative multi-step pipeline builder
 	s.mcp.AddPrompt(
-		mcp.NewPrompt("aimux-workflow",
+		mcp.NewPrompt("workflow",
 			mcp.WithPromptDescription("Build declarative multi-step execution pipelines"),
 			mcp.WithArgument("goal",
 				mcp.ArgumentDescription("What the workflow should accomplish"),
@@ -558,10 +558,10 @@ func (s *Server) handleWorkflowPrompt(_ context.Context, request mcp.GetPromptRe
 // Used by registerSkillPrompts() to detect conflicts.
 func legacyPromptNames() map[string]bool {
 	return map[string]bool{
-		"aimux-background":  true,
-		"aimux-guide":       true,
-		"aimux-investigate": true,
-		"aimux-workflow":    true,
+		"background":  true,
+		"guide":       true,
+		"investigate": true,
+		"workflow":    true,
 	}
 }
 

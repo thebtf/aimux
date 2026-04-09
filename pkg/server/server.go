@@ -55,19 +55,19 @@ orchestration guide with hard gates, exact tool parameters, and cross-skill rout
 
 | Skill Prompt | Purpose |
 |---|---|
-| aimux-debug | 5-phase debug: reproduce → investigate → root-cause → fix → verify |
-| aimux-review | Code review with CLI-adaptive consensus/peer_review fallback |
-| aimux-audit | Codebase audit with P0-P3 triage routing to debug/security/review |
-| aimux-security | 10-category security checklist with investigate integration |
-| aimux-research | 4-phase pipeline: literature → comparison → adversarial → synthesis |
-| aimux-consensus | Multi-model consensus with "consensus ≠ correctness" warning |
-| aimux-investigate | Investigation protocol with domain auto-detect and convergence |
-| aimux-delegate | Delegation decision tree: task size → routing (direct/exec/agent) |
-| aimux-tdd | TDD workflow: RED gate → GREEN gate → IMPROVE → coverage |
-| aimux-workflow | Declarative multi-step pipeline builder |
-| aimux-agent-exec | Agent-first execution: match task → agent, exec as fallback |
-| aimux-guide | Complete reference: tools, roles, patterns |
-| aimux-background | Background async execution with role routing |
+| debug | 5-phase debug: reproduce → investigate → root-cause → fix → verify |
+| review | Code review with CLI-adaptive consensus/peer_review fallback |
+| audit | Codebase audit with P0-P3 triage routing to debug/security/review |
+| security | 10-category security checklist with investigate integration |
+| research | 4-phase pipeline: literature → comparison → adversarial → synthesis |
+| consensus | Multi-model consensus with "consensus ≠ correctness" warning |
+| investigate | Investigation protocol with domain auto-detect and convergence |
+| delegate | Delegation decision tree: task size → routing (direct/exec/agent) |
+| tdd | TDD workflow: RED gate → GREEN gate → IMPROVE → coverage |
+| workflow | Declarative multi-step pipeline builder |
+| agent-exec | Agent-first execution: match task → agent, exec as fallback |
+| guide | Complete reference: tools, roles, patterns |
+| background | Background async execution with role routing |
 
 Use these prompts for structured guidance. Each injects live data (your CLIs, metrics,
 past reports) and adapts to your environment.
@@ -100,7 +100,7 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 - Don't use sync exec for tasks >30s — use async=true
 - Don't skip investigate for complex bugs — jumping to fix wastes time
 - Don't run consensus with 1 CLI — needs 2+ for comparison
-- Don't call exec for tasks an agent can handle — use aimux-agent-exec first`
+- Don't call exec for tasks an agent can handle — use agent-exec first`
 
 // marshalToolResult marshals data to JSON and returns an MCP tool result.
 // Returns an error result if marshaling fails instead of silently returning empty.
