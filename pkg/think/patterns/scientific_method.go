@@ -125,6 +125,37 @@ func countByType(entries []any) map[string]int {
 	return counts
 }
 
+// autoLinkEntry returns the ID of the last session entry of the prerequisite type for
+// the given entryType. Returns empty string if no suitable entry is found.
+//
+//	prediction → links to last hypothesis
+//	experiment → links to last prediction
+//	result     → links to last experiment
+func autoLinkEntry(entryType string, entries []any) string {
+	prerequisite := map[string]string{
+		"prediction": "hypothesis",
+		"experiment": "prediction",
+		"result":     "experiment",
+	}
+	target, needsLink := prerequisite[entryType]
+	if !needsLink {
+		return ""
+	}
+	// Walk in reverse to find the most recent entry of the target type.
+	for i := len(entries) - 1; i >= 0; i-- {
+		em, ok := entries[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if em["type"] == target {
+			if id, ok := em["id"].(string); ok {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
 type scientificMethodPattern struct{}
 
 // NewScientificMethodPattern returns the "scientific_method" pattern handler.
@@ -158,6 +189,56 @@ func (p *scientificMethodPattern) Validate(input map[string]any) (map[string]any
 		}
 	}
 
+	// Flat format optional fields
+	if v, ok := input["step_number"]; ok {
+		switch n := v.(type) {
+		case float64:
+			validated["step_number"] = int(n)
+		case int:
+			validated["step_number"] = n
+		default:
+			return nil, fmt.Errorf("field 'step_number' must be a number")
+		}
+	}
+	if v, ok := input["next_step_needed"]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return nil, fmt.Errorf("field 'next_step_needed' must be a bool")
+		}
+		validated["next_step_needed"] = b
+	}
+
+	// --- Flat entry format detection ---
+	_, hasEntryType := input["entry_type"]
+	_, hasEntryText := input["entry_text"]
+
+	if hasEntryType || hasEntryText {
+		// New flat format path.
+		entryType, ok := input["entry_type"].(string)
+		if !ok || !validEntryTypes[entryType] {
+			return nil, fmt.Errorf("entry 'type' must be one of: hypothesis, prediction, experiment, result")
+		}
+		entryText, ok := input["entry_text"].(string)
+		if !ok || entryText == "" {
+			return nil, fmt.Errorf("field 'entry_text' must be a non-empty string")
+		}
+		flatEntry := map[string]any{"type": entryType, "text": entryText}
+		// link_to is optional; auto-link is resolved in Handle using live session state.
+		if v, ok := input["link_to"]; ok {
+			linkTo, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("field 'link_to' must be a string")
+			}
+			flatEntry["linkedTo"] = linkTo
+		} else {
+			// Signal to Handle that auto-link resolution is needed.
+			flatEntry["autoLink"] = true
+		}
+		validated["entry"] = flatEntry
+		return validated, nil
+	}
+
+	// --- Old nested format path (backward compat) ---
 	if v, ok := input["entry"]; ok {
 		entry, ok := v.(map[string]any)
 		if !ok {
@@ -194,6 +275,24 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 
 	stage := validInput["stage"].(string)
 	stageHistory = append(stageHistory, stage)
+
+	// Resolve auto-link for flat format entries before lifecycle enforcement.
+	if entryRaw, hasEntry := validInput["entry"]; hasEntry {
+		entry := entryRaw.(map[string]any)
+		if _, needsAutoLink := entry["autoLink"]; needsAutoLink {
+			linked := autoLinkEntry(entry["type"].(string), entries)
+			// Build a new map without the autoLink sentinel, substituting the resolved linkedTo.
+			resolved := map[string]any{
+				"type": entry["type"],
+				"text": entry["text"],
+			}
+			if linked != "" {
+				resolved["linkedTo"] = linked
+			}
+			validInput = copyValidInput(validInput)
+			validInput["entry"] = resolved
+		}
+	}
 
 	// Lifecycle enforcement: block entry submissions that lack prerequisite entries in session.
 	if entryRaw, hasEntry := validInput["entry"]; hasEntry {
@@ -276,6 +375,14 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 		data["entry"] = addedEntry
 	}
 
+	// Propagate flat format optional fields to output.
+	if v, ok := validInput["step_number"]; ok {
+		data["step_number"] = v
+	}
+	if v, ok := validInput["next_step_needed"]; ok {
+		data["next_step_needed"] = v
+	}
+
 	suggestedNext := nextStage(stage)
 
 	// Tier 2A: text analysis (added on every call for stateful pattern)
@@ -302,4 +409,13 @@ func nextStage(current string) string {
 		return ""
 	}
 	return "scientific_method"
+}
+
+// copyValidInput creates a shallow copy of the validInput map so we can mutate it safely.
+func copyValidInput(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }

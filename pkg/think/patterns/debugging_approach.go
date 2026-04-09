@@ -35,6 +35,31 @@ var validHypothesisStatuses = map[string]bool{
 	"untested": true, "tested": true, "confirmed": true, "refuted": true,
 }
 
+// confidenceEnumToFloat maps flat confidence enum strings to float values.
+func confidenceEnumToFloat(s string) float64 {
+	switch s {
+	case "exploring":
+		return 0.1
+	case "low":
+		return 0.2
+	case "medium":
+		return 0.5
+	case "high":
+		return 0.7
+	case "very_high":
+		return 0.85
+	case "certain":
+		return 0.95
+	default:
+		return 0.5
+	}
+}
+
+// generateHypothesisID produces a time-based unique ID for flat-format hypotheses.
+func generateHypothesisID() string {
+	return fmt.Sprintf("h_%d", time.Now().UnixNano())
+}
+
 type debuggingApproachPattern struct{}
 
 // NewDebuggingApproachPattern returns the "debugging_approach" pattern handler.
@@ -65,6 +90,97 @@ func (p *debuggingApproachPattern) Validate(input map[string]any) (map[string]an
 		}
 		validated["approachName"] = s
 	}
+
+	// --- Flat format detection ---
+	_, hasHypothesisText := input["hypothesis_text"]
+	_, hasHypothesisAction := input["hypothesis_action"]
+	_, hasStepNumber := input["step_number"]
+
+	if hasHypothesisText || hasHypothesisAction || hasStepNumber {
+		// New flat format path.
+
+		// step_number: MCP sends float64 for numbers.
+		if v, ok := input["step_number"]; ok {
+			switch n := v.(type) {
+			case float64:
+				validated["step_number"] = int(n)
+			case int:
+				validated["step_number"] = n
+			default:
+				return nil, fmt.Errorf("field 'step_number' must be a number")
+			}
+		}
+
+		// next_step_needed
+		if v, ok := input["next_step_needed"]; ok {
+			b, ok := v.(bool)
+			if !ok {
+				return nil, fmt.Errorf("field 'next_step_needed' must be a bool")
+			}
+			validated["next_step_needed"] = b
+		}
+
+		// findings_text
+		if v, ok := input["findings_text"]; ok {
+			s, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("field 'findings_text' must be a string")
+			}
+			validated["findings_text"] = s
+		}
+
+		// hypothesis_text → create hypothesis map
+		if v, ok := input["hypothesis_text"]; ok {
+			text, ok := v.(string)
+			if !ok || text == "" {
+				return nil, fmt.Errorf("field 'hypothesis_text' must be a non-empty string")
+			}
+			conf := 0.5 // default
+			if cv, ok := input["confidence"]; ok {
+				cs, ok := cv.(string)
+				if !ok {
+					return nil, fmt.Errorf("field 'confidence' must be a string enum")
+				}
+				conf = confidenceEnumToFloat(cs)
+			}
+			validated["hypothesis"] = map[string]any{
+				"id":         generateHypothesisID(),
+				"text":       text,
+				"confidence": conf,
+			}
+		}
+
+		// hypothesis_action: confirm/refute → hypothesisUpdate targeting last hypothesis in session
+		if v, ok := input["hypothesis_action"]; ok {
+			action, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("field 'hypothesis_action' must be a string")
+			}
+			var status string
+			switch action {
+			case "confirm":
+				status = "confirmed"
+			case "refute":
+				status = "refuted"
+			case "propose":
+				// propose just adds a hypothesis; if hypothesis_text also present it's already handled above
+				// nothing to do for hypothesisUpdate
+			default:
+				return nil, fmt.Errorf("field 'hypothesis_action' must be one of: propose/confirm/refute")
+			}
+			if status != "" {
+				// We need the last hypothesis ID from session; we pass a sentinel and resolve in Handle.
+				validated["hypothesisUpdate"] = map[string]any{
+					"id":     "__last__",
+					"status": status,
+				}
+			}
+		}
+
+		return validated, nil
+	}
+
+	// --- Old nested format path (backward compat) ---
 
 	if v, ok := input["hypothesis"]; ok {
 		h, ok := v.(map[string]any)
@@ -119,6 +235,25 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 			"addedAt": time.Now().UTC().Format(time.RFC3339),
 		}
 		hypotheses = append(hypotheses, entry)
+	}
+
+	// Resolve __last__ sentinel for flat hypothesis_action path.
+	if huRaw, ok := validInput["hypothesisUpdate"]; ok {
+		hu := huRaw.(map[string]any)
+		if hu["id"] == "__last__" {
+			if len(hypotheses) == 0 {
+				return nil, fmt.Errorf("no hypothesis to update: session has no hypotheses")
+			}
+			lastH, ok := hypotheses[len(hypotheses)-1].(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("malformed hypothesis in session")
+			}
+			hu = map[string]any{
+				"id":     lastH["id"],
+				"status": hu["status"],
+			}
+			validInput["hypothesisUpdate"] = hu
+		}
 	}
 
 	// Update existing hypothesis
@@ -190,6 +325,17 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 		"confirmedCount":    confirmedCount,
 		"refutedCount":      refutedCount,
 		"guidance":          BuildGuidance("debugging_approach", guidanceDepth, []string{"approachName", "hypothesis", "hypothesisUpdate"}),
+	}
+
+	// Propagate flat format optional fields to output.
+	if v, ok := validInput["step_number"]; ok {
+		data["step_number"] = v
+	}
+	if v, ok := validInput["next_step_needed"]; ok {
+		data["next_step_needed"] = v
+	}
+	if v, ok := validInput["findings_text"]; ok {
+		data["findings_text"] = v
 	}
 
 	if refutedCount >= pivotSuggestionThreshold {

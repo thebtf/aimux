@@ -234,6 +234,141 @@ func TestScientific_ExperimentWithoutPrediction(t *testing.T) {
 	}
 }
 
+// TestScientific_FlatEntry: entry_type="hypothesis" + entry_text → entry stored with auto-ID.
+func TestScientific_FlatEntry(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "sci-flat-entry-1"
+
+	inp, err := p.Validate(map[string]any{
+		"stage":      "hypothesis",
+		"entry_type": "hypothesis",
+		"entry_text": "increased temperature accelerates reaction",
+	})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	// Should have an entry map in validated input.
+	entry, ok := inp["entry"].(map[string]any)
+	if !ok {
+		t.Fatal("expected entry map in validated input")
+	}
+	if entry["type"] != "hypothesis" {
+		t.Fatalf("expected entry type=hypothesis, got %v", entry["type"])
+	}
+	if entry["text"] != "increased temperature accelerates reaction" {
+		t.Fatalf("unexpected text: %v", entry["text"])
+	}
+	if _, hasAutoLink := entry["autoLink"]; !hasAutoLink {
+		t.Fatal("expected autoLink sentinel in flat entry when no link_to provided")
+	}
+
+	r, err := p.Handle(inp, sid)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	added, ok := r.Data["entry"].(map[string]any)
+	if !ok {
+		t.Fatal("expected entry in result data")
+	}
+	if added["id"] != "E-1" {
+		t.Fatalf("expected id=E-1, got %v", added["id"])
+	}
+	if added["type"] != "hypothesis" {
+		t.Fatalf("expected type=hypothesis, got %v", added["type"])
+	}
+}
+
+// TestScientific_FlatAutoLink: entry_type="prediction" → auto-linked to last hypothesis.
+func TestScientific_FlatAutoLink(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "sci-flat-autolink-1"
+
+	// Add hypothesis first.
+	inp1, _ := p.Validate(map[string]any{
+		"stage":      "hypothesis",
+		"entry_type": "hypothesis",
+		"entry_text": "plants grow faster with blue light",
+	})
+	r1, err := p.Handle(inp1, sid)
+	if err != nil {
+		t.Fatalf("hypothesis: %v", err)
+	}
+	hypEntry := r1.Data["entry"].(map[string]any)
+	hypID := hypEntry["id"].(string) // should be "E-1"
+
+	// Add prediction without link_to → should auto-link to E-1.
+	inp2, err := p.Validate(map[string]any{
+		"stage":      "hypothesis",
+		"entry_type": "prediction",
+		"entry_text": "yield will be 30% higher under blue light",
+	})
+	if err != nil {
+		t.Fatalf("validate prediction: %v", err)
+	}
+	r2, err := p.Handle(inp2, sid)
+	if err != nil {
+		t.Fatalf("prediction: %v", err)
+	}
+	predEntry := r2.Data["entry"].(map[string]any)
+	if predEntry["linkedTo"] != hypID {
+		t.Fatalf("expected prediction linked to %s, got %v", hypID, predEntry["linkedTo"])
+	}
+}
+
+// TestScientific_FlatLifecycleGate: entry_type="prediction" without prior hypothesis → STOP.
+func TestScientific_FlatLifecycleGate(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "sci-flat-gate-1"
+
+	inp, err := p.Validate(map[string]any{
+		"stage":      "hypothesis",
+		"entry_type": "prediction",
+		"entry_text": "some prediction with no hypothesis in session",
+	})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	_, err = p.Handle(inp, sid)
+	if err == nil {
+		t.Fatal("expected error: prediction requires prior hypothesis in session")
+	}
+}
+
+// TestScientific_BackwardCompat: old nested entry map still works.
+func TestScientific_BackwardCompat(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "sci-compat-1"
+
+	inp, err := p.Validate(map[string]any{
+		"stage": "hypothesis",
+		"entry": map[string]any{
+			"type": "hypothesis",
+			"text": "old nested format hypothesis",
+		},
+	})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	r, err := p.Handle(inp, sid)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	added, ok := r.Data["entry"].(map[string]any)
+	if !ok {
+		t.Fatal("expected entry in result data")
+	}
+	if added["type"] != "hypothesis" {
+		t.Fatalf("expected type=hypothesis, got %v", added["type"])
+	}
+	if added["text"] != "old nested format hypothesis" {
+		t.Fatalf("unexpected text: %v", added["text"])
+	}
+}
+
 // TestScientific_CorrectChain: hypothesis entry → prediction entry → no STOP (correct sequence).
 func TestScientific_CorrectChain(t *testing.T) {
 	think.ClearSessions()
