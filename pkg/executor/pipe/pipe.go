@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -46,7 +47,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 
 	var stderr bytes.Buffer
-	stdout := &safeBuffer{}
+	stdout := &executor.SafeBuffer{}
 	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
@@ -328,27 +329,3 @@ func mergeEnv(extra map[string]string) []string {
 	return env
 }
 
-// safeBuffer is a goroutine-safe bytes.Buffer wrapper.
-// Solves BUG-001: concurrent reads (completion pattern polling) and writes (OS pipe).
-type safeBuffer struct {
-	buf bytes.Buffer
-	mu  sync.Mutex
-}
-
-func (sb *safeBuffer) Write(p []byte) (int, error) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.Write(p)
-}
-
-func (sb *safeBuffer) String() string {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.String()
-}
-
-func (sb *safeBuffer) Len() int {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.buf.Len()
-}
