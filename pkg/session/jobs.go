@@ -97,7 +97,7 @@ func (m *JobManager) StartJob(id string, pid int) bool {
 	return true
 }
 
-// UpdateProgress updates the progress text for a running job.
+// UpdateProgress replaces the progress text for a running job.
 func (m *JobManager) UpdateProgress(id, progress string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -107,6 +107,24 @@ func (m *JobManager) UpdateProgress(id, progress string) bool {
 		return false
 	}
 	j.Progress = progress
+	j.ProgressUpdatedAt = time.Now()
+	return true
+}
+
+// AppendProgress appends a line to the progress text for a running job.
+// More efficient than UpdateProgress for streaming — avoids resending the full buffer.
+func (m *JobManager) AppendProgress(id, line string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	j, ok := m.jobs[id]
+	if !ok || j.Status != types.JobStatusRunning {
+		return false
+	}
+	if j.Progress != "" {
+		j.Progress += "\n"
+	}
+	j.Progress += line
 	j.ProgressUpdatedAt = time.Now()
 	return true
 }

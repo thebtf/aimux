@@ -16,18 +16,23 @@ type IOManager struct {
 	reader    io.Reader
 	pattern   *regexp.Regexp // nil if no pattern or invalid regex
 	buf       SafeBuffer
-	patternCh chan struct{} // signaled when pattern matches
-	doneCh    chan struct{} // closed when reader hits EOF
+	patternCh chan struct{}          // signaled when pattern matches
+	doneCh    chan struct{}          // closed when reader hits EOF
+	onOutput  func(partial string)  // called with accumulated output after each line
 }
 
 // NewIOManager creates an IOManager that reads from the given reader.
 // pattern is a regex string for completion detection (empty = no pattern matching).
 // If pattern is invalid regex, pattern matching is silently disabled.
-func NewIOManager(stdout io.Reader, pattern string) *IOManager {
+// onOutput is an optional callback invoked with accumulated content after each line.
+func NewIOManager(stdout io.Reader, pattern string, onOutput ...func(string)) *IOManager {
 	iom := &IOManager{
 		reader:    stdout,
 		patternCh: make(chan struct{}, 1),
 		doneCh:    make(chan struct{}),
+	}
+	if len(onOutput) > 0 && onOutput[0] != nil {
+		iom.onOutput = onOutput[0]
 	}
 	if pattern != "" {
 		if re, err := regexp.Compile(pattern); err == nil {
@@ -45,10 +50,18 @@ func NewIOManager(stdout io.Reader, pattern string) *IOManager {
 func (iom *IOManager) StreamLines() {
 	go func() {
 		scanner := bufio.NewScanner(iom.reader)
+		// Increase scanner buffer to 1MB to handle CLIs that produce long lines
+		// (e.g. base64 content, large JSON). Default 64KB is too small.
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			line := pipeline.StripANSI(scanner.Text())
 			iom.buf.Write([]byte(line + "\n"))
-			if iom.pattern != nil && iom.pattern.MatchString(iom.buf.String()) {
+			if iom.onOutput != nil {
+				// Send only the new line, not the full buffer — avoids O(n²)
+				iom.onOutput(line)
+			}
+			if iom.pattern != nil && iom.pattern.MatchString(line) {
+				// Match against the new line only — avoids O(n²) regex rescanning
 				select {
 				case iom.patternCh <- struct{}{}:
 				default:
@@ -81,8 +94,10 @@ func (iom *IOManager) Collect() string {
 // Drain waits up to timeout for the reader to finish (EOF).
 // Useful after killing a process to capture remaining buffered output.
 func (iom *IOManager) Drain(timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-iom.doneCh:
-	case <-time.After(timeout):
+	case <-timer.C:
 	}
 }

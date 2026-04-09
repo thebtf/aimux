@@ -405,7 +405,9 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 
 // Shutdown stops background services (GC reaper, snapshot) and closes persistence.
 func (s *Server) Shutdown() {
-	// Kill all tracked session processes before closing persistence.
+	// Kill all tracked processes before closing persistence.
+	// SharedPM tracks one-shot Run() processes; SessionPM tracks persistent sessions.
+	executor.SharedPM.Shutdown()
 	if pm := pipeExec.SessionProcessManager(); pm != nil {
 		pm.Shutdown()
 	}
@@ -1133,6 +1135,17 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 	s.sessions.Update(sessionID, func(sess *session.Session) {
 		sess.Status = types.SessionStatusRunning
 	})
+
+	// Wire live output: IOManager calls this with each new line (not full buffer).
+	// 1. Appends line to job progress (for status polling — returns accumulated output)
+	// 2. Pushes MCP notification with just the new line (for real-time display)
+	args.OnOutput = func(line string) {
+		s.jobs.AppendProgress(jobID, line)
+		s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
+			"progressToken": jobID,
+			"message":       line,
+		})
+	}
 
 	// Build the ordered list of CLIs to try. The primary (args.CLI) is always
 	// first; fallbacks from the router follow (max 2 additional attempts).

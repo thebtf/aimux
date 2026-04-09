@@ -8,11 +8,6 @@ import (
 	think "github.com/thebtf/aimux/pkg/think"
 )
 
-var validReviewCategories = map[string]bool{
-	"novelty": true, "empirical_rigor": true, "reproducibility": true,
-	"baselines": true, "clarity": true, "significance": true,
-}
-
 type peerReviewPattern struct {
 	sampling think.SamplingProvider
 }

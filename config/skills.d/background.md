@@ -35,41 +35,72 @@ Keyword analysis of `{{.Args.task_description}}`:
 
 ---
 
-## Phase 2 — Execute (async)
+## Phase 2 — Dispatch + Delegate
 
-**Goal:** Dispatch the task to the background.
+**Goal:** Launch async job AND delegate monitoring to a background agent.
+
+### Step 1: Create tasks for user visibility
+
+Create tasks BEFORE dispatching so the user sees progress immediately:
+
+```
+TaskCreate(subject="[aimux] <role>: dispatch", activeForm="Dispatching to <cli>")
+TaskCreate(subject="[aimux] <role>: executing", activeForm="CLI processing prompt")
+TaskCreate(subject="[aimux] <role>: collect result", activeForm="Collecting output")
+```
+
+Mark task 1 as `in_progress` immediately.
+
+### Step 2: Dispatch async job
 
 ```
 exec(
-  prompt="{{"{{.Args.task_description}}"}}" ,
+  prompt="{{"{{.Args.task_description}}"}}",
   role="<recommended role from Phase 1>",
   async=true
 )
 ```
 
-Capture the `job_id` from the response. Example response:
-```json
-{ "job_id": "job_abc123", "status": "queued" }
-```
+Capture `job_id`. Mark task 1 `completed`, task 2 `in_progress`.
 
----
-
-## Phase 3 — Poll
-
-**Goal:** Monitor job completion without blocking.
+### Step 3: Spawn background monitor agent
 
 ```
-status(job_id="{{"{{job_id}}"}}")
+Agent(
+  model="sonnet",
+  run_in_background=true,
+  description="Monitor aimux job <job_id>",
+  prompt="Poll mcp__aimux__status(job_id='<job_id>') every 10s.
+    The 'progress' field contains live CLI output (lines produced so far).
+    When status='completed': return the 'content' field.
+    When status='failed': return the 'error' field.
+    Report in under 200 words."
+)
 ```
 
-| `status` value | Action |
+### Step 4: React to background agent notifications
+
+On EACH `<task-notification>` from the monitor agent, update tasks:
+
+| Monitor status | Action |
 |---------------|--------|
-| `running` | Poll again in 10–30s |
-| `done` | Read `content` field — task is complete |
-| `error` | Read `error` field — escalate to `/debug` |
-| `cancelled` | Restart with adjusted prompt if needed |
+| Agent still running | Task 2 stays `in_progress` |
+| Agent completed with content | Task 2 `completed`, task 3 `in_progress` → parse result → task 3 `completed` |
+| Agent completed with error | Task 2 `completed` with error note. Escalate to `/debug`. |
 
-When done, the result is in `{{"{{job_id.content}}"}}`.
+**IMPORTANT:** Main agent does NOT poll. Main agent reacts to `<task-notification>` events
+from the background monitor. This frees the main agent to do other work while CLI executes.
+
+### Sync mode alternative
+
+For short tasks (<10s expected), sync mode with live progress bar is acceptable:
+
+```
+exec(prompt="...", role="...", async=false, timeout_seconds=30)
+```
+
+The MCP server sends `notifications/progress` during execution — Claude Code renders
+a progress bar automatically. Use ONLY when task is known to be fast.
 
 ---
 
@@ -93,10 +124,14 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 ## Acceptance Criteria
 
 - [ ] Task keyword-matched to a role from the reference table
+- [ ] 3 tasks created (dispatch, executing, collect) BEFORE exec call
 - [ ] `exec` called with `async=true` and correct role
 - [ ] `job_id` captured from exec response
-- [ ] `status` polled until `done` or `error`
+- [ ] Background monitor agent spawned with job_id
+- [ ] Main agent does NOT poll — reacts to `<task-notification>` only
+- [ ] Tasks updated on each notification per phase table
 - [ ] Result read from `content` field on completion
+- [ ] All tasks marked completed with outcome summary
 
 ---
 

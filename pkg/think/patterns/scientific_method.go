@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"maps"
 	"time"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -13,7 +14,8 @@ var (
 		"experiment": true, "analysis": true, "conclusion": true, "iteration": true,
 	}
 	validEntryTypes = map[string]bool{
-		"hypothesis": true, "prediction": true, "experiment": true, "result": true,
+		"observation": true, "question": true, "hypothesis": true, "prediction": true,
+		"experiment": true, "analysis": true, "result": true, "conclusion": true,
 	}
 	stageOrder = []string{
 		"observation", "question", "hypothesis", "experiment", "analysis", "conclusion", "iteration",
@@ -236,7 +238,7 @@ func (p *scientificMethodPattern) Validate(input map[string]any) (map[string]any
 		// New flat format path.
 		entryType, ok := input["entry_type"].(string)
 		if !ok || !validEntryTypes[entryType] {
-			return nil, fmt.Errorf("entry 'type' must be one of: hypothesis, prediction, experiment, result")
+			return nil, fmt.Errorf("entry 'type' must be one of: observation, question, hypothesis, prediction, experiment, analysis, result, conclusion")
 		}
 		entryText, ok := input["entry_text"].(string)
 		if !ok || entryText == "" {
@@ -266,7 +268,7 @@ func (p *scientificMethodPattern) Validate(input map[string]any) (map[string]any
 		}
 		entryType, ok := entry["type"].(string)
 		if !ok || !validEntryTypes[entryType] {
-			return nil, fmt.Errorf("entry 'type' must be one of: hypothesis, prediction, experiment, result")
+			return nil, fmt.Errorf("entry 'type' must be one of: observation, question, hypothesis, prediction, experiment, analysis, result, conclusion")
 		}
 		text, ok := entry["text"].(string)
 		if !ok || text == "" {
@@ -434,8 +436,6 @@ func nextStage(current string) string {
 // copyValidInput creates a shallow copy of the validInput map so we can mutate it safely.
 func copyValidInput(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }

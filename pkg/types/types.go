@@ -63,6 +63,7 @@ type SpawnArgs struct {
 	TimeoutSeconds    int               `json:"timeout_seconds,omitempty"`
 	InactivitySeconds int               `json:"inactivity_seconds,omitempty"`
 	CompletionPattern string            `json:"completion_pattern,omitempty"`
+	OnOutput          func(partial string) `json:"-"` // called with accumulated output after each line (live progress)
 }
 
 // Result is the structured output from a CLI execution.
