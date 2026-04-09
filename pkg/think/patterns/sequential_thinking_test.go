@@ -129,3 +129,31 @@ func TestSequential_Contradiction(t *testing.T) {
 		t.Errorf("contradictsWith = %v, want 1", r.Data["contradictsWith"])
 	}
 }
+
+// TestSequential_StepNumber: step_number appears in output data when provided.
+func TestSequential_StepNumber(t *testing.T) {
+	think.ClearSessions()
+	p := NewSequentialThinkingPattern()
+	sid := "seq-stepnum-1"
+
+	inp, err := p.Validate(map[string]any{
+		"thought":       "analyzing the problem space",
+		"thoughtNumber": 1,
+		"totalThoughts": 3,
+		"step_number":   float64(2),
+	})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if inp["step_number"] != 2 {
+		t.Fatalf("expected step_number=2 in validated input, got %v", inp["step_number"])
+	}
+
+	r, err := p.Handle(inp, sid)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if r.Data["step_number"] != 2 {
+		t.Fatalf("expected step_number=2 in output data, got %v", r.Data["step_number"])
+	}
+}

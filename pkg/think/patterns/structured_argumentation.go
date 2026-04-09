@@ -36,7 +36,22 @@ func (p *structuredArgumentationPattern) Validate(input map[string]any) (map[str
 
 	validated := map[string]any{"topic": topic}
 
-	if v, ok := input["argument"]; ok {
+	// Flat param detection: argument_type present → build argument from flat params.
+	if _, hasFlat := input["argument_type"]; hasFlat {
+		argType, ok := input["argument_type"].(string)
+		if !ok || !validArgumentTypes[argType] {
+			return nil, fmt.Errorf("field 'argument_type' must be one of: claim, evidence, rebuttal")
+		}
+		text, ok := input["argument_text"].(string)
+		if !ok || text == "" {
+			return nil, fmt.Errorf("field 'argument_text' must be a non-empty string")
+		}
+		validatedArg := map[string]any{"type": argType, "text": text}
+		if supportsClaimId, ok := input["supports_claim_id"].(string); ok && supportsClaimId != "" {
+			validatedArg["supportsClaimId"] = supportsClaimId
+		}
+		validated["argument"] = validatedArg
+	} else if v, ok := input["argument"]; ok {
 		arg, ok := v.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("field 'argument' must be a map")

@@ -2,6 +2,8 @@ package patterns
 
 import (
 	"testing"
+
+	think "github.com/thebtf/aimux/pkg/think"
 )
 
 // TestCollab_Balance: two personas with equal contributions → balance = 1.0, no silent personas.
@@ -113,5 +115,91 @@ func TestCollab_SilentPersona(t *testing.T) {
 	// balance: alice=3, bob=0, total=3, avg=1.5, deviation=|3-1.5|+|0-1.5|=3, balance=1-3/6=0.5
 	if result.participationBalance != 0.5 {
 		t.Errorf("expected balance=0.5, got %f", result.participationBalance)
+	}
+}
+
+// TestCollab_FlatContribution: contribution_type + contribution_text + persona_id → contribution tracked in session.
+func TestCollab_FlatContribution(t *testing.T) {
+	think.ClearSessions()
+	p := NewCollaborativeReasoningPattern()
+	sid := "collab-flat-1"
+
+	inp, err := p.Validate(map[string]any{
+		"topic":             "AI safety approaches",
+		"contribution_type": "insight",
+		"contribution_text": "idea about interpretability",
+		"persona_id":        "alice",
+	})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	contrib, ok := inp["contribution"].(map[string]any)
+	if !ok {
+		t.Fatal("expected contribution map in validated input")
+	}
+	if contrib["type"] != "insight" {
+		t.Fatalf("expected type=insight, got %v", contrib["type"])
+	}
+	if contrib["text"] != "idea about interpretability" {
+		t.Fatalf("expected text='idea about interpretability', got %v", contrib["text"])
+	}
+	if contrib["persona"] != "alice" {
+		t.Fatalf("expected persona=alice, got %v", contrib["persona"])
+	}
+
+	r, err := p.Handle(inp, sid)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	contributions, ok := r.Data["contributions"].([]any)
+	if !ok || len(contributions) != 1 {
+		t.Fatalf("expected 1 contribution in output, got %v", r.Data["contributions"])
+	}
+	entry, ok := contributions[0].(map[string]any)
+	if !ok {
+		t.Fatal("expected contribution entry to be a map")
+	}
+	if entry["persona"] != "alice" {
+		t.Fatalf("expected persona=alice in entry, got %v", entry["persona"])
+	}
+}
+
+// TestCollab_FlatBackwardCompat: old nested contribution map still works.
+func TestCollab_FlatBackwardCompat(t *testing.T) {
+	think.ClearSessions()
+	p := NewCollaborativeReasoningPattern()
+	sid := "collab-compat-1"
+
+	inp, err := p.Validate(map[string]any{
+		"topic": "distributed consensus",
+		"contribution": map[string]any{
+			"type":    "question",
+			"text":    "what about Byzantine faults?",
+			"persona": "bob",
+		},
+	})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	contrib, ok := inp["contribution"].(map[string]any)
+	if !ok {
+		t.Fatal("expected contribution map in validated input")
+	}
+	if contrib["type"] != "question" {
+		t.Fatalf("expected type=question, got %v", contrib["type"])
+	}
+	if contrib["persona"] != "bob" {
+		t.Fatalf("expected persona=bob, got %v", contrib["persona"])
+	}
+
+	r, err := p.Handle(inp, sid)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if r.Data["contributionCount"] != 1 {
+		t.Fatalf("expected contributionCount=1, got %v", r.Data["contributionCount"])
 	}
 }
