@@ -54,44 +54,62 @@ server:
     default_dialog_max_turns: 4
 
 # Role → CLI preferences (overridden by AIMUX_ROLE_* env)
+# Reasoning effort tiers: low (trivial) → medium (standard) → high (analytical) → xhigh (deep)
 roles:
+  # Trivial: template-based, linting, documentation
+  docgen:
+    cli: codex
+    reasoning_effort: low
+  tracer:
+    cli: codex
+    reasoning_effort: low
+  precommit:
+    cli: codex
+    reasoning_effort: low
+
+  # Standard: implementation, refactoring, test generation
   coding:
     cli: codex
     model: gpt-5.3-codex
+    reasoning_effort: medium
+  refactor:
+    cli: codex
+    reasoning_effort: medium
+  testgen:
+    cli: codex
+    reasoning_effort: medium
+  default:
+    cli: codex
+    reasoning_effort: medium
+
+  # Analytical: review, analysis, debugging — need pattern recognition
   codereview:
-    cli: codex
-    model: gpt-5.4
-  thinkdeep:
-    cli: codex
-    model: gpt-5.4
-  secaudit:
-    cli: codex
-    model: gpt-5.4
-    reasoning_effort: high
-  debug:
-    cli: codex
-  planner:
     cli: codex
     model: gpt-5.4
     reasoning_effort: high
   analyze:
     cli: gemini
-  refactor:
+  debug:
     cli: codex
-  testgen:
+    reasoning_effort: high
+
+  # Deep: architecture, security, adversarial — maximum reasoning
+  thinkdeep:
     cli: codex
-  docgen:
+    model: gpt-5.4
+    reasoning_effort: xhigh
+  secaudit:
     cli: codex
-  tracer:
+    model: gpt-5.4
+    reasoning_effort: xhigh
+  planner:
     cli: codex
-  precommit:
-    cli: codex
+    model: gpt-5.4
+    reasoning_effort: xhigh
   challenge:
     cli: codex
     model: gpt-5.4
-    reasoning_effort: high
-  default:
-    cli: codex
+    reasoning_effort: xhigh
 
 # Circuit breaker settings
 circuit_breaker:
