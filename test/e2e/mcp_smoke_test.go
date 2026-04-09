@@ -281,6 +281,7 @@ func TestE2E_ExecSync(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "e2e test payload",
 			"cli":    "echo-cli",
+			"async":  false,
 		},
 	}))
 

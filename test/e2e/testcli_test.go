@@ -111,6 +111,7 @@ func TestE2E_Codex_JSONL(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "test codex jsonl",
 			"cli":    "codex",
+			"async":  false,
 		},
 	}))
 
@@ -151,6 +152,7 @@ func TestE2E_Codex_HumanMode(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "test codex human mode",
 			"cli":    "codex",
+			"async":  false,
 		},
 	}))
 
@@ -176,6 +178,7 @@ func TestE2E_Gemini_StreamJSON(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "test gemini stream json",
 			"cli":    "gemini",
+			"async":  false,
 		},
 	}))
 
@@ -509,6 +512,7 @@ func TestE2E_Claude_ThroughAimux(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "test claude through aimux",
 			"cli":    "claude",
+			"async":  false,
 		},
 	}))
 
@@ -589,6 +593,7 @@ func TestE2E_Goose_ThroughAimux(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "test goose through aimux",
 			"cli":    "goose",
+			"async":  false,
 		},
 	}))
 
@@ -638,6 +643,7 @@ func TestE2E_Crush_ThroughAimux(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "test crush through aimux",
 			"cli":    "crush",
+			"async":  false,
 		},
 	}))
 
@@ -796,6 +802,7 @@ func TestE2E_Aider_ThroughAimux(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "test aider via aimux",
 			"cli":    "aider",
+			"async":  false,
 		},
 	}))
 
@@ -820,6 +827,7 @@ func TestE2E_Qwen_ThroughAimux(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "test qwen via aimux",
 			"cli":    "qwen",
+			"async":  false,
 		},
 	}))
 
@@ -844,6 +852,7 @@ func TestE2E_Cline_ThroughAimux(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": "test cline via aimux",
 			"cli":    "cline",
+			"async":  false,
 		},
 	}))
 
@@ -1001,6 +1010,7 @@ func TestE2E_Behavior_StdinEOFHandling(t *testing.T) {
 		"arguments": map[string]any{
 			"prompt": longPrompt,
 			"cli":    "codex",
+			"async":  false,
 		},
 	}))
 
