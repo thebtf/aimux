@@ -42,8 +42,13 @@ func (r *Registry) Create(cli string, mode types.SessionMode, cwd string) *Sessi
 	defer r.mu.Unlock()
 
 	now := time.Now()
+	id, err := uuid.NewV7()
+	if err != nil {
+		id = uuid.New() // V4 fallback — never panics
+	}
+
 	s := &Session{
-		ID:           uuid.Must(uuid.NewV7()).String(),
+		ID:           id.String(),
 		CLI:          cli,
 		Mode:         mode,
 		Status:       types.SessionStatusCreated,

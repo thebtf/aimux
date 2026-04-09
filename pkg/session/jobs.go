@@ -49,8 +49,13 @@ func (m *JobManager) Create(sessionID, cli string) *Job {
 	defer m.mu.Unlock()
 
 	now := time.Now()
+	id, err := uuid.NewV7()
+	if err != nil {
+		id = uuid.New() // V4 fallback — never panics
+	}
+
 	j := &Job{
-		ID:                uuid.Must(uuid.NewV7()).String(),
+		ID:                id.String(),
 		SessionID:         sessionID,
 		CLI:               cli,
 		Status:            types.JobStatusCreated,
