@@ -415,12 +415,25 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 }
 
 // Shutdown stops background services (GC reaper, snapshot) and closes persistence.
+// Graceful: waits up to 5s for running CLI processes to finish before killing.
 func (s *Server) Shutdown() {
-	// Kill all tracked processes before closing persistence.
-	// SharedPM tracks one-shot Run() processes; SessionPM tracks persistent sessions.
-	executor.SharedPM.Shutdown()
+	// Graceful drain: give running CLI processes time to finish.
+	// mcp-mux gives us ~8s grace after stdin close — use 5s for drain, rest for cleanup.
+	graceful := executor.SharedPM.GracefulShutdown(5 * time.Second)
+	if graceful > 0 {
+		s.log.Info("graceful shutdown: %d processes finished naturally", graceful)
+	}
+
+	// Kill remaining session processes (persistent sessions don't need grace — they're idle).
 	if pm := pipeExec.SessionProcessManager(); pm != nil {
 		pm.Shutdown()
+	}
+
+	// Mark any still-running jobs as interrupted with partial output.
+	if s.jobs != nil {
+		for _, job := range s.jobs.ListRunning() {
+			s.jobs.FailJob(job.ID, types.NewExecutorError("interrupted: upstream shutdown", nil, job.Progress))
+		}
 	}
 
 	if s.gcCancel != nil {

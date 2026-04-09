@@ -143,3 +143,55 @@ func (pm *ProcessManager) Shutdown() {
 		return true
 	})
 }
+
+// GracefulShutdown waits up to timeout for all tracked processes to finish naturally.
+// After timeout, remaining processes are killed. Returns the number of processes
+// that finished gracefully (vs killed).
+func (pm *ProcessManager) GracefulShutdown(timeout time.Duration) int {
+	// Collect all live handles
+	var handles []*ProcessHandle
+	pm.handles.Range(func(_, value any) bool {
+		if h, ok := value.(*ProcessHandle); ok && pm.IsAlive(h) {
+			handles = append(handles, h)
+		}
+		return true
+	})
+
+	if len(handles) == 0 {
+		return 0
+	}
+
+	// Wait for processes to finish naturally, up to timeout
+	graceful := 0
+	deadline := time.After(timeout)
+	remaining := make([]*ProcessHandle, len(handles))
+	copy(remaining, handles)
+
+	for len(remaining) > 0 {
+		select {
+		case <-deadline:
+			// Timeout — kill remaining
+			for _, h := range remaining {
+				pm.Kill(h)
+				pm.Cleanup(h)
+			}
+			return graceful
+		default:
+			// Check which processes finished
+			var stillAlive []*ProcessHandle
+			for _, h := range remaining {
+				if pm.IsAlive(h) {
+					stillAlive = append(stillAlive, h)
+				} else {
+					graceful++
+					pm.Cleanup(h)
+				}
+			}
+			remaining = stillAlive
+			if len(remaining) > 0 {
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}
+	return graceful
+}
