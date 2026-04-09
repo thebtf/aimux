@@ -135,10 +135,14 @@ func (r *Registry) Find(query string) []*Agent {
 	var matches []*Agent
 
 	for _, a := range r.agents {
-		// Search content prefix (first 200 chars) to avoid scanning huge files
+		// Search content prefix (first ~200 runes) to avoid scanning huge files
 		contentPrefix := a.Content
 		if len(contentPrefix) > 200 {
-			contentPrefix = contentPrefix[:200]
+			// Truncate at rune boundary to avoid splitting multi-byte chars
+			runes := []rune(contentPrefix)
+			if len(runes) > 200 {
+				contentPrefix = string(runes[:200])
+			}
 		}
 
 		if strings.Contains(strings.ToLower(a.Name), query) ||

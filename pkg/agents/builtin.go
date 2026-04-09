@@ -51,7 +51,10 @@ func RegisterBuiltins(r *Registry) {
 	for _, a := range builtinAgents {
 		// Only register if no agent with this name was already discovered
 		if _, exists := r.agents[a.Name]; !exists {
-			r.agents[a.Name] = a
+			// Copy to avoid shared pointer mutation between registries
+			copy := *a
+			copy.Meta = map[string]string{"source_type": "builtin"}
+			r.agents[copy.Name] = &copy
 		}
 	}
 }
