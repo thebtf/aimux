@@ -2,7 +2,7 @@
 
 [![Go](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-528%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-777%20passing-brightgreen)](test/)
 [![Go Report Card](https://goreportcard.com/badge/github.com/thebtf/aimux)](https://goreportcard.com/report/github.com/thebtf/aimux)
 [![MCP Tools](https://img.shields.io/badge/MCP-13%20tools-blueviolet)](https://modelcontextprotocol.io)
 [![CLIs](https://img.shields.io/badge/CLIs-12-orange)](config/cli.d/)
@@ -23,7 +23,7 @@ aimux is a single MCP server binary that exposes all 12 CLIs as one unified inte
 
 ## Why Better
 
-One binary, zero runtime dependencies, 462 tests, 3 transports. Role-based routing sends `codereview` prompts to the model tuned for review, `debug` prompts to the model best at tracing, and `secaudit` prompts to the model trained on vulnerability patterns — without you specifying a CLI name. Five orchestration strategies let multiple models debate, audit, or pair-code together. The result ships as a static Go binary you build once and copy anywhere.
+One binary, zero runtime dependencies, 777 tests, 3 transports. Role-based routing sends `codereview` prompts to the model tuned for review, `debug` prompts to the model best at tracing, and `secaudit` prompts to the model trained on vulnerability patterns — without you specifying a CLI name. Five orchestration strategies let multiple models debate, audit, or pair-code together. The result ships as a static Go binary you build once and copy anywhere.
 
 ---
 
@@ -36,7 +36,7 @@ graph TD
     subgraph aimux["aimux — single binary"]
         Router["Role Router\n17 roles"]
         Orchestrator["Orchestration Engine\n5 strategies"]
-        Executor["Executor\nConPTY · PTY · Pipe"]
+        Executor["Executor\nConPTY · PTY · Pipe\nProcessManager · IOManager"]
         DB[(SQLite\nWAL sessions)]
         Metrics["Metrics Collector\nper-CLI latency + errors"]
 

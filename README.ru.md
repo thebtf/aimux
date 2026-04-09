@@ -2,7 +2,7 @@
 
 [![Go](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-462%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-777%20passing-brightgreen)](test/)
 [![Go Report Card](https://goreportcard.com/badge/github.com/thebtf/aimux)](https://goreportcard.com/report/github.com/thebtf/aimux)
 [![MCP Tools](https://img.shields.io/badge/MCP-11%20tools-blueviolet)](https://modelcontextprotocol.io)
 [![CLIs](https://img.shields.io/badge/CLIs-12-orange)](config/cli.d/)
@@ -23,7 +23,7 @@ aimux — это единый бинарный MCP-сервер, который 
 
 ## Почему лучше
 
-Один бинарь, ноль зависимостей от внешних рантаймов, 462 теста, 3 транспорта. Маршрутизация по ролям направляет промпты `codereview` к модели, заточенной под код-ревью, промпты `debug` — к модели, лучшей в трассировке, а `secaudit` — к модели, обученной на паттернах уязвимостей, без необходимости указывать имя CLI. Пять стратегий оркестрации позволяют нескольким моделям дискутировать, аудировать код или писать его в паре. Результат поставляется как статический Go-бинарь: собрал один раз — копируй куда угодно.
+Один бинарь, ноль зависимостей от внешних рантаймов, 777 теста, 3 транспорта. Маршрутизация по ролям направляет промпты `codereview` к модели, заточенной под код-ревью, промпты `debug` — к модели, лучшей в трассировке, а `secaudit` — к модели, обученной на паттернах уязвимостей, без необходимости указывать имя CLI. Пять стратегий оркестрации позволяют нескольким моделям дискутировать, аудировать код или писать его в паре. Результат поставляется как статический Go-бинарь: собрал один раз — копируй куда угодно.
 
 ---
 
@@ -36,7 +36,7 @@ graph TD
     subgraph aimux["aimux — single binary"]
         Router["Role Router\n17 roles"]
         Orchestrator["Orchestration Engine\n5 strategies"]
-        Executor["Executor\nConPTY · PTY · Pipe"]
+        Executor["Executor\nConPTY · PTY · Pipe\nProcessManager · IOManager"]
         DB[(SQLite\nWAL sessions)]
         Metrics["Metrics Collector\nper-CLI latency + errors"]
 
@@ -436,7 +436,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}' | aimux
 # Собрать всё
 go build ./...
 
-# Запустить все 462 теста (~75 сек на Windows)
+# Запустить все 777 теста (~75 сек на Windows)
 go test ./... -timeout 300s
 
 # Юнит-тесты с покрытием
@@ -475,7 +475,7 @@ config/prompts.d/    составные шаблоны ролевых промп
 ### Статистика
 
 - 13 314 строк реализации + 8 725 строк тестов = **22 039 итого**
-- **462 теста**, 0 падений
+- **777 теста**, 0 падений
 - **26 пакетов**, ~73% взвешенное покрытие
 
 ---
