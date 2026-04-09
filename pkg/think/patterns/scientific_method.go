@@ -100,6 +100,16 @@ func findIncompleteExperiments(entries []any) []string {
 	return result
 }
 
+// hasEntryOfType returns true if entries contains at least one entry of the given type.
+func hasEntryOfType(entries []any, entryType string) bool {
+	for _, e := range entries {
+		if em, ok := e.(map[string]any); ok && em["type"] == entryType {
+			return true
+		}
+	}
+	return false
+}
+
 // countByType returns a count of entries per entry type.
 func countByType(entries []any) map[string]int {
 	counts := map[string]int{"hypothesis": 0, "prediction": 0, "experiment": 0, "result": 0}
@@ -185,6 +195,18 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 	stage := validInput["stage"].(string)
 	stageHistory = append(stageHistory, stage)
 
+	// Lifecycle enforcement: block entry submissions that lack prerequisite entries in session.
+	if entryRaw, hasEntry := validInput["entry"]; hasEntry {
+		entry := entryRaw.(map[string]any)
+		entryType, _ := entry["type"].(string)
+		if entryType == "prediction" && !hasEntryOfType(entries, "hypothesis") {
+			return nil, fmt.Errorf("STOP: No hypothesis to predict from. Submit a hypothesis first.")
+		}
+		if entryType == "experiment" && !hasEntryOfType(entries, "prediction") {
+			return nil, fmt.Errorf("STOP: No prediction to test. Submit a prediction first.")
+		}
+	}
+
 	var addedEntry map[string]any
 	if entryRaw, ok := validInput["entry"]; ok {
 		entry := entryRaw.(map[string]any)
@@ -255,6 +277,22 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 	}
 
 	suggestedNext := nextStage(stage)
+
+	// Tier 2A: text analysis (added on every call for stateful pattern)
+	// Primary text: observation if provided, else hypothesis, else stage name.
+	primaryText := stage
+	if obs, ok := validInput["observation"].(string); ok && obs != "" {
+		primaryText = obs
+	} else if hyp, ok := validInput["hypothesis"].(string); ok && hyp != "" {
+		primaryText = hyp
+	}
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
 
 	return think.MakeThinkResult("scientific_method", data, sessionID, nil, suggestedNext, nil), nil
 }

@@ -76,7 +76,11 @@ func (p *debuggingApproachPattern) Validate(input map[string]any) (map[string]an
 		if !idOk || !textOk || id == "" || text == "" {
 			return nil, fmt.Errorf("hypothesis must have non-empty 'id' and 'text' strings")
 		}
-		validated["hypothesis"] = map[string]any{"id": id, "text": text}
+		validatedHyp := map[string]any{"id": id, "text": text}
+		if conf, ok := h["confidence"].(float64); ok {
+			validatedHyp["confidence"] = conf
+		}
+		validated["hypothesis"] = validatedHyp
 	}
 
 	if v, ok := input["hypothesisUpdate"]; ok {
@@ -190,6 +194,34 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 
 	if refutedCount >= pivotSuggestionThreshold {
 		data["suggestion"] = "3+ hypotheses refuted — consider trying a fundamentally different approach"
+	}
+
+	// Forced Reflection Protocol: gate hypothesis submission behind evidence requirements.
+	if hRaw, hasHyp := validInput["hypothesis"]; hasHyp {
+		// findingsCount = total hypotheses including the one just added
+		findingsCount := len(hypotheses)
+
+		if directive := ValidateEvidenceGate(findingsCount, 3); directive != nil {
+			data["reflection"] = directive
+		} else {
+			// Evidence gate passed — check for overconfidence.
+			h := hRaw.(map[string]any)
+			if conf, ok := h["confidence"].(float64); ok {
+				if directive := ValidateConfidence(conf, findingsCount); directive != nil {
+					data["reflection"] = directive
+				}
+			}
+		}
+	}
+
+	// Tier 2A: text analysis
+	primaryText := validInput["issue"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
 	}
 
 	return think.MakeThinkResult("debugging_approach", data, sessionID, nil, "", nil), nil

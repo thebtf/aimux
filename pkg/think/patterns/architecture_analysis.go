@@ -86,17 +86,18 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 	// Auto-analysis: when 0 or 1 components are provided, derive suggestions from domain templates.
 	var suggestedComponents []string
 	var autoAnalysisSource string
+	var domainTmpl *DomainTemplate // lifted for reuse in text analysis
+	var primarySearchText string   // lifted for text analysis
 	if len(components) <= 1 {
-		searchText := ""
 		if len(components) == 1 {
 			if m, ok := components[0].(map[string]any); ok {
-				searchText, _ = m["name"].(string)
+				primarySearchText, _ = m["name"].(string)
 			}
 		}
-		_ = ExtractKeywords(searchText)
-		tmpl := MatchDomainTemplate(searchText)
-		if tmpl != nil && len(tmpl.Components) > 0 {
-			suggestedComponents = tmpl.Components
+		_ = ExtractKeywords(primarySearchText)
+		domainTmpl = MatchDomainTemplate(primarySearchText)
+		if domainTmpl != nil && len(domainTmpl.Components) > 0 {
+			suggestedComponents = domainTmpl.Components
 			autoAnalysisSource = "domain-template"
 		} else {
 			autoAnalysisSource = "keyword-analysis"
@@ -218,6 +219,16 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 		}(),
 		[]string{"components"},
 	)
+
+	// Tier 2A: text analysis
+	if primarySearchText != "" {
+		if analysis := AnalyzeText(primarySearchText); analysis != nil {
+			if domainTmpl != nil {
+				analysis.Gaps = DetectGaps(analysis.Entities, domainTmpl)
+			}
+			data["textAnalysis"] = analysis
+		}
+	}
 
 	return think.MakeThinkResult("architecture_analysis", data, sessionID, nil, "", []string{"highlyCoupled", "couplingDetected"}), nil
 }

@@ -110,6 +110,16 @@ func (p *stochasticAlgorithmPattern) Handle(validInput map[string]any, sessionID
 
 	data["guidance"] = BuildGuidance("stochastic_algorithm", "basic", []string{"parameters.outcomes", "iterations", "result"})
 
+	// Tier 2A: text analysis
+	primaryText := validInput["problemDefinition"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("stochastic_algorithm", data, sessionID, nil, "", nil), nil
 }
 

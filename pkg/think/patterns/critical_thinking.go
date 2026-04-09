@@ -1,6 +1,8 @@
 package patterns
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -19,10 +21,17 @@ var biasCatalogs = map[string][]string{
 	"framing_effect":         {"depends on how", "way you look at", "perspective changes", "if you frame"},
 }
 
-type criticalThinkingPattern struct{}
+type criticalThinkingPattern struct {
+	sampling think.SamplingProvider
+}
 
 // NewCriticalThinkingPattern returns the "critical_thinking" pattern handler.
 func NewCriticalThinkingPattern() think.PatternHandler { return &criticalThinkingPattern{} }
+
+// SetSampling injects the sampling provider. Implements think.SamplingAwareHandler.
+func (p *criticalThinkingPattern) SetSampling(provider think.SamplingProvider) {
+	p.sampling = provider
+}
 
 func (p *criticalThinkingPattern) Name() string { return "critical_thinking" }
 
@@ -62,6 +71,32 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		}
 	}
 
+	// Tier 1.5: sampling-enhanced bias detection — merge LLM-detected biases, deduplicate.
+	if p.sampling != nil {
+		if sampledBiases, err := p.requestSamplingBiases(issue); err == nil {
+			// Build set of already-detected bias names for deduplication.
+			detected := make(map[string]struct{}, len(detectedBiases))
+			for _, b := range detectedBiases {
+				if name, ok := b["bias"].(string); ok {
+					detected[name] = struct{}{}
+				}
+			}
+			for _, sb := range sampledBiases {
+				name, _ := sb["type"].(string)
+				if _, dup := detected[name]; !dup && name != "" {
+					detectedBiases = append(detectedBiases, map[string]any{
+						"bias":     name,
+						"evidence": sb["evidence"],
+						"severity": sb["severity"],
+						"source":   "sampling",
+					})
+					detected[name] = struct{}{}
+				}
+			}
+		}
+		// On error: keyword-detected biases still used — graceful degradation.
+	}
+
 	recommendation := "No cognitive biases detected in the text."
 	if len(detectedBiases) > 0 {
 		recommendation = fmt.Sprintf("Detected %d potential cognitive bias(es). Review flagged phrases for objective reasoning.", len(detectedBiases))
@@ -74,5 +109,77 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		"recommendation": recommendation,
 		"guidance":       BuildGuidance("critical_thinking", "full", []string{"issue"}),
 	}
-	return think.MakeThinkResult("critical_thinking", data, sessionID, nil, "", []string{"detectedBiases", "biasCount"}), nil
+
+	// Tier 2A: text analysis
+	primaryText := validInput["issue"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
+	// When biases are detected, suggest decision_framework to apply structured evaluation.
+	suggestedNext := ""
+	if len(detectedBiases) > 0 {
+		suggestedNext = "decision_framework"
+	}
+
+	return think.MakeThinkResult("critical_thinking", data, sessionID, nil, suggestedNext, []string{"detectedBiases", "biasCount"}), nil
+}
+
+// samplingBiasResponse is the JSON shape we ask the LLM to return for bias detection.
+type samplingBiasResponse struct {
+	Biases []struct {
+		Type     string `json:"type"`
+		Evidence string `json:"evidence"`
+		Severity string `json:"severity"`
+	} `json:"biases"`
+	Fallacies            []string `json:"fallacies"`
+	UnsupportedAssumptions []string `json:"unsupportedAssumptions"`
+}
+
+// requestSamplingBiases calls the sampling provider to detect additional biases beyond
+// the keyword catalog. Returns a slice of bias maps (type, evidence, severity).
+// Returns nil, error on any failure so the caller can gracefully degrade.
+func (p *criticalThinkingPattern) requestSamplingBiases(issue string) ([]map[string]any, error) {
+	tmpl := GetSamplingPrompt("critical_thinking")
+	var messages []think.SamplingMessage
+	maxTokens := 1500
+	if tmpl != nil {
+		systemRole, userPrompt := FormatSamplingPrompt(tmpl, issue)
+		messages = []think.SamplingMessage{
+			{Role: "user", Content: systemRole + "\n\n" + userPrompt},
+		}
+		maxTokens = tmpl.MaxTokens
+	} else {
+		messages = []think.SamplingMessage{
+			{Role: "user", Content: fmt.Sprintf(
+				`Analyze this statement for cognitive biases. Statement: %s. `+
+					`Return JSON: {"biases": [{"type": "...", "evidence": "...", "severity": "low|medium|high"}]}`,
+				issue,
+			)},
+		}
+	}
+
+	raw, err := p.sampling.RequestSampling(context.Background(), messages, maxTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp samplingBiasResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return nil, fmt.Errorf("sampling JSON parse failed: %w", err)
+	}
+
+	biases := make([]map[string]any, 0, len(resp.Biases))
+	for _, b := range resp.Biases {
+		biases = append(biases, map[string]any{
+			"type":     b.Type,
+			"evidence": b.Evidence,
+			"severity": b.Severity,
+		})
+	}
+	return biases, nil
 }

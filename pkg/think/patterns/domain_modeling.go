@@ -81,14 +81,15 @@ func (p *domainModelingPattern) Handle(validInput map[string]any, sessionID stri
 	}
 
 	// Auto-analysis: when entities are empty, derive suggestions from domain templates.
+	var domainTmpl *DomainTemplate // lifted for reuse in text analysis
 	if entityCount == 0 {
 		_ = ExtractKeywords(domainName)
-		tmpl := MatchDomainTemplate(domainName)
+		domainTmpl = MatchDomainTemplate(domainName)
 		var suggestedEntities []string
 		var suggestedRelationships []map[string]string
 		var autoSource string
-		if tmpl != nil && len(tmpl.Entities) > 0 {
-			suggestedEntities = tmpl.Entities
+		if domainTmpl != nil && len(domainTmpl.Entities) > 0 {
+			suggestedEntities = domainTmpl.Entities
 			// Generate a simple chain of relationships for suggested entities.
 			for i := 0; i+1 < len(suggestedEntities); i++ {
 				suggestedRelationships = append(suggestedRelationships, map[string]string{
@@ -138,6 +139,15 @@ func (p *domainModelingPattern) Handle(validInput map[string]any, sessionID stri
 		}(),
 		[]string{"entities", "relationships", "rules", "constraints"},
 	)
+
+	// Tier 2A: text analysis
+	primaryText := validInput["domainName"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		if domainTmpl != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domainTmpl)
+		}
+		data["textAnalysis"] = analysis
+	}
 
 	return think.MakeThinkResult("domain_modeling", data, sessionID, nil, "", []string{"totalComponents"}), nil
 }

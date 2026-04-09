@@ -220,6 +220,16 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 		data["similarity"] = duplicateSimilarity
 	}
 
+	// Tier 2A: text analysis (added on every call for stateful pattern)
+	primaryText := validInput["thought"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("sequential_thinking", data, sessionID, nil, suggestedNext, nil), nil
 }
 

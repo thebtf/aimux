@@ -42,6 +42,17 @@ func (p *thinkPattern) Handle(validInput map[string]any, sessionID string) (*thi
 		"suggestedPattern": suggestedPattern,
 		"guidance":         BuildGuidance("think", "basic", []string{"thought"}),
 	}
+
+	// Tier 2A: text analysis
+	primaryText := validInput["thought"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("think", data, sessionID, nil, suggestedPattern, nil), nil
 }
 

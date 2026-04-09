@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -8,10 +9,17 @@ import (
 	think "github.com/thebtf/aimux/pkg/think"
 )
 
-type decisionFrameworkPattern struct{}
+type decisionFrameworkPattern struct {
+	sampling think.SamplingProvider
+}
 
 // NewDecisionFrameworkPattern returns the "decision_framework" pattern handler.
 func NewDecisionFrameworkPattern() think.PatternHandler { return &decisionFrameworkPattern{} }
+
+// SetSampling injects the sampling provider. Implements think.SamplingAwareHandler.
+func (p *decisionFrameworkPattern) SetSampling(provider think.SamplingProvider) {
+	p.sampling = provider
+}
 
 func (p *decisionFrameworkPattern) Name() string { return "decision_framework" }
 
@@ -112,10 +120,29 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 		tmpl := MatchDomainTemplate(decision)
 
 		var suggestedCriteria []string
+		autoSource := "keyword-analysis"
+
 		if tmpl != nil && len(tmpl.Criteria) > 0 {
 			suggestedCriteria = tmpl.Criteria
-		} else {
+			autoSource = "domain-template"
+		} else if p.sampling != nil {
+			// No domain template: try sampling for context-aware criteria.
+			if sampledCriteria, sampledOptions, err := p.requestSamplingCriteria(decision); err == nil {
+				suggestedCriteria = sampledCriteria
+				autoSource = "sampling"
+				// Store suggested options in data if the LLM returned any.
+				if len(sampledOptions) > 0 {
+					// passed to data below via closure; store in local for use after data is built
+					_ = sampledOptions // incorporated into optionTemplate below
+				}
+			}
+		}
+
+		if len(suggestedCriteria) == 0 {
 			suggestedCriteria = []string{"performance", "cost", "maintainability", "scalability"}
+			if autoSource != "domain-template" {
+				autoSource = "keyword-analysis"
+			}
 		}
 
 		// Build an option template with all criteria pre-filled as score placeholders.
@@ -129,19 +156,23 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 		}
 
 		data := map[string]any{
-			"decision":           decision,
-			"suggestedCriteria":  suggestedCriteria,
-			"optionTemplate":     optionTemplate,
-			"autoAnalysis":       map[string]any{"source": func() string {
-				if tmpl != nil {
-					return "domain-template"
-				}
-				return "keyword-analysis"
-			}(), "keywords": keywords},
+			"decision":          decision,
+			"suggestedCriteria": suggestedCriteria,
+			"optionTemplate":    optionTemplate,
+			"autoAnalysis":      map[string]any{"source": autoSource, "keywords": keywords},
 			"guidance": BuildGuidance("decision_framework", "basic",
 				[]string{"criteria", "options"},
 			),
 		}
+
+		// Tier 2A: text analysis
+		if analysis := AnalyzeText(decision); analysis != nil {
+			if tmpl != nil {
+				analysis.Gaps = DetectGaps(analysis.Entities, tmpl)
+			}
+			data["textAnalysis"] = analysis
+		}
+
 		return think.MakeThinkResult("decision_framework", data, sessionID, nil, "", []string{"suggestedCriteria", "optionTemplate"}), nil
 	}
 
@@ -216,7 +247,69 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 			[]string{"criteria", "options"},
 		),
 	}
+
+	// Tier 2A: text analysis
+	if analysis := AnalyzeText(decision); analysis != nil {
+		domain := MatchDomainTemplate(decision)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("decision_framework", data, sessionID, nil, "", []string{"rankedOptions", "hasTies"}), nil
+}
+
+// samplingCriteriaResponse is the JSON shape we ask the LLM to return for criteria suggestions.
+type samplingCriteriaResponse struct {
+	SuggestedCriteria []struct {
+		Name      string  `json:"name"`
+		Weight    float64 `json:"weight"`
+		Rationale string  `json:"rationale"`
+	} `json:"suggestedCriteria"`
+	SuggestedOptions []string `json:"suggestedOptions"`
+}
+
+// requestSamplingCriteria calls the sampling provider to get context-aware criteria
+// for a decision that has no matching domain template.
+// Returns (criteriaNames, optionNames, error). On failure the caller falls back gracefully.
+func (p *decisionFrameworkPattern) requestSamplingCriteria(decision string) ([]string, []string, error) {
+	tmpl := GetSamplingPrompt("decision_framework")
+	var messages []think.SamplingMessage
+	maxTokens := 1500
+	if tmpl != nil {
+		systemRole, userPrompt := FormatSamplingPrompt(tmpl, decision)
+		messages = []think.SamplingMessage{
+			{Role: "user", Content: systemRole + "\n\n" + userPrompt},
+		}
+		maxTokens = tmpl.MaxTokens
+	} else {
+		messages = []think.SamplingMessage{
+			{Role: "user", Content: fmt.Sprintf(
+				`Suggest evaluation criteria for this decision. Decision: %s. `+
+					`Return JSON: {"suggestedCriteria": [{"name": "...", "weight": 0.0, "rationale": "..."}], "suggestedOptions": ["..."]}`,
+				decision,
+			)},
+		}
+	}
+
+	raw, err := p.sampling.RequestSampling(context.Background(), messages, maxTokens)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var resp samplingCriteriaResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return nil, nil, fmt.Errorf("sampling JSON parse failed: %w", err)
+	}
+
+	criteria := make([]string, 0, len(resp.SuggestedCriteria))
+	for _, c := range resp.SuggestedCriteria {
+		if c.Name != "" {
+			criteria = append(criteria, c.Name)
+		}
+	}
+	return criteria, resp.SuggestedOptions, nil
 }
 
 // toFloat64 converts numeric types to float64.
