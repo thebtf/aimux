@@ -120,7 +120,13 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		data["textAnalysis"] = analysis
 	}
 
-	return think.MakeThinkResult("critical_thinking", data, sessionID, nil, "", []string{"detectedBiases", "biasCount"}), nil
+	// When biases are detected, suggest decision_framework to apply structured evaluation.
+	suggestedNext := ""
+	if len(detectedBiases) > 0 {
+		suggestedNext = "decision_framework"
+	}
+
+	return think.MakeThinkResult("critical_thinking", data, sessionID, nil, suggestedNext, []string{"detectedBiases", "biasCount"}), nil
 }
 
 // samplingBiasResponse is the JSON shape we ask the LLM to return for bias detection.
