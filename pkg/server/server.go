@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/thebtf/aimux/pkg/hooks"
 	inv "github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/metrics"
+	"github.com/thebtf/aimux/pkg/ratelimit"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
@@ -100,6 +102,16 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 - Don't run consensus with 1 CLI — needs 2+ for comparison
 - Don't call exec for tasks an agent can handle — use aimux-agent-exec first`
 
+// marshalToolResult marshals data to JSON and returns an MCP tool result.
+// Returns an error result if marshaling fails instead of silently returning empty.
+func marshalToolResult(data any) (*mcp.CallToolResult, error) {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("internal error: response serialization failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(b)), nil
+}
+
 // Server holds all dependencies for the MCP server.
 type Server struct {
 	cfg          *config.Config
@@ -119,6 +131,8 @@ type Server struct {
 	store        *session.Store
 	gcCancel     context.CancelFunc
 	skillEngine  *skills.Engine
+	rateLimiter  *ratelimit.Limiter
+	authToken    string
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -138,6 +152,15 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		executor: selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
 	}
 	s.metrics = metrics.New()
+
+	// Initialize rate limiter — per-tool token bucket.
+	s.rateLimiter = ratelimit.New(cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
+
+	// Initialize auth token — config takes precedence over env var.
+	s.authToken = cfg.Server.AuthToken
+	if s.authToken == "" {
+		s.authToken = os.Getenv("AIMUX_AUTH_TOKEN")
+	}
 
 	// Initialize SQLite persistence and WAL recovery
 	dbPath := config.ExpandPath(cfg.Server.DBPath)
@@ -276,33 +299,62 @@ func (s *Server) ServeStdio() error {
 }
 
 // ServeSSE starts the MCP server with Server-Sent Events transport.
-// WARNING: No authentication is applied. Bind to localhost unless you add auth middleware.
+// If authToken is configured, all requests must carry a valid Bearer token.
 func (s *Server) ServeSSE(addr string) error {
 	addr = ensureLocalhostBinding(addr)
 	s.log.Info("MCP server starting on SSE at %s (aimux v%s)", addr, serverVersion)
 	if !isLocalhostAddr(addr) {
-		s.log.Warn("SSE transport bound to non-localhost address %s — no authentication is configured", addr)
+		s.log.Warn("SSE transport bound to non-localhost address %s", addr)
 	}
 	sseServer := server.NewSSEServer(s.mcp)
-	return sseServer.Start(addr)
+	if s.authToken == "" {
+		return sseServer.Start(addr)
+	}
+	s.log.Info("SSE transport: bearer token authentication enabled")
+	httpSrv := &http.Server{
+		Addr:         addr,
+		Handler:      bearerAuthMiddleware(s.authToken, sseServer),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	return server.NewSSEServer(s.mcp, server.WithHTTPServer(httpSrv)).Start(addr)
 }
 
 // ServeHTTP starts the MCP server with StreamableHTTP transport.
-// WARNING: No authentication is applied. Bind to localhost unless you add auth middleware.
+// If authToken is configured, all requests must carry a valid Bearer token.
 func (s *Server) ServeHTTP(addr string, opts ...server.StreamableHTTPOption) error {
 	addr = ensureLocalhostBinding(addr)
 	s.log.Info("MCP server starting on HTTP at %s (aimux v%s)", addr, serverVersion)
 	if !isLocalhostAddr(addr) {
-		s.log.Warn("HTTP transport bound to non-localhost address %s — no authentication is configured", addr)
+		s.log.Warn("HTTP transport bound to non-localhost address %s", addr)
 	}
-	httpServer := server.NewStreamableHTTPServer(s.mcp, opts...)
-	return httpServer.Start(addr)
+	httpMCPServer := server.NewStreamableHTTPServer(s.mcp, opts...)
+	if s.authToken == "" {
+		return httpMCPServer.Start(addr)
+	}
+	s.log.Info("HTTP transport: bearer token authentication enabled")
+	httpSrv := &http.Server{
+		Addr:         addr,
+		Handler:      bearerAuthMiddleware(s.authToken, httpMCPServer),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	authOpts := append(opts, server.WithStreamableHTTPServer(httpSrv))
+	return server.NewStreamableHTTPServer(s.mcp, authOpts...).Start(addr)
 }
 
-// ensureLocalhostBinding defaults to localhost if only a port is specified (e.g., ":8080" → "127.0.0.1:8080").
+// ensureLocalhostBinding rewrites bare port specs and 0.0.0.0 to 127.0.0.1 to
+// prevent accidental exposure on all interfaces.
+//   - ":8080"         → "127.0.0.1:8080"
+//   - "0.0.0.0:8080"  → "127.0.0.1:8080"
 func ensureLocalhostBinding(addr string) string {
 	if len(addr) > 0 && addr[0] == ':' {
 		return "127.0.0.1" + addr
+	}
+	if strings.HasPrefix(addr, "0.0.0.0:") {
+		return "127.0.0.1" + addr[len("0.0.0.0"):]
 	}
 	return addr
 }
@@ -310,6 +362,23 @@ func ensureLocalhostBinding(addr string) string {
 // isLocalhostAddr checks if the address is bound to localhost/127.0.0.1.
 func isLocalhostAddr(addr string) bool {
 	return strings.HasPrefix(addr, "127.0.0.1") || strings.HasPrefix(addr, "localhost") || strings.HasPrefix(addr, "[::1]")
+}
+
+// bearerAuthMiddleware returns an http.Handler that enforces Bearer token authentication.
+// Requests missing or presenting an incorrect token receive 401 Unauthorized.
+// When token is empty the original handler is returned unchanged (backward-compatible).
+func bearerAuthMiddleware(token string, next http.Handler) http.Handler {
+	if token == "" {
+		return next
+	}
+	expected := "Bearer " + token
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != expected {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // runSnapshotLoop periodically saves in-memory state to SQLite.
@@ -786,6 +855,9 @@ func (s *Server) registerResources() {
 // --- Tool Handlers ---
 
 func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("exec") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	prompt, err := request.RequireString("prompt")
 	if err != nil {
 		return mcp.NewToolResultError("prompt is required"), nil
@@ -909,8 +981,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 				"session_id": sess.ID,
 				"status":     "running",
 			}
-			data, _ := json.Marshal(result)
-			return mcp.NewToolResultText(string(data)), nil
+			return marshalToolResult(result)
 		}
 
 		s.executePairCoding(ctx, job.ID, sess.ID, pairParams, cb)
@@ -940,8 +1011,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		} else {
 			result["content"] = j.Content
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 	}
 
 	// Bootstrap prompt injection: prepend role-specific prompt from prompts.d/
@@ -981,8 +1051,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			"session_id": sess.ID,
 			"status":     "running",
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 	}
 
 	s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
@@ -1001,8 +1070,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		"status":     string(j.Status),
 		"content":    j.Content,
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // executePairCoding runs a pair coding pipeline via orchestrator and updates job/session state.
@@ -1296,8 +1364,7 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		result["warning"] = "Polling detected. Prefer background tasks over polling."
 	}
 
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1310,11 +1377,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 	case "list":
 		statusFilter := request.GetString("status", "")
 		sessions := s.sessions.List(types.SessionStatus(statusFilter))
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"sessions": sessions,
 			"count":    len(sessions),
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	case "info":
 		sessionID := request.GetString("session_id", "")
@@ -1326,19 +1392,17 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			return mcp.NewToolResultError("session not found"), nil
 		}
 		jobs := s.jobs.ListBySession(sessionID)
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"session": sess,
 			"jobs":    jobs,
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	case "health":
 		running := s.jobs.ListRunning()
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"total_sessions": s.sessions.Count(),
 			"running_jobs":   len(running),
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	case "cancel":
 		jobID := request.GetString("job_id", "")
@@ -1377,8 +1441,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 				collected++
 			}
 		}
-		data, _ := json.Marshal(map[string]any{"collected": collected})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"collected": collected})
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
@@ -1388,6 +1451,9 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 // --- Dialog Handler ---
 
 func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("dialog") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	prompt, err := request.RequireString("prompt")
 	if err != nil {
 		return mcp.NewToolResultError("prompt is required"), nil
@@ -1460,14 +1526,13 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		ss.Turns = result.Turns
 	})
 
-	data, _ := json.Marshal(map[string]any{
+	return marshalToolResult(map[string]any{
 		"session_id":   sess.ID,
 		"status":       result.Status,
 		"turns":        result.Turns,
 		"content":      result.Content,
 		"participants": result.Participants,
 	})
-	return mcp.NewToolResultText(string(data)), nil
 }
 
 // findDialogTurnHistory scans jobs for the most recent dialog turn history
@@ -1507,8 +1572,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 				"tools":       a.Tools,
 			}
 		}
-		data, _ := json.Marshal(map[string]any{"agents": summaries, "count": len(summaries)})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"agents": summaries, "count": len(summaries)})
 
 	case "find":
 		query := request.GetString("prompt", "")
@@ -1516,8 +1580,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultError("prompt required as search query for find"), nil
 		}
 		matches := s.agentReg.Find(query)
-		data, _ := json.Marshal(map[string]any{"query": query, "matches": matches, "count": len(matches)})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"query": query, "matches": matches, "count": len(matches)})
 
 	case "info":
 		agentName := request.GetString("agent", "")
@@ -1528,8 +1591,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		if agentErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
 		}
-		data, _ := json.Marshal(agent)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(agent)
 
 	case "run":
 		agentName := request.GetString("agent", "")
@@ -1587,13 +1649,12 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			jobCtx, jobCancel := context.WithCancel(context.Background())
 			s.jobs.RegisterCancel(job.ID, jobCancel)
 			go s.executeJob(jobCtx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
-			data, _ := json.Marshal(map[string]any{
+			return marshalToolResult(map[string]any{
 				"agent":      agentName,
 				"job_id":     job.ID,
 				"session_id": sess.ID,
 				"status":     "running",
 			})
-			return mcp.NewToolResultText(string(data)), nil
 		}
 
 		s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
@@ -1606,13 +1667,12 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultError(fmt.Sprintf("agent %q failed: %v", agentName, j.Error)), nil
 		}
 
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"agent":      agentName,
 			"session_id": sess.ID,
 			"status":     string(j.Status),
 			"content":    j.Content,
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
@@ -1622,6 +1682,9 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 // --- Audit Handler ---
 
 func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("audit") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	cwd := request.GetString("cwd", "")
 	mode := request.GetString("mode", "standard")
 	async := request.GetBool("async", false)
@@ -1652,16 +1715,14 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 			}
 			s.jobs.CompleteJob(job.ID, result.Content, 0)
 		}()
-		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": "running"})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"job_id": job.ID, "status": "running"})
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "audit", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("audit failed: %v", err)), nil
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // --- Think Handler ---
@@ -1819,8 +1880,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if domainName == "" {
 			result["available_domains"] = inv.DomainNames()
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 
 	case "finding":
 		sessionID := request.GetString("session_id", "")
@@ -1863,8 +1923,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 				"new_claim":      correction.CorrectedClaim,
 			}
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 
 	case "assess":
 		sessionID := request.GetString("session_id", "")
@@ -1875,8 +1934,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if assessErr != nil {
 			return mcp.NewToolResultError(assessErr.Error()), nil
 		}
-		data, _ := json.Marshal(assessResult)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(assessResult)
 
 	case "report":
 		sessionID := request.GetString("session_id", "")
@@ -1906,8 +1964,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		}
 
 		inv.DeleteInvestigation(sessionID)
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 
 	case "status":
 		sessionID := request.GetString("session_id", "")
@@ -1932,8 +1989,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			"coverage_unchecked": unchecked,
 			"last_activity":     state.LastActivityAt,
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 
 	case "list":
 		active := inv.ListInvestigations()
@@ -1942,13 +1998,12 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			cwd, _ = os.Getwd()
 		}
 		savedReports, _ := inv.ListReports(cwd)
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"active_investigations": active,
 			"active_count":          len(active),
 			"saved_reports":         savedReports,
 			"saved_count":           len(savedReports),
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	case "recall":
 		topic := request.GetString("topic", "")
@@ -1970,21 +2025,19 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			for _, r := range reports {
 				topics = append(topics, r.Topic)
 			}
-			data, _ := json.Marshal(map[string]any{
+			return marshalToolResult(map[string]any{
 				"found":            false,
 				"message":          fmt.Sprintf("No report found matching %q", topic),
 				"available_topics": topics,
 			})
-			return mcp.NewToolResultText(string(data)), nil
 		}
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"found":    true,
 			"filename": result.Filename,
 			"topic":    result.Topic,
 			"date":     result.Date,
 			"content":  result.Content,
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
@@ -1994,6 +2047,9 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 // --- Consensus Handler ---
 
 func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("consensus") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	topic, err := request.RequireString("topic")
 	if err != nil {
 		return mcp.NewToolResultError("topic is required"), nil
@@ -2025,21 +2081,22 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
 		go s.executeStrategy(jobCtx, job.ID, sess.ID, "consensus", params)
-		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "consensus", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("consensus failed: %v", err)), nil
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // --- DeepResearch Handler ---
 
 func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("deepresearch") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	topic, err := request.RequireString("topic")
 	if err != nil {
 		return mcp.NewToolResultError("topic is required"), nil
@@ -2071,18 +2128,19 @@ func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolReq
 		_ = deepresearch.SaveEntryToDisk(cwd, topic, outputFormat, model, nil, content)
 	}
 
-	result := map[string]any{
+	return marshalToolResult(map[string]any{
 		"topic":   topic,
 		"content": content,
 		"cached":  cacheHit,
-	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	})
 }
 
 // --- Debate Handler ---
 
 func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("debate") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	topic, err := request.RequireString("topic")
 	if err != nil {
 		return mcp.NewToolResultError("topic is required"), nil
@@ -2113,21 +2171,22 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
 		go s.executeStrategy(jobCtx, job.ID, sess.ID, "debate", params)
-		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "debate", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("debate failed: %v", err)), nil
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // --- Agent Run Handler ---
 
 func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("agent") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	agentName, err := request.RequireString("agent")
 	if err != nil {
 		return mcp.NewToolResultError("agent is required"), nil
@@ -2223,14 +2282,13 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 			})
 		}()
 
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"agent":      agentName,
 			"cli":        cli,
 			"job_id":     job.ID,
 			"session_id": sess.ID,
 			"status":     "running",
 		})
-		return mcp.NewToolResultText(string(data)), nil
 	}
 
 	result, runErr := agents.RunAgent(ctx, runCfg)
@@ -2238,7 +2296,7 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("agent %q failed: %v", agentName, runErr)), nil
 	}
 
-	data, _ := json.Marshal(map[string]any{
+	return marshalToolResult(map[string]any{
 		"agent":       agentName,
 		"cli":         cli,
 		"status":      result.Status,
@@ -2247,7 +2305,6 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		"duration_ms": result.DurationMS,
 		"turn_log":    result.TurnLog,
 	})
-	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- Resource Handlers ---
@@ -2338,6 +2395,9 @@ func (s *Server) checkConcurrencyLimit() error {
 
 // handleWorkflow executes a declarative multi-step pipeline as a single MCP call.
 func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("workflow") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	name := request.GetString("name", "workflow")
 	stepsJSON, err := request.RequireString("steps")
 	if err != nil {
@@ -2383,16 +2443,14 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 			}
 			s.jobs.CompleteJob(job.ID, result.Content, 0)
 		}()
-		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": "running"})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"job_id": job.ID, "status": "running"})
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "workflow", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("workflow failed: %v", err)), nil
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // selectBestExecutor returns the best available executor for the current platform.
