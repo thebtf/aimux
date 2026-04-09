@@ -168,13 +168,33 @@ func (p *scientificMethodPattern) Description() string {
 }
 
 func (p *scientificMethodPattern) Validate(input map[string]any) (map[string]any, error) {
-	stageRaw, ok := input["stage"]
-	if !ok {
-		return nil, fmt.Errorf("missing required field: stage")
-	}
-	stage, ok := stageRaw.(string)
-	if !ok || !validStages[stage] {
-		return nil, fmt.Errorf("field 'stage' must be one of: observation, question, hypothesis, experiment, analysis, conclusion, iteration")
+	// Determine stage: explicit > inferred from entry_type > required
+	var stage string
+	if stageRaw, ok := input["stage"]; ok {
+		s, ok := stageRaw.(string)
+		if !ok || !validStages[s] {
+			return nil, fmt.Errorf("field 'stage' must be one of: observation, question, hypothesis, experiment, analysis, conclusion, iteration")
+		}
+		stage = s
+	} else if etRaw, ok := input["entry_type"]; ok {
+		// Infer stage from entry_type for flat param callers
+		et, _ := etRaw.(string)
+		entryTypeToStage := map[string]string{
+			"observation": "observation",
+			"hypothesis":  "hypothesis",
+			"prediction":  "hypothesis",
+			"experiment":  "experiment",
+			"analysis":    "analysis",
+			"conclusion":  "conclusion",
+			"result":      "analysis",
+		}
+		if s, ok := entryTypeToStage[et]; ok {
+			stage = s
+		} else {
+			return nil, fmt.Errorf("missing required field: stage")
+		}
+	} else {
+		return nil, fmt.Errorf("missing required field: stage (or provide entry_type for auto-detection)")
 	}
 
 	validated := map[string]any{"stage": stage}
