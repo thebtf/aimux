@@ -951,6 +951,13 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	if timeoutSec == 0 {
 		timeoutSec = profile.TimeoutSeconds
 	}
+	// Ensure minimum timeout for reasoning tasks — high/xhigh need more time
+	if effort == "high" || effort == "xhigh" {
+		minTimeout := 120
+		if timeoutSec < minTimeout {
+			timeoutSec = minTimeout
+		}
+	}
 
 	// Constitution P2: Solo coding prohibited — route coding role through PairCoding
 	if role == "coding" {
