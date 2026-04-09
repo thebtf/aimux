@@ -31,3 +31,4 @@ Thumbs.db
 coverage.out
 *.test
 .aider*
+cover.out
