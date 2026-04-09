@@ -969,3 +969,883 @@ func TestHandleDeepresearch_MissingTopic(t *testing.T) {
 		t.Error("expected error for missing topic")
 	}
 }
+
+// --- Pure helpers ---
+
+func TestExtractPromptFromArgs_LastPositional(t *testing.T) {
+	args := []string{"-p", "my prompt"}
+	got := extractPromptFromArgs(args)
+	if got != "my prompt" {
+		t.Errorf("got %q, want %q", got, "my prompt")
+	}
+}
+
+func TestExtractPromptFromArgs_AllFlags(t *testing.T) {
+	args := []string{"--flag1", "--flag2"}
+	got := extractPromptFromArgs(args)
+	if got != "" {
+		t.Errorf("expected empty for all-flag args, got %q", got)
+	}
+}
+
+func TestExtractPromptFromArgs_Empty(t *testing.T) {
+	got := extractPromptFromArgs(nil)
+	if got != "" {
+		t.Errorf("expected empty for nil args, got %q", got)
+	}
+}
+
+func TestIsRetriableError_RateLimit(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"rate limit exceeded", true},
+		{"quota exceeded for API", true},
+		{"429 Too Many Requests", true},
+		{"authentication failed", true},
+		{"connection refused", true},
+		{"ETIMEDOUT", true},
+		{"ECONNREFUSED", true},
+		{"ENOTFOUND", true},
+		{"dns resolution failed", true},
+		{"some random error", false},
+		{"file not found", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		got := isRetriableError(c.msg)
+		if got != c.want {
+			t.Errorf("isRetriableError(%q) = %v, want %v", c.msg, got, c.want)
+		}
+	}
+}
+
+func TestIsRetriableValidationError_Propagates(t *testing.T) {
+	if isRetriableValidationError([]string{"some error", "rate limit hit"}) != true {
+		t.Error("expected true when one error is retriable")
+	}
+	if isRetriableValidationError([]string{"error1", "error2"}) != false {
+		t.Error("expected false when no error is retriable")
+	}
+	if isRetriableValidationError(nil) != false {
+		t.Error("expected false for nil errors")
+	}
+}
+
+func TestEnsureLocalhostBinding(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{":8080", "127.0.0.1:8080"},
+		{"0.0.0.0:9090", "127.0.0.1:9090"},
+		{"127.0.0.1:8080", "127.0.0.1:8080"},
+		{"example.com:80", "example.com:80"},
+	}
+	for _, c := range cases {
+		got := ensureLocalhostBinding(c.in)
+		if got != c.want {
+			t.Errorf("ensureLocalhostBinding(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestIsLocalhostAddr(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8080", true},
+		{"localhost:3000", true},
+		{"[::1]:8080", true},
+		{"0.0.0.0:8080", false},
+		{"192.168.1.1:8080", false},
+	}
+	for _, c := range cases {
+		got := isLocalhostAddr(c.addr)
+		if got != c.want {
+			t.Errorf("isLocalhostAddr(%q) = %v, want %v", c.addr, got, c.want)
+		}
+	}
+}
+
+// --- Audit Handler ---
+
+func TestHandleAudit_Async(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("audit", map[string]any{
+		"mode":  "standard",
+		"async": true,
+	})
+
+	result, err := srv.handleAudit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAudit async: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["job_id"] == nil || data["job_id"] == "" {
+		t.Error("expected job_id for async audit")
+	}
+	if data["status"] != "running" {
+		t.Errorf("status = %v, want running", data["status"])
+	}
+}
+
+// --- AgentRun Handler ---
+
+func TestHandleAgentRun_MissingAgent(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("agent", map[string]any{
+		"prompt": "do something",
+	})
+
+	result, err := srv.handleAgentRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for missing agent")
+	}
+}
+
+func TestHandleAgentRun_MissingPrompt(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("agent", map[string]any{
+		"agent": "nonexistent",
+	})
+
+	result, err := srv.handleAgentRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for missing prompt")
+	}
+}
+
+func TestHandleAgentRun_AgentNotFound(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("agent", map[string]any{
+		"agent":  "nonexistent-agent-xyz",
+		"prompt": "do something",
+	})
+
+	result, err := srv.handleAgentRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for nonexistent agent")
+	}
+	text := result.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(text, "nonexistent-agent-xyz") {
+		t.Errorf("error should mention agent name, got: %s", text)
+	}
+}
+
+// --- Workflow Handler ---
+
+func TestHandleWorkflow_MissingSteps(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("workflow", map[string]any{})
+
+	result, err := srv.handleWorkflow(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleWorkflow: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for missing steps")
+	}
+}
+
+func TestHandleWorkflow_InvalidJSON(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("workflow", map[string]any{
+		"steps": "not-valid-json",
+	})
+
+	result, err := srv.handleWorkflow(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleWorkflow: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for invalid steps JSON")
+	}
+}
+
+func TestHandleWorkflow_Async(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("workflow", map[string]any{
+		"steps": `[{"role":"default","prompt":"hello"}]`,
+		"async": true,
+	})
+
+	result, err := srv.handleWorkflow(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleWorkflow async: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["job_id"] == nil || data["job_id"] == "" {
+		t.Error("expected job_id for async workflow")
+	}
+	if data["status"] != "running" {
+		t.Errorf("status = %v, want running", data["status"])
+	}
+}
+
+// --- Metrics Resource ---
+
+func TestHandleMetricsResource(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.ReadResourceRequest{
+		Params: mcp.ReadResourceParams{
+			URI: "aimux://metrics",
+		},
+	}
+
+	contents, err := srv.handleMetricsResource(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleMetricsResource: %v", err)
+	}
+
+	if len(contents) == 0 {
+		t.Error("expected metrics resource content")
+	}
+}
+
+// --- buildSkillData / handleSkillPrompt ---
+
+func TestBuildSkillData(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{
+		Params: mcp.GetPromptParams{
+			Arguments: map[string]string{"key": "value"},
+		},
+	}
+
+	data := srv.buildSkillData(req)
+	if data == nil {
+		t.Fatal("buildSkillData returned nil")
+	}
+	// EnabledCLIs may be nil or empty — both valid when no CLIs are probed available yet.
+	if data.RoleRouting == nil {
+		t.Error("RoleRouting should not be nil")
+	}
+	if data.Args["key"] != "value" {
+		t.Errorf("args[key] = %q, want %q", data.Args["key"], "value")
+	}
+}
+
+func TestBuildSkillData_NoArgs(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{}
+
+	data := srv.buildSkillData(req)
+	if data == nil {
+		t.Fatal("buildSkillData returned nil")
+	}
+	if data.Args == nil {
+		t.Error("Args should be non-nil map even with no request args")
+	}
+}
+
+// --- Investigate: additional actions ---
+
+func TestHandleInvestigate_StartMissingTopic(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "start",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for start without topic")
+	}
+}
+
+func TestHandleInvestigate_FindingMissingSessionID(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action":      "finding",
+		"description": "a bug",
+		"source":      "file.go:42",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for finding without session_id")
+	}
+}
+
+func TestHandleInvestigate_AssessMissingSessionID(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "assess",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for assess without session_id")
+	}
+}
+
+func TestHandleInvestigate_ReportMissingSessionID(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "report",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for report without session_id")
+	}
+}
+
+func TestHandleInvestigate_StatusMissingSessionID(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "status",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for status without session_id")
+	}
+}
+
+func TestHandleInvestigate_List(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "list",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate list: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["active_count"] == nil {
+		t.Error("expected active_count field")
+	}
+}
+
+func TestHandleInvestigate_RecallMissingTopic(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "recall",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for recall without topic")
+	}
+}
+
+func TestHandleInvestigate_RecallNotFound(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "recall",
+		"topic":  "nonexistent-topic-xyz-12345",
+		"cwd":    t.TempDir(),
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate recall: %v", err)
+	}
+
+	data := parseResult(t, result)
+	found, _ := data["found"].(bool)
+	if found {
+		t.Error("expected found=false for nonexistent topic")
+	}
+}
+
+func TestHandleInvestigate_InvalidAction(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "unknown_action",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for unknown action")
+	}
+}
+
+func TestHandleInvestigate_FullCycle(t *testing.T) {
+	srv := testServer(t)
+
+	// 1. Start — omit domain to let AutoDetectDomain pick "debugging" from "crash"
+	startReq := makeRequest("investigate", map[string]any{
+		"action": "start",
+		"topic":  "server crash on startup",
+	})
+	startResult, err := srv.handleInvestigate(context.Background(), startReq)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := parseResult(t, startResult)
+	sessionID, ok := startData["session_id"].(string)
+	if !ok || sessionID == "" {
+		t.Fatal("expected session_id from start")
+	}
+
+	// 2. Status
+	statusReq := makeRequest("investigate", map[string]any{
+		"action":     "status",
+		"session_id": sessionID,
+	})
+	statusResult, err := srv.handleInvestigate(context.Background(), statusReq)
+	if err != nil {
+		t.Fatalf("investigate status: %v", err)
+	}
+	statusData := parseResult(t, statusResult)
+	if statusData["topic"] != "server crash on startup" {
+		t.Errorf("topic = %v, want 'server crash on startup'", statusData["topic"])
+	}
+
+	// 3. Finding
+	findingReq := makeRequest("investigate", map[string]any{
+		"action":     "finding",
+		"session_id": sessionID,
+		"description": "Null pointer dereference in init()",
+		"source":      "main.go:42",
+		"severity":    "P0",
+	})
+	findingResult, err := srv.handleInvestigate(context.Background(), findingReq)
+	if err != nil {
+		t.Fatalf("investigate finding: %v", err)
+	}
+	findingData := parseResult(t, findingResult)
+	if findingData["finding_id"] == nil {
+		t.Error("expected finding_id")
+	}
+
+	// 4. Assess
+	assessReq := makeRequest("investigate", map[string]any{
+		"action":     "assess",
+		"session_id": sessionID,
+	})
+	assessResult, err := srv.handleInvestigate(context.Background(), assessReq)
+	if err != nil {
+		t.Fatalf("investigate assess: %v", err)
+	}
+	if assessResult.IsError {
+		t.Errorf("assess returned error: %v", assessResult.Content)
+	}
+
+	// 5. Report (also deletes the session)
+	reportReq := makeRequest("investigate", map[string]any{
+		"action":     "report",
+		"session_id": sessionID,
+	})
+	reportResult, err := srv.handleInvestigate(context.Background(), reportReq)
+	if err != nil {
+		t.Fatalf("investigate report: %v", err)
+	}
+	reportData := parseResult(t, reportResult)
+	if reportData["report"] == nil {
+		t.Error("expected report content")
+	}
+}
+
+// --- CheckConcurrencyLimit ---
+
+func TestCheckConcurrencyLimit_NoLimit(t *testing.T) {
+	srv := testServer(t)
+	// Default config has MaxConcurrentJobs=0 (no limit)
+	if err := srv.checkConcurrencyLimit(); err != nil {
+		t.Errorf("expected no error with no limit, got: %v", err)
+	}
+}
+
+func TestCheckConcurrencyLimit_LimitReached(t *testing.T) {
+	srv := testServer(t)
+	srv.cfg.Server.MaxConcurrentJobs = 1
+
+	// Create a running job to hit the limit
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 0)
+
+	if err := srv.checkConcurrencyLimit(); err == nil {
+		t.Error("expected error when concurrency limit reached")
+	}
+}
+
+func TestCheckConcurrencyLimit_UnderLimit(t *testing.T) {
+	srv := testServer(t)
+	srv.cfg.Server.MaxConcurrentJobs = 5
+
+	// No running jobs — should be fine
+	if err := srv.checkConcurrencyLimit(); err != nil {
+		t.Errorf("expected no error when under limit, got: %v", err)
+	}
+}
+
+// --- Think: unknown pattern ---
+
+func TestHandleThink_UnknownPattern(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("think", map[string]any{
+		"pattern": "nonexistent_pattern_xyz",
+	})
+
+	result, err := srv.handleThink(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleThink: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for unknown think pattern")
+	}
+}
+
+// --- InjectBootstrap with actual template ---
+
+func TestInjectBootstrap_WithPromptEngine(t *testing.T) {
+	srv := testServer(t)
+	// promptEng is initialized but ConfigDir has no templates — falls back to original
+	original := "test prompt"
+	got := srv.injectBootstrap("coding", original)
+	// Either returns original (no template) or prepended (template exists) — both valid
+	if got == "" {
+		t.Error("injectBootstrap should never return empty string")
+	}
+	if !strings.Contains(got, original) {
+		t.Errorf("injectBootstrap result should contain original prompt, got: %q", got)
+	}
+}
+
+// --- Legacy Prompt Handlers ---
+
+func TestHandleBackgroundPrompt_NoArgs(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{}
+
+	result, err := srv.handleBackgroundPrompt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleBackgroundPrompt: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Messages) == 0 {
+		t.Error("expected at least one message")
+	}
+}
+
+func TestHandleBackgroundPrompt_WithTask(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{
+		Params: mcp.GetPromptParams{
+			Arguments: map[string]string{
+				"task_description": "review the codebase for security issues",
+			},
+		},
+	}
+
+	result, err := srv.handleBackgroundPrompt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleBackgroundPrompt: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestHandleBackgroundPrompt_CodingTask(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{
+		Params: mcp.GetPromptParams{
+			Arguments: map[string]string{
+				"task_description": "implement a new feature for the auth system",
+			},
+		},
+	}
+
+	result, err := srv.handleBackgroundPrompt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleBackgroundPrompt: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestHandleGuidePrompt(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{}
+
+	result, err := srv.handleGuidePrompt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleGuidePrompt: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Messages) == 0 {
+		t.Error("expected at least one message")
+	}
+}
+
+func TestHandleInvestigatePrompt_NoTopic(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{}
+
+	result, err := srv.handleInvestigatePrompt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigatePrompt: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestHandleInvestigatePrompt_WithTopic(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{
+		Params: mcp.GetPromptParams{
+			Arguments: map[string]string{
+				"topic": "crash on startup in auth module",
+			},
+		},
+	}
+
+	result, err := srv.handleInvestigatePrompt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigatePrompt: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Messages) == 0 {
+		t.Error("expected at least one message")
+	}
+}
+
+func TestHandleWorkflowPrompt_NoGoal(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{}
+
+	result, err := srv.handleWorkflowPrompt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleWorkflowPrompt: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestHandleWorkflowPrompt_WithGoal(t *testing.T) {
+	srv := testServer(t)
+	req := mcp.GetPromptRequest{
+		Params: mcp.GetPromptParams{
+			Arguments: map[string]string{
+				"goal": "run tests, then deploy to staging",
+			},
+		},
+	}
+
+	result, err := srv.handleWorkflowPrompt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleWorkflowPrompt: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+// --- HandleConsensus async path ---
+
+func TestHandleConsensus_InsufficientCLIs_WithPromptParam(t *testing.T) {
+	srv := testServer(t)
+	// "prompt" is not the right param — consensus uses "topic"
+	// This tests that using the wrong param name triggers the right error.
+	req := makeRequest("consensus", map[string]any{
+		"prompt": "is Go better than Rust?",
+	})
+
+	result, err := srv.handleConsensus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleConsensus: %v", err)
+	}
+
+	// topic is required — this should fail with missing topic error
+	if !result.IsError {
+		t.Error("expected error for missing topic (using wrong param)")
+	}
+}
+
+// --- HandleAgents: run with explicit CLI but no agents registered ---
+
+func TestHandleAgents_Run_NoAgentsRegistered(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("agents", map[string]any{
+		"action": "run",
+		"prompt": "analyze this code for bugs",
+	})
+
+	result, err := srv.handleAgents(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgents run: %v", err)
+	}
+
+	// Either auto-selects a builtin agent or returns error — both valid paths.
+	_ = result
+}
+
+// --- HandleAgents: info for builtin agent ---
+
+func TestHandleAgents_Info_Builtin(t *testing.T) {
+	srv := testServer(t)
+
+	// List agents first to find a valid builtin
+	listReq := makeRequest("agents", map[string]any{"action": "list"})
+	listResult, err := srv.handleAgents(context.Background(), listReq)
+	if err != nil {
+		t.Fatalf("handleAgents list: %v", err)
+	}
+
+	listData := parseResult(t, listResult)
+	agents, ok := listData["agents"].([]any)
+	if !ok || len(agents) == 0 {
+		t.Skip("no agents registered to test info on")
+	}
+
+	// Get info on the first agent
+	firstAgent, ok := agents[0].(map[string]any)
+	if !ok {
+		t.Skip("unexpected agent format")
+	}
+	agentName, _ := firstAgent["name"].(string)
+	if agentName == "" {
+		t.Skip("first agent has no name")
+	}
+
+	infoReq := makeRequest("agents", map[string]any{
+		"action": "info",
+		"agent":  agentName,
+	})
+
+	infoResult, err := srv.handleAgents(context.Background(), infoReq)
+	if err != nil {
+		t.Fatalf("handleAgents info: %v", err)
+	}
+
+	if infoResult.IsError {
+		t.Errorf("info for known agent %q returned error", agentName)
+	}
+}
+
+// --- HandleAgentRun: async path ---
+
+func TestHandleAgentRun_Async_BuiltinAgent(t *testing.T) {
+	srv := testServer(t)
+
+	// Find a builtin agent first
+	listReq := makeRequest("agents", map[string]any{"action": "list"})
+	listResult, _ := srv.handleAgents(context.Background(), listReq)
+	listData := parseResult(t, listResult)
+	agents, ok := listData["agents"].([]any)
+	if !ok || len(agents) == 0 {
+		t.Skip("no agents registered")
+	}
+	firstAgent, _ := agents[0].(map[string]any)
+	agentName, _ := firstAgent["name"].(string)
+	if agentName == "" {
+		t.Skip("no agent name available")
+	}
+
+	req := makeRequest("agent", map[string]any{
+		"agent":  agentName,
+		"prompt": "test prompt",
+		"async":  true,
+	})
+
+	result, err := srv.handleAgentRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgentRun async: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["job_id"] == nil || data["job_id"] == "" {
+		t.Error("expected job_id for async agent run")
+	}
+	if data["status"] != "running" {
+		t.Errorf("status = %v, want running", data["status"])
+	}
+}
+
+// --- Sessions: cancel nonexistent job ---
+
+func TestHandleSessions_CancelNonexistentJob(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{
+		"action": "cancel",
+		"job_id": "nonexistent-job",
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions cancel: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for cancelling nonexistent job")
+	}
+}
+
+func TestHandleSessions_KillNonexistentSession(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{
+		"action":     "kill",
+		"session_id": "nonexistent-session",
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions kill: %v", err)
+	}
+
+	if !result.IsError {
+		t.Error("expected error for killing nonexistent session")
+	}
+}
