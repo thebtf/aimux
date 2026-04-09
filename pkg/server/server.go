@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/thebtf/aimux/pkg/hooks"
 	inv "github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/metrics"
+	"github.com/thebtf/aimux/pkg/ratelimit"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
@@ -129,6 +131,8 @@ type Server struct {
 	store        *session.Store
 	gcCancel     context.CancelFunc
 	skillEngine  *skills.Engine
+	rateLimiter  *ratelimit.Limiter
+	authToken    string
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -148,6 +152,15 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		executor: selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
 	}
 	s.metrics = metrics.New()
+
+	// Initialize rate limiter — per-tool token bucket.
+	s.rateLimiter = ratelimit.New(cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
+
+	// Initialize auth token — config takes precedence over env var.
+	s.authToken = cfg.Server.AuthToken
+	if s.authToken == "" {
+		s.authToken = os.Getenv("AIMUX_AUTH_TOKEN")
+	}
 
 	// Initialize SQLite persistence and WAL recovery
 	dbPath := config.ExpandPath(cfg.Server.DBPath)
@@ -286,33 +299,50 @@ func (s *Server) ServeStdio() error {
 }
 
 // ServeSSE starts the MCP server with Server-Sent Events transport.
-// WARNING: No authentication is applied. Bind to localhost unless you add auth middleware.
+// If authToken is configured, all requests must carry a valid Bearer token.
 func (s *Server) ServeSSE(addr string) error {
 	addr = ensureLocalhostBinding(addr)
 	s.log.Info("MCP server starting on SSE at %s (aimux v%s)", addr, serverVersion)
 	if !isLocalhostAddr(addr) {
-		s.log.Warn("SSE transport bound to non-localhost address %s — no authentication is configured", addr)
+		s.log.Warn("SSE transport bound to non-localhost address %s", addr)
 	}
 	sseServer := server.NewSSEServer(s.mcp)
-	return sseServer.Start(addr)
+	if s.authToken == "" {
+		return sseServer.Start(addr)
+	}
+	s.log.Info("SSE transport: bearer token authentication enabled")
+	httpSrv := &http.Server{Addr: addr, Handler: bearerAuthMiddleware(s.authToken, sseServer)}
+	return server.NewSSEServer(s.mcp, server.WithHTTPServer(httpSrv)).Start(addr)
 }
 
 // ServeHTTP starts the MCP server with StreamableHTTP transport.
-// WARNING: No authentication is applied. Bind to localhost unless you add auth middleware.
+// If authToken is configured, all requests must carry a valid Bearer token.
 func (s *Server) ServeHTTP(addr string, opts ...server.StreamableHTTPOption) error {
 	addr = ensureLocalhostBinding(addr)
 	s.log.Info("MCP server starting on HTTP at %s (aimux v%s)", addr, serverVersion)
 	if !isLocalhostAddr(addr) {
-		s.log.Warn("HTTP transport bound to non-localhost address %s — no authentication is configured", addr)
+		s.log.Warn("HTTP transport bound to non-localhost address %s", addr)
 	}
-	httpServer := server.NewStreamableHTTPServer(s.mcp, opts...)
-	return httpServer.Start(addr)
+	httpMCPServer := server.NewStreamableHTTPServer(s.mcp, opts...)
+	if s.authToken == "" {
+		return httpMCPServer.Start(addr)
+	}
+	s.log.Info("HTTP transport: bearer token authentication enabled")
+	httpSrv := &http.Server{Addr: addr, Handler: bearerAuthMiddleware(s.authToken, httpMCPServer)}
+	authOpts := append(opts, server.WithStreamableHTTPServer(httpSrv))
+	return server.NewStreamableHTTPServer(s.mcp, authOpts...).Start(addr)
 }
 
-// ensureLocalhostBinding defaults to localhost if only a port is specified (e.g., ":8080" → "127.0.0.1:8080").
+// ensureLocalhostBinding rewrites bare port specs and 0.0.0.0 to 127.0.0.1 to
+// prevent accidental exposure on all interfaces.
+//   - ":8080"         → "127.0.0.1:8080"
+//   - "0.0.0.0:8080"  → "127.0.0.1:8080"
 func ensureLocalhostBinding(addr string) string {
 	if len(addr) > 0 && addr[0] == ':' {
 		return "127.0.0.1" + addr
+	}
+	if strings.HasPrefix(addr, "0.0.0.0:") {
+		return "127.0.0.1" + addr[len("0.0.0.0"):]
 	}
 	return addr
 }
@@ -320,6 +350,23 @@ func ensureLocalhostBinding(addr string) string {
 // isLocalhostAddr checks if the address is bound to localhost/127.0.0.1.
 func isLocalhostAddr(addr string) bool {
 	return strings.HasPrefix(addr, "127.0.0.1") || strings.HasPrefix(addr, "localhost") || strings.HasPrefix(addr, "[::1]")
+}
+
+// bearerAuthMiddleware returns an http.Handler that enforces Bearer token authentication.
+// Requests missing or presenting an incorrect token receive 401 Unauthorized.
+// When token is empty the original handler is returned unchanged (backward-compatible).
+func bearerAuthMiddleware(token string, next http.Handler) http.Handler {
+	if token == "" {
+		return next
+	}
+	expected := "Bearer " + token
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != expected {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // runSnapshotLoop periodically saves in-memory state to SQLite.
@@ -796,6 +843,9 @@ func (s *Server) registerResources() {
 // --- Tool Handlers ---
 
 func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("exec") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	prompt, err := request.RequireString("prompt")
 	if err != nil {
 		return mcp.NewToolResultError("prompt is required"), nil
@@ -1389,6 +1439,9 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 // --- Dialog Handler ---
 
 func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("dialog") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	prompt, err := request.RequireString("prompt")
 	if err != nil {
 		return mcp.NewToolResultError("prompt is required"), nil
@@ -1617,6 +1670,9 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 // --- Audit Handler ---
 
 func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("audit") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	cwd := request.GetString("cwd", "")
 	mode := request.GetString("mode", "standard")
 	async := request.GetBool("async", false)
@@ -1979,6 +2035,9 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 // --- Consensus Handler ---
 
 func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("consensus") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	topic, err := request.RequireString("topic")
 	if err != nil {
 		return mcp.NewToolResultError("topic is required"), nil
@@ -2023,6 +2082,9 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 // --- DeepResearch Handler ---
 
 func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("deepresearch") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	topic, err := request.RequireString("topic")
 	if err != nil {
 		return mcp.NewToolResultError("topic is required"), nil
@@ -2064,6 +2126,9 @@ func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolReq
 // --- Debate Handler ---
 
 func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("debate") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	topic, err := request.RequireString("topic")
 	if err != nil {
 		return mcp.NewToolResultError("topic is required"), nil
@@ -2107,6 +2172,9 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 // --- Agent Run Handler ---
 
 func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("agent") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	agentName, err := request.RequireString("agent")
 	if err != nil {
 		return mcp.NewToolResultError("agent is required"), nil
@@ -2315,6 +2383,9 @@ func (s *Server) checkConcurrencyLimit() error {
 
 // handleWorkflow executes a declarative multi-step pipeline as a single MCP call.
 func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !s.rateLimiter.Allow("workflow") {
+		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
+	}
 	name := request.GetString("name", "workflow")
 	stepsJSON, err := request.RequireString("steps")
 	if err != nil {

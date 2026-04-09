@@ -24,6 +24,10 @@ type ServerConfig struct {
 	DefaultAsync          bool   `yaml:"default_async"`
 	DefaultTimeoutSeconds int    `yaml:"default_timeout_seconds"`
 
+	RateLimitRPS   float64 `yaml:"rate_limit_rps"`
+	RateLimitBurst int     `yaml:"rate_limit_burst"`
+	AuthToken      string  `yaml:"auth_token"`
+
 	Transport TransportConfig `yaml:"transport"`
 	Audit     AuditConfig     `yaml:"audit"`
 	Pair      PairConfig      `yaml:"pair"`
