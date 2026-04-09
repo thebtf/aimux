@@ -92,6 +92,7 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 	var domainTmpl *DomainTemplate // lifted for reuse in text analysis
 
 	if countSlice("subProblems") == 0 && countSlice("dependencies") == 0 {
+		_ = ExtractKeywords(problem) // extract for future enrichment; used via MatchDomainTemplate
 		domainTmpl = MatchDomainTemplate(problem)
 		if domainTmpl != nil {
 			suggestedSubProblems = domainTmpl.SubProblems

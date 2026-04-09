@@ -94,6 +94,7 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 				primarySearchText, _ = m["name"].(string)
 			}
 		}
+		_ = ExtractKeywords(primarySearchText)
 		domainTmpl = MatchDomainTemplate(primarySearchText)
 		if domainTmpl != nil && len(domainTmpl.Components) > 0 {
 			suggestedComponents = domainTmpl.Components
