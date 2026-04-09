@@ -16,18 +16,23 @@ type IOManager struct {
 	reader    io.Reader
 	pattern   *regexp.Regexp // nil if no pattern or invalid regex
 	buf       SafeBuffer
-	patternCh chan struct{} // signaled when pattern matches
-	doneCh    chan struct{} // closed when reader hits EOF
+	patternCh chan struct{}          // signaled when pattern matches
+	doneCh    chan struct{}          // closed when reader hits EOF
+	onOutput  func(partial string)  // called with accumulated output after each line
 }
 
 // NewIOManager creates an IOManager that reads from the given reader.
 // pattern is a regex string for completion detection (empty = no pattern matching).
 // If pattern is invalid regex, pattern matching is silently disabled.
-func NewIOManager(stdout io.Reader, pattern string) *IOManager {
+// onOutput is an optional callback invoked with accumulated content after each line.
+func NewIOManager(stdout io.Reader, pattern string, onOutput ...func(string)) *IOManager {
 	iom := &IOManager{
 		reader:    stdout,
 		patternCh: make(chan struct{}, 1),
 		doneCh:    make(chan struct{}),
+	}
+	if len(onOutput) > 0 && onOutput[0] != nil {
+		iom.onOutput = onOutput[0]
 	}
 	if pattern != "" {
 		if re, err := regexp.Compile(pattern); err == nil {
@@ -48,6 +53,9 @@ func (iom *IOManager) StreamLines() {
 		for scanner.Scan() {
 			line := pipeline.StripANSI(scanner.Text())
 			iom.buf.Write([]byte(line + "\n"))
+			if iom.onOutput != nil {
+				iom.onOutput(iom.buf.String())
+			}
 			if iom.pattern != nil && iom.pattern.MatchString(iom.buf.String()) {
 				select {
 				case iom.patternCh <- struct{}{}:

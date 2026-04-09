@@ -1134,6 +1134,18 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		sess.Status = types.SessionStatusRunning
 	})
 
+	// Wire live output: IOManager calls this after each line.
+	// 1. Updates job progress (for status polling)
+	// 2. Pushes MCP notification to client (for real-time display)
+	args.OnOutput = func(partial string) {
+		s.jobs.UpdateProgress(jobID, partial)
+		s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
+			"progressToken": jobID,
+			"progress":      len(partial),
+			"message":       partial,
+		})
+	}
+
 	// Build the ordered list of CLIs to try. The primary (args.CLI) is always
 	// first; fallbacks from the router follow (max 2 additional attempts).
 	candidates := s.buildFallbackCandidates(role, args.CLI, cb)

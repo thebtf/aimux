@@ -55,8 +55,8 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 	defer pm.Cleanup(handle)
 
-	// Data plane: stream I/O
-	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern)
+	// Data plane: stream I/O with optional live progress callback
+	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern, args.OnOutput)
 	iom.StreamLines()
 
 	// Build optional timeout channel

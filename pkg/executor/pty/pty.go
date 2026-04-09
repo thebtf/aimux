@@ -69,7 +69,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 
 	// Data plane: IOManager reads from ptmx (strips ANSI per line, checks pattern)
-	iom := executor.NewIOManager(ptmx, args.CompletionPattern)
+	iom := executor.NewIOManager(ptmx, args.CompletionPattern, args.OnOutput)
 	iom.StreamLines()
 
 	// Process exit tracking

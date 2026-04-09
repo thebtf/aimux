@@ -77,7 +77,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	defer pm.Cleanup(handle)
 
 	// Data plane (IOManager strips ANSI per line — no need for pipeline.StripANSI here)
-	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern)
+	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern, args.OnOutput)
 	iom.StreamLines()
 
 	var timerC <-chan time.Time
