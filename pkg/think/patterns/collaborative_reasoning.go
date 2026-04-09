@@ -52,7 +52,25 @@ func (p *collaborativeReasoningPattern) Validate(input map[string]any) (map[stri
 		validated["stage"] = stage
 	}
 
-	if v, ok := input["contribution"]; ok {
+	// Flat param detection: contribution_type present → build contribution from flat params.
+	if _, hasFlat := input["contribution_type"]; hasFlat {
+		contribType, ok := input["contribution_type"].(string)
+		if !ok || !validContributionTypes[contribType] {
+			return nil, fmt.Errorf("field 'contribution_type' must be one of: observation, question, insight, concern, suggestion, challenge, synthesis")
+		}
+		text, ok := input["contribution_text"].(string)
+		if !ok || text == "" {
+			return nil, fmt.Errorf("field 'contribution_text' must be a non-empty string")
+		}
+		validatedContrib := map[string]any{"type": contribType, "text": text}
+		if persona, ok := input["persona_id"].(string); ok && persona != "" {
+			validatedContrib["persona"] = persona
+		}
+		if cv, ok := input["contribution_confidence"].(float64); ok {
+			validatedContrib["confidence"] = cv
+		}
+		validated["contribution"] = validatedContrib
+	} else if v, ok := input["contribution"]; ok {
 		contrib, ok := v.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("field 'contribution' must be a map")

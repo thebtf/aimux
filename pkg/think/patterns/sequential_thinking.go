@@ -96,6 +96,18 @@ func (p *sequentialThinkingPattern) Validate(input map[string]any) (map[string]a
 		validated["branchId"] = s
 	}
 
+	// step_number: optional flat param for external step tracking (forwarded to output).
+	if v, ok := input["step_number"]; ok {
+		switch n := v.(type) {
+		case float64:
+			validated["step_number"] = int(n)
+		case int:
+			validated["step_number"] = n
+		default:
+			return nil, fmt.Errorf("field 'step_number' must be a number")
+		}
+	}
+
 	return validated, nil
 }
 
@@ -218,6 +230,11 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 			duplicateSimilarity*100, duplicateSimilarTo,
 		)
 		data["similarity"] = duplicateSimilarity
+	}
+
+	// Propagate optional flat param to output.
+	if v, ok := validInput["step_number"]; ok {
+		data["step_number"] = v
 	}
 
 	// Tier 2A: text analysis (added on every call for stateful pattern)
