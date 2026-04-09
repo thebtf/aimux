@@ -86,6 +86,7 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 	// Auto-analysis: when 0 or 1 components are provided, derive suggestions from domain templates.
 	var suggestedComponents []string
 	var autoAnalysisSource string
+	var extractedKW []string
 	var domainTmpl *DomainTemplate // lifted for reuse in text analysis
 	var primarySearchText string   // lifted for text analysis
 	if len(components) <= 1 {
@@ -94,7 +95,7 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 				primarySearchText, _ = m["name"].(string)
 			}
 		}
-		_ = ExtractKeywords(primarySearchText)
+		extractedKW = ExtractKeywords(primarySearchText)
 		domainTmpl = MatchDomainTemplate(primarySearchText)
 		if domainTmpl != nil && len(domainTmpl.Components) > 0 {
 			suggestedComponents = domainTmpl.Components
@@ -203,7 +204,11 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 	// Include auto-analysis when triggered (0 or 1 components provided).
 	if autoAnalysisSource != "" {
 		data["suggestedComponents"] = suggestedComponents
-		data["autoAnalysis"] = map[string]any{"source": autoAnalysisSource}
+		autoAnalysis := map[string]any{"source": autoAnalysisSource}
+		if len(extractedKW) > 0 {
+			autoAnalysis["keywords"] = extractedKW
+		}
+		data["autoAnalysis"] = autoAnalysis
 	}
 
 	// Guidance — always included.

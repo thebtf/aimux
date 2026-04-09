@@ -89,10 +89,11 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 	var suggestedSubProblems []string
 	var suggestedDependencies []map[string]string
 	var autoAnalysisSource string
+	var extractedKW []string
 	var domainTmpl *DomainTemplate // lifted for reuse in text analysis
 
 	if countSlice("subProblems") == 0 && countSlice("dependencies") == 0 {
-		_ = ExtractKeywords(problem) // extract for future enrichment; used via MatchDomainTemplate
+		extractedKW = ExtractKeywords(problem)
 		domainTmpl = MatchDomainTemplate(problem)
 		if domainTmpl != nil {
 			suggestedSubProblems = domainTmpl.SubProblems
@@ -124,7 +125,11 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 	if len(suggestedSubProblems) > 0 || autoAnalysisSource != "" {
 		data["suggestedSubProblems"] = suggestedSubProblems
 		data["suggestedDependencies"] = suggestedDependencies
-		data["autoAnalysis"] = map[string]any{"source": autoAnalysisSource}
+		autoAnalysis := map[string]any{"source": autoAnalysisSource}
+		if len(extractedKW) > 0 {
+			autoAnalysis["keywords"] = extractedKW
+		}
+		data["autoAnalysis"] = autoAnalysis
 
 		// Run DAG on suggested dependencies.
 		if len(suggestedDependencies) > 0 {
