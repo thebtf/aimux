@@ -83,7 +83,6 @@ func (p *domainModelingPattern) Handle(validInput map[string]any, sessionID stri
 	// Auto-analysis: when entities are empty, derive suggestions from domain templates.
 	var domainTmpl *DomainTemplate // lifted for reuse in text analysis
 	if entityCount == 0 {
-		_ = ExtractKeywords(domainName)
 		domainTmpl = MatchDomainTemplate(domainName)
 		var suggestedEntities []string
 		var suggestedRelationships []map[string]string
