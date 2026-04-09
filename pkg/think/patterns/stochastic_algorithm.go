@@ -90,9 +90,25 @@ func (p *stochasticAlgorithmPattern) Handle(validInput map[string]any, sessionID
 				data["variance"] = ev.variance
 				data["standardDeviation"] = ev.standardDeviation
 				data["dominantOutcome"] = ev.dominantOutcome
+			} else {
+				// outcomes field missing or empty — provide a template.
+				data["suggestedOutcomes"] = []map[string]any{
+					{"name": "outcome_a", "probability": 0.5, "value": 10.0},
+					{"name": "outcome_b", "probability": 0.3, "value": 25.0},
+					{"name": "outcome_c", "probability": 0.2, "value": 5.0},
+				}
+			}
+		} else {
+			// No parameters at all — provide template.
+			data["suggestedOutcomes"] = []map[string]any{
+				{"name": "outcome_a", "probability": 0.5, "value": 10.0},
+				{"name": "outcome_b", "probability": 0.3, "value": 25.0},
+				{"name": "outcome_c", "probability": 0.2, "value": 5.0},
 			}
 		}
 	}
+
+	data["guidance"] = BuildGuidance("stochastic_algorithm", "basic", []string{"parameters.outcomes", "iterations", "result"})
 
 	return think.MakeThinkResult("stochastic_algorithm", data, sessionID, nil, "", nil), nil
 }

@@ -82,6 +82,26 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 		// On error: fall through silently — graceful degradation.
 	}
 
+	// Auto-analysis: when subProblems and dependencies are still empty after sampling
+	// (or sampling is unavailable), derive suggestions from domain templates.
+	var suggestedSubProblems []string
+	var suggestedDependencies []map[string]string
+	var autoAnalysisSource string
+
+	if countSlice("subProblems") == 0 && countSlice("dependencies") == 0 {
+		_ = ExtractKeywords(problem) // extract for future enrichment; used via MatchDomainTemplate
+		tmpl := MatchDomainTemplate(problem)
+		if tmpl != nil {
+			suggestedSubProblems = tmpl.SubProblems
+			for _, dep := range tmpl.Dependencies {
+				suggestedDependencies = append(suggestedDependencies, dep)
+			}
+			autoAnalysisSource = "domain-template"
+		} else {
+			autoAnalysisSource = "keyword-analysis"
+		}
+	}
+
 	data := map[string]any{
 		"problem":          problem,
 		"methodology":      methodology,
@@ -90,6 +110,35 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 		"riskCount":        countSlice("risks"),
 		"stakeholderCount": countSlice("stakeholders"),
 		"totalComponents":  countSlice("subProblems") + countSlice("dependencies") + countSlice("risks") + countSlice("stakeholders"),
+	}
+
+	// Include auto-analysis suggestions when no user-supplied subProblems/dependencies.
+	if len(suggestedSubProblems) > 0 || autoAnalysisSource != "" {
+		data["suggestedSubProblems"] = suggestedSubProblems
+		data["suggestedDependencies"] = suggestedDependencies
+		data["autoAnalysis"] = map[string]any{"source": autoAnalysisSource}
+
+		// Run DAG on suggested dependencies.
+		if len(suggestedDependencies) > 0 {
+			dagDeps := make([]any, len(suggestedDependencies))
+			for i, d := range suggestedDependencies {
+				dagDeps[i] = map[string]any{"from": d["from"], "to": d["to"]}
+			}
+			edges := extractDagDependencies(dagDeps)
+			if edges != nil {
+				spAny := make([]any, len(suggestedSubProblems))
+				for i, s := range suggestedSubProblems {
+					spAny[i] = s
+				}
+				dagRes := analyzeDag(edges, spAny)
+				data["dag"] = map[string]any{
+					"hasCycle":          dagRes.hasCycle,
+					"cyclePath":         dagRes.cyclePath,
+					"topologicalOrder":  dagRes.topologicalOrder,
+					"orphanSubProblems": dagRes.orphanSubProblems,
+				}
+			}
+		}
 	}
 
 	// DAG analysis — only when dependencies are provided as {from, to} objects.
@@ -106,6 +155,20 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 			}
 		}
 	}
+
+	// Guidance — always included.
+	data["guidance"] = BuildGuidance("problem_decomposition",
+		func() string {
+			if countSlice("subProblems") > 0 {
+				return "full"
+			}
+			if autoAnalysisSource != "" {
+				return "enriched"
+			}
+			return "basic"
+		}(),
+		[]string{"subProblems", "dependencies", "risks", "stakeholders"},
+	)
 
 	return think.MakeThinkResult("problem_decomposition", data, sessionID, nil, "", []string{"totalComponents"}), nil
 }

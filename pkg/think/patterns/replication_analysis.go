@@ -62,12 +62,13 @@ func (p *replicationAnalysisPattern) Handle(validInput map[string]any, sessionID
 	feasibility, effort := assessFeasibility(reqAny, riskAny, resources, constraints)
 
 	data := map[string]any{
-		"claim":                claim,
+		"claim":                  claim,
 		"replicationFeasibility": feasibility,
-		"requirements":         requirements,
-		"risks":                risks,
-		"estimatedEffort":      effort,
-		"criticalAssumptions":  criticalAssumptions,
+		"requirements":           requirements,
+		"risks":                  risks,
+		"estimatedEffort":        effort,
+		"criticalAssumptions":    criticalAssumptions,
+		"guidance":               BuildGuidance("replication_analysis", "full", []string{"originalMethod", "resources", "constraints"}),
 	}
 	return think.MakeThinkResult("replication_analysis", data, sessionID, nil, "", nil), nil
 }

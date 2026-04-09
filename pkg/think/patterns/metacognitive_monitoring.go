@@ -87,16 +87,27 @@ func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessi
 	}
 
 	data := map[string]any{
-		"task":                   task,
-		"claimsCount":            claimsCount,
-		"biasesCount":            biasesCount,
-		"uncertaintiesCount":     uncertaintiesCount,
-		"cognitiveProcessCount":  processesCount,
-		"confidence":             confidence,
-		"overconfidenceWarning":  overconfidenceWarning,
+		"task":                  task,
+		"claimsCount":           claimsCount,
+		"biasesCount":           biasesCount,
+		"uncertaintiesCount":    uncertaintiesCount,
+		"cognitiveProcessCount": processesCount,
+		"confidence":            confidence,
+		"overconfidenceWarning": overconfidenceWarning,
 	}
 
 	computed := []string{"overconfidenceWarning"}
+
+	// When only task is provided (no claims/biases/uncertainties), suggest assessment framework.
+	if claimsCount == 0 && biasesCount == 0 && uncertaintiesCount == 0 {
+		data["assessmentFramework"] = []string{
+			"knowledge depth",
+			"assumption quality",
+			"evidence strength",
+			"reasoning clarity",
+		}
+		computed = append(computed, "assessmentFramework")
+	}
 
 	if hasConfidence {
 		cal := computeMetacogCalibration(confidence, uncertaintiesCount, biasesCount, claimsCount)
@@ -105,6 +116,8 @@ func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessi
 		data["adjustmentReason"] = cal.adjustmentReason
 		computed = append(computed, "calibratedConfidence", "overconfident", "adjustmentReason")
 	}
+
+	data["guidance"] = BuildGuidance("metacognitive_monitoring", "basic", []string{"claims", "biases", "uncertainties", "cognitiveProcesses", "confidence", "knowledgeAssessment"})
 
 	return think.MakeThinkResult("metacognitive_monitoring", data, sessionID, nil, "", computed), nil
 }

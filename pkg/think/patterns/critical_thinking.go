@@ -72,6 +72,7 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		"detectedBiases": detectedBiases,
 		"biasCount":      len(detectedBiases),
 		"recommendation": recommendation,
+		"guidance":       BuildGuidance("critical_thinking", "full", []string{"issue"}),
 	}
 	return think.MakeThinkResult("critical_thinking", data, sessionID, nil, "", []string{"detectedBiases", "biasCount"}), nil
 }

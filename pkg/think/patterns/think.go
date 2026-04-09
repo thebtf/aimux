@@ -31,9 +31,63 @@ func (p *thinkPattern) Validate(input map[string]any) (map[string]any, error) {
 
 func (p *thinkPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	thought := validInput["thought"].(string)
+
+	keywords := ExtractKeywords(thought)
+	suggestedPattern := suggestPatternFromKeywords(keywords)
+
 	data := map[string]any{
-		"thought":       thought,
-		"thoughtLength": len(thought),
+		"thought":          thought,
+		"thoughtLength":    len(thought),
+		"keywords":         keywords,
+		"suggestedPattern": suggestedPattern,
+		"guidance":         BuildGuidance("think", "basic", []string{"thought"}),
 	}
-	return think.MakeThinkResult("think", data, sessionID, nil, "", nil), nil
+	return think.MakeThinkResult("think", data, sessionID, nil, suggestedPattern, nil), nil
+}
+
+// suggestPatternFromKeywords returns a pattern name based on keyword signals in the thought.
+func suggestPatternFromKeywords(keywords []string) string {
+	kwSet := make(map[string]bool, len(keywords))
+	for _, k := range keywords {
+		kwSet[k] = true
+	}
+
+	// Debug / error signals.
+	for _, k := range []string{"bug", "error", "crash", "fail", "broken", "exception", "panic", "nil", "undefined"} {
+		if kwSet[k] {
+			return "debugging_approach"
+		}
+	}
+	// Architecture / design signals.
+	for _, k := range []string{"design", "architecture", "system", "structure", "service", "layer", "pattern", "module"} {
+		if kwSet[k] {
+			return "architecture_analysis"
+		}
+	}
+	// Decision / choice signals.
+	for _, k := range []string{"choose", "choice", "decide", "decision", "option", "compare", "tradeoff", "versus", "vs", "pick", "select"} {
+		if kwSet[k] {
+			return "decision_framework"
+		}
+	}
+	// Research / literature signals.
+	for _, k := range []string{"research", "paper", "study", "literature", "evidence", "survey", "review"} {
+		if kwSet[k] {
+			return "literature_review"
+		}
+	}
+	// Hypothesis / experiment signals.
+	for _, k := range []string{"hypothesis", "experiment", "test", "measure", "metric", "data", "result"} {
+		if kwSet[k] {
+			return "experimental_loop"
+		}
+	}
+	// Recursive / decomposition signals.
+	for _, k := range []string{"recursive", "decompose", "break", "sub-problem", "nested", "tree", "hierarchy"} {
+		if kwSet[k] {
+			return "problem_decomposition"
+		}
+	}
+	// Fallback — generic sequential thinking.
+	return "sequential_thinking"
 }

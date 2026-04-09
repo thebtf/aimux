@@ -83,6 +83,26 @@ type componentMetric struct {
 func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	components := validInput["components"].([]any)
 
+	// Auto-analysis: when 0 or 1 components are provided, derive suggestions from domain templates.
+	var suggestedComponents []string
+	var autoAnalysisSource string
+	if len(components) <= 1 {
+		searchText := ""
+		if len(components) == 1 {
+			if m, ok := components[0].(map[string]any); ok {
+				searchText, _ = m["name"].(string)
+			}
+		}
+		_ = ExtractKeywords(searchText)
+		tmpl := MatchDomainTemplate(searchText)
+		if tmpl != nil && len(tmpl.Components) > 0 {
+			suggestedComponents = tmpl.Components
+			autoAnalysisSource = "domain-template"
+		} else {
+			autoAnalysisSource = "keyword-analysis"
+		}
+	}
+
 	// ca[name] = afferent coupling — how many others depend on this component.
 	// ce[name] = efferent coupling — how many components this one depends on.
 	ca := make(map[string]int, len(components))
@@ -178,6 +198,27 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 		"mostUnstable":       mostUnstable,
 		"mostDepended":       mostDepended,
 	}
+
+	// Include auto-analysis when triggered (0 or 1 components provided).
+	if autoAnalysisSource != "" {
+		data["suggestedComponents"] = suggestedComponents
+		data["autoAnalysis"] = map[string]any{"source": autoAnalysisSource}
+	}
+
+	// Guidance — always included.
+	data["guidance"] = BuildGuidance("architecture_analysis",
+		func() string {
+			if len(components) >= 2 {
+				return "full"
+			}
+			if autoAnalysisSource != "" {
+				return "enriched"
+			}
+			return "basic"
+		}(),
+		[]string{"components"},
+	)
+
 	return think.MakeThinkResult("architecture_analysis", data, sessionID, nil, "", []string{"highlyCoupled", "couplingDetected"}), nil
 }
 

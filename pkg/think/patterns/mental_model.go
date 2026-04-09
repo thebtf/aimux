@@ -121,5 +121,64 @@ func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string)
 		"coherenceScore":    coherenceScore,
 		"complexity":        complexity,
 	}
+
+	if known {
+		data["analysisSteps"] = mentalModelAnalysisSteps(modelName, problem)
+	}
+
+	data["guidance"] = BuildGuidance("mental_model", "basic", []string{"steps", "reasoning", "conclusion"})
+
 	return think.MakeThinkResult("mental_model", data, sessionID, nil, "", []string{"known", "description", "completenessScore", "clarityScore", "coherenceScore", "complexity"}), nil
+}
+
+// mentalModelAnalysisSteps returns structured application steps for a known mental model.
+func mentalModelAnalysisSteps(modelName, problem string) []string {
+	templates := map[string][]string{
+		"first_principles": {
+			"1. Identify assumptions currently held about: " + problem,
+			"2. Break the problem down to its most fundamental truths",
+			"3. Rebuild your solution from those ground truths",
+		},
+		"inversion": {
+			"1. State the goal of: " + problem,
+			"2. Ask: what would guarantee failure or the opposite outcome?",
+			"3. Remove or avoid those failure conditions",
+		},
+		"second_order_thinking": {
+			"1. Identify the immediate effect of acting on: " + problem,
+			"2. Ask: what happens next as a result of that effect?",
+			"3. Trace second- and third-order consequences",
+		},
+		"occams_razor": {
+			"1. List all competing explanations or solutions for: " + problem,
+			"2. Count assumptions required by each option",
+			"3. Prefer the option with the fewest assumptions",
+		},
+		"pareto_principle": {
+			"1. List all inputs and outputs related to: " + problem,
+			"2. Identify which 20% of inputs produce 80% of results",
+			"3. Prioritize or eliminate based on the 80/20 distribution",
+		},
+		"systems_thinking": {
+			"1. Map all components involved in: " + problem,
+			"2. Identify feedback loops and interdependencies",
+			"3. Find leverage points where small changes cause large effects",
+		},
+		"probabilistic_thinking": {
+			"1. Define possible outcomes for: " + problem,
+			"2. Assign rough probabilities to each outcome",
+			"3. Make decisions that maximize expected value across the distribution",
+		},
+	}
+
+	if steps, ok := templates[modelName]; ok {
+		return steps
+	}
+
+	// Generic fallback for known-but-untemplateed models.
+	return []string{
+		"1. Understand the core principle of the " + modelName + " model",
+		"2. Apply the model's lens to: " + problem,
+		"3. Derive actionable insight or decision from the analysis",
+	}
 }

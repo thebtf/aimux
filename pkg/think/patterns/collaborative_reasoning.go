@@ -141,15 +141,22 @@ func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessio
 	participation := computeParticipation(contributions, knownPersonas)
 
 	topic := validInput["topic"].(string)
+
+	guidanceDepth := "enriched"
+	if len(contributions) == 0 {
+		guidanceDepth = "basic"
+	}
+
 	data := map[string]any{
-		"topic":                topic,
-		"currentStage":         currentStage,
-		"contributions":        contributions,
-		"contributionCount":    len(contributions),
-		"stageProgress":        stageProgress,
+		"topic":                   topic,
+		"currentStage":            currentStage,
+		"contributions":           contributions,
+		"contributionCount":       len(contributions),
+		"stageProgress":           stageProgress,
 		"contributionsPerPersona": participation.contributionsPerPersona,
-		"silentPersonas":       participation.silentPersonas,
-		"participationBalance": participation.participationBalance,
+		"silentPersonas":          participation.silentPersonas,
+		"participationBalance":    participation.participationBalance,
+		"guidance":                BuildGuidance("collaborative_reasoning", guidanceDepth, []string{"stage", "contribution", "personas"}),
 	}
 
 	return think.MakeThinkResult("collaborative_reasoning", data, sessionID, nil, "", nil), nil

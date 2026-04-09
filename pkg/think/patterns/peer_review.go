@@ -128,6 +128,7 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 		"objections":    objections,
 		"revisionPlan":  revisionPlan,
 		"strengths":     strengths,
+		"guidance":      BuildGuidance("peer_review", "full", []string{"claims", "methodology", "novelty"}),
 	}
 	return think.MakeThinkResult("peer_review", data, sessionID, nil, "", nil), nil
 }

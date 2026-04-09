@@ -64,6 +64,7 @@ func (p *literatureReviewPattern) Handle(validInput map[string]any, sessionID st
 		"themes":              themes,
 		"identifiedGaps":      identifiedGaps,
 		"suggestedDirections": suggestedDirections,
+		"guidance":            BuildGuidance("literature_review", "full", []string{"papers", "criteria", "timeFrame"}),
 	}
 	return think.MakeThinkResult("literature_review", data, sessionID, nil, "source_comparison", nil), nil
 }

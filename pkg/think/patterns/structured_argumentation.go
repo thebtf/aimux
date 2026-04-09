@@ -141,6 +141,11 @@ func (p *structuredArgumentationPattern) Handle(validInput map[string]any, sessi
 		}
 	}
 
+	guidanceDepth := "enriched"
+	if len(arguments) == 0 {
+		guidanceDepth = "basic"
+	}
+
 	data := map[string]any{
 		"topic":             topic,
 		"arguments":         arguments,
@@ -148,6 +153,7 @@ func (p *structuredArgumentationPattern) Handle(validInput map[string]any, sessi
 		"evidenceCount":     evidenceCount,
 		"rebuttalCount":     rebuttalCount,
 		"unsupportedClaims": unsupportedClaims,
+		"guidance":          BuildGuidance("structured_argumentation", guidanceDepth, []string{"argument"}),
 	}
 
 	return think.MakeThinkResult("structured_argumentation", data, sessionID, nil, "", nil), nil

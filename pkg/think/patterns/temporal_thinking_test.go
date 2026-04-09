@@ -113,6 +113,119 @@ func TestTemporal_LongestGap(t *testing.T) {
 	}
 }
 
+// TestTemporal_AutoAnalysis_MigrationKeyword verifies that when events are empty and
+// timeFrame contains "migration", suggestedPhases includes migration-specific phases.
+func TestTemporal_AutoAnalysis_MigrationKeyword(t *testing.T) {
+	p := NewTemporalThinkingPattern()
+
+	input := map[string]any{
+		"timeFrame": "Q1 2026 migration",
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-auto-migration")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	data := result.Data
+
+	// suggestedPhases must be present and non-empty.
+	sp, ok := data["suggestedPhases"].([]string)
+	if !ok || len(sp) == 0 {
+		t.Errorf("expected non-empty suggestedPhases, got %v (%T)", data["suggestedPhases"], data["suggestedPhases"])
+	}
+
+	// autoAnalysis must be present.
+	if _, ok := data["autoAnalysis"]; !ok {
+		t.Error("expected autoAnalysis field")
+	}
+
+	// guidance must be present.
+	if _, ok := data["guidance"]; !ok {
+		t.Error("expected guidance field")
+	}
+
+	// sortedEvents must NOT be present (no events provided).
+	if _, ok := data["sortedEvents"]; ok {
+		t.Error("sortedEvents must not appear when no events are provided")
+	}
+}
+
+// TestTemporal_AutoAnalysis_BackwardCompat verifies that when events ARE provided,
+// the existing timeline behavior is preserved (no suggestedPhases) and guidance is added.
+func TestTemporal_AutoAnalysis_BackwardCompat(t *testing.T) {
+	p := NewTemporalThinkingPattern()
+
+	input := map[string]any{
+		"timeFrame": "Q1 2024",
+		"events": []any{
+			makeEvent(10.0, "start"),
+			makeEvent(20.0, "end"),
+		},
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-compat")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	data := result.Data
+
+	// suggestedPhases must NOT be present when events are provided.
+	if _, ok := data["suggestedPhases"]; ok {
+		t.Error("suggestedPhases must not appear when events are provided")
+	}
+
+	// Existing timeline fields must still be present.
+	if _, ok := data["sortedEvents"]; !ok {
+		t.Error("sortedEvents must be present when events are provided")
+	}
+	if _, ok := data["totalTimespan"]; !ok {
+		t.Error("totalTimespan must be present when events are provided")
+	}
+
+	// guidance must be present.
+	if _, ok := data["guidance"]; !ok {
+		t.Error("expected guidance field")
+	}
+}
+
+// TestTemporal_AutoAnalysis_DefaultPhases verifies that unrecognized timeFrame text
+// falls back to default phases.
+func TestTemporal_AutoAnalysis_DefaultPhases(t *testing.T) {
+	p := NewTemporalThinkingPattern()
+
+	input := map[string]any{
+		"timeFrame": "some unrecognized context",
+	}
+	validated, _ := p.Validate(input)
+	result, err := p.Handle(validated, "test-auto-default")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	sp, ok := result.Data["suggestedPhases"].([]string)
+	if !ok || len(sp) == 0 {
+		t.Fatalf("expected suggestedPhases, got %v", result.Data["suggestedPhases"])
+	}
+	// Default phases must include "planning" and "execution".
+	found := map[string]bool{}
+	for _, p := range sp {
+		found[p] = true
+	}
+	for _, want := range []string{"planning", "execution"} {
+		if !found[want] {
+			t.Errorf("expected default phases to include %q, got %v", want, sp)
+		}
+	}
+}
+
 func TestTemporal_NoTimestamps(t *testing.T) {
 	p := NewTemporalThinkingPattern()
 

@@ -45,13 +45,23 @@ func (p *decisionFrameworkPattern) Validate(input map[string]any) (map[string]an
 		return nil, fmt.Errorf("field 'decision' must be a non-empty string")
 	}
 
-	criteriaRaw, ok := input["criteria"]
-	if !ok {
-		return nil, fmt.Errorf("missing required field: criteria")
+	criteriaRaw, hasCriteria := input["criteria"]
+	optionsRaw, hasOptions := input["options"]
+
+	// Auto-mode: when criteria or options are absent, set flag and skip scoring.
+	if !hasCriteria || !hasOptions {
+		return map[string]any{
+			"decision": ds,
+			"autoMode": true,
+		}, nil
 	}
+
 	criteria, ok := criteriaRaw.([]any)
 	if !ok || len(criteria) == 0 {
-		return nil, fmt.Errorf("field 'criteria' must be a non-empty array")
+		return map[string]any{
+			"decision": ds,
+			"autoMode": true,
+		}, nil
 	}
 	for i, c := range criteria {
 		m, ok := c.(map[string]any)
@@ -66,13 +76,12 @@ func (p *decisionFrameworkPattern) Validate(input map[string]any) (map[string]an
 		}
 	}
 
-	optionsRaw, ok := input["options"]
-	if !ok {
-		return nil, fmt.Errorf("missing required field: options")
-	}
 	options, ok := optionsRaw.([]any)
 	if !ok || len(options) == 0 {
-		return nil, fmt.Errorf("field 'options' must be a non-empty array")
+		return map[string]any{
+			"decision": ds,
+			"autoMode": true,
+		}, nil
 	}
 	for i, o := range options {
 		m, ok := o.(map[string]any)
@@ -96,6 +105,46 @@ func (p *decisionFrameworkPattern) Validate(input map[string]any) (map[string]an
 
 func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	decision := validInput["decision"].(string)
+
+	// Auto-mode: criteria or options were not supplied — generate suggestions.
+	if autoMode, _ := validInput["autoMode"].(bool); autoMode {
+		keywords := ExtractKeywords(decision)
+		tmpl := MatchDomainTemplate(decision)
+
+		var suggestedCriteria []string
+		if tmpl != nil && len(tmpl.Criteria) > 0 {
+			suggestedCriteria = tmpl.Criteria
+		} else {
+			suggestedCriteria = []string{"performance", "cost", "maintainability", "scalability"}
+		}
+
+		// Build an option template with all criteria pre-filled as score placeholders.
+		scoreTemplate := make(map[string]any, len(suggestedCriteria))
+		for _, c := range suggestedCriteria {
+			scoreTemplate[c] = 0
+		}
+		optionTemplate := map[string]any{
+			"name":   "<option name>",
+			"scores": scoreTemplate,
+		}
+
+		data := map[string]any{
+			"decision":           decision,
+			"suggestedCriteria":  suggestedCriteria,
+			"optionTemplate":     optionTemplate,
+			"autoAnalysis":       map[string]any{"source": func() string {
+				if tmpl != nil {
+					return "domain-template"
+				}
+				return "keyword-analysis"
+			}(), "keywords": keywords},
+			"guidance": BuildGuidance("decision_framework", "basic",
+				[]string{"criteria", "options"},
+			),
+		}
+		return think.MakeThinkResult("decision_framework", data, sessionID, nil, "", []string{"suggestedCriteria", "optionTemplate"}), nil
+	}
+
 	criteria := validInput["criteria"].([]any)
 	options := validInput["options"].([]any)
 
@@ -163,6 +212,9 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 		"rankedOptions": rankedAny,
 		"hasTies":       hasTies,
 		"criteriaUsed":  criteriaUsed,
+		"guidance": BuildGuidance("decision_framework", "full",
+			[]string{"criteria", "options"},
+		),
 	}
 	return think.MakeThinkResult("decision_framework", data, sessionID, nil, "", []string{"rankedOptions", "hasTies"}), nil
 }

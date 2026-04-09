@@ -174,3 +174,105 @@ func TestArchAnalysis_AntiStub(t *testing.T) {
 		t.Errorf("unstable Hub Ce: want 4, got %d", hubUnstable["ce"].(int))
 	}
 }
+
+// TestArchAnalysis_AutoAnalysis_NoComponents verifies that when no components are
+// provided, Validate rejects the empty array (required field constraint).
+// A single-component input with a domain-matching name should trigger auto-analysis.
+func TestArchAnalysis_AutoAnalysis_SingleComponent(t *testing.T) {
+	p := NewArchitectureAnalysisPattern()
+
+	// "backend" matches the backend domain template which has Components.
+	input := map[string]any{
+		"components": []any{
+			map[string]any{"name": "backend server"},
+		},
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-auto-single")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	data := result.Data
+
+	// suggestedComponents must be present.
+	sc, ok := data["suggestedComponents"].([]string)
+	if !ok || len(sc) == 0 {
+		t.Errorf("expected non-empty suggestedComponents, got %v (%T)", data["suggestedComponents"], data["suggestedComponents"])
+	}
+
+	// autoAnalysis must be present.
+	aa, ok := data["autoAnalysis"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected autoAnalysis map, got %T", data["autoAnalysis"])
+	}
+	if aa["source"] != "domain-template" {
+		t.Errorf("expected source=domain-template, got %v", aa["source"])
+	}
+
+	// guidance must be present.
+	if _, ok := data["guidance"]; !ok {
+		t.Error("expected guidance field")
+	}
+}
+
+// TestArchAnalysis_AutoAnalysis_BackwardCompat verifies that with 2+ components,
+// existing behavior is preserved (no suggestedComponents, but guidance is added).
+func TestArchAnalysis_AutoAnalysis_BackwardCompat(t *testing.T) {
+	input := buildComponents([]map[string]any{
+		{"name": "Client", "dependencies": []any{"ServiceA", "ServiceB"}},
+		{"name": "ServiceA"},
+		{"name": "ServiceB"},
+	})
+	data := runHandle(input)
+
+	// suggestedComponents must NOT be present for 2+ component input.
+	if _, ok := data["suggestedComponents"]; ok {
+		t.Error("suggestedComponents must not appear when 2+ components are provided")
+	}
+
+	// Existing instability analysis must still work.
+	m := getMetric(data, "Client")
+	if m == nil {
+		t.Fatal("Client metric missing")
+	}
+	if m["ce"].(int) != 2 {
+		t.Errorf("Client Ce: want 2, got %d", m["ce"].(int))
+	}
+
+	// guidance must be present.
+	if _, ok := data["guidance"]; !ok {
+		t.Error("expected guidance field")
+	}
+}
+
+// TestArchAnalysis_AutoAnalysis_KeywordFallback verifies that when a single component
+// name does not match any domain template, autoAnalysis.source is "keyword-analysis".
+func TestArchAnalysis_AutoAnalysis_KeywordFallback(t *testing.T) {
+	p := NewArchitectureAnalysisPattern()
+
+	input := map[string]any{
+		"components": []any{
+			map[string]any{"name": "unicorn-sparkle-module"},
+		},
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-auto-kw")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	aa, ok := result.Data["autoAnalysis"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected autoAnalysis map, got %T", result.Data["autoAnalysis"])
+	}
+	if aa["source"] != "keyword-analysis" {
+		t.Errorf("expected source=keyword-analysis, got %v", aa["source"])
+	}
+}
