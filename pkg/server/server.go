@@ -155,14 +155,18 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 				log.Warn("WAL recovery: %v", err)
 			}
 
-			// Start periodic snapshot (every 30s)
-			go s.runSnapshotLoop(store)
+			// snapshot loop started below after gcCtx is created
 		}
 	}
 
 	// Start GC reaper for expired sessions
 	gcCtx, gcCancel := context.WithCancel(context.Background())
 	s.gcCancel = gcCancel
+
+	// Start periodic snapshot (uses gcCtx for graceful shutdown)
+	if s.store != nil {
+		go s.runSnapshotLoop(gcCtx, s.store)
+	}
 	ttl := cfg.Server.SessionTTLHours
 	if ttl <= 0 {
 		ttl = 24
@@ -173,6 +177,23 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	}
 	gc := session.NewGCReaper(s.sessions, s.jobs, log, ttl)
 	go gc.Run(gcCtx, time.Duration(gcInterval)*time.Second)
+
+	// Think session GC: clean up stale think pattern sessions alongside main GC
+	go func() {
+		ticker := time.NewTicker(time.Duration(gcInterval) * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-gcCtx.Done():
+				return
+			case <-ticker.C:
+				thinkTTL := time.Duration(ttl) * time.Hour
+				if removed := think.GCSessions(thinkTTL); removed > 0 {
+					log.Info("think session GC: removed %d expired sessions", removed)
+				}
+			}
+		}
+	}()
 
 	// Initialize CLI resolver for profile-aware command resolution
 	cliResolver := resolve.NewProfileResolver(cfg.CLIProfiles)
@@ -292,13 +313,19 @@ func isLocalhostAddr(addr string) bool {
 }
 
 // runSnapshotLoop periodically saves in-memory state to SQLite.
-func (s *Server) runSnapshotLoop(store *session.Store) {
+// Stops gracefully when ctx is cancelled.
+func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if err := store.SnapshotAll(s.sessions, s.jobs); err != nil {
-			s.log.Warn("snapshot failed: %v", err)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := store.SnapshotAll(s.sessions, s.jobs); err != nil {
+				s.log.Warn("snapshot failed: %v", err)
+			}
 		}
 	}
 }
@@ -1781,8 +1808,13 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			"topic":          state.Topic,
 			"domain":         state.Domain,
 			"coverage_areas": state.CoverageAreas,
-			"guidance": fmt.Sprintf("Begin investigation [%s domain]. Recommended first area: %s. "+
-				"Read implementations, not descriptions. Then call finding action.", state.Domain, state.CoverageAreas[0]),
+			"guidance": func() string {
+				base := fmt.Sprintf("Begin investigation [%s domain]. ", state.Domain)
+				if len(state.CoverageAreas) > 0 {
+					base += fmt.Sprintf("Recommended first area: %s. ", state.CoverageAreas[0])
+				}
+				return base + "Read implementations, not descriptions. Then call finding action."
+			}(),
 		}
 		if domainName == "" {
 			result["available_domains"] = inv.DomainNames()
@@ -2023,11 +2055,12 @@ func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch unavailable: %v. Set GOOGLE_API_KEY or GEMINI_API_KEY.", clientErr)), nil
 	}
 
+	defer client.Close()
+
 	content, cacheHit, researchErr := client.Research(ctx, topic, outputFormat, nil, force)
 	if researchErr != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch failed: %v", researchErr)), nil
 	}
-	defer client.Close()
 
 	// Persist result to disk so investigate recall can cross-search it.
 	if !cacheHit {

@@ -1,6 +1,9 @@
 package think
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestGetOrCreateSession_New(t *testing.T) {
 	ClearSessions()
@@ -109,5 +112,55 @@ func TestClearSessions(t *testing.T) {
 
 	if GetSessionCount() != 0 {
 		t.Errorf("count = %d, want 0 after clear", GetSessionCount())
+	}
+}
+
+func TestGCSessions_RemovesExpired(t *testing.T) {
+	ClearSessions()
+	defer ClearSessions()
+
+	// Create sessions — they get current timestamp
+	GetOrCreateSession("fresh", "think", nil)
+	GetOrCreateSession("stale", "think", nil)
+
+	// Manually backdate the stale session's LastAccessedAt
+	sessionsMu.Lock()
+	if s, ok := sessions["stale"]; ok {
+		old := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+		sessions["stale"] = &ThinkSession{
+			ID: s.ID, Pattern: s.Pattern, CreatedAt: s.CreatedAt,
+			LastAccessedAt: old, State: s.State,
+		}
+	}
+	sessionsMu.Unlock()
+
+	removed := GCSessions(1 * time.Hour)
+	if removed != 1 {
+		t.Errorf("GCSessions removed %d, want 1", removed)
+	}
+	if GetSessionCount() != 1 {
+		t.Errorf("count = %d, want 1 after GC", GetSessionCount())
+	}
+	if GetSession("fresh") == nil {
+		t.Error("fresh session should survive GC")
+	}
+	if GetSession("stale") != nil {
+		t.Error("stale session should be removed by GC")
+	}
+}
+
+func TestGCSessions_KeepsActive(t *testing.T) {
+	ClearSessions()
+	defer ClearSessions()
+
+	GetOrCreateSession("a", "think", nil)
+	GetOrCreateSession("b", "think", nil)
+
+	removed := GCSessions(1 * time.Hour)
+	if removed != 0 {
+		t.Errorf("GCSessions removed %d, want 0 (all fresh)", removed)
+	}
+	if GetSessionCount() != 2 {
+		t.Errorf("count = %d, want 2", GetSessionCount())
 	}
 }

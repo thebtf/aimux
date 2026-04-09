@@ -115,6 +115,24 @@ func ClearSessions() {
 	sessions = make(map[string]*ThinkSession)
 }
 
+// GCSessions removes sessions that haven't been accessed within the given TTL.
+// Returns the number of sessions removed.
+func GCSessions(ttl time.Duration) int {
+	sessionsMu.Lock()
+	defer sessionsMu.Unlock()
+
+	cutoff := time.Now().Add(-ttl)
+	removed := 0
+	for id, s := range sessions {
+		lastAccessed, err := time.Parse(time.RFC3339, s.LastAccessedAt)
+		if err != nil || lastAccessed.Before(cutoff) {
+			delete(sessions, id)
+			removed++
+		}
+	}
+	return removed
+}
+
 // GetSessionCount returns the number of active sessions.
 func GetSessionCount() int {
 	sessionsMu.RLock()
