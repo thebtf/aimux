@@ -1141,9 +1141,10 @@ func TestHandleAgentRun_AgentNotFound(t *testing.T) {
 	if !result.IsError {
 		t.Error("expected error for nonexistent agent")
 	}
-	text := result.Content[0].(mcp.TextContent).Text
-	if !strings.Contains(text, "nonexistent-agent-xyz") {
-		t.Errorf("error should mention agent name, got: %s", text)
+	text := parseResult(t, result)
+	textStr, _ := text["text"].(string)
+	if !strings.Contains(textStr, "nonexistent-agent-xyz") {
+		t.Errorf("error should mention agent name, got: %s", textStr)
 	}
 }
 
@@ -1386,6 +1387,12 @@ func TestHandleInvestigate_RecallNotFound(t *testing.T) {
 		t.Fatalf("handleInvestigate recall: %v", err)
 	}
 
+	// Verify the recall code path was exercised and returned a proper response.
+	if result.IsError {
+		// An error result here would mean the handler failed internally, not a
+		// cache miss — that would be a real bug, not the expected not-found path.
+		t.Errorf("recall returned an error result: %v", result)
+	}
 	data := parseResult(t, result)
 	found, _ := data["found"].(bool)
 	if found {
@@ -1501,7 +1508,7 @@ func TestCheckConcurrencyLimit_LimitReached(t *testing.T) {
 	srv.cfg.Server.MaxConcurrentJobs = 1
 
 	// Create a running job to hit the limit
-	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, t.TempDir())
 	job := srv.jobs.Create(sess.ID, "codex")
 	srv.jobs.StartJob(job.ID, 0)
 
@@ -1728,8 +1735,16 @@ func TestHandleAgents_Run_NoAgentsRegistered(t *testing.T) {
 		t.Fatalf("handleAgents run: %v", err)
 	}
 
-	// Either auto-selects a builtin agent or returns error — both valid paths.
-	_ = result
+	// Either auto-selects a builtin agent or returns an error — both are valid
+	// paths when no explicit agent name is provided.
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+	// result.IsError may be true (no matching agent) or false (builtin auto-selected).
+	// We only assert the result is non-nil and has content.
+	if len(result.Content) == 0 {
+		t.Error("expected result to have content")
+	}
 }
 
 // --- HandleAgents: info for builtin agent ---

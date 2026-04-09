@@ -55,8 +55,8 @@ func TestCache_Search_LimitRespected(t *testing.T) {
 	cache.Put("go topic 3", "summary", "model1", nil, "r3")
 
 	results := cache.Search("go topic", 2)
-	if len(results) > 2 {
-		t.Fatalf("Search returned %d results, want <= 2", len(results))
+	if len(results) != 2 {
+		t.Fatalf("Search returned %d results, want exactly 2", len(results))
 	}
 }
 
@@ -72,18 +72,24 @@ func TestCache_Search_ZeroLimit_ReturnsAll(t *testing.T) {
 	}
 }
 
-func TestCache_Cleanup_RemovesExpired(t *testing.T) {
+func TestCache_Cleanup_FreshEntriesNotRemoved(t *testing.T) {
 	cache := deepresearch.NewCache()
-	// Put two entries, then manually expire one by putting with past time.
-	// We can only test this via the public API, so we verify Cleanup returns 0
-	// when entries are fresh (not expired).
+	// Verify Cleanup leaves fresh (non-expired) entries untouched.
 	cache.Put("topic1", "summary", "model1", nil, "result1")
 	cache.Put("topic2", "summary", "model1", nil, "result2")
 
 	removed := cache.Cleanup()
-	// Fresh entries should not be removed.
 	if removed != 0 {
 		t.Errorf("Cleanup removed %d entries, want 0 for fresh entries", removed)
+	}
+
+	// Verify entries are still accessible after cleanup.
+	entry, ok := cache.Get("topic1", "summary", "model1", nil)
+	if !ok {
+		t.Error("entry 'topic1' should still be present after cleanup")
+	}
+	if ok && entry.Content != "result1" {
+		t.Errorf("entry content = %q, want %q", entry.Content, "result1")
 	}
 }
 
