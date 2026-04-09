@@ -126,7 +126,7 @@ func (r *Registry) List() []*Agent {
 	return result
 }
 
-// Find searches agents by keyword matching on name and description.
+// Find searches agents by keyword matching on name, description, domain, role, and content.
 func (r *Registry) Find(query string) []*Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -135,8 +135,17 @@ func (r *Registry) Find(query string) []*Agent {
 	var matches []*Agent
 
 	for _, a := range r.agents {
+		// Search content prefix (first 200 chars) to avoid scanning huge files
+		contentPrefix := a.Content
+		if len(contentPrefix) > 200 {
+			contentPrefix = contentPrefix[:200]
+		}
+
 		if strings.Contains(strings.ToLower(a.Name), query) ||
-			strings.Contains(strings.ToLower(a.Description), query) {
+			strings.Contains(strings.ToLower(a.Description), query) ||
+			strings.Contains(strings.ToLower(a.Domain), query) ||
+			strings.Contains(strings.ToLower(a.Role), query) ||
+			strings.Contains(strings.ToLower(contentPrefix), query) {
 			matches = append(matches, a)
 		}
 	}
