@@ -311,7 +311,13 @@ func (s *Server) ServeSSE(addr string) error {
 		return sseServer.Start(addr)
 	}
 	s.log.Info("SSE transport: bearer token authentication enabled")
-	httpSrv := &http.Server{Addr: addr, Handler: bearerAuthMiddleware(s.authToken, sseServer)}
+	httpSrv := &http.Server{
+		Addr:         addr,
+		Handler:      bearerAuthMiddleware(s.authToken, sseServer),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 	return server.NewSSEServer(s.mcp, server.WithHTTPServer(httpSrv)).Start(addr)
 }
 
@@ -328,7 +334,13 @@ func (s *Server) ServeHTTP(addr string, opts ...server.StreamableHTTPOption) err
 		return httpMCPServer.Start(addr)
 	}
 	s.log.Info("HTTP transport: bearer token authentication enabled")
-	httpSrv := &http.Server{Addr: addr, Handler: bearerAuthMiddleware(s.authToken, httpMCPServer)}
+	httpSrv := &http.Server{
+		Addr:         addr,
+		Handler:      bearerAuthMiddleware(s.authToken, httpMCPServer),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 	authOpts := append(opts, server.WithStreamableHTTPServer(httpSrv))
 	return server.NewStreamableHTTPServer(s.mcp, authOpts...).Start(addr)
 }
