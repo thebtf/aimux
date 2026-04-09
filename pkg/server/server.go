@@ -100,6 +100,16 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 - Don't run consensus with 1 CLI — needs 2+ for comparison
 - Don't call exec for tasks an agent can handle — use aimux-agent-exec first`
 
+// marshalToolResult marshals data to JSON and returns an MCP tool result.
+// Returns an error result if marshaling fails instead of silently returning empty.
+func marshalToolResult(data any) (*mcp.CallToolResult, error) {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("internal error: response serialization failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(b)), nil
+}
+
 // Server holds all dependencies for the MCP server.
 type Server struct {
 	cfg          *config.Config
@@ -909,8 +919,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 				"session_id": sess.ID,
 				"status":     "running",
 			}
-			data, _ := json.Marshal(result)
-			return mcp.NewToolResultText(string(data)), nil
+			return marshalToolResult(result)
 		}
 
 		s.executePairCoding(ctx, job.ID, sess.ID, pairParams, cb)
@@ -940,8 +949,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		} else {
 			result["content"] = j.Content
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 	}
 
 	// Bootstrap prompt injection: prepend role-specific prompt from prompts.d/
@@ -981,8 +989,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			"session_id": sess.ID,
 			"status":     "running",
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 	}
 
 	s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
@@ -1001,8 +1008,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		"status":     string(j.Status),
 		"content":    j.Content,
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // executePairCoding runs a pair coding pipeline via orchestrator and updates job/session state.
@@ -1296,8 +1302,7 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		result["warning"] = "Polling detected. Prefer background tasks over polling."
 	}
 
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1310,11 +1315,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 	case "list":
 		statusFilter := request.GetString("status", "")
 		sessions := s.sessions.List(types.SessionStatus(statusFilter))
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"sessions": sessions,
 			"count":    len(sessions),
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	case "info":
 		sessionID := request.GetString("session_id", "")
@@ -1326,19 +1330,17 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			return mcp.NewToolResultError("session not found"), nil
 		}
 		jobs := s.jobs.ListBySession(sessionID)
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"session": sess,
 			"jobs":    jobs,
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	case "health":
 		running := s.jobs.ListRunning()
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"total_sessions": s.sessions.Count(),
 			"running_jobs":   len(running),
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	case "cancel":
 		jobID := request.GetString("job_id", "")
@@ -1377,8 +1379,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 				collected++
 			}
 		}
-		data, _ := json.Marshal(map[string]any{"collected": collected})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"collected": collected})
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
@@ -1460,14 +1461,13 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		ss.Turns = result.Turns
 	})
 
-	data, _ := json.Marshal(map[string]any{
+	return marshalToolResult(map[string]any{
 		"session_id":   sess.ID,
 		"status":       result.Status,
 		"turns":        result.Turns,
 		"content":      result.Content,
 		"participants": result.Participants,
 	})
-	return mcp.NewToolResultText(string(data)), nil
 }
 
 // findDialogTurnHistory scans jobs for the most recent dialog turn history
@@ -1507,8 +1507,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 				"tools":       a.Tools,
 			}
 		}
-		data, _ := json.Marshal(map[string]any{"agents": summaries, "count": len(summaries)})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"agents": summaries, "count": len(summaries)})
 
 	case "find":
 		query := request.GetString("prompt", "")
@@ -1516,8 +1515,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultError("prompt required as search query for find"), nil
 		}
 		matches := s.agentReg.Find(query)
-		data, _ := json.Marshal(map[string]any{"query": query, "matches": matches, "count": len(matches)})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"query": query, "matches": matches, "count": len(matches)})
 
 	case "info":
 		agentName := request.GetString("agent", "")
@@ -1528,8 +1526,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		if agentErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
 		}
-		data, _ := json.Marshal(agent)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(agent)
 
 	case "run":
 		agentName := request.GetString("agent", "")
@@ -1587,13 +1584,12 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			jobCtx, jobCancel := context.WithCancel(context.Background())
 			s.jobs.RegisterCancel(job.ID, jobCancel)
 			go s.executeJob(jobCtx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
-			data, _ := json.Marshal(map[string]any{
+			return marshalToolResult(map[string]any{
 				"agent":      agentName,
 				"job_id":     job.ID,
 				"session_id": sess.ID,
 				"status":     "running",
 			})
-			return mcp.NewToolResultText(string(data)), nil
 		}
 
 		s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
@@ -1606,13 +1602,12 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultError(fmt.Sprintf("agent %q failed: %v", agentName, j.Error)), nil
 		}
 
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"agent":      agentName,
 			"session_id": sess.ID,
 			"status":     string(j.Status),
 			"content":    j.Content,
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
@@ -1652,16 +1647,14 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 			}
 			s.jobs.CompleteJob(job.ID, result.Content, 0)
 		}()
-		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": "running"})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"job_id": job.ID, "status": "running"})
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "audit", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("audit failed: %v", err)), nil
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // --- Think Handler ---
@@ -1819,8 +1812,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if domainName == "" {
 			result["available_domains"] = inv.DomainNames()
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 
 	case "finding":
 		sessionID := request.GetString("session_id", "")
@@ -1863,8 +1855,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 				"new_claim":      correction.CorrectedClaim,
 			}
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 
 	case "assess":
 		sessionID := request.GetString("session_id", "")
@@ -1875,8 +1866,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if assessErr != nil {
 			return mcp.NewToolResultError(assessErr.Error()), nil
 		}
-		data, _ := json.Marshal(assessResult)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(assessResult)
 
 	case "report":
 		sessionID := request.GetString("session_id", "")
@@ -1906,8 +1896,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		}
 
 		inv.DeleteInvestigation(sessionID)
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 
 	case "status":
 		sessionID := request.GetString("session_id", "")
@@ -1932,8 +1921,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			"coverage_unchecked": unchecked,
 			"last_activity":     state.LastActivityAt,
 		}
-		data, _ := json.Marshal(result)
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(result)
 
 	case "list":
 		active := inv.ListInvestigations()
@@ -1942,13 +1930,12 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			cwd, _ = os.Getwd()
 		}
 		savedReports, _ := inv.ListReports(cwd)
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"active_investigations": active,
 			"active_count":          len(active),
 			"saved_reports":         savedReports,
 			"saved_count":           len(savedReports),
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	case "recall":
 		topic := request.GetString("topic", "")
@@ -1970,21 +1957,19 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			for _, r := range reports {
 				topics = append(topics, r.Topic)
 			}
-			data, _ := json.Marshal(map[string]any{
+			return marshalToolResult(map[string]any{
 				"found":            false,
 				"message":          fmt.Sprintf("No report found matching %q", topic),
 				"available_topics": topics,
 			})
-			return mcp.NewToolResultText(string(data)), nil
 		}
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"found":    true,
 			"filename": result.Filename,
 			"topic":    result.Topic,
 			"date":     result.Date,
 			"content":  result.Content,
 		})
-		return mcp.NewToolResultText(string(data)), nil
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
@@ -2025,16 +2010,14 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
 		go s.executeStrategy(jobCtx, job.ID, sess.ID, "consensus", params)
-		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "consensus", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("consensus failed: %v", err)), nil
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // --- DeepResearch Handler ---
@@ -2071,13 +2054,11 @@ func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolReq
 		_ = deepresearch.SaveEntryToDisk(cwd, topic, outputFormat, model, nil, content)
 	}
 
-	result := map[string]any{
+	return marshalToolResult(map[string]any{
 		"topic":   topic,
 		"content": content,
 		"cached":  cacheHit,
-	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	})
 }
 
 // --- Debate Handler ---
@@ -2113,16 +2094,14 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
 		go s.executeStrategy(jobCtx, job.ID, sess.ID, "debate", params)
-		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "debate", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("debate failed: %v", err)), nil
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // --- Agent Run Handler ---
@@ -2223,14 +2202,13 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 			})
 		}()
 
-		data, _ := json.Marshal(map[string]any{
+		return marshalToolResult(map[string]any{
 			"agent":      agentName,
 			"cli":        cli,
 			"job_id":     job.ID,
 			"session_id": sess.ID,
 			"status":     "running",
 		})
-		return mcp.NewToolResultText(string(data)), nil
 	}
 
 	result, runErr := agents.RunAgent(ctx, runCfg)
@@ -2238,7 +2216,7 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("agent %q failed: %v", agentName, runErr)), nil
 	}
 
-	data, _ := json.Marshal(map[string]any{
+	return marshalToolResult(map[string]any{
 		"agent":       agentName,
 		"cli":         cli,
 		"status":      result.Status,
@@ -2247,7 +2225,6 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		"duration_ms": result.DurationMS,
 		"turn_log":    result.TurnLog,
 	})
-	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- Resource Handlers ---
@@ -2383,16 +2360,14 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 			}
 			s.jobs.CompleteJob(job.ID, result.Content, 0)
 		}()
-		data, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": "running"})
-		return mcp.NewToolResultText(string(data)), nil
+		return marshalToolResult(map[string]any{"job_id": job.ID, "status": "running"})
 	}
 
 	result, err := s.orchestrator.Execute(ctx, "workflow", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("workflow failed: %v", err)), nil
 	}
-	data, _ := json.Marshal(result)
-	return mcp.NewToolResultText(string(data)), nil
+	return marshalToolResult(result)
 }
 
 // selectBestExecutor returns the best available executor for the current platform.
