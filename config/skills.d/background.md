@@ -54,22 +54,42 @@ Capture the `job_id` from the response. Example response:
 
 ---
 
-## Phase 3 — Poll
+## Phase 3 — Monitor with Task List
 
-**Goal:** Monitor job completion without blocking.
+**Goal:** Give the user real-time visibility into job progress.
+
+### Step 1: Create a task for the user
+
+Immediately after dispatching the async job, create a task so the user can track it:
+
+```
+TaskCreate(description="[aimux] <role>: <short task summary>", status="in_progress")
+```
+
+### Step 2: Poll and update
 
 ```
 status(job_id="{{"{{job_id}}"}}")
 ```
 
-| `status` value | Action |
-|---------------|--------|
-| `running` | Poll again in 10–30s |
-| `done` | Read `content` field — task is complete |
-| `error` | Read `error` field — escalate to `/debug` |
-| `cancelled` | Restart with adjusted prompt if needed |
+The `progress` field contains **live CLI output** — the actual lines the CLI has produced so far.
+Parse it and update the task:
 
-When done, the result is in `{{"{{job_id.content}}"}}`.
+| `status` value | `progress` field | Action |
+|---------------|-----------------|--------|
+| `running` | Non-empty | Update task with latest progress summary. Poll again in 10–15s. |
+| `running` | Empty | CLI hasn't produced output yet. Poll again in 5s. |
+| `completed` | — | Read `content` field. Mark task completed. |
+| `failed` | — | Read `error` field. Mark task completed with error note. Escalate to `/debug`. |
+| `cancelled` | — | Mark task completed. Restart with adjusted prompt if needed. |
+
+### Step 3: Report result
+
+When job completes, update the task one final time with outcome summary, then report
+the content to the user or consume it for the next workflow step.
+
+**IMPORTANT:** Never use `async=false` — it blocks the MCP transport with no escape hatch.
+Always `async=true` + task-based monitoring.
 
 ---
 
@@ -93,10 +113,13 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 ## Acceptance Criteria
 
 - [ ] Task keyword-matched to a role from the reference table
-- [ ] `exec` called with `async=true` and correct role
+- [ ] `exec` called with `async=true` (NEVER async=false) and correct role
 - [ ] `job_id` captured from exec response
-- [ ] `status` polled until `done` or `error`
+- [ ] TaskCreate called immediately with job description
+- [ ] `status` polled — `progress` field parsed for live CLI output
+- [ ] Task updated with progress summary on each poll
 - [ ] Result read from `content` field on completion
+- [ ] Task marked completed with outcome summary
 
 ---
 
