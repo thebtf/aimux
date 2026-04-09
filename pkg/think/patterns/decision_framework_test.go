@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -175,5 +176,114 @@ func TestDecisionFramework_AutoMode_GenericFallback(t *testing.T) {
 		if !found[want] {
 			t.Errorf("expected generic criteria to include %q, got %v", want, sc)
 		}
+	}
+}
+
+// TestDecision_SamplingSuggestsCriteria verifies that in auto-mode with no domain template
+// match, sampling is used to suggest context-aware criteria. The mock returns structured
+// JSON and the result must reflect those criteria with source="sampling".
+func TestDecision_SamplingSuggestsCriteria(t *testing.T) {
+	samplingResp := `{
+		"suggestedCriteria": [
+			{"name": "latency", "weight": 0.4, "rationale": "critical for user experience"},
+			{"name": "throughput", "weight": 0.3, "rationale": "handles peak load"},
+			{"name": "cost", "weight": 0.3, "rationale": "within budget constraints"}
+		],
+		"suggestedOptions": ["Redis", "Memcached", "Hazelcast"]
+	}`
+
+	p := &decisionFrameworkPattern{}
+	p.SetSampling(&mockSamplingProvider{response: samplingResp})
+
+	// Use a novel domain that won't match any template.
+	input := map[string]any{
+		"decision": "choose a caching layer for a unicorn breeding application",
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-sampling-criteria")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	sc, ok := result.Data["suggestedCriteria"].([]string)
+	if !ok || len(sc) == 0 {
+		t.Fatalf("expected non-empty suggestedCriteria, got %v (%T)", result.Data["suggestedCriteria"], result.Data["suggestedCriteria"])
+	}
+	// Verify LLM-suggested criteria are in the result.
+	found := map[string]bool{}
+	for _, c := range sc {
+		found[c] = true
+	}
+	for _, want := range []string{"latency", "throughput", "cost"} {
+		if !found[want] {
+			t.Errorf("expected sampling criterion %q in suggestedCriteria, got %v", want, sc)
+		}
+	}
+
+	// autoAnalysis source must be "sampling".
+	aa, ok := result.Data["autoAnalysis"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected autoAnalysis map, got %T", result.Data["autoAnalysis"])
+	}
+	if aa["source"] != "sampling" {
+		t.Errorf("expected autoAnalysis.source=sampling, got %v", aa["source"])
+	}
+}
+
+// TestDecision_FallbackWithoutSampling verifies that when a domain template matches,
+// its criteria are used regardless of whether a sampling provider is available.
+func TestDecision_FallbackWithoutSampling(t *testing.T) {
+	p := &decisionFrameworkPattern{} // no sampling
+
+	// "security" matches a known domain template.
+	input := map[string]any{
+		"decision": "evaluate a security vulnerability scanner",
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-domain-fallback")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	aa, ok := result.Data["autoAnalysis"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected autoAnalysis map, got %T", result.Data["autoAnalysis"])
+	}
+	// Domain template should win even without sampling.
+	if aa["source"] != "domain-template" {
+		t.Errorf("expected source=domain-template, got %v", aa["source"])
+	}
+}
+
+// TestDecision_SamplingFailureFallbackToGeneric verifies that when sampling fails
+// and no domain template matches, generic default criteria are used gracefully.
+func TestDecision_SamplingFailureFallbackToGeneric(t *testing.T) {
+	p := &decisionFrameworkPattern{}
+	p.SetSampling(&mockSamplingProvider{err: errors.New("sampling unavailable")})
+
+	input := map[string]any{
+		"decision": "pick a color for my office chair",
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-sampling-fail")
+	if err != nil {
+		t.Fatalf("Handle must not return error on sampling failure, got: %v", err)
+	}
+
+	sc, ok := result.Data["suggestedCriteria"].([]string)
+	if !ok || len(sc) == 0 {
+		t.Fatalf("expected generic suggestedCriteria on sampling failure, got %v", result.Data["suggestedCriteria"])
 	}
 }

@@ -73,11 +73,13 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 	// When subProblems is absent/empty and a sampling provider is available,
 	// ask the LLM to decompose the problem and derive subProblems + dependencies.
 	subProblemsProvided := countSlice("subProblems") > 0
+	samplingUsed := false
 	if !subProblemsProvided && p.sampling != nil {
 		generated, err := p.generateDecomposition(problem)
 		if err == nil && generated != nil {
 			// Merge generated data into validInput so the rest of Handle uses it.
 			validInput = mergeGenerated(validInput, generated)
+			samplingUsed = true
 		}
 		// On error: fall through silently — graceful degradation.
 	}
@@ -111,6 +113,11 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 		"riskCount":        countSlice("risks"),
 		"stakeholderCount": countSlice("stakeholders"),
 		"totalComponents":  countSlice("subProblems") + countSlice("dependencies") + countSlice("risks") + countSlice("stakeholders"),
+	}
+
+	// Tag sampling source when sampling populated subProblems/dependencies.
+	if samplingUsed {
+		data["autoAnalysis"] = map[string]any{"source": "sampling"}
 	}
 
 	// Include auto-analysis suggestions when no user-supplied subProblems/dependencies.
@@ -190,19 +197,33 @@ type samplingDecomposition struct {
 }
 
 // generateDecomposition calls the sampling provider to auto-decompose problem.
-// Returns nil, error on any failure so the caller can gracefully degrade.
+// Uses GetSamplingPrompt for the template; returns nil on any failure so the
+// caller can gracefully degrade.
 func (p *problemDecompositionPattern) generateDecomposition(problem string) (*samplingDecomposition, error) {
-	prompt := fmt.Sprintf(
-		`Decompose this problem into 3-7 sub-problems with dependencies. `+
-			`Problem: %s. `+
-			`Return JSON: {"subProblems": [{"id": "sp1", "description": "..."}], `+
-			`"dependencies": [{"from": "sp1", "to": "sp2"}]}`,
-		problem,
-	)
-	messages := []think.SamplingMessage{
-		{Role: "user", Content: prompt},
+	tmpl := GetSamplingPrompt("problem_decomposition")
+	var messages []think.SamplingMessage
+	if tmpl != nil {
+		systemRole, userPrompt := FormatSamplingPrompt(tmpl, problem)
+		messages = []think.SamplingMessage{
+			{Role: "user", Content: systemRole + "\n\n" + userPrompt},
+		}
+	} else {
+		// Fallback if template is ever removed.
+		messages = []think.SamplingMessage{
+			{Role: "user", Content: fmt.Sprintf(
+				`Decompose this problem into 3-7 sub-problems with dependencies. `+
+					`Problem: %s. `+
+					`Return JSON: {"subProblems": [{"id": "sp1", "description": "..."}], `+
+					`"dependencies": [{"from": "sp1", "to": "sp2"}]}`,
+				problem,
+			)},
+		}
 	}
-	raw, err := p.sampling.RequestSampling(context.Background(), messages, 2000)
+	maxTokens := 2000
+	if tmpl != nil {
+		maxTokens = tmpl.MaxTokens
+	}
+	raw, err := p.sampling.RequestSampling(context.Background(), messages, maxTokens)
 	if err != nil {
 		return nil, err
 	}

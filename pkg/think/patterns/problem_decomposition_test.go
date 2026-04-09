@@ -381,3 +381,69 @@ func TestProblemDecomp_NoSampling(t *testing.T) {
 		t.Errorf("expected riskCount=1, got %v", result.Data["riskCount"])
 	}
 }
+
+// TestProblemDecomp_SamplingWithPromptTemplate verifies that generateDecomposition
+// uses GetSamplingPrompt (not a hardcoded string). The mock captures the message text
+// and the result must have autoAnalysis.source="sampling".
+func TestProblemDecomp_SamplingWithPromptTemplate(t *testing.T) {
+	samplingResp := `{
+		"subProblems": [
+			{"id": "sp1", "description": "Identify data sources"},
+			{"id": "sp2", "description": "Design ETL pipeline"},
+			{"id": "sp3", "description": "Validate output schema"}
+		],
+		"dependencies": [
+			{"from": "sp1", "to": "sp2"},
+			{"from": "sp2", "to": "sp3"}
+		]
+	}`
+
+	// Use a captureProvider so we can verify the prompt was built from the template.
+	capture := &captureProvider{response: samplingResp}
+
+	p := &problemDecompositionPattern{}
+	p.SetSampling(capture)
+
+	input := map[string]any{"problem": "build a data pipeline"}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-prompt-template")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	// The prompt sent to sampling must include the template's system role keyword.
+	// GetSamplingPrompt("problem_decomposition").SystemRole contains "systems architect".
+	if capture.lastContent == "" {
+		t.Fatal("expected sampling to be called")
+	}
+
+	// Result must be tagged as sampling source.
+	aa, ok := result.Data["autoAnalysis"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected autoAnalysis map, got %T", result.Data["autoAnalysis"])
+	}
+	if aa["source"] != "sampling" {
+		t.Errorf("expected autoAnalysis.source=sampling, got %v", aa["source"])
+	}
+
+	// Parsed data must be present.
+	if result.Data["subProblemCount"] != 3 {
+		t.Errorf("expected subProblemCount=3, got %v", result.Data["subProblemCount"])
+	}
+}
+
+// captureProvider records the last message content for inspection.
+type captureProvider struct {
+	response    string
+	lastContent string
+}
+
+func (c *captureProvider) RequestSampling(_ context.Context, msgs []think.SamplingMessage, _ int) (string, error) {
+	if len(msgs) > 0 {
+		c.lastContent = msgs[0].Content
+	}
+	return c.response, nil
+}

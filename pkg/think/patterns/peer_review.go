@@ -1,6 +1,8 @@
 package patterns
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -11,10 +13,17 @@ var validReviewCategories = map[string]bool{
 	"baselines": true, "clarity": true, "significance": true,
 }
 
-type peerReviewPattern struct{}
+type peerReviewPattern struct {
+	sampling think.SamplingProvider
+}
 
 // NewPeerReviewPattern returns the "peer_review" pattern handler.
 func NewPeerReviewPattern() think.PatternHandler { return &peerReviewPattern{} }
+
+// SetSampling injects the sampling provider. Implements think.SamplingAwareHandler.
+func (p *peerReviewPattern) SetSampling(provider think.SamplingProvider) {
+	p.sampling = provider
+}
 
 func (p *peerReviewPattern) Name() string { return "peer_review" }
 
@@ -117,10 +126,28 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 	})
 	revisionPlan = append(revisionPlan, "Add comparison against established baselines")
 
+	// Tier 1.5: sampling-enhanced review — merge LLM-detected objections when artifact is substantial.
+	samplingSource := ""
+	if p.sampling != nil && len(artifact) > 100 {
+		if samplingObjections, samplingStrengths, err := p.requestSamplingReview(artifact); err == nil {
+			for _, obj := range samplingObjections {
+				objections = append(objections, obj)
+			}
+			strengths = append(strengths, samplingStrengths...)
+			samplingSource = "sampling"
+		}
+		// On error: fall through — existing keyword-based review stands.
+	}
+
 	// Determine verdict from severity distribution.
 	verdict := computeVerdict(objections)
 
 	_ = artifact // used in return data
+
+	reviewSource := "keyword-analysis"
+	if samplingSource != "" {
+		reviewSource = samplingSource
+	}
 
 	data := map[string]any{
 		"artifact":      artifact,
@@ -128,6 +155,7 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 		"objections":    objections,
 		"revisionPlan":  revisionPlan,
 		"strengths":     strengths,
+		"reviewSource":  reviewSource,
 		"guidance":      BuildGuidance("peer_review", "full", []string{"claims", "methodology", "novelty"}),
 	}
 
@@ -142,6 +170,62 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 	}
 
 	return think.MakeThinkResult("peer_review", data, sessionID, nil, "", nil), nil
+}
+
+// samplingReviewResponse is the JSON shape we ask the LLM to return for peer review.
+type samplingReviewResponse struct {
+	Objections []struct {
+		Severity    string `json:"severity"`
+		Category    string `json:"category"`
+		Description string `json:"description"`
+		Suggestion  string `json:"suggestion"`
+	} `json:"objections"`
+	Strengths []string `json:"strengths"`
+}
+
+// requestSamplingReview calls the sampling provider to get LLM-enhanced peer review.
+// Returns (objections, strengths, error). On any failure the caller falls back gracefully.
+func (p *peerReviewPattern) requestSamplingReview(artifact string) ([]map[string]any, []string, error) {
+	tmpl := GetSamplingPrompt("peer_review")
+	var messages []think.SamplingMessage
+	maxTokens := 2000
+	if tmpl != nil {
+		systemRole, userPrompt := FormatSamplingPrompt(tmpl, artifact)
+		messages = []think.SamplingMessage{
+			{Role: "user", Content: systemRole + "\n\n" + userPrompt},
+		}
+		maxTokens = tmpl.MaxTokens
+	} else {
+		messages = []think.SamplingMessage{
+			{Role: "user", Content: fmt.Sprintf(
+				`Review this artifact for issues. Artifact: %s. `+
+					`Return JSON: {"objections": [{"severity": "P0|P1|P2|P3", "category": "...", "description": "...", "suggestion": "..."}], "strengths": ["..."]}`,
+				artifact,
+			)},
+		}
+	}
+
+	raw, err := p.sampling.RequestSampling(context.Background(), messages, maxTokens)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var resp samplingReviewResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return nil, nil, fmt.Errorf("sampling JSON parse failed: %w", err)
+	}
+
+	objections := make([]map[string]any, 0, len(resp.Objections))
+	for _, o := range resp.Objections {
+		objections = append(objections, map[string]any{
+			"objection": o.Description,
+			"severity":  o.Severity,
+			"category":  o.Category,
+			"suggestion": o.Suggestion,
+			"source":    "sampling",
+		})
+	}
+	return objections, resp.Strengths, nil
 }
 
 // computeVerdict derives the overall verdict from the objection severity set.
