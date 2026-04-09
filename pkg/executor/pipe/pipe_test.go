@@ -133,3 +133,81 @@ func TestPipeExecutor_Run_BadCommand(t *testing.T) {
 		t.Errorf("expected ExecutorError, got %T", err)
 	}
 }
+
+func TestPipeSession_ProcessManagerTracking(t *testing.T) {
+	e := pipe.New()
+	sess, err := e.Start(context.Background(), types.SpawnArgs{
+		Command: "cmd",
+		Args:    []string{"/c", "echo ready && ping -n 30 127.0.0.1 >nul"},
+	})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer sess.Close()
+
+	// Process should be tracked and alive.
+	if !sess.Alive() {
+		t.Error("expected session to be alive")
+	}
+	if sess.PID() <= 0 {
+		t.Errorf("expected PID > 0, got %d", sess.PID())
+	}
+
+	// Close should kill and cleanup.
+	sess.Close()
+	time.Sleep(100 * time.Millisecond)
+	if sess.Alive() {
+		t.Error("expected session to be dead after Close")
+	}
+}
+
+func TestPipeSession_ShutdownKillsSession(t *testing.T) {
+	e := pipe.New()
+	sess, err := e.Start(context.Background(), types.SpawnArgs{
+		Command: "cmd",
+		Args:    []string{"/c", "ping -n 30 127.0.0.1 >nul"},
+	})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	pid := sess.PID()
+	if pid <= 0 {
+		t.Fatal("expected PID > 0")
+	}
+
+	// Shutdown should kill all tracked sessions.
+	pipe.SessionProcessManager().Shutdown()
+	time.Sleep(100 * time.Millisecond)
+
+	if sess.Alive() {
+		t.Error("expected session to be dead after Shutdown")
+	}
+}
+
+func TestPipeExecutor_Run_CancelReturnsPartialOutput(t *testing.T) {
+	e := pipe.New()
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// Output "line1", then sleep ~3s, then output "line2".
+	// Context cancels after 1s — we expect partial output containing "line1" but not "line2".
+	result, err := e.Run(ctx, types.SpawnArgs{
+		Command:        "cmd",
+		Args:           []string{"/c", "echo line1 && ping -n 4 127.0.0.1 >nul && echo line2"},
+		TimeoutSeconds: 30,
+	})
+
+	if err != nil {
+		t.Fatalf("expected result, got error: %v", err)
+	}
+	if !result.Partial {
+		t.Error("expected Partial=true")
+	}
+	if result.Content == "" {
+		t.Error("expected non-empty partial content")
+	}
+	if !strings.Contains(result.Content, "line1") {
+		t.Errorf("expected content to contain 'line1', got: %q", result.Content)
+	}
+}

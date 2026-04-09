@@ -405,6 +405,11 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 
 // Shutdown stops background services (GC reaper, snapshot) and closes persistence.
 func (s *Server) Shutdown() {
+	// Kill all tracked session processes before closing persistence.
+	if pm := pipeExec.SessionProcessManager(); pm != nil {
+		pm.Shutdown()
+	}
+
 	if s.gcCancel != nil {
 		s.gcCancel()
 	}
