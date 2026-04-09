@@ -142,6 +142,15 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 				[]string{"criteria", "options"},
 			),
 		}
+
+		// Tier 2A: text analysis
+		if analysis := AnalyzeText(decision); analysis != nil {
+			if tmpl != nil {
+				analysis.Gaps = DetectGaps(analysis.Entities, tmpl)
+			}
+			data["textAnalysis"] = analysis
+		}
+
 		return think.MakeThinkResult("decision_framework", data, sessionID, nil, "", []string{"suggestedCriteria", "optionTemplate"}), nil
 	}
 
@@ -216,6 +225,16 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 			[]string{"criteria", "options"},
 		),
 	}
+
+	// Tier 2A: text analysis
+	if analysis := AnalyzeText(decision); analysis != nil {
+		domain := MatchDomainTemplate(decision)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("decision_framework", data, sessionID, nil, "", []string{"rankedOptions", "hasTies"}), nil
 }
 

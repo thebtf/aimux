@@ -97,6 +97,16 @@ func (p *visualReasoningPattern) Handle(validInput map[string]any, sessionID str
 
 	data["guidance"] = BuildGuidance("visual_reasoning", "basic", []string{"elements", "relationships", "transformations", "diagramType"})
 
+	// Tier 2A: text analysis
+	primaryText := validInput["operation"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("visual_reasoning", data, sessionID, nil, "", computed), nil
 }
 

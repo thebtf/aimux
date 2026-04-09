@@ -256,6 +256,22 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 
 	suggestedNext := nextStage(stage)
 
+	// Tier 2A: text analysis (added on every call for stateful pattern)
+	// Primary text: observation if provided, else hypothesis, else stage name.
+	primaryText := stage
+	if obs, ok := validInput["observation"].(string); ok && obs != "" {
+		primaryText = obs
+	} else if hyp, ok := validInput["hypothesis"].(string); ok && hyp != "" {
+		primaryText = hyp
+	}
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("scientific_method", data, sessionID, nil, suggestedNext, nil), nil
 }
 

@@ -74,5 +74,16 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		"recommendation": recommendation,
 		"guidance":       BuildGuidance("critical_thinking", "full", []string{"issue"}),
 	}
+
+	// Tier 2A: text analysis
+	primaryText := validInput["issue"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("critical_thinking", data, sessionID, nil, "", []string{"detectedBiases", "biasCount"}), nil
 }

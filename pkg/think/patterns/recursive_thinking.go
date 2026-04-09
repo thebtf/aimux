@@ -100,6 +100,16 @@ func (p *recursiveThinkingPattern) Handle(validInput map[string]any, sessionID s
 		"recursiveStructureDetected": recursiveStructureDetected,
 		"guidance":                  BuildGuidance("recursive_thinking", "basic", []string{"baseCase", "recursiveCase", "convergenceCheck", "maxDepth"}),
 	}
+	// Tier 2A: text analysis
+	primaryText := validInput["problem"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("recursive_thinking", data, sessionID, nil, "", []string{"depthWarning", "convergenceWarning", "depthRemaining", "depthPercentage", "isBaseCase"}), nil
 }
 

@@ -100,6 +100,16 @@ func (p *experimentalLoopPattern) Handle(validInput map[string]any, sessionID st
 		"suggestedAction": suggestedAction,
 		"guidance":        BuildGuidance("experimental_loop", guidanceDepth, []string{"observation", "result", "metric"}),
 	}
+	// Tier 2A: text analysis (added on every call for stateful pattern)
+	primaryText := validInput["hypothesis"].(string)
+	if analysis := AnalyzeText(primaryText); analysis != nil {
+		domain := MatchDomainTemplate(primaryText)
+		if domain != nil {
+			analysis.Gaps = DetectGaps(analysis.Entities, domain)
+		}
+		data["textAnalysis"] = analysis
+	}
+
 	return think.MakeThinkResult("experimental_loop", data, sessionID, nil, "experimental_loop", nil), nil
 }
 
