@@ -23,7 +23,7 @@ command:
     {{if .ReadOnly}}--sandbox read-only{{end}}
     {{if .Model}}-m {{.Model}}{{end}}
     {{if .ReasoningEffort}}-c model_reasoning_effort="{{.ReasoningEffort}}"{{end}}
-    {{if .SessionResume}}exec resume {{.SessionID}}{{end}}
+    {{if .SessionResume}}resume {{.SessionID}}{{end}}
     "{{.Prompt}}"
 
 # Codex uses positional prompt (last argument), NOT -p flag

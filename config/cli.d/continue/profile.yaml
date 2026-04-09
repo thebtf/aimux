@@ -23,6 +23,8 @@ command:
 prompt_flag: ""
 prompt_flag_type: "positional"
 
+# WARNING: --model expects hub slug format (owner/package), not bare model names.
+# Example: --model anthropic/claude-sonnet-4-5 (NOT --model claude-sonnet-4-5)
 default_model: ""
 model_flag: "--model"
 

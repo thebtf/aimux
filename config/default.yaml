@@ -61,11 +61,9 @@ roles:
   codereview:
     cli: codex
     model: gpt-5.4
-    reasoning_effort: high
   thinkdeep:
     cli: codex
     model: gpt-5.4
-    reasoning_effort: high
   secaudit:
     cli: codex
     model: gpt-5.4
