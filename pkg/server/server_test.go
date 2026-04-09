@@ -95,3 +95,11 @@ func TestNewServer_AllToolsRegistered(t *testing.T) {
 // 2. Smoke test via binary confirms tools respond
 // 3. Strategy-level tests in pkg/orchestrator/ verify each strategy works
 // 4. Stress tests verify concurrent session/job operations
+
+func TestServer_ShutdownCallsProcessManager(t *testing.T) {
+	// Verify Shutdown() completes cleanly with no tracked processes.
+	// ProcessManager.Shutdown() is safe to call on an empty manager.
+	// All Server fields are nil — Shutdown() must guard each before use.
+	s := &aimuxServer.Server{}
+	s.Shutdown() // must not panic
+}

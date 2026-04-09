@@ -123,6 +123,15 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 }
 
+// sessionPM is the package-level ProcessManager for persistent sessions.
+// Server calls SessionProcessManager().Shutdown() on server shutdown.
+var sessionPM = executor.NewProcessManager()
+
+// SessionProcessManager returns the ProcessManager used for persistent sessions.
+func SessionProcessManager() *executor.ProcessManager {
+	return sessionPM
+}
+
 // Start begins a persistent session via stdin/stdout pipes.
 func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
 	cmd := exec.Command(args.Command, args.Args...)
@@ -132,17 +141,14 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 		cmd.Env = mergeEnv(args.Env)
 	}
 
+	// Stdin pipe must be created before Spawn (which calls cmd.Start internally).
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, types.NewExecutorError("failed to create stdin pipe", err, "")
 	}
 
-	stdout, err := cmd.StdoutPipe()
+	handle, err := sessionPM.Spawn(cmd)
 	if err != nil {
-		return nil, types.NewExecutorError("failed to create stdout pipe", err, "")
-	}
-
-	if err := cmd.Start(); err != nil {
 		return nil, types.NewExecutorError(
 			fmt.Sprintf("failed to start %s", args.Command), err, "")
 	}
@@ -150,7 +156,8 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 	return &pipeSession{
 		cmd:    cmd,
 		stdin:  stdin,
-		stdout: stdout,
+		stdout: handle.Stdout,
+		handle: handle,
 		ctx:    ctx,
 	}, nil
 }
@@ -160,6 +167,7 @@ type pipeSession struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
+	handle *executor.ProcessHandle
 	ctx    context.Context
 	mu     sync.Mutex
 }
@@ -264,25 +272,20 @@ func (s *pipeSession) Stream(ctx context.Context, prompt string) (<-chan types.E
 
 func (s *pipeSession) Close() error {
 	_ = s.stdin.Close()
-	return killProcess(s.cmd)
+	sessionPM.Kill(s.handle)
+	sessionPM.Cleanup(s.handle)
+	return nil
 }
 
 func (s *pipeSession) Alive() bool {
-	return s.cmd.ProcessState == nil
+	return sessionPM.IsAlive(s.handle)
 }
 
 func (s *pipeSession) PID() int {
-	if s.cmd.Process != nil {
-		return s.cmd.Process.Pid
+	if s.handle != nil {
+		return s.handle.PID
 	}
 	return 0
-}
-
-func killProcess(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	return cmd.Process.Kill()
 }
 
 func mergeEnv(extra map[string]string) []string {
