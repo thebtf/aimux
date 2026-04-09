@@ -105,7 +105,7 @@ func parseResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
 
 // --- Exec Handler ---
 
-func TestHandleExec_SyncWithPrompt(t *testing.T) {
+func TestHandleExec_AsyncWithPrompt(t *testing.T) {
 	srv := testServer(t)
 	req := makeRequest("exec", map[string]any{
 		"prompt": "hello world",
@@ -118,11 +118,16 @@ func TestHandleExec_SyncWithPrompt(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	if data["status"] != "completed" {
-		t.Errorf("status = %v, want completed", data["status"])
+	// exec defaults to async=true — should return running status with job_id
+	status, _ := data["status"].(string)
+	if status != "running" {
+		t.Errorf("status = %v, want running (async default)", data["status"])
 	}
 	if data["session_id"] == nil || data["session_id"] == "" {
 		t.Error("missing session_id")
+	}
+	if data["job_id"] == nil || data["job_id"] == "" {
+		t.Error("missing job_id for async exec")
 	}
 }
 
