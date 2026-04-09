@@ -50,13 +50,18 @@ func NewIOManager(stdout io.Reader, pattern string, onOutput ...func(string)) *I
 func (iom *IOManager) StreamLines() {
 	go func() {
 		scanner := bufio.NewScanner(iom.reader)
+		// Increase scanner buffer to 1MB to handle CLIs that produce long lines
+		// (e.g. base64 content, large JSON). Default 64KB is too small.
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			line := pipeline.StripANSI(scanner.Text())
 			iom.buf.Write([]byte(line + "\n"))
 			if iom.onOutput != nil {
-				iom.onOutput(iom.buf.String())
+				// Send only the new line, not the full buffer — avoids O(n²)
+				iom.onOutput(line)
 			}
-			if iom.pattern != nil && iom.pattern.MatchString(iom.buf.String()) {
+			if iom.pattern != nil && iom.pattern.MatchString(line) {
+				// Match against the new line only — avoids O(n²) regex rescanning
 				select {
 				case iom.patternCh <- struct{}{}:
 				default:
@@ -89,8 +94,10 @@ func (iom *IOManager) Collect() string {
 // Drain waits up to timeout for the reader to finish (EOF).
 // Useful after killing a process to capture remaining buffered output.
 func (iom *IOManager) Drain(timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-iom.doneCh:
-	case <-time.After(timeout):
+	case <-timer.C:
 	}
 }

@@ -177,9 +177,11 @@ func TestPipeSession_ShutdownKillsSession(t *testing.T) {
 	}
 
 	// Shutdown should kill all tracked sessions.
+	t.Logf("before shutdown: alive=%v pid=%d", sess.Alive(), sess.PID())
 	pipe.SessionProcessManager().Shutdown()
-	time.Sleep(100 * time.Millisecond)
+	t.Logf("after shutdown: alive=%v", sess.Alive())
 
+	// Verify — after synchronous Shutdown+Kill, process must be dead.
 	if sess.Alive() {
 		t.Error("expected session to be dead after Shutdown")
 	}

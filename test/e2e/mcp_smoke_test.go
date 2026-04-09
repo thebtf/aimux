@@ -47,23 +47,31 @@ func readResponse(reader *bufio.Reader, timeout time.Duration) (map[string]any, 
 	errCh := make(chan error, 1)
 
 	go func() {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			errCh <- fmt.Errorf("read line: %w", err)
-			return
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			errCh <- fmt.Errorf("empty response line")
-			return
-		}
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				errCh <- fmt.Errorf("read line: %w", err)
+				return
+			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
 
-		var result map[string]any
-		if err := json.Unmarshal([]byte(line), &result); err != nil {
-			errCh <- fmt.Errorf("parse JSON: %w (line: %s)", err, line)
+			var result map[string]any
+			if err := json.Unmarshal([]byte(line), &result); err != nil {
+				errCh <- fmt.Errorf("parse JSON: %w (line: %s)", err, line)
+				return
+			}
+			// Skip MCP notifications (method present, no id = server-initiated)
+			if _, hasMethod := result["method"]; hasMethod {
+				if _, hasID := result["id"]; !hasID {
+					continue // notification — skip, read next line
+				}
+			}
+			done <- result
 			return
 		}
-		done <- result
 	}()
 
 	select {
