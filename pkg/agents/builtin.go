@@ -23,10 +23,10 @@ var builtinAgents = []*Agent{
 	},
 	{
 		Name:        "debugger",
-		Description: "Debug issues using systematic root cause analysis",
+		Description: "Debug and investigate issues using systematic root cause analysis",
 		Role:        "debug",
 		Domain:      "debugging",
-		Content:     "You are a debugging specialist. Use systematic investigation: reproduce the issue, form hypotheses, test each one, identify root cause. Never guess — verify with evidence.",
+		Content:     "You are a debugging and investigation specialist. Investigate issues systematically: reproduce the problem, form hypotheses, test each one, identify root cause. Never guess — verify with evidence.",
 		MaxTurns:    1,
 		Source:      "builtin",
 	},
