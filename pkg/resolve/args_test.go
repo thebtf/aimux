@@ -157,14 +157,14 @@ func TestBuildPromptArgs_WithReasoningTemplate(t *testing.T) {
 		PromptFlag:    "-p",
 		Reasoning: &config.ReasoningConfig{
 			Flag:              "-c",
-			FlagValueTemplate: `model_reasoning_effort="%s"`,
-			Levels:            []string{"low", "medium", "high"},
+			FlagValueTemplate: `model_reasoning_effort=%s`,
+			Levels:            []string{"low", "medium", "high", "xhigh"},
 		},
 	}
 
 	args := BuildPromptArgs(profile, "", "high", false, "hello")
 
-	assertSliceEqual(t, args, []string{"--full-auto", "-c", `model_reasoning_effort="high"`, "-p", "hello"})
+	assertSliceEqual(t, args, []string{"--full-auto", "-c", `model_reasoning_effort=high`, "-p", "hello"})
 }
 
 func TestBuildPromptArgs_ReadOnly(t *testing.T) {
