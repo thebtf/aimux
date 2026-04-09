@@ -252,6 +252,8 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		home, _ := os.UserHomeDir()
 		s.agentReg.Discover(cwd, home)
 	}
+	// Register built-in generic agents (shadowed by project/user agents with same name)
+	agents.RegisterBuiltins(s.agentReg)
 
 	// Initialize skill engine — embedded skills from config/skills.d, with optional disk overlay.
 	s.skillEngine = skills.NewEngine()
@@ -882,7 +884,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		}
 	}
 	sessionID := request.GetString("session_id", "")
-	async := request.GetBool("async", false)
+	async := request.GetBool("async", true)
 	readOnly := request.GetBool("read_only", false)
 	timeoutSec := int(request.GetFloat("timeout_seconds", 0))
 
