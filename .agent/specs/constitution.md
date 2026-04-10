@@ -3,7 +3,7 @@
 **Project:** aimux v3 — Go MCP server multiplexing 12+ AI CLIs
 **Version:** 3.1.0
 **Ratified:** 2026-04-05
-**Last Amended:** 2026-04-11
+**Last Amended:** 2026-04-10
 
 ## Principles
 
@@ -167,7 +167,7 @@ Synchronous execution is acceptable only for deterministic, sub-second operation
 
 | Version | Date | Change |
 |---------|------|--------|
-| 3.1.0 | 2026-04-11 | MINOR: Added P26 (Long-Running Tool Calls Must Be Interruptible). Evidence: investigate-session failure on 2026-04-10 where sync delegation would have hung the CC session; existing async-only workaround rule in memory was never codified; engram issue #8 is a concrete P26 violation. |
+| 3.1.0 | 2026-04-10 | MINOR: Added P26 (Long-Running Tool Calls Must Be Interruptible). Evidence: investigate-session failure on 2026-04-10 where sync delegation would have hung the CC session; existing async-only workaround rule in memory was never codified; engram issue #8 is a concrete P26 violation. |
 | 3.0.0 | 2026-04-09 | MAJOR: Added P23 (Reasoning Effort Tiers), P24 (Local-Only by Default), P25 (Agent-First Architecture). Updated P4 with control/data plane separation. Updated governance commands to /nvmd-*. Evidence: CLI profile audit, PRC findings, user decision on network scope. |
 | 2.0.0 | 2026-04-08 | MAJOR: Restored P15-P16 (lost in editing). Added P18 (Skills = Deep Workflows), P19 (Graph Map Before Authoring), P20 (Interconnection Over Isolation), P21 (Caller-Aware Composition), P22 (Config-as-Files). Updated P14 to include skills.d/. Updated project description. Sequential numbering P1-P22. |
 | 1.2.0 | 2026-04-05 | Added: P17 No Stubs — 8-rule STUB-* taxonomy, 3-level defense-in-depth |
