@@ -135,6 +135,9 @@ func TestPipeExecutor_Run_BadCommand(t *testing.T) {
 }
 
 func TestPipeSession_ProcessManagerTracking(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("uses cmd /c and ping -n — Windows-only syntax")
+	}
 	e := pipe.New()
 	sess, err := e.Start(context.Background(), types.SpawnArgs{
 		Command: "cmd",
@@ -162,6 +165,9 @@ func TestPipeSession_ProcessManagerTracking(t *testing.T) {
 }
 
 func TestPipeSession_ShutdownKillsSession(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("uses cmd /c and ping -n — Windows-only syntax")
+	}
 	e := pipe.New()
 	sess, err := e.Start(context.Background(), types.SpawnArgs{
 		Command: "cmd",
@@ -188,6 +194,9 @@ func TestPipeSession_ShutdownKillsSession(t *testing.T) {
 }
 
 func TestPipeExecutor_Run_CancelReturnsPartialOutput(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("uses cmd /c and ping -n — Windows-only syntax")
+	}
 	e := pipe.New()
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
