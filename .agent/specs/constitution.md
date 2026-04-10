@@ -1,9 +1,9 @@
 # Project Constitution — aimux
 
 **Project:** aimux v3 — Go MCP server multiplexing 12+ AI CLIs
-**Version:** 3.0.0
+**Version:** 3.1.0
 **Ratified:** 2026-04-05
-**Last Amended:** 2026-04-09
+**Last Amended:** 2026-04-11
 
 ## Principles
 
@@ -132,6 +132,24 @@ The `agents` tool is the PRIMARY entry point for task execution. `exec` is a low
 
 **Rationale:** Users called exec for everything because agent tool required knowing exact agent names. Auto-selection + built-ins make agent the natural first choice, giving users structured reasoning (agent role, model selection, reasoning effort) without manual configuration.
 
+### 26. Long-Running Tool Calls Must Be Interruptible
+Every MCP tool action that may run longer than 10 seconds MUST be asynchronous by default. Such actions MUST:
+
+1. Return a `job_id` immediately and execute in the background
+2. Expose cancellation via `sessions(action="cancel", job_id=...)` — cancel signal propagates to all child CLI processes (SIGTERM → grace period → SIGKILL on Unix; cascade kill on Windows)
+3. Stream progress via MCP `notifications/progress` AND accumulate into `status(job_id).progress` for clients that poll
+4. Fail fast and loud if async infrastructure (OnOutput wiring, progress push, cancel handler) is not connected — never silently downgrade to sync
+
+Synchronous execution is acceptable only for deterministic, sub-second operations (config reads, registry lookups, one-shot state mutations). Any path that invokes an LLM, shells out to a CLI, or waits on network IO MUST follow the async+cancel+stream contract above.
+
+**Prohibited:**
+- Sync tool calls that wrap long-running CLI invocations with "just use a high timeout"
+- Tool paths that return `job_id` but have no corresponding cancel handler
+- Streaming channels that are defined but never wired (the current `handleAgentRun` async path bug — tracked as engram issue #8 — is a concrete violation)
+- Any new tool action added to aimux without explicitly declaring whether it is sync-allowed or async-mandatory
+
+**Rationale:** MCP protocol itself has no request timeout, so a sync tool call that blocks for 5 minutes hangs the entire caller session with no escape hatch. User decision 2026-04-10: "когда ты запускаешь задачу в блокирующей сессии и у задачи нет escape hatch — сессия повисает навечно. я против такого подхода." This happened during the aimux-investigate session where a sync delegation call was discussed — it would have hung the CC session with no way to cancel. The only currently-working async path (`exec` tool) demonstrates the correct pattern: OnOutput callback plumbed from executor → JobManager.AppendProgress → MCP notifications/progress, cancel via context.CancelFunc registered per job, child processes killed on cancel. All future stateful/delegating tool actions must follow this pattern, not invent new sync variants.
+
 ## Governance
 
 ### Amendment Process
@@ -149,6 +167,7 @@ The `agents` tool is the PRIMARY entry point for task execution. `exec` is a low
 
 | Version | Date | Change |
 |---------|------|--------|
+| 3.1.0 | 2026-04-11 | MINOR: Added P26 (Long-Running Tool Calls Must Be Interruptible). Evidence: investigate-session failure on 2026-04-10 where sync delegation would have hung the CC session; existing async-only workaround rule in memory was never codified; engram issue #8 is a concrete P26 violation. |
 | 3.0.0 | 2026-04-09 | MAJOR: Added P23 (Reasoning Effort Tiers), P24 (Local-Only by Default), P25 (Agent-First Architecture). Updated P4 with control/data plane separation. Updated governance commands to /nvmd-*. Evidence: CLI profile audit, PRC findings, user decision on network scope. |
 | 2.0.0 | 2026-04-08 | MAJOR: Restored P15-P16 (lost in editing). Added P18 (Skills = Deep Workflows), P19 (Graph Map Before Authoring), P20 (Interconnection Over Isolation), P21 (Caller-Aware Composition), P22 (Config-as-Files). Updated P14 to include skills.d/. Updated project description. Sequential numbering P1-P22. |
 | 1.2.0 | 2026-04-05 | Added: P17 No Stubs — 8-rule STUB-* taxonomy, 3-level defense-in-depth |
