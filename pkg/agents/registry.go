@@ -4,6 +4,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,7 +44,17 @@ func NewRegistry() *Registry {
 // Discover scans configured directories for agent definitions.
 // Sources (9 total per spec): project .aimux/, .claude/, .codex/, .claw/,
 // user-level equivalents, config/agents/, built-in.
+// Order: plugin → user → project (project agents shadow user, user shadows plugin).
 func (r *Registry) Discover(projectDir string, userDir string) {
+	// Plugin-level sources (lowest priority — shadowed by user and project)
+	r.discoverPluginAgents(userDir)
+
+	// User-level sources
+	userSources := []string{
+		filepath.Join(userDir, ".aimux", "agents"),
+		filepath.Join(userDir, ".claude", "agents"),
+	}
+
 	// Project-level sources
 	projectSources := []string{
 		filepath.Join(projectDir, ".aimux", "agents"),
@@ -52,18 +63,121 @@ func (r *Registry) Discover(projectDir string, userDir string) {
 		filepath.Join(projectDir, ".claw", "agents"),
 	}
 
-	// User-level sources
-	userSources := []string{
-		filepath.Join(userDir, ".aimux", "agents"),
-		filepath.Join(userDir, ".claude", "agents"),
-	}
-
-	// Scan all sources (project sources shadow user sources)
+	// Scan all sources (project sources shadow user sources, user sources shadow plugins)
 	for _, dir := range userSources {
 		r.scanDir(dir, "user")
 	}
 	for _, dir := range projectSources {
 		r.scanDir(dir, "project") // project overrides user
+	}
+}
+
+// pluginManifest represents the structure of installed_plugins.json.
+type pluginManifest struct {
+	Version int                        `json:"version"`
+	Plugins map[string][]pluginInstall `json:"plugins"`
+}
+
+// pluginInstall represents a single installed plugin entry.
+type pluginInstall struct {
+	Scope       string `json:"scope"`
+	InstallPath string `json:"installPath"`
+	Version     string `json:"version"`
+}
+
+// discoverPluginAgents scans ~/.claude/plugins/installed_plugins.json and
+// loads agents from each installed plugin. Agents are namespaced as
+// "{pluginName}:{agentName}" to match Claude Code's naming convention.
+func (r *Registry) discoverPluginAgents(userDir string) {
+	manifestPath := filepath.Join(userDir, ".claude", "plugins", "installed_plugins.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return // manifest not present — silent skip
+	}
+
+	var manifest pluginManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return // corrupt manifest — silent skip
+	}
+
+	for pluginKey, installs := range manifest.Plugins {
+		if len(installs) == 0 {
+			continue
+		}
+		install := installs[0]
+		if install.InstallPath == "" {
+			continue
+		}
+
+		// Extract plugin name: "nvmd-platform@nvmd-ai-kit" → "nvmd-platform"
+		pluginName := pluginKey
+		if idx := strings.Index(pluginKey, "@"); idx >= 0 {
+			pluginName = pluginKey[:idx]
+		}
+
+		// Pattern A: {installPath}/agents/*.md
+		r.scanPluginDir(
+			filepath.Join(install.InstallPath, "agents"),
+			pluginName,
+			install.Version,
+			pluginName+":",
+		)
+
+		// Pattern B: {installPath}/skills/*/agents/*.md
+		skillGlob := filepath.Join(install.InstallPath, "skills", "*", "agents")
+		skillDirs, _ := filepath.Glob(skillGlob)
+		for _, dir := range skillDirs {
+			// extract skillName from path: .../skills/skill-creator/agents → "skill-creator"
+			parent := filepath.Dir(dir) // .../skills/skill-creator
+			skillName := filepath.Base(parent)
+			r.scanPluginDir(
+				dir,
+				pluginName,
+				install.Version,
+				pluginName+":"+skillName+":",
+			)
+		}
+	}
+}
+
+// scanPluginDir reads all .md files in dir and registers them as plugin agents.
+// The agent map key is agentNamePrefix+baseName (e.g. "nvmd-platform:debugger").
+func (r *Registry) scanPluginDir(dir, pluginName, pluginVersion, agentNamePrefix string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // directory doesn't exist — skip silently
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+
+		path := filepath.Join(dir, entry.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		baseName := strings.TrimSuffix(entry.Name(), ".md")
+		fullName := agentNamePrefix + baseName
+		agent := &Agent{
+			Name:    fullName,
+			Source:  path,
+			Content: string(content),
+			Meta: map[string]string{
+				"source_type":    "plugin",
+				"plugin":         pluginName,
+				"plugin_version": pluginVersion,
+			},
+		}
+
+		// Parse YAML frontmatter if present
+		parseFrontmatter(agent, string(content))
+
+		r.mu.Lock()
+		r.agents[fullName] = agent
+		r.mu.Unlock()
 	}
 }
 
