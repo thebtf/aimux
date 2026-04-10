@@ -11,6 +11,9 @@ import (
 
 func TestConPTY_Start_ReturnsError(t *testing.T) {
 	e := conpty.New()
+	if !e.Available() {
+		t.Skip("ConPTY not available on this platform — Start() returns a different error")
+	}
 	_, err := e.Start(context.Background(), types.SpawnArgs{
 		Command: "echo",
 		Args:    []string{"test"},
