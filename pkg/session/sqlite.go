@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/types"
 	_ "modernc.org/sqlite"
 )
 
@@ -168,6 +169,103 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	}
 
 	return tx.Commit()
+}
+
+// RestoreJobs loads completed and failed jobs from SQLite into the JobManager.
+// Running jobs are marked as failed (process died mid-execution).
+// Called once at server startup to survive process restarts.
+// Only jobs created within the last hour are restored to avoid loading ancient history.
+func (s *Store) RestoreJobs(jobs *JobManager) (int, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_id, cli, status, progress, content, exit_code,
+		       error_json, poll_count, pheromones_json, pipeline_json, pid,
+		       created_at, progress_updated_at, completed_at
+		FROM jobs
+		WHERE created_at > datetime('now', '-1 hour')
+		ORDER BY created_at DESC`)
+	if err != nil {
+		return 0, fmt.Errorf("query jobs: %w", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var (
+			errorJSON, pheromonesJSON, pipelineJSON sql.NullString
+			completedAtStr                          sql.NullString
+			createdAtStr, progressUpdatedAtStr      string
+		)
+
+		j := &Job{}
+		if err := rows.Scan(
+			&j.ID, &j.SessionID, &j.CLI, &j.Status, &j.Progress, &j.Content, &j.ExitCode,
+			&errorJSON, &j.PollCount, &pheromonesJSON, &pipelineJSON, &j.PID,
+			&createdAtStr, &progressUpdatedAtStr, &completedAtStr,
+		); err != nil {
+			return count, fmt.Errorf("scan job row: %w", err)
+		}
+
+		if t, err := time.Parse(time.RFC3339, createdAtStr); err == nil {
+			j.CreatedAt = t
+		}
+		if t, err := time.Parse(time.RFC3339, progressUpdatedAtStr); err == nil {
+			j.ProgressUpdatedAt = t
+		}
+		if completedAtStr.Valid && completedAtStr.String != "" {
+			if t, err := time.Parse(time.RFC3339, completedAtStr.String); err == nil {
+				j.CompletedAt = &t
+			}
+		}
+
+		if errorJSON.Valid && errorJSON.String != "" {
+			var te TypedErrorJSON
+			if err := json.Unmarshal([]byte(errorJSON.String), &te); err == nil {
+				j.Error = &types.TypedError{
+					Type:          types.ErrorType(te.Type),
+					Message:       te.Message,
+					PartialOutput: te.PartialOutput,
+				}
+			}
+		}
+		if pheromonesJSON.Valid && pheromonesJSON.String != "" {
+			_ = json.Unmarshal([]byte(pheromonesJSON.String), &j.Pheromones)
+		}
+		if j.Pheromones == nil {
+			j.Pheromones = make(map[string]string)
+		}
+		if pipelineJSON.Valid && pipelineJSON.String != "" {
+			var ps types.PipelineStats
+			if err := json.Unmarshal([]byte(pipelineJSON.String), &ps); err == nil {
+				j.Pipeline = &ps
+			}
+		}
+
+		// Running jobs had their process killed when the server restarted.
+		if j.Status == types.JobStatusRunning || j.Status == types.JobStatusCreated {
+			now := time.Now()
+			j.Status = types.JobStatusFailed
+			j.PID = 0
+			j.CompletedAt = &now
+			j.Error = &types.TypedError{
+				Type:    types.ErrorTypeExecutor,
+				Message: "process restarted",
+			}
+		}
+
+		jobs.Restore(j)
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return count, fmt.Errorf("iterate job rows: %w", err)
+	}
+	return count, nil
+}
+
+// TypedErrorJSON is a helper for deserializing TypedError from SQLite (Cause field is not stored).
+type TypedErrorJSON struct {
+	Type          string `json:"type"`
+	Message       string `json:"message"`
+	PartialOutput string `json:"partial_output,omitempty"`
 }
 
 // Close closes the SQLite database.
