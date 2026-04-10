@@ -240,8 +240,10 @@ func (s *Store) RestoreJobs(jobs *JobManager) (int, error) {
 			}
 		}
 
-		// Running jobs had their process killed when the server restarted.
-		if j.Status == types.JobStatusRunning || j.Status == types.JobStatusCreated {
+		// Running, created, or completing jobs all had their subprocess killed
+		// when the server exited. Completing is a transient state between
+		// Running and Completed — a restart interrupts the completion write.
+		if j.Status == types.JobStatusRunning || j.Status == types.JobStatusCreated || j.Status == types.JobStatusCompleting {
 			now := time.Now()
 			j.Status = types.JobStatusFailed
 			j.PID = 0

@@ -56,6 +56,43 @@ func TestRestoreJobs_RunningBecomeFailed(t *testing.T) {
 	}
 }
 
+func TestRestoreJobs_CompletingBecomeFailed(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	store, err := session.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	// A job caught mid-completion when the server dies.
+	jm := session.NewJobManager()
+	job := jm.Create("session-3", "codex")
+	jm.StartJob(job.ID, 54321)
+	jm.Get(job.ID).Status = types.JobStatusCompleting
+
+	if err := store.SnapshotJob(jm.Get(job.ID)); err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
+
+	jm2 := session.NewJobManager()
+	if _, err := store.RestoreJobs(jm2); err != nil {
+		t.Fatalf("RestoreJobs: %v", err)
+	}
+
+	restored := jm2.Get(job.ID)
+	if restored == nil {
+		t.Fatal("restored job not found in JobManager")
+	}
+	if restored.Status != types.JobStatusFailed {
+		t.Errorf("status = %q, want failed (completing → failed on restart)", restored.Status)
+	}
+	if restored.Error == nil || !strings.Contains(restored.Error.Message, "process restarted") {
+		t.Errorf("error = %+v, want 'process restarted'", restored.Error)
+	}
+}
+
 func TestRestoreJobs_CompletedPreserved(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
