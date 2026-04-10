@@ -104,38 +104,47 @@ func (r *Registry) discoverPluginAgents(userDir string) {
 		if len(installs) == 0 {
 			continue
 		}
-		install := installs[0]
-		if install.InstallPath == "" {
-			continue
-		}
 
-		// Extract plugin name: "nvmd-platform@nvmd-ai-kit" → "nvmd-platform"
+		// Extract plugin name: strip the trailing @marketplace suffix.
+		// LastIndex (not Index) correctly handles npm-style scoped names like
+		// "@scope/plugin@marketplace" → "@scope/plugin". Requiring idx > 0
+		// preserves a leading "@" in scoped names.
 		pluginName := pluginKey
-		if idx := strings.Index(pluginKey, "@"); idx >= 0 {
+		if idx := strings.LastIndex(pluginKey, "@"); idx > 0 {
 			pluginName = pluginKey[:idx]
 		}
 
-		// Pattern A: {installPath}/agents/*.md
-		r.scanPluginDir(
-			filepath.Join(install.InstallPath, "agents"),
-			pluginName,
-			install.Version,
-			pluginName+":",
-		)
+		// Iterate over every install entry — installed_plugins.json may list
+		// the same plugin in multiple scopes (user, project) or versions.
+		// Silently skipping [1:] would drop subagents that live in a
+		// project-scoped install alongside a user-scoped one.
+		for _, install := range installs {
+			if install.InstallPath == "" {
+				continue
+			}
 
-		// Pattern B: {installPath}/skills/*/agents/*.md
-		skillGlob := filepath.Join(install.InstallPath, "skills", "*", "agents")
-		skillDirs, _ := filepath.Glob(skillGlob)
-		for _, dir := range skillDirs {
-			// extract skillName from path: .../skills/skill-creator/agents → "skill-creator"
-			parent := filepath.Dir(dir) // .../skills/skill-creator
-			skillName := filepath.Base(parent)
+			// Pattern A: {installPath}/agents/*.md
 			r.scanPluginDir(
-				dir,
+				filepath.Join(install.InstallPath, "agents"),
 				pluginName,
 				install.Version,
-				pluginName+":"+skillName+":",
+				pluginName+":",
 			)
+
+			// Pattern B: {installPath}/skills/*/agents/*.md
+			skillGlob := filepath.Join(install.InstallPath, "skills", "*", "agents")
+			skillDirs, _ := filepath.Glob(skillGlob)
+			for _, dir := range skillDirs {
+				// extract skillName from path: .../skills/skill-creator/agents → "skill-creator"
+				parent := filepath.Dir(dir) // .../skills/skill-creator
+				skillName := filepath.Base(parent)
+				r.scanPluginDir(
+					dir,
+					pluginName,
+					install.Version,
+					pluginName+":"+skillName+":",
+				)
+			}
 		}
 	}
 }

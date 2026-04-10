@@ -203,6 +203,87 @@ func TestRegistry_DiscoverPluginAgents_NestedSkills(t *testing.T) {
 	}
 }
 
+func TestRegistry_DiscoverPluginAgents_ScopedPluginName(t *testing.T) {
+	userDir := t.TempDir()
+	installPath := filepath.Join(userDir, "install", "scoped-plugin")
+
+	agentsDir := filepath.Join(installPath, "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "helper.md"), []byte("# helper"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	pluginsDir := filepath.Join(userDir, ".claude", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Scoped plugin key: "@vendor/tools@marketplace" → expect name "@vendor/tools"
+	manifest := makePluginManifest(t, map[string][]map[string]string{
+		"@vendor/tools@marketplace": {
+			{"scope": "user", "installPath": installPath, "version": "1.0.0"},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), manifest, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	reg := agents.NewRegistry()
+	reg.Discover("", userDir)
+
+	// The leading "@" must be preserved; the trailing "@marketplace" must be stripped.
+	want := "@vendor/tools:helper"
+	if _, err := reg.Get(want); err != nil {
+		t.Fatalf("Get(%q): %v — scoped plugin name was not preserved", want, err)
+	}
+}
+
+func TestRegistry_DiscoverPluginAgents_MultipleInstalls(t *testing.T) {
+	userDir := t.TempDir()
+	installA := filepath.Join(userDir, "install", "a")
+	installB := filepath.Join(userDir, "install", "b")
+
+	// Install A has agent foo.md, install B has agent bar.md
+	for _, pair := range []struct{ dir, name string }{
+		{installA, "foo"},
+		{installB, "bar"},
+	} {
+		agentsDir := filepath.Join(pair.dir, "agents")
+		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(agentsDir, pair.name+".md"), []byte("# "+pair.name), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	pluginsDir := filepath.Join(userDir, ".claude", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	manifest := makePluginManifest(t, map[string][]map[string]string{
+		"multi-plugin@marketplace": {
+			{"scope": "user", "installPath": installA, "version": "1.0.0"},
+			{"scope": "project", "installPath": installB, "version": "2.0.0"},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), manifest, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	reg := agents.NewRegistry()
+	reg.Discover("", userDir)
+
+	// Both installs must be scanned, not just installs[0].
+	if _, err := reg.Get("multi-plugin:foo"); err != nil {
+		t.Errorf("Get(multi-plugin:foo) from installs[0]: %v", err)
+	}
+	if _, err := reg.Get("multi-plugin:bar"); err != nil {
+		t.Errorf("Get(multi-plugin:bar) from installs[1]: %v", err)
+	}
+}
+
 func TestRegistry_DiscoverPluginAgents_InvalidJSON(t *testing.T) {
 	userDir := t.TempDir()
 
