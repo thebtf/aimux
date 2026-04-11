@@ -100,6 +100,52 @@ func initTestCLIServer(t *testing.T) (io.WriteCloser, *bufio.Reader) {
 	return stdin, reader
 }
 
+func streamMessages(reader *bufio.Reader, done <-chan struct{}) (<-chan map[string]any, <-chan error) {
+	msgCh := make(chan map[string]any, 16)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(msgCh)
+		defer close(errCh)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				errCh <- fmt.Errorf("read line: %w", err)
+				return
+			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			var msg map[string]any
+			if err := json.Unmarshal([]byte(line), &msg); err != nil {
+				errCh <- fmt.Errorf("parse json: %w (line: %s)", err, line)
+				return
+			}
+
+			select {
+			case <-done:
+				return
+			case msgCh <- msg:
+			}
+		}
+	}()
+
+	return msgCh, errCh
+}
+
 // --- Codex JSONL Parsing Tests ---
 
 // TestE2E_Codex_JSONL verifies aimux can execute the codex emulator and return output.
@@ -282,6 +328,108 @@ func TestE2E_TestCLI_CodexAsync(t *testing.T) {
 		}
 	}
 	t.Fatal("async codex job did not complete in time")
+}
+
+func TestE2E_Agent_AsyncProgressNotification(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "agent",
+		"arguments": map[string]any{
+			"agent":  "implementer",
+			"prompt": "async implementer test",
+			"async":  true,
+		},
+	}))
+
+	deadline := time.Now().Add(10 * time.Second)
+	var jobID string
+	var progressParams map[string]any
+	progressSeen := false
+	completed := false
+	done := make(chan struct{})
+	defer close(done)
+	msgCh, errCh := streamMessages(reader, done)
+	nextPollID := 100
+
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("read message: %v", err)
+			}
+		case msg, ok := <-msgCh:
+			if !ok {
+				t.Fatal("message stream closed before async agent verification completed")
+			}
+
+			if method, ok := msg["method"].(string); ok {
+				if method == "notifications/progress" {
+					progressParams, _ = msg["params"].(map[string]any)
+					if jobID != "" && progressParams != nil {
+						if token, _ := progressParams["progressToken"].(string); token == jobID {
+							if message, _ := progressParams["message"].(string); message != "" {
+								progressSeen = true
+							}
+						}
+					}
+				}
+				continue
+			}
+
+			if id, ok := msg["id"].(float64); ok {
+				if int(id) == 2 {
+					data := extractToolJSON(t, msg)
+					jobID, _ = data["job_id"].(string)
+					if jobID == "" {
+						t.Fatal("missing job_id in agent async response")
+					}
+					continue
+				}
+				if int(id) >= 100 {
+					pollData := extractToolJSON(t, msg)
+					status, _ := pollData["status"].(string)
+					if status == "failed" {
+						t.Fatalf("agent job failed: %v", pollData)
+					}
+					if status == "completed" {
+						completed = true
+					}
+				}
+			}
+		case <-time.After(200 * time.Millisecond):
+			if jobID != "" && !completed {
+				fmt.Fprint(stdin, jsonRPCRequest(nextPollID, "tools/call", map[string]any{
+					"name":      "status",
+					"arguments": map[string]any{"job_id": jobID},
+				}))
+				nextPollID++
+			}
+		}
+
+		if progressSeen && completed {
+			break
+		}
+	}
+
+	if jobID == "" {
+		t.Fatal("did not observe async agent response with job_id")
+	}
+	if progressParams == nil {
+		t.Fatal("did not observe notifications/progress event")
+	}
+	if token, _ := progressParams["progressToken"].(string); token != jobID {
+		t.Fatalf("progressToken = %q, want %q", token, jobID)
+	}
+	if message, _ := progressParams["message"].(string); message == "" {
+		t.Fatal("progress notification message is empty")
+	}
+	if !progressSeen {
+		t.Fatal("did not observe non-empty progress notification for async agent")
+	}
+	if !completed {
+		t.Fatal("async agent job did not reach completed state")
+	}
 }
 
 // --- Standalone testcli verification (no aimux server) ---

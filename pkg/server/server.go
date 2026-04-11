@@ -1038,7 +1038,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 
 		s.executePairCoding(ctx, job.ID, sess.ID, pairParams, cb)
 
-		j := s.jobs.Get(job.ID)
+		j := s.jobs.GetSnapshot(job.ID)
 		if j == nil {
 			return mcp.NewToolResultError("job disappeared"), nil
 		}
@@ -1108,7 +1108,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 
 	s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
-	j := s.jobs.Get(job.ID)
+	j := s.jobs.GetSnapshot(job.ID)
 	if j == nil {
 		return mcp.NewToolResultError("job disappeared"), nil
 	}
@@ -1171,17 +1171,6 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 	s.sendBusy(jobID, "exec:"+args.CLI, args.TimeoutSeconds*1000)
 	defer s.sendIdle(jobID)
 
-	// Wire live output: IOManager calls this with each new line (not full buffer).
-	// 1. Appends line to job progress (for status polling — returns accumulated output)
-	// 2. Pushes MCP notification with just the new line (for real-time display)
-	args.OnOutput = func(line string) {
-		s.jobs.AppendProgress(jobID, line)
-		s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
-			"progressToken": jobID,
-			"message":       line,
-		})
-	}
-
 	// Build the ordered list of CLIs to try. The primary (args.CLI) is always
 	// first; fallbacks from the router follow (max 2 additional attempts).
 	candidates := s.buildFallbackCandidates(role, args.CLI, cb)
@@ -1205,6 +1194,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 				currentArgs = s.rebuildArgsForCLI(args, p)
 			}
 		}
+		currentArgs.OnOutput = s.progressSink(jobID, currentFormat)
 
 		result, err := s.executor.Run(ctx, currentArgs)
 
@@ -1407,7 +1397,7 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("job_id is required"), nil
 	}
 
-	j := s.jobs.Get(jobID)
+	j := s.jobs.GetSnapshot(jobID)
 	if j == nil {
 		return mcp.NewToolResultError(fmt.Sprintf("job %q not found", jobID)), nil
 	}
@@ -1460,7 +1450,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
-		jobs := s.jobs.ListBySession(sessionID)
+		jobs := s.jobs.ListBySessionSnapshot(sessionID)
 		return marshalToolResult(map[string]any{
 			"session": sess,
 			"jobs":    jobs,
@@ -1492,15 +1482,12 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
-		// Fail all running jobs for this session
-		for _, j := range s.jobs.ListBySession(sessionID) {
-			if j.Status == types.JobStatusRunning || j.Status == types.JobStatusCreated {
-				s.jobs.FailJob(j.ID, types.NewExecutorError("session killed", nil, ""))
-			}
+		// Atomically fail only still-active jobs for this session.
+		for _, j := range s.jobs.ListBySessionSnapshot(sessionID) {
+			s.jobs.FailJobIfActive(j.ID, types.NewExecutorError("session killed", nil, ""))
 		}
 		s.sessions.Delete(sessionID)
 		return mcp.NewToolResultText(`{"status":"killed"}`), nil
-
 	case "gc":
 		// Garbage collect expired sessions (idle > 1 hour)
 		collected := 0
@@ -1750,7 +1737,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 
 		s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
-		j := s.jobs.Get(job.ID)
+		j := s.jobs.GetSnapshot(job.ID)
 		if j == nil {
 			return mcp.NewToolResultError("agent job disappeared"), nil
 		}
@@ -2376,7 +2363,18 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		job := s.jobs.Create(sess.ID, cli)
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
-		s.sendBusy(job.ID, "agent:"+agentName, timeoutSeconds*1000)
+		outputFormat := ""
+		if profile, err := s.registry.Get(cli); err == nil {
+			outputFormat = profile.OutputFormat
+		}
+		runCfg.OnOutput = func(resolvedCLI, line string) {
+			format := outputFormat
+			if profile, err := s.registry.Get(resolvedCLI); err == nil {
+				format = profile.OutputFormat
+			}
+			s.progressSink(job.ID, format)(line)
+		}
+		s.sendBusy(job.ID, "agent:"+agentName, agentBusyEstimateMs(timeoutSeconds, maxTurns))
 
 		go func() {
 			defer s.sendIdle(job.ID)

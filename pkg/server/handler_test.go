@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -49,12 +50,12 @@ func testServer(t *testing.T) *Server {
 		},
 		CLIProfiles: map[string]*config.CLIProfile{
 			"codex": {
-				Name:           "codex",
-				Binary:         "echo",
-				DisplayName:    "Test CLI",
-				Command:        config.CommandConfig{Base: "echo"},
-				PromptFlag:     "-p",
-				ModelFlag:      "-m",
+				Name:        "codex",
+				Binary:      "echo",
+				DisplayName: "Test CLI",
+				Command:     config.CommandConfig{Base: "echo"},
+				PromptFlag:  "-p",
+				ModelFlag:   "-m",
 				Reasoning: &config.ReasoningConfig{
 					Flag:              "-c",
 					FlagValueTemplate: "model_reasoning_effort=%s",
@@ -632,6 +633,46 @@ func TestNewProgressBridge_DefaultInterval(t *testing.T) {
 	}
 }
 
+func TestNormalizeProgressLine_JSONLAgentMessage(t *testing.T) {
+	line := `{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello"}}`
+	if got := normalizeProgressLine("jsonl", line); got != "hello" {
+		t.Fatalf("normalizeProgressLine(jsonl) = %q, want hello", got)
+	}
+}
+
+func TestNormalizeProgressLine_JSONLSuppressesControlEvents(t *testing.T) {
+	line := `{"type":"turn.started"}`
+	if got := normalizeProgressLine("jsonl", line); got != "" {
+		t.Fatalf("normalizeProgressLine(jsonl control) = %q, want empty", got)
+	}
+}
+
+func TestNormalizeProgressLine_JSONExtractsContent(t *testing.T) {
+	line := `{"type":"message","role":"assistant","content":"chunk","delta":true}`
+	if got := normalizeProgressLine("json", line); got != "chunk" {
+		t.Fatalf("normalizeProgressLine(json) = %q, want chunk", got)
+	}
+}
+
+func TestNormalizeProgressLine_JSONSuppressesInit(t *testing.T) {
+	line := `{"type":"init","session_id":"abc"}`
+	if got := normalizeProgressLine("json", line); got != "" {
+		t.Fatalf("normalizeProgressLine(json init) = %q, want empty", got)
+	}
+}
+
+func TestAgentBusyEstimateMs_DefaultTurns(t *testing.T) {
+	if got := agentBusyEstimateMs(30, 0); got != 30000 {
+		t.Fatalf("agentBusyEstimateMs(30,0) = %d, want 30000", got)
+	}
+}
+
+func TestAgentBusyEstimateMs_MultiTurn(t *testing.T) {
+	if got := agentBusyEstimateMs(30, 3); got != 90000 {
+		t.Fatalf("agentBusyEstimateMs(30,3) = %d, want 90000", got)
+	}
+}
+
 func TestProgressBridge_Forward_ContextCancel(t *testing.T) {
 	b := NewProgressBridge(1)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -790,6 +831,45 @@ func TestHandleSessions_KillMissingID(t *testing.T) {
 
 	if !result.IsError {
 		t.Error("expected error for missing session_id on kill")
+	}
+}
+
+func TestHandleSessions_KillExistingSession(t *testing.T) {
+	srv := testServer(t)
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 123)
+	srv.jobs.SetPheromone(job.ID, "k", "v")
+
+	req := makeRequest("sessions", map[string]any{
+		"action":     "kill",
+		"session_id": sess.ID,
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions kill: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected successful kill")
+	}
+
+	live := srv.jobs.Get(job.ID)
+	if live == nil {
+		t.Fatal("expected job to still exist after kill")
+	}
+	if live.Status != types.JobStatusFailed {
+		t.Fatalf("job status = %q, want failed", live.Status)
+	}
+	if live.Error == nil || live.Error.Message != "session killed" {
+		t.Fatalf("job error = %#v, want message session killed", live.Error)
+	}
+	if live.Pheromones["k"] != "v" {
+		t.Fatalf("job pheromone = %q, want v", live.Pheromones["k"])
+	}
+
+	if got := srv.sessions.Get(sess.ID); got != nil {
+		t.Fatal("expected session to be deleted after kill")
 	}
 }
 
@@ -1457,8 +1537,8 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 
 	// 3. Finding
 	findingReq := makeRequest("investigate", map[string]any{
-		"action":     "finding",
-		"session_id": sessionID,
+		"action":      "finding",
+		"session_id":  sessionID,
 		"description": "Null pointer dereference in init()",
 		"source":      "main.go:42",
 		"severity":    "P0",
@@ -1833,6 +1913,40 @@ func TestHandleAgentRun_Async_BuiltinAgent(t *testing.T) {
 	}
 	if data["status"] != "running" {
 		t.Errorf("status = %v, want running", data["status"])
+	}
+
+	jobID, _ := data["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("job_id must be string")
+	}
+	if job := srv.jobs.Get(jobID); job == nil {
+		t.Fatal("job should exist for async agent run")
+	}
+
+	statusReq := makeRequest("status", map[string]any{"job_id": jobID})
+	var statusData map[string]any
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		statusResult, statusErr := srv.handleStatus(context.Background(), statusReq)
+		if statusErr != nil {
+			t.Fatalf("handleStatus: %v", statusErr)
+		}
+		statusData = parseResult(t, statusResult)
+		if progress, _ := statusData["progress"].(string); progress != "" {
+			break
+		}
+		if st, _ := statusData["status"].(string); st == "failed" || st == "completed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	progress, _ := statusData["progress"].(string)
+	if progress == "" {
+		t.Fatalf("expected non-empty progress for async agent run, got %v", statusData)
+	}
+	if statusData["job_id"] != jobID {
+		t.Fatalf("status job_id = %v, want %s", statusData["job_id"], jobID)
 	}
 }
 

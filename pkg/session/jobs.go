@@ -11,21 +11,21 @@ import (
 
 // Job represents an async execution task.
 type Job struct {
-	ID              string              `json:"id"`
-	SessionID       string              `json:"session_id"`
-	CLI             string              `json:"cli"`
-	Status          types.JobStatus     `json:"status"`
-	Progress        string              `json:"progress,omitempty"`
-	Content         string              `json:"content,omitempty"`
-	ExitCode        int                 `json:"exit_code"`
-	Error           *types.TypedError   `json:"error,omitempty"`
-	PollCount       int                 `json:"poll_count"`
-	Pheromones      map[string]string   `json:"pheromones,omitempty"`
-	Pipeline        *types.PipelineStats `json:"pipeline,omitempty"`
-	PID             int                 `json:"pid"`
-	CreatedAt       time.Time           `json:"created_at"`
-	ProgressUpdatedAt time.Time         `json:"progress_updated_at"`
-	CompletedAt     *time.Time          `json:"completed_at,omitempty"`
+	ID                string               `json:"id"`
+	SessionID         string               `json:"session_id"`
+	CLI               string               `json:"cli"`
+	Status            types.JobStatus      `json:"status"`
+	Progress          string               `json:"progress,omitempty"`
+	Content           string               `json:"content,omitempty"`
+	ExitCode          int                  `json:"exit_code"`
+	Error             *types.TypedError    `json:"error,omitempty"`
+	PollCount         int                  `json:"poll_count"`
+	Pheromones        map[string]string    `json:"pheromones,omitempty"`
+	Pipeline          *types.PipelineStats `json:"pipeline,omitempty"`
+	PID               int                  `json:"pid"`
+	CreatedAt         time.Time            `json:"created_at"`
+	ProgressUpdatedAt time.Time            `json:"progress_updated_at"`
+	CompletedAt       *time.Time           `json:"completed_at,omitempty"`
 }
 
 // JobManager manages async jobs with state machine transitions.
@@ -97,11 +97,61 @@ func (m *JobManager) Restore(j *Job) {
 	m.jobs[j.ID] = j
 }
 
-// Get returns a job by ID, or nil if not found.
+// Get returns a live job pointer by ID, or nil if not found.
+// Callers that only need to read must prefer GetSnapshot to avoid data races.
 func (m *JobManager) Get(id string) *Job {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.jobs[id]
+}
+
+// GetSnapshot returns a deep-copied job snapshot by ID, or nil if not found.
+// The returned job is detached from internal mutable state and safe for read-only use.
+func (m *JobManager) GetSnapshot(id string) *Job {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	j, ok := m.jobs[id]
+	if !ok {
+		return nil
+	}
+	return cloneJob(j)
+}
+
+func cloneJob(j *Job) *Job {
+	if j == nil {
+		return nil
+	}
+
+	copy := *j
+
+	if j.CompletedAt != nil {
+		completedAt := *j.CompletedAt
+		copy.CompletedAt = &completedAt
+	}
+
+	if j.Error != nil {
+		errCopy := *j.Error
+		// Detach snapshot error from live-state: keep metadata/message but drop
+		// underlying wrapped cause pointer to avoid aliasing via Unwrap().
+		errCopy.Cause = nil
+		copy.Error = &errCopy
+	}
+
+	if j.Pipeline != nil {
+		pipelineCopy := *j.Pipeline
+		copy.Pipeline = &pipelineCopy
+	}
+
+	if j.Pheromones != nil {
+		pheromones := make(map[string]string, len(j.Pheromones))
+		for k, v := range j.Pheromones {
+			pheromones[k] = v
+		}
+		copy.Pheromones = pheromones
+	}
+
+	return &copy
 }
 
 // StartJob transitions a job to running state.
@@ -188,10 +238,26 @@ func (m *JobManager) CompleteJob(id, content string, exitCode int) bool {
 func (m *JobManager) FailJob(id string, err *types.TypedError) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.failJobLocked(id, err, false)
+}
 
+// FailJobIfActive transitions a job to failed only when it is still active.
+// Active states are created/running/completing. Completed/failed jobs are left untouched.
+func (m *JobManager) FailJobIfActive(id string, err *types.TypedError) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.failJobLocked(id, err, true)
+}
+
+func (m *JobManager) failJobLocked(id string, err *types.TypedError, activeOnly bool) bool {
 	j, ok := m.jobs[id]
 	if !ok {
 		return false
+	}
+	if activeOnly {
+		if j.Status != types.JobStatusCreated && j.Status != types.JobStatusRunning && j.Status != types.JobStatusCompleting {
+			return false
+		}
 	}
 	now := time.Now()
 	j.Status = types.JobStatusFailed
@@ -211,7 +277,6 @@ func (m *JobManager) FailJob(id string, err *types.TypedError) bool {
 
 	return true
 }
-
 
 // IncrementPoll increments the poll counter for anti-polling detection.
 func (m *JobManager) IncrementPoll(id string) int {
@@ -239,7 +304,8 @@ func (m *JobManager) SetPheromone(id, key, value string) bool {
 	return true
 }
 
-// ListBySession returns all jobs for a given session.
+// ListBySession returns live job pointers for a given session.
+// Callers that only need to read must prefer ListBySessionSnapshot to avoid data races.
 func (m *JobManager) ListBySession(sessionID string) []*Job {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -248,6 +314,21 @@ func (m *JobManager) ListBySession(sessionID string) []*Job {
 	for _, j := range m.jobs {
 		if j.SessionID == sessionID {
 			result = append(result, j)
+		}
+	}
+	return result
+}
+
+// ListBySessionSnapshot returns deep-copied job snapshots for a given session.
+// Returned jobs are detached from internal mutable state and safe for read-only use.
+func (m *JobManager) ListBySessionSnapshot(sessionID string) []*Job {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []*Job
+	for _, j := range m.jobs {
+		if j.SessionID == sessionID {
+			result = append(result, cloneJob(j))
 		}
 	}
 	return result
