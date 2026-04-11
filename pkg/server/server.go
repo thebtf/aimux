@@ -18,10 +18,11 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
-	"github.com/thebtf/aimux/pkg/guidance"
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
+	"github.com/thebtf/aimux/pkg/guidance"
+	"github.com/thebtf/aimux/pkg/guidance/policies"
 	"github.com/thebtf/aimux/pkg/hooks"
 	inv "github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/logger"
@@ -115,7 +116,22 @@ func marshalToolResult(data any) (*mcp.CallToolResult, error) {
 
 func marshalGuidedToolResult(tool, action string, stateSnapshot any, rawResult any) (*mcp.CallToolResult, error) {
 	builder := guidance.NewResponseBuilder()
-	payload := builder.BuildPayload(guidance.NextActionPlan{}, guidance.HandlerResult{
+	plan := guidance.NextActionPlan{}
+
+	if tool == "investigate" {
+		if state, ok := stateSnapshot.(*inv.InvestigationState); ok && state != nil {
+			investigatePolicy := policies.NewInvestigatePolicy()
+			if builtPlan, err := investigatePolicy.BuildPlan(guidance.PolicyInput{
+				Action:        action,
+				StateSnapshot: state,
+				RawResult:     rawResult,
+			}); err == nil {
+				plan = builtPlan
+			}
+		}
+	}
+
+	payload := builder.BuildPayload(plan, guidance.HandlerResult{
 		Tool:   tool,
 		Action: action,
 		State:  stateSnapshot,
@@ -2065,6 +2081,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			}
 		}
 		result := map[string]any{
+			"session_id":         sessionID,
 			"topic":              state.Topic,
 			"iteration":          state.Iteration,
 			"findings_count":     len(state.Findings),

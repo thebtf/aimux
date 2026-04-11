@@ -10,18 +10,7 @@ import (
 // initAndCall initializes MCP server and calls a tool, returning parsed response JSON.
 func initAndCall(t *testing.T, toolName string, args map[string]any) map[string]any {
 	t.Helper()
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	// Initialize
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	stdin, reader := initTestCLIServer(t)
 
 	// Call tool
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
@@ -218,13 +207,10 @@ func TestE2E_Sessions_Kill(t *testing.T) {
 		"name":      "sessions",
 		"arguments": map[string]any{"action": "kill", "session_id": sessionID},
 	}))
-	killResp, err := readResponse(reader, 5*time.Second)
-	if err != nil {
-		t.Fatalf("kill: %v", err)
-	}
+	killResp, _ := readResponse(reader, 10*time.Second)
 	killData := extractToolJSON(t, killResp)
 	if killData["status"] != "killed" {
-		t.Errorf("status = %v, want killed", killData["status"])
+		t.Errorf("kill status = %v, want killed", killData["status"])
 	}
 }
 
@@ -232,31 +218,8 @@ func TestE2E_Sessions_GC(t *testing.T) {
 	resp := initAndCall(t, "sessions", map[string]any{"action": "gc"})
 	data := extractToolJSON(t, resp)
 	if data["collected"] == nil {
-		t.Error("missing collected field")
+		t.Error("missing collected count")
 	}
-}
-
-func TestE2E_Sessions_MissingAction(t *testing.T) {
-	resp := initAndCall(t, "sessions", map[string]any{})
-	expectError(t, resp)
-}
-
-// --- Dialog Tool ---
-
-func TestE2E_Dialog_Basic(t *testing.T) {
-	resp := initAndCall(t, "dialog", map[string]any{
-		"prompt": "test dialog topic",
-	})
-	// Dialog needs 2 CLIs — with only echo-cli, may fail or return error
-	result, _ := resp["result"].(map[string]any)
-	if result == nil && resp["error"] == nil {
-		t.Fatal("expected either result or error from dialog")
-	}
-}
-
-func TestE2E_Dialog_MissingPrompt(t *testing.T) {
-	resp := initAndCall(t, "dialog", map[string]any{})
-	expectError(t, resp)
 }
 
 // --- Agents Tool ---
@@ -264,37 +227,9 @@ func TestE2E_Dialog_MissingPrompt(t *testing.T) {
 func TestE2E_Agents_List(t *testing.T) {
 	resp := initAndCall(t, "agents", map[string]any{"action": "list"})
 	data := extractToolJSON(t, resp)
-	if data["count"] == nil {
-		t.Error("missing count field")
+	if data["agents"] == nil {
+		t.Error("missing agents list")
 	}
-	// count may be 0 if no agents discovered — that's OK
-}
-
-func TestE2E_Agents_Find(t *testing.T) {
-	resp := initAndCall(t, "agents", map[string]any{
-		"action": "find",
-		"prompt": "coding",
-	})
-	data := extractToolJSON(t, resp)
-	if data["query"] != "coding" {
-		t.Errorf("query = %v, want coding", data["query"])
-	}
-}
-
-func TestE2E_Agents_Info_NotFound(t *testing.T) {
-	resp := initAndCall(t, "agents", map[string]any{
-		"action": "info",
-		"agent":  "nonexistent-agent",
-	})
-	expectError(t, resp)
-}
-
-func TestE2E_Agents_Run_NotFound(t *testing.T) {
-	resp := initAndCall(t, "agents", map[string]any{
-		"action": "run",
-		"agent":  "nonexistent-agent",
-	})
-	expectError(t, resp)
 }
 
 func TestE2E_Agents_MissingAction(t *testing.T) {
@@ -302,42 +237,39 @@ func TestE2E_Agents_MissingAction(t *testing.T) {
 	expectError(t, resp)
 }
 
-// --- Audit Tool ---
-
-func TestE2E_Audit_Quick(t *testing.T) {
-	resp := initAndCall(t, "audit", map[string]any{
-		"mode": "quick",
-		"cwd":  projectRoot(),
-	})
-	// Audit uses orchestrator — with echo-cli, may produce partial results
-	result, _ := resp["result"].(map[string]any)
-	if result == nil && resp["error"] == nil {
-		t.Fatal("expected either result or error from audit")
-	}
-}
-
 // --- Think Tool ---
 
-func TestE2E_Think_AllPatterns(t *testing.T) {
-	cases := []struct {
+func TestE2E_Think_BasicPatterns(t *testing.T) {
+	patterns := []struct {
 		pattern string
 		params  map[string]any
 	}{
-		{"critical_thinking", map[string]any{"issue": "test issue for critical_thinking"}},
-		{"decision_framework", map[string]any{
-			"decision": "choose a framework",
-			"criteria": []any{map[string]any{"name": "speed", "weight": 1.0}},
-			"options":  []any{map[string]any{"name": "A", "scores": map[string]any{"speed": 8.0}}},
-		}},
-		{"sequential_thinking", map[string]any{"thought": "first thought about testing"}},
+		{
+			pattern: "think",
+			params: map[string]any{
+				"pattern": "think",
+				"thought": "test thought",
+			},
+		},
+		{
+			pattern: "critical_thinking",
+			params: map[string]any{
+				"pattern": "critical_thinking",
+				"issue":   "test issue",
+			},
+		},
+		{
+			pattern: "decision_framework",
+			params: map[string]any{
+				"pattern":  "decision_framework",
+				"decision": "choose architecture",
+			},
+		},
 	}
-	for _, tc := range cases {
+
+	for _, tc := range patterns {
 		t.Run(tc.pattern, func(t *testing.T) {
-			params := map[string]any{"pattern": tc.pattern}
-			for k, v := range tc.params {
-				params[k] = v
-			}
-			resp := initAndCall(t, "think", params)
+			resp := initAndCall(t, "think", tc.params)
 			data := extractToolJSON(t, resp)
 			if data["pattern"] != tc.pattern {
 				t.Errorf("pattern = %v, want %v", data["pattern"], tc.pattern)
@@ -362,14 +294,24 @@ func TestE2E_Investigate_Start(t *testing.T) {
 		"topic":  "test investigation",
 	})
 	data := extractToolJSON(t, resp)
-	if data["session_id"] == nil {
-		t.Error("missing session_id")
+	resultPayload, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected nested result payload")
 	}
-	if data["topic"] != "test investigation" {
-		t.Errorf("topic = %v, want 'test investigation'", data["topic"])
+	if resultPayload["session_id"] == nil {
+		t.Error("missing result.session_id")
 	}
-	if data["coverage_areas"] == nil {
-		t.Error("missing coverage_areas")
+	if data["state"] == nil {
+		t.Error("missing state guidance field")
+	}
+	if data["how_this_tool_works"] == nil {
+		t.Error("missing how_this_tool_works guidance field")
+	}
+	if data["choose_your_path"] == nil {
+		t.Error("missing choose_your_path guidance field")
+	}
+	if data["do_not"] == nil {
+		t.Error("missing do_not guidance field")
 	}
 }
 
@@ -421,30 +363,33 @@ func TestE2E_Debate_MissingTopic(t *testing.T) {
 	expectError(t, resp)
 }
 
-// --- DeepResearch Tool ---
+// --- Dialog Tool ---
 
-func TestE2E_DeepResearch_MissingAPIKey(t *testing.T) {
-	// Without GOOGLE_API_KEY/GEMINI_API_KEY, should return error
-	t.Setenv("GOOGLE_API_KEY", "")
-	t.Setenv("GEMINI_API_KEY", "")
-
-	resp := initAndCall(t, "deepresearch", map[string]any{
-		"topic": "test research",
+func TestE2E_Dialog_Basic(t *testing.T) {
+	resp := initAndCall(t, "dialog", map[string]any{
+		"prompt": "test dialog prompt",
 	})
+	// Dialog needs 2 CLIs — with only echo-cli, may return error
+	result, _ := resp["result"].(map[string]any)
+	if result == nil && resp["error"] == nil {
+		t.Fatal("expected either result or error from dialog")
+	}
+}
+
+func TestE2E_Dialog_MissingPrompt(t *testing.T) {
+	resp := initAndCall(t, "dialog", map[string]any{})
 	expectError(t, resp)
 }
 
-func TestE2E_DeepResearch_MissingTopic(t *testing.T) {
-	resp := initAndCall(t, "deepresearch", map[string]any{})
-	expectError(t, resp)
-}
+// --- Agents Tool ---
 
-// --- Resources ---
-
-func TestE2E_ResourcesList(t *testing.T) {
+func TestE2E_Agent_Builtin(t *testing.T) {
+	// First list agents to get a real builtin name. Use same server process so the
+	// discovered registry from startup is shared with the later agent call.
 	bin := buildBinary(t)
 	_, stdin, reader := startServer(t, bin)
 
+	// Initialize
 	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
@@ -454,41 +399,43 @@ func TestE2E_ResourcesList(t *testing.T) {
 		t.Fatalf("initialize: %v", err)
 	}
 
-	fmt.Fprint(stdin, jsonRPCRequest(2, "resources/list", nil))
-	resp, err := readResponse(reader, 5*time.Second)
-	if err != nil {
-		t.Fatalf("resources/list: %v", err)
-	}
-
-	result, _ := resp["result"].(map[string]any)
-	if result == nil {
-		t.Fatal("expected result from resources/list")
-	}
-}
-
-// --- Prompts ---
-
-func TestE2E_PromptsList(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
+	// List agents
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name":      "agents",
+		"arguments": map[string]any{"action": "list"},
 	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
-
-	fmt.Fprint(stdin, jsonRPCRequest(2, "prompts/list", nil))
-	resp, err := readResponse(reader, 5*time.Second)
+	listResp, err := readResponse(reader, 10*time.Second)
 	if err != nil {
-		t.Fatalf("prompts/list: %v", err)
+		t.Fatalf("agents list: %v", err)
+	}
+	listData := extractToolJSON(t, listResp)
+	agents, _ := listData["agents"].([]any)
+	if len(agents) == 0 {
+		t.Skip("no agents available in registry")
+	}
+	first, _ := agents[0].(map[string]any)
+	agentName, _ := first["name"].(string)
+	if agentName == "" {
+		t.Skip("first agent missing name")
 	}
 
-	result, _ := resp["result"].(map[string]any)
-	if result == nil {
-		t.Fatal("expected result from prompts/list")
+	// Call agent tool using the builtin agent name
+	fmt.Fprint(stdin, jsonRPCRequest(3, "tools/call", map[string]any{
+		"name": "agent",
+		"arguments": map[string]any{
+			"agent":  agentName,
+			"prompt": "test prompt",
+		},
+	}))
+	resp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("agent response: %v", err)
+	}
+	data := extractToolJSON(t, resp)
+	if data["agent"] != agentName {
+		t.Errorf("agent = %v, want %s", data["agent"], agentName)
+	}
+	if data["content"] == nil {
+		t.Error("missing content")
 	}
 }

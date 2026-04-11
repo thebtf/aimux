@@ -594,6 +594,18 @@ func TestHandleInvestigate_StartWithTopic(t *testing.T) {
 	if resultData["coverage_areas"] == nil {
 		t.Error("expected result.coverage_areas")
 	}
+	if data["state"] == nil {
+		t.Error("expected state guidance field")
+	}
+	if data["how_this_tool_works"] == nil {
+		t.Error("expected how_this_tool_works guidance field")
+	}
+	if data["choose_your_path"] == nil {
+		t.Error("expected choose_your_path guidance field")
+	}
+	if data["do_not"] == nil {
+		t.Error("expected do_not guidance field")
+	}
 }
 
 // --- Chains ---
@@ -1625,8 +1637,20 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 	if !ok {
 		t.Fatal("expected status result payload")
 	}
+	if statusResultData["session_id"] != sessionID {
+		t.Errorf("result.session_id = %v, want %q", statusResultData["session_id"], sessionID)
+	}
 	if statusResultData["topic"] != "server crash on startup" {
 		t.Errorf("result.topic = %v, want 'server crash on startup'", statusResultData["topic"])
+	}
+	if statusResultData["iteration"] == nil {
+		t.Error("expected result.iteration")
+	}
+	if statusResultData["findings_count"] == nil {
+		t.Error("expected result.findings_count")
+	}
+	if statusResultData["coverage_unchecked"] == nil {
+		t.Error("expected result.coverage_unchecked")
 	}
 
 	// 3. Finding
