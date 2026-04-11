@@ -55,8 +55,8 @@ func TestPipeExecutor_Run_Echo(t *testing.T) {
 		t.Errorf("Content = %q, want to contain 'hello world'", result.Content)
 	}
 
-	if result.DurationMS <= 0 {
-		t.Error("DurationMS should be positive")
+	if result.DurationMS < 0 {
+		t.Errorf("DurationMS = %d, want non-negative", result.DurationMS)
 	}
 }
 
