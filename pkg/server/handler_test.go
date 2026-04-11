@@ -834,6 +834,45 @@ func TestHandleSessions_KillMissingID(t *testing.T) {
 	}
 }
 
+func TestHandleSessions_KillExistingSession(t *testing.T) {
+	srv := testServer(t)
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 123)
+	srv.jobs.SetPheromone(job.ID, "k", "v")
+
+	req := makeRequest("sessions", map[string]any{
+		"action":     "kill",
+		"session_id": sess.ID,
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions kill: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected successful kill")
+	}
+
+	live := srv.jobs.Get(job.ID)
+	if live == nil {
+		t.Fatal("expected job to still exist after kill")
+	}
+	if live.Status != types.JobStatusFailed {
+		t.Fatalf("job status = %q, want failed", live.Status)
+	}
+	if live.Error == nil || live.Error.Message != "session killed" {
+		t.Fatalf("job error = %#v, want message session killed", live.Error)
+	}
+	if live.Pheromones["k"] != "v" {
+		t.Fatalf("job pheromone = %q, want v", live.Pheromones["k"])
+	}
+
+	if got := srv.sessions.Get(sess.ID); got != nil {
+		t.Fatal("expected session to be deleted after kill")
+	}
+}
+
 func TestHandleSessions_GC(t *testing.T) {
 	srv := testServer(t)
 

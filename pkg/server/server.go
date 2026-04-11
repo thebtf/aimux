@@ -1038,7 +1038,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 
 		s.executePairCoding(ctx, job.ID, sess.ID, pairParams, cb)
 
-		j := s.jobs.Get(job.ID)
+		j := s.jobs.GetSnapshot(job.ID)
 		if j == nil {
 			return mcp.NewToolResultError("job disappeared"), nil
 		}
@@ -1108,7 +1108,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 
 	s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
-	j := s.jobs.Get(job.ID)
+	j := s.jobs.GetSnapshot(job.ID)
 	if j == nil {
 		return mcp.NewToolResultError("job disappeared"), nil
 	}
@@ -1397,7 +1397,7 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("job_id is required"), nil
 	}
 
-	j := s.jobs.Get(jobID)
+	j := s.jobs.GetSnapshot(jobID)
 	if j == nil {
 		return mcp.NewToolResultError(fmt.Sprintf("job %q not found", jobID)), nil
 	}
@@ -1450,7 +1450,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
-		jobs := s.jobs.ListBySession(sessionID)
+		jobs := s.jobs.ListBySessionSnapshot(sessionID)
 		return marshalToolResult(map[string]any{
 			"session": sess,
 			"jobs":    jobs,
@@ -1483,7 +1483,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			return mcp.NewToolResultError("session not found"), nil
 		}
 		// Fail all running jobs for this session
-		for _, j := range s.jobs.ListBySession(sessionID) {
+		for _, j := range s.jobs.ListBySessionSnapshot(sessionID) {
 			if j.Status == types.JobStatusRunning || j.Status == types.JobStatusCreated {
 				s.jobs.FailJob(j.ID, types.NewExecutorError("session killed", nil, ""))
 			}
@@ -1740,7 +1740,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 
 		s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
-		j := s.jobs.Get(job.ID)
+		j := s.jobs.GetSnapshot(job.ID)
 		if j == nil {
 			return mcp.NewToolResultError("agent job disappeared"), nil
 		}

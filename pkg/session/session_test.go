@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
@@ -191,6 +192,45 @@ func TestJobManager_ListBySession(t *testing.T) {
 	}
 }
 
+func TestJobManager_ListBySessionSnapshot_ReturnsDetachedCopies(t *testing.T) {
+	jm := session.NewJobManager()
+	job := jm.Create("session-1", "codex")
+	jm.StartJob(job.ID, 100)
+	jm.SetPheromone(job.ID, "k", "v")
+	jm.FailJob(job.ID, types.NewExecutorError("boom", nil, "partial"))
+
+	live := jm.Get(job.ID)
+	if live == nil {
+		t.Fatal("live job should exist")
+	}
+
+	snapshots := jm.ListBySessionSnapshot("session-1")
+	if len(snapshots) != 1 {
+		t.Fatalf("ListBySessionSnapshot = %d, want 1", len(snapshots))
+	}
+
+	snapshot := snapshots[0]
+	if snapshot == live {
+		t.Fatal("snapshot must not alias live job pointer")
+	}
+	if snapshot.Pheromones["k"] != "v" {
+		t.Fatalf("snapshot pheromone = %q, want v", snapshot.Pheromones["k"])
+	}
+	if snapshot.Error == nil || snapshot.Error.Message != "boom" {
+		t.Fatalf("snapshot error = %#v, want message boom", snapshot.Error)
+	}
+
+	live.Pheromones["k"] = "live-mutated"
+	live.Error.Message = "mutated"
+
+	if snapshot.Pheromones["k"] != "v" {
+		t.Fatalf("snapshot pheromone changed to %q", snapshot.Pheromones["k"])
+	}
+	if snapshot.Error.Message != "boom" {
+		t.Fatalf("snapshot error message changed to %q", snapshot.Error.Message)
+	}
+}
+
 func TestJobManager_InvalidTransitions(t *testing.T) {
 	jm := session.NewJobManager()
 	job := jm.Create("session-1", "codex")
@@ -204,5 +244,98 @@ func TestJobManager_InvalidTransitions(t *testing.T) {
 	jm.StartJob(job.ID, 100)
 	if jm.StartJob(job.ID, 200) {
 		t.Error("should not start a running job")
+	}
+}
+
+func TestJobManager_GetSnapshot_ReturnsDetachedCopy(t *testing.T) {
+	jm := session.NewJobManager()
+	job := jm.Create("session-1", "codex")
+	jm.StartJob(job.ID, 100)
+	jm.UpdateProgress(job.ID, "before")
+	jm.SetPheromone(job.ID, "k", "v")
+	jm.FailJob(job.ID, types.NewExecutorError("boom", nil, "partial"))
+
+	live := jm.Get(job.ID)
+	if live == nil {
+		t.Fatal("live job should exist")
+	}
+	live.Pipeline = &types.PipelineStats{TotalDurationMS: 10}
+
+	snapshot := jm.GetSnapshot(job.ID)
+	if snapshot == nil {
+		t.Fatal("snapshot should exist")
+	}
+
+	if snapshot == live {
+		t.Fatal("snapshot must not alias live job pointer")
+	}
+
+	if snapshot.Progress != "before" {
+		t.Fatalf("snapshot.Progress = %q, want before", snapshot.Progress)
+	}
+	if snapshot.Pheromones["k"] != "v" {
+		t.Fatalf("snapshot pheromone = %q, want v", snapshot.Pheromones["k"])
+	}
+	if snapshot.Error == nil || snapshot.Error.Message != "boom" {
+		t.Fatalf("snapshot error = %#v, want message boom", snapshot.Error)
+	}
+	if snapshot.Pipeline == nil || snapshot.Pipeline.TotalDurationMS != 10 {
+		t.Fatalf("snapshot pipeline = %#v, want total=10", snapshot.Pipeline)
+	}
+	if snapshot.CompletedAt == nil {
+		t.Fatal("snapshot.CompletedAt should be set")
+	}
+
+	live.Progress = "after"
+	live.Pheromones["k"] = "live-mutated"
+	live.Error.Message = "mutated"
+	live.Pipeline.TotalDurationMS = 99
+	*live.CompletedAt = live.CompletedAt.Add(time.Hour)
+
+	if snapshot.Progress != "before" {
+		t.Fatalf("snapshot.Progress changed to %q", snapshot.Progress)
+	}
+	if snapshot.Pheromones["k"] != "v" {
+		t.Fatalf("snapshot pheromone changed to %q", snapshot.Pheromones["k"])
+	}
+	if snapshot.Error.Message != "boom" {
+		t.Fatalf("snapshot error message changed to %q", snapshot.Error.Message)
+	}
+	if snapshot.Pipeline.TotalDurationMS != 10 {
+		t.Fatalf("snapshot pipeline changed to %d", snapshot.Pipeline.TotalDurationMS)
+	}
+}
+
+func TestJobManager_GetSnapshot_MutationDoesNotAffectStoredJob(t *testing.T) {
+	jm := session.NewJobManager()
+	job := jm.Create("session-1", "codex")
+	jm.StartJob(job.ID, 100)
+	jm.SetPheromone(job.ID, "k", "v")
+	jm.FailJob(job.ID, types.NewExecutorError("boom", nil, "partial"))
+
+	live := jm.Get(job.ID)
+	if live == nil {
+		t.Fatal("live job should exist")
+	}
+	live.Pipeline = &types.PipelineStats{TotalDurationMS: 10}
+
+	snapshot := jm.GetSnapshot(job.ID)
+	if snapshot == nil {
+		t.Fatal("snapshot should exist")
+	}
+
+	snapshot.Pheromones["k"] = "snapshot-mutated"
+	snapshot.Error.Message = "snapshot-error"
+	snapshot.Pipeline.TotalDurationMS = 999
+
+	live = jm.Get(job.ID)
+	if live.Pheromones["k"] != "v" {
+		t.Fatalf("live pheromone = %q, want v", live.Pheromones["k"])
+	}
+	if live.Error == nil || live.Error.Message != "boom" {
+		t.Fatalf("live error = %#v, want boom", live.Error)
+	}
+	if live.Pipeline == nil || live.Pipeline.TotalDurationMS != 10 {
+		t.Fatalf("live pipeline = %#v, want total=10", live.Pipeline)
 	}
 }

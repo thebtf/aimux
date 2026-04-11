@@ -97,11 +97,58 @@ func (m *JobManager) Restore(j *Job) {
 	m.jobs[j.ID] = j
 }
 
-// Get returns a job by ID, or nil if not found.
+// Get returns a live job pointer by ID, or nil if not found.
+// Callers that only need to read must prefer GetSnapshot to avoid data races.
 func (m *JobManager) Get(id string) *Job {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.jobs[id]
+}
+
+// GetSnapshot returns a deep-copied job snapshot by ID, or nil if not found.
+// The returned job is detached from internal mutable state and safe for read-only use.
+func (m *JobManager) GetSnapshot(id string) *Job {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	j, ok := m.jobs[id]
+	if !ok {
+		return nil
+	}
+	return cloneJob(j)
+}
+
+func cloneJob(j *Job) *Job {
+	if j == nil {
+		return nil
+	}
+
+	copy := *j
+
+	if j.CompletedAt != nil {
+		completedAt := *j.CompletedAt
+		copy.CompletedAt = &completedAt
+	}
+
+	if j.Error != nil {
+		errCopy := *j.Error
+		copy.Error = &errCopy
+	}
+
+	if j.Pipeline != nil {
+		pipelineCopy := *j.Pipeline
+		copy.Pipeline = &pipelineCopy
+	}
+
+	if j.Pheromones != nil {
+		pheromones := make(map[string]string, len(j.Pheromones))
+		for k, v := range j.Pheromones {
+			pheromones[k] = v
+		}
+		copy.Pheromones = pheromones
+	}
+
+	return &copy
 }
 
 // StartJob transitions a job to running state.
@@ -239,7 +286,8 @@ func (m *JobManager) SetPheromone(id, key, value string) bool {
 	return true
 }
 
-// ListBySession returns all jobs for a given session.
+// ListBySession returns live job pointers for a given session.
+// Callers that only need to read must prefer ListBySessionSnapshot to avoid data races.
 func (m *JobManager) ListBySession(sessionID string) []*Job {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -248,6 +296,21 @@ func (m *JobManager) ListBySession(sessionID string) []*Job {
 	for _, j := range m.jobs {
 		if j.SessionID == sessionID {
 			result = append(result, j)
+		}
+	}
+	return result
+}
+
+// ListBySessionSnapshot returns deep-copied job snapshots for a given session.
+// Returned jobs are detached from internal mutable state and safe for read-only use.
+func (m *JobManager) ListBySessionSnapshot(sessionID string) []*Job {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []*Job
+	for _, j := range m.jobs {
+		if j.SessionID == sessionID {
+			result = append(result, cloneJob(j))
 		}
 	}
 	return result
