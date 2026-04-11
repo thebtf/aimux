@@ -556,15 +556,7 @@ func (s *Server) registerTools() {
 	// think tool
 	s.mcp.AddTool(
 		mcp.NewTool("think",
-			mcp.WithDescription("23 reasoning patterns. "+
-				"Top patterns: decision_framework (structured tradeoff analysis), problem_decomposition (break down complexity), "+
-				"debugging_approach (systematic trace + fix), peer_review (simulate review with objections), "+
-				"research_synthesis (group findings, assess evidence). "+
-				"Stateless: think, critical_thinking, decision_framework, problem_decomposition, mental_model, metacognitive_monitoring, recursive_thinking, "+
-				"domain_modeling, architecture_analysis, stochastic_algorithm, temporal_thinking, visual_reasoning, "+
-				"source_comparison, literature_review, peer_review, replication_analysis, experimental_loop, research_synthesis. "+
-				"Stateful (pass session_id): sequential_thinking, scientific_method, debugging_approach, "+
-				"structured_argumentation, collaborative_reasoning."),
+			mcp.WithDescription(mustStatefulToolDescription("think")),
 			mcp.WithString("pattern",
 				mcp.Required(),
 				mcp.Description("Pattern name"),
@@ -665,10 +657,7 @@ func (s *Server) registerTools() {
 	// investigate tool
 	s.mcp.AddTool(
 		mcp.NewTool("investigate",
-			mcp.WithDescription("Structured deep investigation — catches wrong assumptions before they become wrong decisions. "+
-				"Auto-detects domain (security/performance/architecture/debugging/research) from topic keywords if not specified. "+
-				"Flow: start(domain?) → (finding + assess) × N → report. "+
-				"Stops only when BOTH: convergence ≥ 1.0 AND coverage ≥ 80%."),
+			mcp.WithDescription(mustStatefulToolDescription("investigate")),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: start, finding, assess, report, status, list, recall"),
@@ -713,7 +702,7 @@ func (s *Server) registerTools() {
 	// consensus tool
 	s.mcp.AddTool(
 		mcp.NewTool("consensus",
-			mcp.WithDescription("Multi-model blinded consensus with optional synthesis"),
+			mcp.WithDescription(mustStatefulToolDescription("consensus")),
 			mcp.WithString("topic",
 				mcp.Required(),
 				mcp.Description("Topic for consensus"),
@@ -737,7 +726,7 @@ func (s *Server) registerTools() {
 	// debate tool
 	s.mcp.AddTool(
 		mcp.NewTool("debate",
-			mcp.WithDescription("Structured adversarial debate with verdict synthesis"),
+			mcp.WithDescription(mustStatefulToolDescription("debate")),
 			mcp.WithString("topic",
 				mcp.Required(),
 				mcp.Description("Topic for debate"),
@@ -758,7 +747,7 @@ func (s *Server) registerTools() {
 	// dialog tool
 	s.mcp.AddTool(
 		mcp.NewTool("dialog",
-			mcp.WithDescription("Sequential multi-turn dialog between AI CLIs"),
+			mcp.WithDescription(mustStatefulToolDescription("dialog")),
 			mcp.WithString("prompt",
 				mcp.Required(),
 				mcp.Description("Dialog topic or initial prompt"),
@@ -849,7 +838,7 @@ func (s *Server) registerTools() {
 	// workflow tool
 	s.mcp.AddTool(
 		mcp.NewTool("workflow",
-			mcp.WithDescription("Execute a declarative multi-step pipeline. Each step can call exec, think, or investigate. Steps can reference previous step outputs via {{step_id.content}} templates."),
+			mcp.WithDescription(mustStatefulToolDescription("workflow")),
 			mcp.WithString("name",
 				mcp.Description("Workflow name (for logging)"),
 			),
