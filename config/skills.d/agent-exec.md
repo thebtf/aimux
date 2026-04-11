@@ -141,7 +141,7 @@ exec(session_id="{{"{{job_id}}"}}" , prompt="<follow-up prompt>")
 - [ ] If agents found, `agents(action="find")` used for keyword matching
 - [ ] Agent path attempted before exec fallback
 - [ ] exec fallback only used when agent match confidence is Low or no agents registered
-- [ ] Async exec jobs polled via `status(job_id=...)`
+- [ ] Async jobs polled only via polling wrapper subagent (no direct `status(job_id=...)` in main turn)
 
 ---
 

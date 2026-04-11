@@ -27,8 +27,13 @@ you receive a clean single-shot result.
 - Single-shot `think` patterns that complete in-process (no CLI involved)
 - Synchronous `exec` calls known to be <30 s AND you actually need the result in the
   same turn (e.g., a quick lookup). When in doubt, use the wrapper.
+- Tasks known to take less than ~30 seconds — a direct sync tool call is simpler and
+  already shows progress via `notifications/progress` (Claude Code renders a progress bar).
+- Cases where intermediate state is needed mid-run (stall warnings, partial findings,
+  cancel on a specific progress marker) — poll yourself with the state you need.
+- Jobs that produce streaming data that must be acted upon as it arrives (rare).
 
-These exceptions are exhaustive. If a case isn't listed here, the wrapper is required.
+These exceptions are the complete list. Any case not covered here requires the wrapper.
 
 **Why this pattern is correct:**
 
@@ -54,7 +59,7 @@ You are a polling wrapper. Do ONLY these steps — nothing else, no exploration,
 1. Call mcp__aimux__status(job_id="<JOB_ID>")
 2. If response.status == "completed": output the response.content field verbatim and stop.
 3. If response.status == "failed": output the response.error field verbatim and stop.
-4. If response.status == "running":
+4. If response.status == "running" or response.status == "created":
    - Optionally echo the last 3 lines of response.progress (for visibility in logs).
    - Wait 10 seconds via Bash("sleep 10").
    - Go to step 1.
@@ -80,10 +85,10 @@ Agent(
   run_in_background=true,
   description="Monitor aimux job <JOB_ID>",
   prompt="""
-Poll mcp__aimux__status(job_id='<JOB_ID>') every 10 seconds.
+Poll mcp__aimux__status(job_id="<JOB_ID>") every 10 seconds. Use Bash("sleep 10") to wait between polls.
 Echo a short status line on each poll for visibility.
-When status='completed' or status='failed', return the content or error and stop.
-Hard ceiling: 20 minutes — cancel via mcp__aimux__sessions if exceeded.
+When status is "completed" or "failed", return the content or error and stop.
+Hard ceiling: 20 minutes — if exceeded, call mcp__aimux__sessions(action="cancel", job_id="<JOB_ID>") and stop.
 """
 )
 ```
@@ -91,14 +96,6 @@ Hard ceiling: 20 minutes — cancel via mcp__aimux__sessions if exceeded.
 With `run_in_background=true`, the Agent call returns immediately with a task ID; you
 receive a `<task-notification>` when the wrapper finishes. Use this only if the polling
 loop would otherwise block meaningful parallel work.
-
-**When NOT to use a polling wrapper:**
-
-- Task is known to take less than ~30 seconds — a direct sync tool call is simpler and
-  already shows progress via `notifications/progress` (Claude Code renders a progress bar).
-- You need intermediate state mid-run (stall warnings, partial findings, cancel on a
-  specific progress marker) — in that case, poll yourself with the state you need.
-- The job produces streaming data that must be acted upon as it arrives (rare).
 
 **Which subagent_type to use:** `general-purpose` is the safest default — it has full
 tool access including Bash (needed for sleep) and MCP tools (needed for status polling).
