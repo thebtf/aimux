@@ -145,10 +145,10 @@ Synchronous execution is acceptable only for deterministic, sub-second operation
 **Prohibited:**
 - Sync tool calls that wrap long-running CLI invocations with "just use a high timeout"
 - Tool paths that return `job_id` but have no corresponding cancel handler
-- Streaming channels that are defined but never wired (the current `handleAgentRun` async path bug — tracked as engram issue #8 — is a concrete violation)
+- Streaming channels that are defined but never wired
 - Any new tool action added to aimux without explicitly declaring whether it is sync-allowed or async-mandatory
 
-**Rationale:** MCP protocol itself has no request timeout, so a sync tool call that blocks for 5 minutes hangs the entire caller session with no escape hatch. User decision 2026-04-10: "когда ты запускаешь задачу в блокирующей сессии и у задачи нет escape hatch — сессия повисает навечно. я против такого подхода." This happened during the aimux-investigate session where a sync delegation call was discussed — it would have hung the CC session with no way to cancel. The only currently-working async path (`exec` tool) demonstrates the correct pattern: OnOutput callback plumbed from executor → JobManager.AppendProgress → MCP notifications/progress, cancel via context.CancelFunc registered per job, child processes killed on cancel. All future stateful/delegating tool actions must follow this pattern, not invent new sync variants.
+**Rationale:** MCP protocol itself has no request timeout, so a sync tool call that blocks for 5 minutes hangs the entire caller session with no escape hatch. User decision 2026-04-10: "когда ты запускаешь задачу в блокирующей сессии и у задачи нет escape hatch — сессия повисает навечно. я против такого подхода." This happened during the aimux-investigate session where a sync delegation call was discussed — it would have hung the CC session with no way to cancel. The `exec` tool demonstrates the baseline async wiring pattern (OnOutput callback from executor → JobManager → MCP `notifications/progress`, cancel via `context.CancelFunc` registered per job, child-process termination on cancel); progress accumulation semantics and cancel/stream guarantees must remain explicitly enforced by implementation and tests, not assumed from any single reference path. Concrete in-flight violations are tracked in engram issues (e.g., handleAgentRun OnOutput wiring). All future stateful/delegating tool actions must follow this contract, not invent new sync variants.
 
 ## Governance
 
