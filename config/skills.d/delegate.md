@@ -81,15 +81,25 @@ exec(
 )
 ```
 
-Capture `job_id` (for async polling via `status(job_id=...)`) and `session_id` (for session resume).
+Capture `job_id` (for wrapper polling) and `session_id` (for session resume).
 
 For agent-first routing, try:
 ```
 agent(
   agent="{{"{{best_agent}}"}}" ,
-  prompt="<QUICK format above>"
+  prompt="<QUICK format above>",
+  async=true
 )
 ```
+
+### Polling is MANDATORY via a subagent wrapper — never direct
+
+You may NOT call `status(job_id=...)` from your own context for any job dispatched in
+this delegation protocol. Every long-running delegation MUST hand polling off to a
+Sonnet subagent spawned via Task/Agent. See the `poll-wrapper-subagent` fragment for the
+template and rationale.
+
+{{template "poll-wrapper-subagent" .}}
 
 ---
 
@@ -97,7 +107,7 @@ agent(
 
 **Goal:** 5-step post-delegation quality gate.
 
-After the delegated session completes (poll with `status(job_id="{{"{{job_id}}"}}")`):
+After the polling wrapper subagent returns the final content (no direct polling!):
 
 1. **Check DONE WHEN** — did the output satisfy every verifiable outcome in the QUICK format?
 2. **Read changed files** — open each modified file and verify the implementation is real (not a stub).
@@ -127,6 +137,9 @@ exec(session_id="{{"{{session_id}}"}}", prompt="<follow-up or correction prompt>
 - [ ] Role assigned from the 9-role table
 - [ ] QUICK format written in full (no fields omitted)
 - [ ] Delegation executed via exec or agent (not manual implementation)
+- [ ] **Polling wrapper subagent used for every long-running delegation** — zero direct
+  `status(job_id=...)` calls in the main agent's turn log
+- [ ] Wrapper subagent used `subagent_type="general-purpose"` and `model="sonnet"`
 - [ ] All 5 post-delegation validation steps completed
 - [ ] Code-review lite passed with no P0/P1 findings
 
