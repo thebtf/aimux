@@ -18,6 +18,7 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
+	"github.com/thebtf/aimux/pkg/guidance"
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
@@ -110,6 +111,17 @@ func marshalToolResult(data any) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultError(fmt.Sprintf("internal error: response serialization failed: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(b)), nil
+}
+
+func marshalGuidedToolResult(tool, action string, stateSnapshot any, rawResult any) (*mcp.CallToolResult, error) {
+	builder := guidance.NewResponseBuilder()
+	payload := builder.BuildPayload(guidance.NextActionPlan{}, guidance.HandlerResult{
+		Tool:   tool,
+		Action: action,
+		State:  stateSnapshot,
+		Result: rawResult,
+	})
+	return marshalToolResult(payload)
 }
 
 // Server holds all dependencies for the MCP server.
@@ -1949,7 +1961,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if domainName == "" {
 			result["available_domains"] = inv.DomainNames()
 		}
-		return marshalToolResult(result)
+		return marshalGuidedToolResult("investigate", action, state, result)
 
 	case "finding":
 		sessionID := request.GetString("session_id", "")
@@ -1992,7 +2004,8 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 				"new_claim":      correction.CorrectedClaim,
 			}
 		}
-		return marshalToolResult(result)
+		state := inv.GetInvestigation(sessionID)
+		return marshalGuidedToolResult("investigate", action, state, result)
 
 	case "assess":
 		sessionID := request.GetString("session_id", "")
@@ -2003,7 +2016,8 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if assessErr != nil {
 			return mcp.NewToolResultError(assessErr.Error()), nil
 		}
-		return marshalToolResult(assessResult)
+		state := inv.GetInvestigation(sessionID)
+		return marshalGuidedToolResult("investigate", action, state, assessResult)
 
 	case "report":
 		sessionID := request.GetString("session_id", "")
@@ -2033,7 +2047,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		}
 
 		inv.DeleteInvestigation(sessionID)
-		return marshalToolResult(result)
+		return marshalGuidedToolResult("investigate", action, state, result)
 
 	case "status":
 		sessionID := request.GetString("session_id", "")
@@ -2058,7 +2072,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			"coverage_unchecked": unchecked,
 			"last_activity":      state.LastActivityAt,
 		}
-		return marshalToolResult(result)
+		return marshalGuidedToolResult("investigate", action, state, result)
 
 	case "list":
 		active := inv.ListInvestigations()
@@ -2067,12 +2081,13 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			cwd, _ = os.Getwd()
 		}
 		savedReports, _ := inv.ListReports(cwd)
-		return marshalToolResult(map[string]any{
+		result := map[string]any{
 			"active_investigations": active,
 			"active_count":          len(active),
 			"saved_reports":         savedReports,
 			"saved_count":           len(savedReports),
-		})
+		}
+		return marshalGuidedToolResult("investigate", action, nil, result)
 
 	case "recall":
 		topic := request.GetString("topic", "")
@@ -2094,19 +2109,21 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			for _, r := range reports {
 				topics = append(topics, r.Topic)
 			}
-			return marshalToolResult(map[string]any{
+			result := map[string]any{
 				"found":            false,
 				"message":          fmt.Sprintf("No report found matching %q", topic),
 				"available_topics": topics,
-			})
+			}
+			return marshalGuidedToolResult("investigate", action, nil, result)
 		}
-		return marshalToolResult(map[string]any{
+		payload := map[string]any{
 			"found":    true,
 			"filename": result.Filename,
 			"topic":    result.Topic,
 			"date":     result.Date,
 			"content":  result.Content,
-		})
+		}
+		return marshalGuidedToolResult("investigate", action, nil, payload)
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil

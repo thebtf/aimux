@@ -580,14 +580,18 @@ func TestHandleInvestigate_StartWithTopic(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	if data["session_id"] == nil {
-		t.Error("expected session_id")
+	resultData, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected nested result payload")
 	}
-	if data["topic"] != "test investigation" {
-		t.Errorf("topic = %v, want 'test investigation'", data["topic"])
+	if resultData["session_id"] == nil {
+		t.Error("expected result.session_id")
 	}
-	if data["coverage_areas"] == nil {
-		t.Error("expected coverage_areas")
+	if resultData["topic"] != "test investigation" {
+		t.Errorf("result.topic = %v, want 'test investigation'", resultData["topic"])
+	}
+	if resultData["coverage_areas"] == nil {
+		t.Error("expected result.coverage_areas")
 	}
 }
 
@@ -1440,8 +1444,12 @@ func TestHandleInvestigate_List(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	if data["active_count"] == nil {
-		t.Error("expected active_count field")
+	resultData, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected result payload")
+	}
+	if resultData["active_count"] == nil {
+		t.Error("expected result.active_count field")
 	}
 }
 
@@ -1481,7 +1489,11 @@ func TestHandleInvestigate_RecallNotFound(t *testing.T) {
 		t.Errorf("recall returned an error result: %v", result)
 	}
 	data := parseResult(t, result)
-	found, _ := data["found"].(bool)
+	resultPayload, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected result payload")
+	}
+	found, _ := resultPayload["found"].(bool)
 	if found {
 		t.Error("expected found=false for nonexistent topic")
 	}
@@ -1516,7 +1528,11 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 		t.Fatalf("investigate start: %v", err)
 	}
 	startData := parseResult(t, startResult)
-	sessionID, ok := startData["session_id"].(string)
+	startResultData, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected start result payload")
+	}
+	sessionID, ok := startResultData["session_id"].(string)
 	if !ok || sessionID == "" {
 		t.Fatal("expected session_id from start")
 	}
@@ -1531,8 +1547,12 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 		t.Fatalf("investigate status: %v", err)
 	}
 	statusData := parseResult(t, statusResult)
-	if statusData["topic"] != "server crash on startup" {
-		t.Errorf("topic = %v, want 'server crash on startup'", statusData["topic"])
+	statusResultData, ok := statusData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected status result payload")
+	}
+	if statusResultData["topic"] != "server crash on startup" {
+		t.Errorf("result.topic = %v, want 'server crash on startup'", statusResultData["topic"])
 	}
 
 	// 3. Finding
@@ -1548,7 +1568,11 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 		t.Fatalf("investigate finding: %v", err)
 	}
 	findingData := parseResult(t, findingResult)
-	if findingData["finding_id"] == nil {
+	findingResultData, ok := findingData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected finding result payload")
+	}
+	if findingResultData["finding_id"] == nil {
 		t.Error("expected finding_id")
 	}
 
@@ -1575,7 +1599,11 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 		t.Fatalf("investigate report: %v", err)
 	}
 	reportData := parseResult(t, reportResult)
-	if reportData["report"] == nil {
+	reportResultData, ok := reportData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected report result payload")
+	}
+	if reportResultData["report"] == nil {
 		t.Error("expected report content")
 	}
 }

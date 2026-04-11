@@ -92,3 +92,68 @@ func TestResponseBuilderBuild_AlwaysIncludesResultWithEmptyPlan(t *testing.T) {
 		t.Fatalf("DoNot = %#v, want nil when plan empty", envelope.DoNot)
 	}
 }
+
+func TestResponseBuilderBuildPayload_BranchesResultAndGuidance(t *testing.T) {
+	builder := guidance.NewResponseBuilder()
+
+	plan := guidance.NextActionPlan{
+		State:            "test_state",
+		YouAreHere:       "Test position",
+		HowThisToolWorks: "Nested result should remain raw",
+		ChooseYourPath: map[string]guidance.PathBranch{
+			guidance.BranchSelf: {
+				When:     "manual",
+				NextCall: "investigate(action=\"finding\")",
+				Example:  "investigate(action=\"finding\", ...)",
+				Then:     "continue",
+			},
+		},
+		Gaps:         []string{"coverage"},
+		StopConditions: "done",
+		DoNot:        []string{"do not"},
+	}
+	raw := map[string]any{"session_id": "abc"}
+
+	payload := builder.BuildPayload(plan, guidance.HandlerResult{Result: raw})
+
+	wrapped, ok := payload["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload.result missing or wrong type: %#v", payload["result"])
+	}
+	if !reflect.DeepEqual(wrapped, raw) {
+		t.Fatalf("result payload mismatch: got %#v want %#v", wrapped, raw)
+	}
+	if payload["state"] != plan.State {
+		t.Fatalf("state = %v want %q", payload["state"], plan.State)
+	}
+	if payload["how_this_tool_works"] != plan.HowThisToolWorks {
+		t.Fatalf("how_this_tool_works = %v want %q", payload["how_this_tool_works"], plan.HowThisToolWorks)
+	}
+	if _, ok := payload["choose_your_path"]; !ok {
+		t.Fatal("missing choose_your_path")
+	}
+	if payload["gaps"].([]string)[0] != plan.Gaps[0] {
+		t.Fatalf("gaps mismatch: %v", payload["gaps"])
+	}
+
+	if payload["stop_conditions"] != plan.StopConditions {
+		t.Fatalf("stop_conditions mismatch: %v", payload["stop_conditions"])
+	}
+}
+
+func TestResponseBuilderBuildPayload_WithEmptyPlanOnlyResult(t *testing.T) {
+	builder := guidance.NewResponseBuilder()
+	raw := map[string]any{"session_id": "xyz"}
+
+	payload := builder.BuildPayload(guidance.NextActionPlan{}, guidance.HandlerResult{Result: raw})
+	wrapped, ok := payload["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload.result missing or wrong type: %#v", payload["result"])
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload contains unexpected fields: %#v", payload)
+	}
+	if !reflect.DeepEqual(wrapped, raw) {
+		t.Fatalf("result mismatch: got %#v want %#v", wrapped, raw)
+	}
+}
