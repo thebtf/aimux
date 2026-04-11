@@ -442,8 +442,8 @@ current P26 violation. Fixing it is a prerequisite for Phase 1.5 delivery of `ac
 **so that** I do not accidentally continue a session that has lost relevance.
 
 **Acceptance Criteria:**
-- [ ] Sessions without state changes for more than 30 minutes return responses with
-  `alert: "session stalled"` and an age field
+- [ ] Active jobs without output for more than the `hard_stall_seconds` threshold return responses with
+  `alert: "stalled >Ns, consider cancel"` and an age field
 - [ ] The alert includes options to resume, abandon, or delegate
 
 ## Terminology — Distinguishing Stateful Tools
@@ -531,7 +531,7 @@ refactoring needed — the debate tool already matches the intended semantics ab
 
 - [ ] Regression test: simulated agent receiving `investigate(action="start")` response and
   choosing next action reaches a final `report` state in >95% of runs across 100 trials
-- [ ] Zero stalled sessions (no state change for >30 min with zero findings) in telemetry
+- [ ] Zero stalled active jobs (no output for >15 min) in telemetry
   across 1 week of production use after Phase 1 ships
 - [ ] 100% of stateful tools have a registered `ToolPolicy` by end of Phase 3
 - [ ] 100% of stateful tools have WHEN/WHY/HOW/CHOOSE structured descriptions by end of

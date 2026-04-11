@@ -214,8 +214,8 @@ from MCP or handlers. Handlers never format envelopes directly.
 
 - **Handler fails** (IO, DB): raw error propagates, guidance layer wraps with "you_are_here:
   error — retry or skip this step" + recommended recovery call.
-- **Planner detects stall** (session older than N minutes with no new findings): guidance
-  envelope includes `alert: "session is stale"` and "auto_cleanup_in: Nm".
+- **Planner detects stall** (active job produces no output for configured threshold): guidance
+  envelope includes `alert: "stalled >Ns, consider cancel"` and recommended recovery.
 - **Agent calls action out of order** (e.g. `finding` without `start`): handler returns
   error, guidance layer transforms it into a constructive "call start first, then ..."
   message with example.
@@ -238,9 +238,11 @@ daemon. No new runtime dependencies.
 2. Deployed via existing release workflow (goreleaser on tag push).
 3. mcp-mux auto-picks up new binary on next `mux_restart` — no config changes needed.
 
-**Backward compatibility:** Old callers that only read `session_id` and ignore other fields
-continue to work. New callers parse the envelope. **REVERSIBLE** — we can roll back the
-response shape by reverting the guidance layer without touching handlers.
+**Backward compatibility:** This is a **BREAKING CHANGE**. The original response fields are
+nested under a `result` field; existing callers must read from the new path (e.g.,
+`response.result.session_id`). In-repo migration is atomic in Phase 1; external callers are
+informed via release notes. **REVERSIBLE** — we can roll back the response shape by reverting
+the guidance layer without touching handlers.
 
 ---
 
