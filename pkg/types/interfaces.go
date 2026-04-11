@@ -66,6 +66,8 @@ type ModelledCLIResolver interface {
 }
 
 // StrategyParams is the input for orchestrator strategies.
+// Model and Effort are optional overrides forwarded to profile-aware
+// resolvers; empty values fall back to role defaults.
 type StrategyParams struct {
 	Prompt    string         `json:"prompt"`
 	CLIs      []string       `json:"clis,omitempty"`
@@ -74,6 +76,8 @@ type StrategyParams struct {
 	MaxTurns  int            `json:"max_turns,omitempty"`
 	Timeout   int            `json:"timeout,omitempty"`
 	SessionID string         `json:"session_id,omitempty"`
+	Model     string         `json:"model,omitempty"`
+	Effort    string         `json:"effort,omitempty"`
 	Extra     map[string]any `json:"extra,omitempty"`
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/logger"
@@ -36,7 +37,7 @@ func testServer(t *testing.T) *Server {
 		},
 		Roles: map[string]types.RolePreference{
 			"default":    {CLI: "codex"},
-			"coding":     {CLI: "codex"},
+			"coding":     {CLI: "codex", Model: "gpt-5.3-codex", ReasoningEffort: "medium"},
 			"codereview": {CLI: "codex"},
 			"thinkdeep":  {CLI: "codex"},
 			"analyze":    {CLI: "codex"},
@@ -53,6 +54,12 @@ func testServer(t *testing.T) *Server {
 				DisplayName:    "Test CLI",
 				Command:        config.CommandConfig{Base: "echo"},
 				PromptFlag:     "-p",
+				ModelFlag:      "-m",
+				Reasoning: &config.ReasoningConfig{
+					Flag:              "-c",
+					FlagValueTemplate: "model_reasoning_effort=%s",
+					Levels:            []string{"low", "medium", "high", "xhigh"},
+				},
 				TimeoutSeconds: 10,
 				Features:       types.CLIFeatures{Headless: true},
 			},
@@ -1826,6 +1833,98 @@ func TestHandleAgentRun_Async_BuiltinAgent(t *testing.T) {
 	}
 	if data["status"] != "running" {
 		t.Errorf("status = %v, want running", data["status"])
+	}
+}
+
+func TestHandleAgentRun_EnvOverrideBeatsAgentFrontmatter(t *testing.T) {
+	t.Setenv("AIMUX_ROLE_CODING", "codex:gpt-5.3-codex-spark:high")
+
+	srv := testServer(t)
+	agent := &agents.Agent{
+		Name:   "test-coding-agent",
+		Role:   "coding",
+		Model:  "gpt-5.4",
+		Effort: "low",
+		Meta: map[string]string{
+			"cli": "codex",
+		},
+	}
+	srv.agentReg.Register(agent)
+
+	req := makeRequest("agent", map[string]any{
+		"agent":  agent.Name,
+		"prompt": "test prompt",
+	})
+
+	result, err := srv.handleAgentRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error result")
+	}
+
+	data := parseResult(t, result)
+	content, _ := data["content"].(string)
+	if content == "" {
+		t.Fatal("missing content")
+	}
+	if !strings.Contains(content, "gpt-5.3-codex-spark") {
+		t.Fatalf("content = %q, want env override model", content)
+	}
+	if !strings.Contains(content, "model_reasoning_effort=high") {
+		t.Fatalf("content = %q, want env override effort", content)
+	}
+	if strings.Contains(content, "gpt-5.4") {
+		t.Fatalf("content = %q, got frontmatter model", content)
+	}
+	if strings.Contains(content, "model_reasoning_effort=low") {
+		t.Fatalf("content = %q, got frontmatter effort", content)
+	}
+}
+
+func TestHandleAgentRun_FrontmatterBeatsRoleDefaultsWithoutEnv(t *testing.T) {
+	srv := testServer(t)
+	agent := &agents.Agent{
+		Name:   "test-coding-agent-frontmatter",
+		Role:   "coding",
+		Model:  "gpt-5.4",
+		Effort: "low",
+		Meta: map[string]string{
+			"cli": "codex",
+		},
+	}
+	srv.agentReg.Register(agent)
+
+	req := makeRequest("agent", map[string]any{
+		"agent":  agent.Name,
+		"prompt": "test prompt",
+	})
+
+	result, err := srv.handleAgentRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error result")
+	}
+
+	data := parseResult(t, result)
+	content, _ := data["content"].(string)
+	if content == "" {
+		t.Fatal("missing content")
+	}
+	if !strings.Contains(content, "gpt-5.4") {
+		t.Fatalf("content = %q, want frontmatter model", content)
+	}
+	if !strings.Contains(content, "model_reasoning_effort=low") {
+		t.Fatalf("content = %q, want frontmatter effort", content)
+	}
+	if strings.Contains(content, "gpt-5.3-codex") {
+		t.Fatalf("content = %q, got role default model", content)
+	}
+	if strings.Contains(content, "model_reasoning_effort=medium") {
+		t.Fatalf("content = %q, got role default effort", content)
 	}
 }
 
