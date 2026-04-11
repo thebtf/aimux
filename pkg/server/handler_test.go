@@ -12,6 +12,7 @@ import (
 	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
+	"github.com/thebtf/aimux/pkg/guidance"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/session"
@@ -1450,6 +1451,79 @@ func TestHandleInvestigate_List(t *testing.T) {
 	}
 	if resultData["active_count"] == nil {
 		t.Error("expected result.active_count field")
+	}
+}
+
+func TestMarshalGuidedToolResult_NestsRawPayloadUnderResult(t *testing.T) {
+	state := map[string]any{"step": "start"}
+	raw := map[string]any{"session_id": "sess-123", "topic": "test investigation"}
+
+	toolResult, err := marshalGuidedToolResult("investigate", "start", state, raw)
+	if err != nil {
+		t.Fatalf("marshalGuidedToolResult: %v", err)
+	}
+
+	data := parseResult(t, toolResult)
+	if _, exists := data["session_id"]; exists {
+		t.Fatal("unexpected top-level session_id; guided payload must be nested under result")
+	}
+
+	resultData, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested result object, got %T", data["result"])
+	}
+	if resultData["session_id"] != "sess-123" {
+		t.Fatalf("result.session_id = %v, want sess-123", resultData["session_id"])
+	}
+	if resultData["topic"] != "test investigation" {
+		t.Fatalf("result.topic = %v, want test investigation", resultData["topic"])
+	}
+}
+
+func TestGuidanceFallbackProductionMode_MissingPolicyReturnsNestedResultWithoutPanic(t *testing.T) {
+	t.Setenv("AIMUX_ENV", "")
+
+	rawGuided := map[string]any{
+		"result": map[string]any{
+			"job_id":  "job-1",
+			"session": "sess-1",
+		},
+	}
+
+	registry := guidance.NewRegistry()
+	policy, fallback, err := registry.Resolve("workflow", rawGuided)
+	if err != nil {
+		t.Fatalf("Resolve missing policy in production mode: %v", err)
+	}
+	if policy != nil {
+		t.Fatal("expected nil policy for missing workflow policy")
+	}
+	if fallback == nil {
+		t.Fatal("expected fallback envelope for missing policy")
+	}
+	if fallback.State != guidance.StateGuidanceNotImplemented {
+		t.Fatalf("fallback.State = %q, want %q", fallback.State, guidance.StateGuidanceNotImplemented)
+	}
+
+	marshaled, err := marshalToolResult(fallback)
+	if err != nil {
+		t.Fatalf("marshalToolResult(fallback): %v", err)
+	}
+
+	data := parseResult(t, marshaled)
+	if data["state"] != guidance.StateGuidanceNotImplemented {
+		t.Fatalf("state = %v, want %s", data["state"], guidance.StateGuidanceNotImplemented)
+	}
+
+	resultData, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested result object, got %T", data["result"])
+	}
+	if resultData["job_id"] != "job-1" {
+		t.Fatalf("result.job_id = %v, want job-1", resultData["job_id"])
+	}
+	if resultData["session"] != "sess-1" {
+		t.Fatalf("result.session = %v, want sess-1", resultData["session"])
 	}
 }
 
