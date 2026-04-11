@@ -1160,6 +1160,12 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		sess.Status = types.SessionStatusRunning
 	})
 
+	// Declare busy to mcp-mux so the idle reaper does not evict this upstream
+	// while the background goroutine runs. The deferred sendIdle covers every
+	// return path below (success, failure, fallback exhaustion). See P26.
+	s.sendBusy(jobID, "exec:"+args.CLI, args.TimeoutSeconds*1000)
+	defer s.sendIdle(jobID)
+
 	// Wire live output: IOManager calls this with each new line (not full buffer).
 	// 1. Appends line to job progress (for status polling — returns accumulated output)
 	// 2. Pushes MCP notification with just the new line (for real-time display)
@@ -1788,6 +1794,8 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 		job := s.jobs.Create(sess.ID, "audit")
 		go func() {
 			s.jobs.StartJob(job.ID, 0)
+			s.sendBusy(job.ID, "audit", 0)
+			defer s.sendIdle(job.ID)
 			result, stratErr := s.orchestrator.Execute(context.Background(), "audit", params)
 			if stratErr != nil {
 				s.jobs.FailJob(job.ID, types.NewExecutorError(stratErr.Error(), stratErr, ""))
@@ -2347,6 +2355,8 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 			s.sessions.Update(sess.ID, func(sess *session.Session) {
 				sess.Status = types.SessionStatusRunning
 			})
+			s.sendBusy(job.ID, "agent:"+agentName, timeoutSeconds*1000)
+			defer s.sendIdle(job.ID)
 			result, runErr := agents.RunAgent(jobCtx, runCfg)
 			if runErr != nil {
 				s.jobs.FailJob(job.ID, types.NewExecutorError(runErr.Error(), runErr, "agent_run"))
@@ -2516,6 +2526,8 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 		job := s.jobs.Create(sess.ID, "workflow")
 		go func() {
 			s.jobs.StartJob(job.ID, 0)
+			s.sendBusy(job.ID, "workflow", 0)
+			defer s.sendIdle(job.ID)
 			result, stratErr := s.orchestrator.Execute(context.Background(), "workflow", params)
 			if stratErr != nil {
 				s.jobs.FailJob(job.ID, types.NewExecutorError(stratErr.Error(), stratErr, ""))
