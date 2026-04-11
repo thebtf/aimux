@@ -633,6 +633,46 @@ func TestNewProgressBridge_DefaultInterval(t *testing.T) {
 	}
 }
 
+func TestNormalizeProgressLine_JSONLAgentMessage(t *testing.T) {
+	line := `{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello"}}`
+	if got := normalizeProgressLine("jsonl", line); got != "hello" {
+		t.Fatalf("normalizeProgressLine(jsonl) = %q, want hello", got)
+	}
+}
+
+func TestNormalizeProgressLine_JSONLSuppressesControlEvents(t *testing.T) {
+	line := `{"type":"turn.started"}`
+	if got := normalizeProgressLine("jsonl", line); got != "" {
+		t.Fatalf("normalizeProgressLine(jsonl control) = %q, want empty", got)
+	}
+}
+
+func TestNormalizeProgressLine_JSONExtractsContent(t *testing.T) {
+	line := `{"type":"message","role":"assistant","content":"chunk","delta":true}`
+	if got := normalizeProgressLine("json", line); got != "chunk" {
+		t.Fatalf("normalizeProgressLine(json) = %q, want chunk", got)
+	}
+}
+
+func TestNormalizeProgressLine_JSONSuppressesInit(t *testing.T) {
+	line := `{"type":"init","session_id":"abc"}`
+	if got := normalizeProgressLine("json", line); got != "" {
+		t.Fatalf("normalizeProgressLine(json init) = %q, want empty", got)
+	}
+}
+
+func TestAgentBusyEstimateMs_DefaultTurns(t *testing.T) {
+	if got := agentBusyEstimateMs(30, 0); got != 30000 {
+		t.Fatalf("agentBusyEstimateMs(30,0) = %d, want 30000", got)
+	}
+}
+
+func TestAgentBusyEstimateMs_MultiTurn(t *testing.T) {
+	if got := agentBusyEstimateMs(30, 3); got != 90000 {
+		t.Fatalf("agentBusyEstimateMs(30,3) = %d, want 90000", got)
+	}
+}
+
 func TestProgressBridge_Forward_ContextCancel(t *testing.T) {
 	b := NewProgressBridge(1)
 	ctx, cancel := context.WithCancel(context.Background())
