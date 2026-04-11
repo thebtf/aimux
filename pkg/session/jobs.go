@@ -11,21 +11,21 @@ import (
 
 // Job represents an async execution task.
 type Job struct {
-	ID              string              `json:"id"`
-	SessionID       string              `json:"session_id"`
-	CLI             string              `json:"cli"`
-	Status          types.JobStatus     `json:"status"`
-	Progress        string              `json:"progress,omitempty"`
-	Content         string              `json:"content,omitempty"`
-	ExitCode        int                 `json:"exit_code"`
-	Error           *types.TypedError   `json:"error,omitempty"`
-	PollCount       int                 `json:"poll_count"`
-	Pheromones      map[string]string   `json:"pheromones,omitempty"`
-	Pipeline        *types.PipelineStats `json:"pipeline,omitempty"`
-	PID             int                 `json:"pid"`
-	CreatedAt       time.Time           `json:"created_at"`
-	ProgressUpdatedAt time.Time         `json:"progress_updated_at"`
-	CompletedAt     *time.Time          `json:"completed_at,omitempty"`
+	ID                string               `json:"id"`
+	SessionID         string               `json:"session_id"`
+	CLI               string               `json:"cli"`
+	Status            types.JobStatus      `json:"status"`
+	Progress          string               `json:"progress,omitempty"`
+	Content           string               `json:"content,omitempty"`
+	ExitCode          int                  `json:"exit_code"`
+	Error             *types.TypedError    `json:"error,omitempty"`
+	PollCount         int                  `json:"poll_count"`
+	Pheromones        map[string]string    `json:"pheromones,omitempty"`
+	Pipeline          *types.PipelineStats `json:"pipeline,omitempty"`
+	PID               int                  `json:"pid"`
+	CreatedAt         time.Time            `json:"created_at"`
+	ProgressUpdatedAt time.Time            `json:"progress_updated_at"`
+	CompletedAt       *time.Time           `json:"completed_at,omitempty"`
 }
 
 // JobManager manages async jobs with state machine transitions.
@@ -132,6 +132,9 @@ func cloneJob(j *Job) *Job {
 
 	if j.Error != nil {
 		errCopy := *j.Error
+		// Detach snapshot error from live-state: keep metadata/message but drop
+		// underlying wrapped cause pointer to avoid aliasing via Unwrap().
+		errCopy.Cause = nil
 		copy.Error = &errCopy
 	}
 
@@ -235,10 +238,26 @@ func (m *JobManager) CompleteJob(id, content string, exitCode int) bool {
 func (m *JobManager) FailJob(id string, err *types.TypedError) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.failJobLocked(id, err, false)
+}
 
+// FailJobIfActive transitions a job to failed only when it is still active.
+// Active states are created/running/completing. Completed/failed jobs are left untouched.
+func (m *JobManager) FailJobIfActive(id string, err *types.TypedError) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.failJobLocked(id, err, true)
+}
+
+func (m *JobManager) failJobLocked(id string, err *types.TypedError, activeOnly bool) bool {
 	j, ok := m.jobs[id]
 	if !ok {
 		return false
+	}
+	if activeOnly {
+		if j.Status != types.JobStatusCreated && j.Status != types.JobStatusRunning && j.Status != types.JobStatusCompleting {
+			return false
+		}
 	}
 	now := time.Now()
 	j.Status = types.JobStatusFailed
@@ -258,7 +277,6 @@ func (m *JobManager) FailJob(id string, err *types.TypedError) bool {
 
 	return true
 }
-
 
 // IncrementPoll increments the poll counter for anti-polling detection.
 func (m *JobManager) IncrementPoll(id string) int {

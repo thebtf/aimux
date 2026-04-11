@@ -1482,15 +1482,12 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
-		// Fail all running jobs for this session
+		// Atomically fail only still-active jobs for this session.
 		for _, j := range s.jobs.ListBySessionSnapshot(sessionID) {
-			if j.Status == types.JobStatusRunning || j.Status == types.JobStatusCreated {
-				s.jobs.FailJob(j.ID, types.NewExecutorError("session killed", nil, ""))
-			}
+			s.jobs.FailJobIfActive(j.ID, types.NewExecutorError("session killed", nil, ""))
 		}
 		s.sessions.Delete(sessionID)
 		return mcp.NewToolResultText(`{"status":"killed"}`), nil
-
 	case "gc":
 		// Garbage collect expired sessions (idle > 1 hour)
 		collected := 0
@@ -2370,7 +2367,13 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		if profile, err := s.registry.Get(cli); err == nil {
 			outputFormat = profile.OutputFormat
 		}
-		runCfg.OnOutput = s.progressSink(job.ID, outputFormat)
+		runCfg.OnOutput = func(resolvedCLI, line string) {
+			format := outputFormat
+			if profile, err := s.registry.Get(resolvedCLI); err == nil {
+				format = profile.OutputFormat
+			}
+			s.progressSink(job.ID, format)(line)
+		}
 		s.sendBusy(job.ID, "agent:"+agentName, agentBusyEstimateMs(timeoutSeconds, maxTurns))
 
 		go func() {

@@ -16,17 +16,17 @@ const (
 
 // RunConfig holds configuration for an agent run.
 type RunConfig struct {
-	Agent    *Agent            // agent definition
-	CLI      string            // which CLI to use
-	Prompt   string            // user task
-	CWD      string            // working directory
-	MaxTurns int               // max conversation turns (default: 1)
-	Timeout  int               // per-turn timeout in seconds
-	Model    string            // model override (passed to CLI via profile model flag)
-	Effort   string            // reasoning effort override (passed to CLI via profile effort flag)
-	Executor types.Executor    // process executor
-	Resolver types.CLIResolver // CLI resolver
-	OnOutput func(line string) // forwarded to SpawnArgs.OnOutput for live progress
+	Agent    *Agent                 // agent definition
+	CLI      string                 // which CLI to use
+	Prompt   string                 // user task
+	CWD      string                 // working directory
+	MaxTurns int                    // max conversation turns (default: 1)
+	Timeout  int                    // per-turn timeout in seconds
+	Model    string                 // model override (passed to CLI via profile model flag)
+	Effort   string                 // reasoning effort override (passed to CLI via profile effort flag)
+	Executor types.Executor         // process executor
+	Resolver types.CLIResolver      // CLI resolver
+	OnOutput func(cli, line string) // forwarded to SpawnArgs.OnOutput with resolved CLI context
 }
 
 // RunResult holds the outcome of an agent run.
@@ -171,11 +171,22 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 				args.TimeoutSeconds = cfg.Timeout
 			}
 			if cfg.OnOutput != nil {
-				args.OnOutput = cfg.OnOutput
+				resolvedCLI := args.CLI
+				args.OnOutput = func(line string) {
+					cfg.OnOutput(resolvedCLI, line)
+				}
 			}
 			return args, nil
 		}
 		// fall through to default on resolver error
+	}
+
+	var onOutput func(string)
+	if cfg.OnOutput != nil {
+		resolvedCLI := cfg.CLI
+		onOutput = func(line string) {
+			cfg.OnOutput(resolvedCLI, line)
+		}
 	}
 
 	// Legacy fallback: cli + "-p" + prompt
@@ -185,7 +196,7 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 		Args:           []string{"-p", prompt},
 		CWD:            cfg.CWD,
 		TimeoutSeconds: cfg.Timeout,
-		OnOutput:       cfg.OnOutput,
+		OnOutput:       onOutput,
 	}, nil
 }
 

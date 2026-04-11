@@ -383,6 +383,7 @@ func TestResolveArgs_PropagatesOnOutput(t *testing.T) {
 	executed := false
 	var receivedArgs types.SpawnArgs
 	outputLines := []string{}
+	outputCLIs := []string{}
 
 	exec := &onOutputExecutor{
 		CaptureArgs: func(args types.SpawnArgs) {
@@ -396,7 +397,8 @@ func TestResolveArgs_PropagatesOnOutput(t *testing.T) {
 		CLI:      "codex",
 		Prompt:   "analyze output",
 		Executor: exec,
-		OnOutput: func(line string) {
+		OnOutput: func(cli, line string) {
+			outputCLIs = append(outputCLIs, cli)
 			outputLines = append(outputLines, line)
 		},
 		Resolver: &mockResolver{},
@@ -413,10 +415,14 @@ func TestResolveArgs_PropagatesOnOutput(t *testing.T) {
 	if len(outputLines) != 2 {
 		t.Fatalf("expected 2 output lines, got %d", len(outputLines))
 	}
+	if len(outputCLIs) != 2 || outputCLIs[0] != "codex" || outputCLIs[1] != "codex" {
+		t.Fatalf("unexpected output CLIs: %#v", outputCLIs)
+	}
 }
 
 func TestResolveArgs_FallbackCopiesOnOutput(t *testing.T) {
 	outputLines := []string{}
+	outputCLIs := []string{}
 
 	exec := &onOutputExecutor{}
 
@@ -425,7 +431,8 @@ func TestResolveArgs_FallbackCopiesOnOutput(t *testing.T) {
 		CLI:      "codex",
 		Prompt:   "analyze output",
 		Executor: exec,
-		OnOutput: func(line string) {
+		OnOutput: func(cli, line string) {
+			outputCLIs = append(outputCLIs, cli)
 			outputLines = append(outputLines, line)
 		},
 		// no resolver; legacy fallback path
@@ -435,6 +442,9 @@ func TestResolveArgs_FallbackCopiesOnOutput(t *testing.T) {
 	}
 	if len(outputLines) != 2 {
 		t.Fatalf("expected 2 output lines via fallback path, got %d", len(outputLines))
+	}
+	if len(outputCLIs) != 2 || outputCLIs[0] != "codex" || outputCLIs[1] != "codex" {
+		t.Fatalf("unexpected output CLIs in fallback: %#v", outputCLIs)
 	}
 }
 
