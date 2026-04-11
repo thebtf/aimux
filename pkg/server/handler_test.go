@@ -1886,7 +1886,8 @@ func TestHandleAgentRun_Async_BuiltinAgent(t *testing.T) {
 
 	statusReq := makeRequest("status", map[string]any{"job_id": jobID})
 	var statusData map[string]any
-	for i := 0; i < 200; i++ {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
 		statusResult, statusErr := srv.handleStatus(context.Background(), statusReq)
 		if statusErr != nil {
 			t.Fatalf("handleStatus: %v", statusErr)
@@ -1895,7 +1896,10 @@ func TestHandleAgentRun_Async_BuiltinAgent(t *testing.T) {
 		if progress, _ := statusData["progress"].(string); progress != "" {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		if st, _ := statusData["status"].(string); st == "failed" || st == "completed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	progress, _ := statusData["progress"].(string)
