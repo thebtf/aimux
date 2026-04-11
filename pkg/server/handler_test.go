@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -49,12 +50,12 @@ func testServer(t *testing.T) *Server {
 		},
 		CLIProfiles: map[string]*config.CLIProfile{
 			"codex": {
-				Name:           "codex",
-				Binary:         "echo",
-				DisplayName:    "Test CLI",
-				Command:        config.CommandConfig{Base: "echo"},
-				PromptFlag:     "-p",
-				ModelFlag:      "-m",
+				Name:        "codex",
+				Binary:      "echo",
+				DisplayName: "Test CLI",
+				Command:     config.CommandConfig{Base: "echo"},
+				PromptFlag:  "-p",
+				ModelFlag:   "-m",
 				Reasoning: &config.ReasoningConfig{
 					Flag:              "-c",
 					FlagValueTemplate: "model_reasoning_effort=%s",
@@ -1457,8 +1458,8 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 
 	// 3. Finding
 	findingReq := makeRequest("investigate", map[string]any{
-		"action":     "finding",
-		"session_id": sessionID,
+		"action":      "finding",
+		"session_id":  sessionID,
 		"description": "Null pointer dereference in init()",
 		"source":      "main.go:42",
 		"severity":    "P0",
@@ -1833,6 +1834,36 @@ func TestHandleAgentRun_Async_BuiltinAgent(t *testing.T) {
 	}
 	if data["status"] != "running" {
 		t.Errorf("status = %v, want running", data["status"])
+	}
+
+	jobID, _ := data["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("job_id must be string")
+	}
+	if job := srv.jobs.Get(jobID); job == nil {
+		t.Fatal("job should exist for async agent run")
+	}
+
+	statusReq := makeRequest("status", map[string]any{"job_id": jobID})
+	var statusData map[string]any
+	for i := 0; i < 200; i++ {
+		statusResult, statusErr := srv.handleStatus(context.Background(), statusReq)
+		if statusErr != nil {
+			t.Fatalf("handleStatus: %v", statusErr)
+		}
+		statusData = parseResult(t, statusResult)
+		if progress, _ := statusData["progress"].(string); progress != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	progress, _ := statusData["progress"].(string)
+	if progress == "" {
+		t.Fatalf("expected non-empty progress for async agent run, got %v", statusData)
+	}
+	if statusData["job_id"] != jobID {
+		t.Fatalf("status job_id = %v, want %s", statusData["job_id"], jobID)
 	}
 }
 

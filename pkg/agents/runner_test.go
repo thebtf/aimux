@@ -30,8 +30,8 @@ func (m *mockExecutor) Start(_ context.Context, _ types.SpawnArgs) (types.Sessio
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockExecutor) Name() string      { return "mock" }
-func (m *mockExecutor) Available() bool   { return true }
+func (m *mockExecutor) Name() string    { return "mock" }
+func (m *mockExecutor) Available() bool { return true }
 
 // mockResolver always succeeds with minimal SpawnArgs.
 type mockResolver struct{}
@@ -379,6 +379,87 @@ func TestRunAgent_NilExecutorError(t *testing.T) {
 }
 
 // capturingExecutor records the SpawnArgs it receives.
+func TestResolveArgs_PropagatesOnOutput(t *testing.T) {
+	executed := false
+	var receivedArgs types.SpawnArgs
+	outputLines := []string{}
+
+	exec := &onOutputExecutor{
+		CaptureArgs: func(args types.SpawnArgs) {
+			receivedArgs = args
+			executed = true
+		},
+	}
+
+	_, err := agents.RunAgent(context.Background(), agents.RunConfig{
+		Agent:    makeAgent("worker", "", ""),
+		CLI:      "codex",
+		Prompt:   "analyze output",
+		Executor: exec,
+		OnOutput: func(line string) {
+			outputLines = append(outputLines, line)
+		},
+		Resolver: &mockResolver{},
+	})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if !executed {
+		t.Fatal("executor did not capture SpawnArgs")
+	}
+	if receivedArgs.OnOutput == nil {
+		t.Fatal("expected RunConfig.OnOutput to be copied into SpawnArgs")
+	}
+	if len(outputLines) != 2 {
+		t.Fatalf("expected 2 output lines, got %d", len(outputLines))
+	}
+}
+
+func TestResolveArgs_FallbackCopiesOnOutput(t *testing.T) {
+	outputLines := []string{}
+
+	exec := &onOutputExecutor{}
+
+	_, err := agents.RunAgent(context.Background(), agents.RunConfig{
+		Agent:    makeAgent("worker", "", ""),
+		CLI:      "codex",
+		Prompt:   "analyze output",
+		Executor: exec,
+		OnOutput: func(line string) {
+			outputLines = append(outputLines, line)
+		},
+		// no resolver; legacy fallback path
+	})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+	if len(outputLines) != 2 {
+		t.Fatalf("expected 2 output lines via fallback path, got %d", len(outputLines))
+	}
+}
+
+type onOutputExecutor struct {
+	CaptureArgs func(types.SpawnArgs)
+}
+
+func (o *onOutputExecutor) Run(_ context.Context, args types.SpawnArgs) (*types.Result, error) {
+	if o.CaptureArgs != nil {
+		o.CaptureArgs(args)
+	}
+	if args.OnOutput != nil {
+		args.OnOutput("line-1")
+		args.OnOutput("line-2")
+	}
+	return &types.Result{Content: "done"}, nil
+}
+
+func (o *onOutputExecutor) Start(_ context.Context, _ types.SpawnArgs) (types.Session, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (o *onOutputExecutor) Name() string    { return "callback" }
+func (o *onOutputExecutor) Available() bool { return true }
+
 type capturingExecutor struct {
 	capture  func(types.SpawnArgs)
 	response string
