@@ -1006,6 +1006,8 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			CLIs:    []string{cli, reviewerCLI},
 			CWD:     cwd,
 			Timeout: timeoutSec,
+			Model:   model,
+			Effort:  effort,
 			Extra: map[string]any{
 				"max_rounds": s.cfg.Server.Pair.MaxRounds,
 				"complex":    request.GetBool("complex", false),
@@ -2334,6 +2336,21 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 	model := agent.Model
 	effort := agent.Effort
 	timeoutSeconds := agent.Timeout
+
+	// Env override (AIMUX_ROLE_<role>=cli:model:effort) takes precedence over
+	// agent frontmatter. Same rule as handleExec — whatever the user set in the
+	// environment wins, so AIMUX_ROLE_CODING=codex:gpt-5.3-codex-spark forces
+	// every coding-role agent onto spark regardless of its frontmatter.
+	if agent.Role != "" {
+		if pref, resolveErr := s.router.Resolve(agent.Role); resolveErr == nil {
+			if pref.Model != "" {
+				model = pref.Model
+			}
+			if pref.ReasoningEffort != "" {
+				effort = pref.ReasoningEffort
+			}
+		}
+	}
 	if ts := int(request.GetFloat("timeout_seconds", 0)); ts > 0 {
 		timeoutSeconds = ts
 	}

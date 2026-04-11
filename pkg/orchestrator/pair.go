@@ -72,7 +72,7 @@ func (p *PairCoding) Execute(ctx context.Context, params types.StrategyParams) (
 			driverPrompt = buildReprompt(params.Prompt, allReviews)
 		}
 
-		driverResult, err := p.driver.Run(ctx, resolveOrFallback(p.resolver, driverCLI, driverPrompt, params.CWD, params.Timeout))
+		driverResult, err := p.driver.Run(ctx, resolveOrFallbackWithOpts(p.resolver, driverCLI, driverPrompt, params.CWD, params.Timeout, params.Model, params.Effort))
 		if err != nil {
 			return nil, fmt.Errorf("driver failed (round %d): %w", round+1, err)
 		}
@@ -191,7 +191,7 @@ func (p *PairCoding) reviewHunks(ctx context.Context, hunks []DiffHunk, reviewer
 		sb.WriteString(fmt.Sprintf("### Hunk %d (%s)\n```diff\n%s```\n\n", h.Index, h.FilePath, h.Content))
 	}
 
-	reviewResult, err := p.reviewer.Run(ctx, resolveOrFallback(p.resolver, reviewerCLI, sb.String(), params.CWD, params.Timeout))
+	reviewResult, err := p.reviewer.Run(ctx, resolveOrFallbackWithOpts(p.resolver, reviewerCLI, sb.String(), params.CWD, params.Timeout, params.Model, params.Effort))
 	if err != nil {
 		return nil, err
 	}

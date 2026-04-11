@@ -64,7 +64,7 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 
 		prompt := buildDebatePrompt(params.Prompt, history, cli, stance)
 
-		result, err := d.executor.Run(ctx, resolveOrFallback(d.resolver, cli, prompt, params.CWD, params.Timeout))
+		result, err := d.executor.Run(ctx, resolveOrFallbackWithOpts(d.resolver, cli, prompt, params.CWD, params.Timeout, params.Model, params.Effort))
 		if err != nil {
 			return nil, fmt.Errorf("debate turn %d (%s) failed: %w", totalTurns, cli, err)
 		}
@@ -96,7 +96,7 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 			params.Prompt+"\n\nProvide a final verdict: which side presented stronger arguments? Summarize key points from each side and give your recommendation.",
 			responses, budget)
 
-		synthResult, synthErr := d.executor.Run(ctx, resolveOrFallback(d.resolver, participants[0], synthPrompt, params.CWD, params.Timeout))
+		synthResult, synthErr := d.executor.Run(ctx, resolveOrFallbackWithOpts(d.resolver, participants[0], synthPrompt, params.CWD, params.Timeout, params.Model, params.Effort))
 		if synthErr == nil {
 			content += "\n\n---\n\n## Verdict\n\n" + synthResult.Content
 			totalTurns++

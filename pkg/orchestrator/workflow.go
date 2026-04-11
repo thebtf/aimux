@@ -195,6 +195,10 @@ func (w *WorkflowStrategy) executeExecStep(
 		}
 	}
 
+	// Workflow steps specify their own CLI explicitly; top-level model/effort
+	// from StrategyParams does not currently propagate to per-step resolution.
+	// Per-step model override is a follow-up (each step can carry its own
+	// "model"/"effort" params if needed).
 	spawnArgs := resolveOrFallback(w.resolver, cli, prompt, stepCWD, timeout)
 	result, err := w.executor.Run(ctx, spawnArgs)
 	if err != nil {
