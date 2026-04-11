@@ -420,7 +420,7 @@ func (s *Server) Shutdown() {
 	// Graceful drain: give running CLI processes time to finish.
 	// mcp-mux gives us ~8s grace after stdin close — use 5s for drain, rest for cleanup.
 	graceful := executor.SharedPM.GracefulShutdown(5 * time.Second)
-	if graceful > 0 {
+	if graceful > 0 && s.log != nil {
 		s.log.Info("graceful shutdown: %d processes finished naturally", graceful)
 	}
 
@@ -1022,7 +1022,11 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			}
 			jobCtx, jobCancel := context.WithCancel(context.Background())
 			s.jobs.RegisterCancel(job.ID, jobCancel)
-			go s.executePairCoding(jobCtx, job.ID, sess.ID, pairParams, cb)
+			s.sendBusy(job.ID, "pair_coding", pairParams.Timeout*1000)
+			go func() {
+				defer s.sendIdle(job.ID)
+				s.executePairCoding(jobCtx, job.ID, sess.ID, pairParams, cb)
+			}()
 			result := map[string]any{
 				"job_id":     job.ID,
 				"session_id": sess.ID,
@@ -1159,6 +1163,12 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 	s.sessions.Update(sessionID, func(sess *session.Session) {
 		sess.Status = types.SessionStatusRunning
 	})
+
+	// Declare busy to mcp-mux so the idle reaper does not evict this upstream
+	// while the background goroutine runs. The deferred sendIdle covers every
+	// return path below (success, failure, fallback exhaustion). See P26.
+	s.sendBusy(jobID, "exec:"+args.CLI, args.TimeoutSeconds*1000)
+	defer s.sendIdle(jobID)
 
 	// Wire live output: IOManager calls this with each new line (not full buffer).
 	// 1. Appends line to job progress (for status polling — returns accumulated output)
@@ -1786,7 +1796,9 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 		}
 		sess := s.sessions.Create("audit", types.SessionModeOnceStateless, cwd)
 		job := s.jobs.Create(sess.ID, "audit")
+		s.sendBusy(job.ID, "audit", 0)
 		go func() {
+			defer s.sendIdle(job.ID)
 			s.jobs.StartJob(job.ID, 0)
 			result, stratErr := s.orchestrator.Execute(context.Background(), "audit", params)
 			if stratErr != nil {
@@ -2160,7 +2172,11 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		job := s.jobs.Create(sess.ID, "consensus")
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
-		go s.executeStrategy(jobCtx, job.ID, sess.ID, "consensus", params)
+		s.sendBusy(job.ID, "consensus", 0)
+		go func() {
+			defer s.sendIdle(job.ID)
+			s.executeStrategy(jobCtx, job.ID, sess.ID, "consensus", params)
+		}()
 		return marshalToolResult(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 	}
 
@@ -2250,7 +2266,11 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		job := s.jobs.Create(sess.ID, "debate")
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
-		go s.executeStrategy(jobCtx, job.ID, sess.ID, "debate", params)
+		s.sendBusy(job.ID, "debate", 0)
+		go func() {
+			defer s.sendIdle(job.ID)
+			s.executeStrategy(jobCtx, job.ID, sess.ID, "debate", params)
+		}()
 		return marshalToolResult(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 	}
 
@@ -2341,8 +2361,10 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		job := s.jobs.Create(sess.ID, cli)
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
+		s.sendBusy(job.ID, "agent:"+agentName, timeoutSeconds*1000)
 
 		go func() {
+			defer s.sendIdle(job.ID)
 			s.jobs.StartJob(job.ID, 0)
 			s.sessions.Update(sess.ID, func(sess *session.Session) {
 				sess.Status = types.SessionStatusRunning
@@ -2514,7 +2536,9 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 		}
 		sess := s.sessions.Create("workflow", types.SessionModeOnceStateless, "")
 		job := s.jobs.Create(sess.ID, "workflow")
+		s.sendBusy(job.ID, "workflow", 0)
 		go func() {
+			defer s.sendIdle(job.ID)
 			s.jobs.StartJob(job.ID, 0)
 			result, stratErr := s.orchestrator.Execute(context.Background(), "workflow", params)
 			if stratErr != nil {
