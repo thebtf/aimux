@@ -59,7 +59,10 @@ You are a polling wrapper. Do ONLY these steps — nothing else, no exploration,
 1. Call mcp__aimux__status(job_id="<JOB_ID>")
 2. If response.status == "completed": output the response.content field verbatim and stop.
 3. If response.status == "failed": output the response.error field verbatim and stop.
-4. If response.status == "running" or response.status == "created":
+4. If response.status is one of "created", "running", "completing":
+   - "created" = job queued but not yet dispatched to CLI
+   - "running" = CLI producing output
+   - "completing" = CLI finished, aimux is finalizing (parsing, validation, persistence)
    - Optionally echo the last 3 lines of response.progress (for visibility in logs).
    - Wait 10 seconds via Bash("sleep 10").
    - Go to step 1.
@@ -87,7 +90,13 @@ Agent(
   prompt="""
 Poll mcp__aimux__status(job_id="<JOB_ID>") every 10 seconds. Use Bash("sleep 10") to wait between polls.
 Echo a short status line on each poll for visibility.
-When status is "completed" or "failed", return the content or error and stop.
+Terminal states (return and stop):
+  - "completed" → return response.content
+  - "failed"    → return response.error
+Non-terminal states (keep polling):
+  - "created"    = queued, CLI not yet dispatched
+  - "running"    = CLI producing output
+  - "completing" = CLI done, aimux finalizing (parsing, persistence)
 Hard ceiling: 20 minutes — if exceeded, call mcp__aimux__sessions(action="cancel", job_id="<JOB_ID>") and stop.
 """
 )
