@@ -327,6 +327,86 @@ func TestE2E_Investigate_StartMissingTopic(t *testing.T) {
 	expectError(t, resp)
 }
 
+func TestE2E_Investigate_FindingCoverageGuidance(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action": "start",
+			"topic":  "server crash on startup",
+		},
+	}))
+	startResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := extractToolJSON(t, startResp)
+	startResult, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected nested start result payload")
+	}
+	sessionID, _ := startResult["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("missing result.session_id")
+	}
+
+	areas := []string{"reproduction", "isolation", "hypothesis_formation", "root_cause_analysis", "fix_verification", "regression_prevention", "environmental_factors", "error_trail"}
+	previousGapCount := len(areas)
+	for i, area := range areas {
+		fmt.Fprint(stdin, jsonRPCRequest(3+i, "tools/call", map[string]any{
+			"name": "investigate",
+			"arguments": map[string]any{
+				"action":        "finding",
+				"session_id":    sessionID,
+				"description":   "Observed issue in " + area,
+				"source":        "main.go:42",
+				"severity":      "P0",
+				"coverage_area": area,
+			},
+		}))
+		findingResp, err := readResponse(reader, 10*time.Second)
+		if err != nil {
+			t.Fatalf("investigate finding %d: %v", i, err)
+		}
+		findingData := extractToolJSON(t, findingResp)
+		gaps, ok := findingData["gaps"].([]any)
+		if i < len(areas)-1 {
+			if !ok {
+				t.Fatalf("expected gaps array at step %d, got %T", i, findingData["gaps"])
+			}
+			if len(gaps) >= previousGapCount {
+				t.Fatalf("gaps did not shrink at step %d: got %d want < %d", i, len(gaps), previousGapCount)
+			}
+			previousGapCount = len(gaps)
+		} else if ok && len(gaps) != 0 {
+			t.Fatalf("expected no gaps after full coverage, got %v", gaps)
+		}
+		choose, ok := findingData["choose_your_path"].(map[string]any)
+		if !ok {
+			t.Fatal("missing choose_your_path")
+		}
+		self, ok := choose["self"].(map[string]any)
+		if !ok {
+			t.Fatal("missing self branch")
+		}
+		nextCall, _ := self["next_call"].(string)
+		if i < len(areas)-1 {
+			if nextCall == `investigate(action="assess", session_id="<session_id>")` || nextCall == `investigate(action="report", session_id="<session_id>")` {
+				t.Fatalf("finding next_call switched too early at step %d: %q", i, nextCall)
+			}
+		} else {
+			if len(gaps) != 0 {
+				t.Fatalf("expected no gaps after full coverage, got %v", gaps)
+			}
+			if nextCall != `investigate(action="assess", session_id="<session_id>")` && nextCall != `investigate(action="report", session_id="<session_id>")` {
+				t.Fatalf("expected assess/report next_call after full coverage, got %q", nextCall)
+			}
+		}
+		previousGapCount = len(gaps)
+	}
+}
+
 // --- Consensus Tool ---
 
 func TestE2E_Consensus_Basic(t *testing.T) {

@@ -1585,6 +1585,71 @@ func TestHandleInvestigate_RecallNotFound(t *testing.T) {
 	}
 }
 
+func TestHandleInvestigate_FindingWhenCoverageCompletePromotesAssess(t *testing.T) {
+	srv := testServer(t)
+	startReq := makeRequest("investigate", map[string]any{
+		"action": "start",
+		"topic":  "server crash on startup",
+	})
+	startResult, err := srv.handleInvestigate(context.Background(), startReq)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := parseResult(t, startResult)
+	startResultData, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected start result payload")
+	}
+	sessionID, _ := startResultData["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("expected session_id")
+	}
+
+	areas := []string{"reproduction", "isolation", "hypothesis_formation", "root_cause_analysis", "fix_verification", "regression_prevention", "environmental_factors", "error_trail"}
+	previousGapCount := len(areas)
+	for i, area := range areas {
+		findingReq := makeRequest("investigate", map[string]any{
+			"action":        "finding",
+			"session_id":    sessionID,
+			"description":   "finding " + area,
+			"source":        "file.go:42",
+			"severity":      "P2",
+			"coverage_area": area,
+		})
+		findingResult, findErr := srv.handleInvestigate(context.Background(), findingReq)
+		if findErr != nil {
+			t.Fatalf("finding %d: %v", i, findErr)
+		}
+		data := parseResult(t, findingResult)
+		gaps, ok := data["gaps"].([]any)
+		if i < len(areas)-1 {
+			if !ok {
+				t.Fatalf("expected gaps array after finding %d, got %T", i, data["gaps"])
+			}
+			if len(gaps) >= previousGapCount {
+				t.Fatalf("gaps did not shrink after finding %d: got %d want < %d", i, len(gaps), previousGapCount)
+			}
+			previousGapCount = len(gaps)
+			continue
+		}
+		if ok && len(gaps) != 0 {
+			t.Fatalf("expected no gaps after full coverage, got %v", gaps)
+		}
+		choose, ok := data["choose_your_path"].(map[string]any)
+		if !ok {
+			t.Fatal("expected choose_your_path after full coverage")
+		}
+		self, ok := choose["self"].(map[string]any)
+		if !ok {
+			t.Fatal("expected self branch after full coverage")
+		}
+		nextCall, _ := self["next_call"].(string)
+		if nextCall != `investigate(action="assess", session_id="<session_id>")` && nextCall != `investigate(action="report", session_id="<session_id>")` {
+			t.Fatalf("expected assess/report next_call after full coverage, got %q", nextCall)
+		}
+	}
+}
+
 func TestHandleInvestigate_InvalidAction(t *testing.T) {
 	srv := testServer(t)
 	req := makeRequest("investigate", map[string]any{
@@ -1672,6 +1737,20 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 	}
 	if findingResultData["finding_id"] == nil {
 		t.Error("expected finding_id")
+	}
+	if gaps, ok := findingData["gaps"].([]any); !ok || len(gaps) == 0 {
+		t.Fatalf("expected non-empty gaps after first finding, got %v", findingData["gaps"])
+	}
+	choose, ok := findingData["choose_your_path"].(map[string]any)
+	if !ok {
+		t.Fatal("expected choose_your_path in finding response")
+	}
+	self, ok := choose["self"].(map[string]any)
+	if !ok {
+		t.Fatal("expected self branch in finding response")
+	}
+	if nextCall, _ := self["next_call"].(string); nextCall == `investigate(action="assess", session_id="<session_id>")` || nextCall == `investigate(action="report", session_id="<session_id>")` {
+		t.Fatalf("finding next_call switched too early: %q", nextCall)
 	}
 
 	// 4. Assess
