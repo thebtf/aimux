@@ -93,7 +93,7 @@ context. Main agent sees one clean tool result, not a polling loop.
 
 If you chose `run_in_background=true` for the wrapper, react to each `<task-notification>`:
 
-| Monitor status | Action |
+| Wrapper status | Action |
 |---------------|--------|
 | Wrapper still running | Task 2 stays `in_progress` |
 | Wrapper completed with content | Task 2 `completed`, task 3 `in_progress` → parse → task 3 `completed` |

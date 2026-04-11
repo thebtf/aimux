@@ -1,9 +1,10 @@
 {{define "poll-wrapper-subagent"}}
 ### Polling Wrapper Subagent (MANDATORY for long delegations)
 
-**This is the ONLY valid way to run long-running delegated work (coding, research, audit,
+**This is the required pattern for long-running delegated work (coding, research, audit,
 debug, analyze, plan, any task >30 s).** Direct polling loops in the main agent's context
-are prohibited — they burn tokens and congest the main turn with noise.
+are prohibited — they burn tokens and congest the main turn with noise. The explicit
+exceptions listed below are the only cases where a wrapper is not required.
 
 When you dispatch a job via `exec(async=true)`, `agent(async=true)`, or any other aimux
 action that returns a `job_id`, you MUST hand polling off to a cheap Sonnet subagent via
@@ -20,12 +21,14 @@ you receive a clean single-shot result.
 - Every `agent` invocation with `async=true`
 - Anything with an unknown or variable runtime
 
-**The rule does NOT apply to:**
+**Explicit exceptions (wrapper NOT required):**
 
 - Deterministic sub-second calls: `status`, `sessions(action=list)`, `agents(action=list)`
 - Single-shot `think` patterns that complete in-process (no CLI involved)
 - Synchronous `exec` calls known to be <30 s AND you actually need the result in the
   same turn (e.g., a quick lookup). When in doubt, use the wrapper.
+
+These exceptions are exhaustive. If a case isn't listed here, the wrapper is required.
 
 **Why this pattern is correct:**
 
