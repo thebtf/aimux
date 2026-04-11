@@ -32,9 +32,9 @@ func (p *InvestigatePolicy) BuildPlan(input guidance.PolicyInput) (guidance.Next
 		ChooseYourPath: map[string]guidance.PathBranch{
 			guidance.BranchSelf: {
 				When:     "Use this when you want to drive the investigation manually.",
-				NextCall: `investigate(action="finding", session_id="<session_id>", description="...", source="...", severity="P2")`,
-				Example:  `investigate(action="finding", session_id="<session_id>", description="Observed nil dereference in init()", source="main.go:42", severity="P0")`,
-				Then:     "Add more findings, then call assess to check convergence and coverage.",
+				NextCall: nextInvestigateSelfCall(gaps),
+				Example:  nextInvestigateSelfExample(gaps),
+				Then:     nextInvestigateSelfThen(gaps),
 			},
 			guidance.BranchDelegate: {
 				When:     "Use this when you want a delegate to run the investigation loop for you.",
@@ -70,4 +70,25 @@ func uncheckedCoverageAreas(state *inv.InvestigationState) []string {
 		}
 	}
 	return gaps
+}
+
+func nextInvestigateSelfCall(gaps []string) string {
+	if len(gaps) == 0 {
+		return `investigate(action="assess", session_id="<session_id>")`
+	}
+	return `investigate(action="finding", session_id="<session_id>", description="...", source="...", severity="P2")`
+}
+
+func nextInvestigateSelfExample(gaps []string) string {
+	if len(gaps) == 0 {
+		return `investigate(action="assess", session_id="<session_id>")`
+	}
+	return `investigate(action="finding", session_id="<session_id>", description="Observed nil dereference in init()", source="main.go:42", severity="P0")`
+}
+
+func nextInvestigateSelfThen(gaps []string) string {
+	if len(gaps) == 0 {
+		return "Assess convergence and, if it is strong enough, move to report."
+	}
+	return "Add more findings, then call assess to check convergence and coverage."
 }

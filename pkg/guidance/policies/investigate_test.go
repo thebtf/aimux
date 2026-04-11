@@ -88,3 +88,70 @@ func TestInvestigatePolicy_StartIncludesCoverageGapsAndStopConditions(t *testing
 		t.Fatal("YouAreHere should be populated")
 	}
 }
+
+func TestInvestigatePolicy_FindingKeepsRemainingCoverageGaps(t *testing.T) {
+	policy := policies.NewInvestigatePolicy()
+	state := &inv.InvestigationState{
+		Topic:         "root cause",
+		Domain:        "debugging",
+		Iteration:     1,
+		Findings:      []inv.Finding{{ID: "f1", CoverageArea: "assumptions"}},
+		CoverageAreas: []string{"assumptions", "claims", "alternatives"},
+		CoverageChecked: map[string]bool{
+			"assumptions":  true,
+			"claims":       false,
+			"alternatives": false,
+		},
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+
+	plan, err := policy.BuildPlan(guidance.PolicyInput{Action: "finding", StateSnapshot: state})
+	if err != nil {
+		t.Fatalf("BuildPlan(finding): %v", err)
+	}
+	if len(plan.Gaps) != 2 {
+		t.Fatalf("Gaps len = %d, want 2", len(plan.Gaps))
+	}
+	if plan.Gaps[0] != "claims" || plan.Gaps[1] != "alternatives" {
+		t.Fatalf("Gaps = %#v, want [claims alternatives]", plan.Gaps)
+	}
+	if plan.ChooseYourPath[guidance.BranchSelf].NextCall == "" {
+		t.Fatal("self.next_call should stay populated for finding state")
+	}
+}
+
+func TestInvestigatePolicy_WhenCoverageCompleteSwitchesToAssessOrReport(t *testing.T) {
+	policy := policies.NewInvestigatePolicy()
+	state := &inv.InvestigationState{
+		Topic:     "root cause",
+		Domain:    "debugging",
+		Iteration: 2,
+		Findings: []inv.Finding{
+			{ID: "f1", CoverageArea: "assumptions"},
+			{ID: "f2", CoverageArea: "claims"},
+		},
+		CoverageAreas: []string{"assumptions", "claims"},
+		CoverageChecked: map[string]bool{
+			"assumptions": true,
+			"claims":      true,
+		},
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+
+	plan, err := policy.BuildPlan(guidance.PolicyInput{Action: "finding", StateSnapshot: state})
+	if err != nil {
+		t.Fatalf("BuildPlan(finding): %v", err)
+	}
+	if len(plan.Gaps) != 0 {
+		t.Fatalf("Gaps = %#v, want empty", plan.Gaps)
+	}
+	selfNext := plan.ChooseYourPath[guidance.BranchSelf].NextCall
+	if selfNext == `investigate(action="finding", session_id="<session_id>", description="...", source="...", severity="P2")` {
+		t.Fatalf("self.next_call stayed on finding path after full coverage: %q", selfNext)
+	}
+	if selfNext != `investigate(action="assess", session_id="<session_id>")` && selfNext != `investigate(action="report", session_id="<session_id>")` {
+		t.Fatalf("self.next_call = %q, want assess/report path", selfNext)
+	}
+}
