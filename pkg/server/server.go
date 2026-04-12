@@ -2363,6 +2363,14 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		s.jobs.RegisterCancel(job.ID, jobCancel)
 		s.sendBusy(job.ID, "agent:"+agentName, timeoutSeconds*1000)
 
+		runCfg.OnOutput = func(line string) {
+			s.jobs.AppendProgress(job.ID, line)
+			s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
+				"progressToken": job.ID,
+				"message":       line,
+			})
+		}
+
 		go func() {
 			defer s.sendIdle(job.ID)
 			s.jobs.StartJob(job.ID, 0)

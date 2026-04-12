@@ -26,6 +26,7 @@ type RunConfig struct {
 	Effort   string            // reasoning effort override (passed to CLI via profile effort flag)
 	Executor types.Executor    // process executor
 	Resolver types.CLIResolver // CLI resolver
+	OnOutput func(line string) // forwarded to SpawnArgs.OnOutput for live progress
 }
 
 // RunResult holds the outcome of an agent run.
@@ -166,6 +167,7 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 		}
 		if err == nil {
 			args.CWD = cfg.CWD
+			args.OnOutput = cfg.OnOutput
 			if cfg.Timeout > 0 {
 				args.TimeoutSeconds = cfg.Timeout
 			}
@@ -181,6 +183,7 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 		Args:           []string{"-p", prompt},
 		CWD:            cfg.CWD,
 		TimeoutSeconds: cfg.Timeout,
+		OnOutput:       cfg.OnOutput,
 	}, nil
 }
 
