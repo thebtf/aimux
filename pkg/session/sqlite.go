@@ -181,11 +181,11 @@ func (s *Store) RestoreJobs(jobs *JobManager) (int, error) {
 		       error_json, poll_count, pheromones_json, pipeline_json, pid,
 		       created_at, progress_updated_at, completed_at
 		FROM jobs
-		WHERE status NOT IN (?, ?, ?)
-		   OR (status IN (?, ?, ?) AND unixepoch(created_at) > unixepoch('now', '-1 hour'))
+		WHERE status NOT IN (?, ?)
+		   OR (status IN (?, ?) AND unixepoch(created_at) > unixepoch('now', '-1 hour'))
 		ORDER BY created_at DESC`,
-		types.JobStatusCompleted, types.JobStatusFailed, "cancelled",
-		types.JobStatusCompleted, types.JobStatusFailed, "cancelled",
+		types.JobStatusCompleted, types.JobStatusFailed,
+		types.JobStatusCompleted, types.JobStatusFailed,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("query jobs: %w", err)
