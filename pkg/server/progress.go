@@ -8,6 +8,20 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
+// sendJobProgress appends a progress line to the job store and pushes a
+// notifications/progress MCP notification so clients receive real-time output.
+// This single method is the canonical path for both exec and agent handlers —
+// centralising the format prevents silent divergence between the two.
+func (s *Server) sendJobProgress(jobID, line string) {
+	s.jobs.AppendProgress(jobID, line)
+	if s.mcp != nil {
+		s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
+			"progressToken": jobID,
+			"message":       line,
+		})
+	}
+}
+
 // ProgressBridge connects internal Go channels to MCP progress notifications.
 // Constitution P6: Push, not poll. Job progress delivered via channels.
 type ProgressBridge struct {

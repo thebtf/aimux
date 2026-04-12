@@ -2376,6 +2376,10 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		}
 		s.sendBusy(job.ID, "agent:"+agentName, agentBusyEstimateMs(timeoutSeconds, maxTurns))
 
+		runCfg.OnOutput = func(cli, line string) {
+			s.sendJobProgress(job.ID, line)
+		}
+
 		go func() {
 			defer s.sendIdle(job.ID)
 			s.jobs.StartJob(job.ID, 0)
