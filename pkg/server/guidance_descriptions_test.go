@@ -29,15 +29,30 @@ func TestStatefulToolDescriptions_IncludeRequiredTools(t *testing.T) {
 		if strings.TrimSpace(desc.How) == "" {
 			t.Fatalf("tool %q missing HOW section", tool)
 		}
+		if strings.TrimSpace(desc.NotDo) == "" {
+			t.Fatalf("tool %q missing NOT-DO section (explicit statement of what the tool does not do)", tool)
+		}
 		if strings.TrimSpace(desc.Choose) == "" {
 			t.Fatalf("tool %q missing CHOOSE section", tool)
 		}
 
 		rendered := mustStatefulToolDescription(tool)
-		for _, heading := range []string{"WHAT:", "WHEN:", "WHY:", "HOW:", "CHOOSE:"} {
+		for _, heading := range []string{"WHAT:", "WHEN:", "WHY:", "HOW:", "NOT:", "CHOOSE:"} {
 			if !strings.Contains(rendered, heading) {
 				t.Fatalf("rendered description for %q missing heading %q", tool, heading)
 			}
+		}
+
+		// The NOT section must contain a meaningful negative statement.
+		// This test fails if NotDo is zeroed out (swap body→return null guard).
+		notIdx := strings.Index(rendered, "NOT:")
+		chooseIdx := strings.Index(rendered, "CHOOSE:")
+		if notIdx < 0 || chooseIdx < 0 || chooseIdx <= notIdx {
+			t.Fatalf("rendered description for %q has NOT: after or without CHOOSE:", tool)
+		}
+		notSection := rendered[notIdx:chooseIdx]
+		if !strings.Contains(strings.ToLower(notSection), "not") && !strings.Contains(strings.ToLower(notSection), "does not") {
+			t.Fatalf("NOT section for %q does not contain a negative statement", tool)
 		}
 	}
 }
