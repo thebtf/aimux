@@ -465,6 +465,17 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 	}
 }
 
+// ToolDescription returns the description string that was registered for the named MCP tool.
+// Returns an empty string if the tool is not found.
+// Used by tests to verify that registered descriptions contain required structured sections.
+func (s *Server) ToolDescription(name string) string {
+	st := s.mcp.GetTool(name)
+	if st == nil {
+		return ""
+	}
+	return st.Tool.Description
+}
+
 // Shutdown stops background services (GC reaper, snapshot) and closes persistence.
 // Graceful: waits up to 5s for running CLI processes to finish before killing.
 func (s *Server) Shutdown() {
