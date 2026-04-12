@@ -113,6 +113,18 @@ func makeRequest(name string, args map[string]any) mcp.CallToolRequest {
 }
 
 // parseResult extracts the text content from a tool result.
+// parseGuidedResult parses a guided tool response and returns the nested "result" payload.
+// Guided responses wrap the raw handler payload under result: { ... }.
+func parseGuidedResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
+	t.Helper()
+	data := parseResult(t, result)
+	inner, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("parseGuidedResult: expected result.result map, got %T; full: %v", data["result"], data)
+	}
+	return inner
+}
+
 func parseResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
 	t.Helper()
 	if result == nil {
@@ -1491,7 +1503,7 @@ func TestMarshalGuidedToolResult_NestsRawPayloadUnderResult(t *testing.T) {
 	state := map[string]any{"step": "start"}
 	raw := map[string]any{"session_id": "sess-123", "topic": "test investigation"}
 
-	toolResult, err := marshalGuidedToolResult("investigate", "start", state, raw)
+	toolResult, err := (*Server)(nil).marshalGuidedToolResult("investigate", "start", state, raw)
 	if err != nil {
 		t.Fatalf("marshalGuidedToolResult: %v", err)
 	}
@@ -2063,7 +2075,7 @@ func TestHandleInvestigate_AutoReturnsJobIDAndPersistsDelegateResult(t *testing.
 		t.Fatalf("investigate auto returned error result: %+v", autoResult)
 	}
 
-	autoData := parseResult(t, autoResult)
+	autoData := parseGuidedResult(t, autoResult)
 	jobID, _ := autoData["job_id"].(string)
 	sessionID, _ := autoData["session_id"].(string)
 	if jobID == "" {
@@ -2155,7 +2167,7 @@ func TestHandleInvestigate_AutoCancelUsesSessionsInfrastructure(t *testing.T) {
 	if autoResult.IsError {
 		t.Fatalf("investigate auto returned error result: %+v", autoResult)
 	}
-	autoData := parseResult(t, autoResult)
+	autoData := parseGuidedResult(t, autoResult)
 	jobID, _ := autoData["job_id"].(string)
 	if jobID == "" {
 		t.Fatal("expected job_id from investigate auto")
@@ -2231,7 +2243,7 @@ func TestHandleInvestigate_AutoProgressBecomesVisibleDuringExecution(t *testing.
 		t.Fatalf("investigate auto returned error result: %+v", autoResult)
 	}
 
-	autoData := parseResult(t, autoResult)
+	autoData := parseGuidedResult(t, autoResult)
 	jobID, _ := autoData["job_id"].(string)
 	if jobID == "" {
 		t.Fatal("expected job_id from investigate auto")
@@ -2303,7 +2315,7 @@ func TestHandleInvestigate_AutoCancelPreventsSuccessResult(t *testing.T) {
 	if autoResult.IsError {
 		t.Fatalf("investigate auto returned error result: %+v", autoResult)
 	}
-	autoData := parseResult(t, autoResult)
+	autoData := parseGuidedResult(t, autoResult)
 	jobID, _ := autoData["job_id"].(string)
 	if jobID == "" {
 		t.Fatal("expected job_id from investigate auto")

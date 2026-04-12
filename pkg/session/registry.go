@@ -74,15 +74,37 @@ func cloneSession(s *Session) *Session {
 		return nil
 	}
 
-	copy := *s
+	cp := *s
 	if s.Metadata != nil {
 		metadata := make(map[string]any, len(s.Metadata))
 		for k, v := range s.Metadata {
-			metadata[k] = v
+			metadata[k] = deepCopyValue(v)
 		}
-		copy.Metadata = metadata
+		cp.Metadata = metadata
 	}
-	return &copy
+	return &cp
+}
+
+// deepCopyValue performs a recursive copy of map[string]any and []any values
+// to prevent metadata snapshots from sharing mutable reference types with the original.
+// Scalar values (string, int, bool, float64, nil, etc.) are returned as-is since they are immutable.
+func deepCopyValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, vv := range val {
+			out[k] = deepCopyValue(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, vv := range val {
+			out[i] = deepCopyValue(vv)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // Get returns a detached session snapshot by ID, or nil if not found.

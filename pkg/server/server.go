@@ -114,24 +114,40 @@ func marshalToolResult(data any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
-func marshalGuidedToolResult(tool, action string, stateSnapshot any, rawResult any) (*mcp.CallToolResult, error) {
-	builder := guidance.NewResponseBuilder()
-	plan := guidance.NextActionPlan{}
-
-	if tool == "investigate" {
-		if state, ok := stateSnapshot.(*inv.InvestigationState); ok && state != nil {
-			investigatePolicy := policies.NewInvestigatePolicy()
-			if builtPlan, err := investigatePolicy.BuildPlan(guidance.PolicyInput{
-				Action:        action,
-				StateSnapshot: state,
-				RawResult:     rawResult,
-			}); err == nil {
-				plan = builtPlan
-			}
-		}
+// buildGuidancePlan resolves the policy for tool from the server registry and computes the NextActionPlan.
+// Returns the plan and a boolean indicating whether plan.State is "report_ready".
+// Falls back to a zero plan when no policy is registered for the tool.
+//
+// NOTE: s may be nil during tests or early init; in that case only the zero plan is returned.
+func (s *Server) buildGuidancePlan(tool, action string, stateSnapshot, rawResult any) (guidance.NextActionPlan, bool) {
+	zero := guidance.NextActionPlan{}
+	if s == nil || s.guidanceReg == nil {
+		return zero, false
 	}
+	policy, ok := s.guidanceReg.Get(tool)
+	if !ok {
+		return zero, false
+	}
+	plan, err := policy.BuildPlan(guidance.PolicyInput{
+		Action:        action,
+		StateSnapshot: stateSnapshot,
+		RawResult:     rawResult,
+	})
+	if err != nil {
+		return zero, false
+	}
+	return plan, plan.State == "report_ready"
+}
 
-	payload := builder.BuildPayload(plan, guidance.HandlerResult{
+func (s *Server) marshalGuidedToolResult(tool, action string, stateSnapshot any, rawResult any) (*mcp.CallToolResult, error) {
+	plan, _ := s.buildGuidancePlan(tool, action, stateSnapshot, rawResult)
+	return s.marshalGuidedToolResultWithPlan(plan, tool, action, stateSnapshot, rawResult)
+}
+
+// marshalGuidedToolResultWithPlan assembles the guided response envelope using a pre-computed plan,
+// avoiding a redundant BuildPlan call when the caller already computed it.
+func (s *Server) marshalGuidedToolResultWithPlan(plan guidance.NextActionPlan, tool, action string, stateSnapshot, rawResult any) (*mcp.CallToolResult, error) {
+	payload := guidance.NewResponseBuilder().BuildPayload(plan, guidance.HandlerResult{
 		Tool:   tool,
 		Action: action,
 		State:  stateSnapshot,
@@ -162,6 +178,7 @@ type Server struct {
 	rateLimiter  *ratelimit.Limiter
 	authToken    string
 	projectDir   string // directory used for initial agent discovery
+	guidanceReg  *guidance.Registry
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -280,6 +297,12 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 
 	// Initialize think patterns
 	patterns.RegisterAll()
+
+	// Initialize guidance policy registry — extensible, registry-driven policy resolution.
+	s.guidanceReg = guidance.NewRegistry()
+	if err := s.guidanceReg.Register(policies.NewInvestigatePolicy()); err != nil {
+		log.Warn("guidance: failed to register investigate policy: %v", err)
+	}
 
 	// Initialize hooks registry with built-in telemetry
 	s.hooks = hooks.NewRegistry()
@@ -1983,7 +2006,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if domainName == "" {
 			result["available_domains"] = inv.DomainNames()
 		}
-		return marshalGuidedToolResult("investigate", action, state, result)
+		return s.marshalGuidedToolResult("investigate", action, state, result)
 
 	case "auto":
 		topic := request.GetString("topic", "")
@@ -2003,9 +2026,12 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		}
 
 		delegateCLI := request.GetString("cli", "")
+		var delegateModel, delegateEffort string
 		if delegateCLI == "" {
 			if pref, resolveErr := s.router.Resolve("analyze"); resolveErr == nil && pref.CLI != "" {
 				delegateCLI = pref.CLI
+				delegateModel = pref.Model
+				delegateEffort = pref.ReasoningEffort
 			}
 		}
 		if delegateCLI == "" {
@@ -2037,11 +2063,11 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		state := inv.CreateInvestigation(sess.ID, topic, domainName)
 		job := s.jobs.Create(sess.ID, delegateCLI)
 
-		prompt := inv.BuildAutoDelegatePrompt(topic, state.CoverageAreas)
+		autoPrompt := inv.BuildAutoDelegatePrompt(topic, state.CoverageAreas)
 		args := types.SpawnArgs{
 			CLI:            delegateCLI,
 			Command:        resolve.CommandBinary(profile.Command.Base),
-			Args:           resolve.BuildPromptArgs(profile, "", "", false, prompt),
+			Args:           resolve.BuildPromptArgs(profile, delegateModel, delegateEffort, false, autoPrompt),
 			CWD:            cwd,
 			TimeoutSeconds: profile.TimeoutSeconds,
 			OnOutput:       s.progressSink(job.ID, profile.OutputFormat),
@@ -2049,13 +2075,13 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
+		s.sendBusy(job.ID, "investigate:auto:"+delegateCLI, profile.TimeoutSeconds*1000)
 		go func() {
 			s.jobs.StartJob(job.ID, 0)
 			s.sessions.Update(sess.ID, func(ss *session.Session) {
 				ss.Status = types.SessionStatusRunning
 			})
 			defer s.sendIdle(job.ID)
-			s.sendBusy(job.ID, "investigate:auto:"+delegateCLI, profile.TimeoutSeconds*1000)
 
 			result, runErr := s.executor.Run(jobCtx, args)
 			if runErr != nil {
@@ -2111,7 +2137,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			s.jobs.CompleteJob(job.ID, completeContent, result.ExitCode)
 		}()
 
-		return marshalToolResult(map[string]any{
+		return s.marshalGuidedToolResult("investigate", action, state, map[string]any{
 			"job_id":     job.ID,
 			"session_id": sess.ID,
 			"status":     "running",
@@ -2160,7 +2186,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			}
 		}
 		state := inv.GetInvestigation(sessionID)
-		return marshalGuidedToolResult("investigate", action, state, result)
+		return s.marshalGuidedToolResult("investigate", action, state, result)
 
 	case "assess":
 		sessionID := request.GetString("session_id", "")
@@ -2172,7 +2198,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			return mcp.NewToolResultError(assessErr.Error()), nil
 		}
 		state := inv.GetInvestigation(sessionID)
-		return marshalGuidedToolResult("investigate", action, state, assessResult)
+		return s.marshalGuidedToolResult("investigate", action, state, assessResult)
 
 	case "report":
 		sessionID := request.GetString("session_id", "")
@@ -2206,14 +2232,11 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			}
 		}
 
-		if plan, planErr := policies.NewInvestigatePolicy().BuildPlan(guidance.PolicyInput{
-			Action:        action,
-			StateSnapshot: state,
-			RawResult:     result,
-		}); planErr == nil && plan.State == "report_ready" {
+		reportPlan, isReady := s.buildGuidancePlan("investigate", action, state, result)
+		if isReady {
 			inv.DeleteInvestigation(sessionID)
 		}
-		return marshalGuidedToolResult("investigate", action, state, result)
+		return s.marshalGuidedToolResultWithPlan(reportPlan, "investigate", action, state, result)
 
 	case "status":
 		sessionID := request.GetString("session_id", "")
@@ -2239,7 +2262,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			"coverage_unchecked": unchecked,
 			"last_activity":      state.LastActivityAt,
 		}
-		return marshalGuidedToolResult("investigate", action, state, result)
+		return s.marshalGuidedToolResult("investigate", action, state, result)
 
 	case "list":
 		active := inv.ListInvestigations()
@@ -2254,7 +2277,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			"saved_reports":         savedReports,
 			"saved_count":           len(savedReports),
 		}
-		return marshalGuidedToolResult("investigate", action, nil, result)
+		return s.marshalGuidedToolResult("investigate", action, nil, result)
 
 	case "recall":
 		topic := request.GetString("topic", "")
@@ -2281,7 +2304,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 				"message":          fmt.Sprintf("No report found matching %q", topic),
 				"available_topics": topics,
 			}
-			return marshalGuidedToolResult("investigate", action, nil, result)
+			return s.marshalGuidedToolResult("investigate", action, nil, result)
 		}
 		payload := map[string]any{
 			"found":    true,
@@ -2290,7 +2313,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			"date":     result.Date,
 			"content":  result.Content,
 		}
-		return marshalGuidedToolResult("investigate", action, nil, payload)
+		return s.marshalGuidedToolResult("investigate", action, nil, payload)
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil

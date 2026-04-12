@@ -120,8 +120,8 @@ func DelegateFindingFromOutput(cli, topic, content string, coverageAreas []strin
 	if description == "" {
 		description = fmt.Sprintf("Delegate %s completed investigation for %s", cli, topic)
 	}
-	if len(description) > 240 {
-		description = description[:240] + "..."
+	if runes := []rune(description); len(runes) > 240 {
+		description = string(runes[:240]) + "..."
 	}
 
 	coverageArea := ""
