@@ -97,9 +97,43 @@ func ThinkFindingFromResult(result *think.ThinkResult, sessionID string) Finding
 	}
 
 	return FindingInput{
-		Description:  summary.String(),
-		Source:       fmt.Sprintf("auto:think:%s", result.Pattern),
-		Severity:     SeverityP3,
-		Confidence:   ConfidenceInferred,
+		Description: summary.String(),
+		Source:      fmt.Sprintf("auto:think:%s", result.Pattern),
+		Severity:    SeverityP3,
+		Confidence:  ConfidenceInferred,
+	}
+}
+
+func BuildAutoDelegatePrompt(topic string, coverageAreas []string) string {
+	var prompt strings.Builder
+	prompt.WriteString("Investigate the following topic and return concrete evidence.\n")
+	prompt.WriteString(fmt.Sprintf("Topic: %s\n", topic))
+	if len(coverageAreas) > 0 {
+		prompt.WriteString(fmt.Sprintf("Coverage areas: %s\n", strings.Join(coverageAreas, ", ")))
+	}
+	prompt.WriteString("Return concise findings with concrete evidence and a short conclusion.")
+	return prompt.String()
+}
+
+func DelegateFindingFromOutput(cli, topic, content string, coverageAreas []string) FindingInput {
+	description := strings.TrimSpace(content)
+	if description == "" {
+		description = fmt.Sprintf("Delegate %s completed investigation for %s", cli, topic)
+	}
+	if len(description) > 240 {
+		description = description[:240] + "..."
+	}
+
+	coverageArea := ""
+	if len(coverageAreas) > 0 {
+		coverageArea = coverageAreas[0]
+	}
+
+	return FindingInput{
+		Description:  description,
+		Source:       fmt.Sprintf("delegate:%s", cli),
+		Severity:     SeverityP2,
+		Confidence:   ConfidenceVerified,
+		CoverageArea: coverageArea,
 	}
 }

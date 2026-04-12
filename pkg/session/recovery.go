@@ -33,6 +33,7 @@ func RecoverFromWAL(walPath string, sessions *Registry, jobs *JobManager) error 
 				Status       types.SessionStatus `json:"status"`
 				CLISessionID string              `json:"cli_session_id"`
 				Turns        int                 `json:"turns"`
+				Metadata     map[string]any      `json:"metadata"`
 			}
 			if err := json.Unmarshal(entry.Data, &update); err != nil {
 				continue
@@ -46,6 +47,9 @@ func RecoverFromWAL(walPath string, sessions *Registry, jobs *JobManager) error 
 				}
 				if update.Turns > 0 {
 					s.Turns = update.Turns
+				}
+				if update.Metadata != nil {
+					s.Metadata = update.Metadata
 				}
 			})
 

@@ -407,6 +407,298 @@ func TestE2E_Investigate_FindingCoverageGuidance(t *testing.T) {
 	}
 }
 
+func TestE2E_Investigate_ReportZeroFindings_BlockedKeepsSession(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action": "start",
+			"topic":  "no findings yet",
+		},
+	}))
+	startResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := extractToolJSON(t, startResp)
+	startResult, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected nested start result payload")
+	}
+	sessionID, _ := startResult["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("missing result.session_id")
+	}
+
+	fmt.Fprint(stdin, jsonRPCRequest(3, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action":     "report",
+			"session_id": sessionID,
+		},
+	}))
+	reportResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate report: %v", err)
+	}
+	reportData := extractToolJSON(t, reportResp)
+	if reportData["state"] != "report_blocked" {
+		t.Fatalf("state = %v, want report_blocked", reportData["state"])
+	}
+	if _, leaked := reportData["report"]; leaked {
+		t.Fatal("unexpected top-level report field leak")
+	}
+	reportResult, ok := reportData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected report result payload")
+	}
+	reportText, _ := reportResult["report"].(string)
+	if reportText == "" {
+		t.Fatal("expected non-empty result.report")
+	}
+	choose, ok := reportData["choose_your_path"].(map[string]any)
+	if !ok {
+		t.Fatal("missing choose_your_path")
+	}
+	self, ok := choose["self"].(map[string]any)
+	if !ok {
+		t.Fatal("missing self branch")
+	}
+	nextCall, _ := self["next_call"].(string)
+	if nextCall != `investigate(action="finding", session_id="<session_id>", description="...", source="...", severity="P2")` {
+		t.Fatalf("next_call = %q, want finding corrective call", nextCall)
+	}
+
+	fmt.Fprint(stdin, jsonRPCRequest(4, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action":     "status",
+			"session_id": sessionID,
+		},
+	}))
+	statusResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate status: %v", err)
+	}
+	if statusResp["error"] != nil {
+		t.Fatalf("status should remain usable after blocked report: %v", statusResp["error"])
+	}
+	statusResult, _ := statusResp["result"].(map[string]any)
+	if statusResult == nil {
+		t.Fatalf("missing JSON-RPC result in status response: %+v", statusResp)
+	}
+	if isErr, _ := statusResult["isError"].(bool); isErr {
+		t.Fatalf("status returned tool error after blocked report: %+v", statusResult)
+	}
+}
+
+func TestE2E_Investigate_ReportWeakEvidence_PreliminaryKeepsSession(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action": "start",
+			"topic":  "startup crash",
+		},
+	}))
+	startResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := extractToolJSON(t, startResp)
+	startResult, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected nested start result payload")
+	}
+	sessionID, _ := startResult["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("missing result.session_id")
+	}
+
+	fmt.Fprint(stdin, jsonRPCRequest(3, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action":      "finding",
+			"session_id":  sessionID,
+			"description": "single weak finding",
+			"source":      "main.go:42",
+			"severity":    "P2",
+		},
+	}))
+	if _, err := readResponse(reader, 10*time.Second); err != nil {
+		t.Fatalf("investigate finding: %v", err)
+	}
+
+	fmt.Fprint(stdin, jsonRPCRequest(4, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action":     "report",
+			"session_id": sessionID,
+		},
+	}))
+	reportResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate report: %v", err)
+	}
+	reportData := extractToolJSON(t, reportResp)
+	if reportData["state"] != "report_preliminary" {
+		t.Fatalf("state = %v, want report_preliminary", reportData["state"])
+	}
+	if _, leaked := reportData["report"]; leaked {
+		t.Fatal("unexpected top-level report field leak")
+	}
+	reportResult, ok := reportData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected report result payload")
+	}
+	reportText, _ := reportResult["report"].(string)
+	if reportText == "" {
+		t.Fatal("expected non-empty result.report")
+	}
+	choose, ok := reportData["choose_your_path"].(map[string]any)
+	if !ok {
+		t.Fatal("missing choose_your_path")
+	}
+	self, ok := choose["self"].(map[string]any)
+	if !ok {
+		t.Fatal("missing self branch")
+	}
+	nextCall, _ := self["next_call"].(string)
+	if nextCall != `investigate(action="assess", session_id="<session_id>")` {
+		t.Fatalf("next_call = %q, want assess corrective call", nextCall)
+	}
+
+	fmt.Fprint(stdin, jsonRPCRequest(5, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action":     "status",
+			"session_id": sessionID,
+		},
+	}))
+	statusResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate status: %v", err)
+	}
+	if statusResp["error"] != nil {
+		t.Fatalf("status should remain usable after preliminary report: %v", statusResp["error"])
+	}
+	statusResult, _ := statusResp["result"].(map[string]any)
+	if statusResult == nil {
+		t.Fatalf("missing JSON-RPC result in status response: %+v", statusResp)
+	}
+	if isErr, _ := statusResult["isError"].(bool); isErr {
+		t.Fatalf("status returned tool error after preliminary report: %+v", statusResult)
+	}
+}
+
+func TestE2E_Investigate_ReportWeakEvidence_ForceIncompleteKeepsSession(t *testing.T) {
+	stdin, reader := initTestCLIServer(t)
+
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action": "start",
+			"topic":  "startup crash",
+		},
+	}))
+	startResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := extractToolJSON(t, startResp)
+	startResult, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected nested start result payload")
+	}
+	sessionID, _ := startResult["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("missing result.session_id")
+	}
+
+	fmt.Fprint(stdin, jsonRPCRequest(3, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action":      "finding",
+			"session_id":  sessionID,
+			"description": "single weak finding",
+			"source":      "main.go:42",
+			"severity":    "P2",
+		},
+	}))
+	if _, err := readResponse(reader, 10*time.Second); err != nil {
+		t.Fatalf("investigate finding: %v", err)
+	}
+
+	fmt.Fprint(stdin, jsonRPCRequest(4, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action":     "report",
+			"session_id": sessionID,
+			"force":      true,
+		},
+	}))
+	reportResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate report force=true: %v", err)
+	}
+	reportData := extractToolJSON(t, reportResp)
+	if reportData["state"] != "report_incomplete_forced" {
+		t.Fatalf("state = %v, want report_incomplete_forced", reportData["state"])
+	}
+	reportResult, ok := reportData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected report result payload")
+	}
+	reportText, _ := reportResult["report"].(string)
+	if reportText == "" {
+		t.Fatal("expected non-empty result.report")
+	}
+	metadata, ok := reportResult["metadata"].(map[string]any)
+	if !ok {
+		t.Fatal("expected result.metadata")
+	}
+	force, _ := metadata["force"].(bool)
+	if !force {
+		t.Fatalf("result.metadata.force = %v, want true", metadata["force"])
+	}
+	choose, ok := reportData["choose_your_path"].(map[string]any)
+	if !ok {
+		t.Fatal("missing choose_your_path")
+	}
+	self, ok := choose["self"].(map[string]any)
+	if !ok {
+		t.Fatal("missing self branch")
+	}
+	nextCall, _ := self["next_call"].(string)
+	if nextCall != `investigate(action="assess", session_id="<session_id>")` {
+		t.Fatalf("next_call = %q, want assess corrective call", nextCall)
+	}
+
+	fmt.Fprint(stdin, jsonRPCRequest(5, "tools/call", map[string]any{
+		"name": "investigate",
+		"arguments": map[string]any{
+			"action":     "status",
+			"session_id": sessionID,
+		},
+	}))
+	statusResp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("investigate status: %v", err)
+	}
+	if statusResp["error"] != nil {
+		t.Fatalf("status should remain usable after forced incomplete report: %v", statusResp["error"])
+	}
+	statusResult, _ := statusResp["result"].(map[string]any)
+	if statusResult == nil {
+		t.Fatalf("missing JSON-RPC result in status response: %+v", statusResp)
+	}
+	if isErr, _ := statusResult["isError"].(bool); isErr {
+		t.Fatalf("status returned tool error after forced incomplete report: %+v", statusResult)
+	}
+}
+
 // --- Consensus Tool ---
 
 func TestE2E_Consensus_Basic(t *testing.T) {

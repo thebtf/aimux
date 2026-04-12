@@ -688,8 +688,8 @@ func (s *Server) registerTools() {
 			mcp.WithDescription(mustStatefulToolDescription("investigate")),
 			mcp.WithString("action",
 				mcp.Required(),
-				mcp.Description("Action: start, finding, assess, report, status, list, recall"),
-				mcp.Enum("start", "finding", "assess", "report", "status", "list", "recall"),
+				mcp.Description("Action: start, finding, assess, report, auto, status, list, recall"),
+				mcp.Enum("start", "finding", "assess", "report", "auto", "status", "list", "recall"),
 			),
 			mcp.WithString("topic",
 				mcp.Description("Investigation topic (required for start, recall)"),
@@ -721,7 +721,13 @@ func (s *Server) registerTools() {
 				mcp.Description("Finding ID this corrects — creates a Correction chain (optional for action=finding)"),
 			),
 			mcp.WithString("cwd",
-				mcp.Description("Working directory for report file save (optional for action=report)"),
+				mcp.Description("Working directory for report file save (optional for action=report, auto)"),
+			),
+			mcp.WithString("cli",
+				mcp.Description("Delegate CLI override (optional for action=auto)"),
+			),
+			mcp.WithBoolean("force",
+				mcp.Description("Generate report even when evidence is incomplete (optional for action=report)"),
 			),
 		),
 		s.handleInvestigate,
@@ -1979,6 +1985,139 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		}
 		return marshalGuidedToolResult("investigate", action, state, result)
 
+	case "auto":
+		topic := request.GetString("topic", "")
+		if topic == "" {
+			return mcp.NewToolResultError("topic required for auto"), nil
+		}
+		if err := s.checkConcurrencyLimit(); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		domainName := request.GetString("domain", "")
+		if domainName == "" {
+			domainName = inv.AutoDetectDomain(topic)
+		}
+		if inv.GetDomain(domainName) == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("unknown domain %q; valid: %v", domainName, inv.DomainNames())), nil
+		}
+
+		delegateCLI := request.GetString("cli", "")
+		if delegateCLI == "" {
+			if pref, resolveErr := s.router.Resolve("analyze"); resolveErr == nil && pref.CLI != "" {
+				delegateCLI = pref.CLI
+			}
+		}
+		if delegateCLI == "" {
+			delegateCLI = "codex"
+		}
+
+		profile, profileErr := s.registry.Get(delegateCLI)
+		if profileErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("CLI %q not configured for investigate auto", delegateCLI)), nil
+		}
+
+		cwd := request.GetString("cwd", "")
+		if cwd != "" {
+			cwd = filepath.Clean(cwd)
+			if info, err := os.Stat(cwd); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("cwd %q not found: %v", cwd, err)), nil
+			} else if !info.IsDir() {
+				return mcp.NewToolResultError(fmt.Sprintf("cwd %q is not a directory", cwd)), nil
+			}
+		}
+
+		sess := s.sessions.Create("investigate", types.SessionModeOnceStateful, cwd)
+		s.sessions.Update(sess.ID, func(ss *session.Session) {
+			ss.Metadata = map[string]any{
+				"source": "delegate",
+				"cli":    delegateCLI,
+			}
+		})
+		state := inv.CreateInvestigation(sess.ID, topic, domainName)
+		job := s.jobs.Create(sess.ID, delegateCLI)
+
+		prompt := inv.BuildAutoDelegatePrompt(topic, state.CoverageAreas)
+		args := types.SpawnArgs{
+			CLI:            delegateCLI,
+			Command:        resolve.CommandBinary(profile.Command.Base),
+			Args:           resolve.BuildPromptArgs(profile, "", "", false, prompt),
+			CWD:            cwd,
+			TimeoutSeconds: profile.TimeoutSeconds,
+			OnOutput:       s.progressSink(job.ID, profile.OutputFormat),
+		}
+
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		s.jobs.RegisterCancel(job.ID, jobCancel)
+		go func() {
+			s.jobs.StartJob(job.ID, 0)
+			s.sessions.Update(sess.ID, func(ss *session.Session) {
+				ss.Status = types.SessionStatusRunning
+			})
+			defer s.sendIdle(job.ID)
+			s.sendBusy(job.ID, "investigate:auto:"+delegateCLI, profile.TimeoutSeconds*1000)
+
+			result, runErr := s.executor.Run(jobCtx, args)
+			if runErr != nil {
+				s.jobs.FailJob(job.ID, types.NewExecutorError(runErr.Error(), runErr, ""))
+				s.sessions.Update(sess.ID, func(ss *session.Session) {
+					ss.Status = types.SessionStatusFailed
+				})
+				return
+			}
+			if result.Error != nil {
+				s.jobs.FailJob(job.ID, result.Error)
+				s.sessions.Update(sess.ID, func(ss *session.Session) {
+					ss.Status = types.SessionStatusFailed
+				})
+				return
+			}
+
+			parsed, cliSessionID := parser.ParseContent(result.Content, profile.OutputFormat)
+			if cliSessionID != "" {
+				s.sessions.Update(sess.ID, func(ss *session.Session) {
+					ss.CLISessionID = cliSessionID
+				})
+			}
+
+			delegateFinding := inv.DelegateFindingFromOutput(delegateCLI, topic, parsed, state.CoverageAreas)
+			if _, _, findErr := inv.AddFinding(sess.ID, delegateFinding); findErr != nil {
+				s.jobs.FailJob(job.ID, types.NewExecutorError(findErr.Error(), findErr, ""))
+				s.sessions.Update(sess.ID, func(ss *session.Session) {
+					ss.Status = types.SessionStatusFailed
+				})
+				return
+			}
+
+			updatedState := inv.GetInvestigation(sess.ID)
+			delegateReport := ""
+			if updatedState != nil {
+				delegateReport = inv.GenerateReport(updatedState)
+			}
+			s.sessions.Update(sess.ID, func(ss *session.Session) {
+				if ss.Metadata == nil {
+					ss.Metadata = make(map[string]any)
+				}
+				ss.Metadata["source"] = "delegate"
+				ss.Metadata["cli"] = delegateCLI
+				ss.Metadata["delegate_report"] = delegateReport
+				ss.Status = types.SessionStatusCompleted
+				ss.Turns++
+			})
+			completeContent := parsed
+			if delegateReport != "" {
+				completeContent = parsed + "\n\n" + delegateReport
+			}
+			s.jobs.CompleteJob(job.ID, completeContent, result.ExitCode)
+		}()
+
+		return marshalToolResult(map[string]any{
+			"job_id":     job.ID,
+			"session_id": sess.ID,
+			"status":     "running",
+			"cli":        delegateCLI,
+		})
+
 	case "finding":
 		sessionID := request.GetString("session_id", "")
 		if sessionID == "" {
@@ -2046,12 +2185,17 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		}
 
 		report := inv.GenerateReport(state)
+		forceReport := request.GetBool("force", false)
 
 		result := map[string]any{
 			"report":            report,
 			"findings_count":    len(state.Findings),
 			"corrections_count": len(state.Corrections),
 			"iterations":        state.Iteration,
+			"force":             forceReport,
+			"metadata": map[string]any{
+				"force": forceReport,
+			},
 		}
 
 		cwd := request.GetString("cwd", "")
@@ -2062,7 +2206,13 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			}
 		}
 
-		inv.DeleteInvestigation(sessionID)
+		if plan, planErr := policies.NewInvestigatePolicy().BuildPlan(guidance.PolicyInput{
+			Action:        action,
+			StateSnapshot: state,
+			RawResult:     result,
+		}); planErr == nil && plan.State == "report_ready" {
+			inv.DeleteInvestigation(sessionID)
+		}
 		return marshalGuidedToolResult("investigate", action, state, result)
 
 	case "status":

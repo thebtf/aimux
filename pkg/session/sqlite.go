@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/types"
@@ -44,6 +45,7 @@ func migrate(db *sql.DB) error {
 			status TEXT NOT NULL,
 			turns INTEGER DEFAULT 0,
 			cwd TEXT,
+			metadata_json TEXT,
 			created_at TEXT NOT NULL,
 			last_active_at TEXT NOT NULL
 		);
@@ -71,16 +73,27 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 		CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN metadata_json TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // SnapshotSession upserts a session into SQLite.
 func (s *Store) SnapshotSession(sess *Session) error {
+	metadataJSON, _ := json.Marshal(sess.Metadata)
 	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, created_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.CLI, sess.Mode, sess.CLISessionID, sess.PID,
-		sess.Status, sess.Turns, sess.CWD,
+		sess.Status, sess.Turns, sess.CWD, string(metadataJSON),
 		sess.CreatedAt.Format(time.RFC3339),
 		sess.LastActiveAt.Format(time.RFC3339),
 	)
@@ -128,11 +141,12 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	defer tx.Rollback()
 
 	for _, sess := range sessions.List("") {
+		metadataJSON, _ := json.Marshal(sess.Metadata)
 		if _, execErr := tx.Exec(`
-			INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, created_at, last_active_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.CLI, sess.Mode, sess.CLISessionID, sess.PID,
-			sess.Status, sess.Turns, sess.CWD,
+			sess.Status, sess.Turns, sess.CWD, string(metadataJSON),
 			sess.CreatedAt.Format(time.RFC3339),
 			sess.LastActiveAt.Format(time.RFC3339),
 		); execErr != nil {

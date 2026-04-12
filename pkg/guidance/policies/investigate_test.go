@@ -1,6 +1,7 @@
 package policies_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -51,14 +52,11 @@ func TestInvestigatePolicy_StartBuildsNotebookReadyGuidance(t *testing.T) {
 	if _, ok := plan.ChooseYourPath[guidance.BranchSelf]; !ok {
 		t.Fatal("self branch missing")
 	}
-	if _, ok := plan.ChooseYourPath[guidance.BranchDelegate]; !ok {
-		t.Fatal("delegate branch missing")
-	}
 	if plan.ChooseYourPath[guidance.BranchSelf].NextCall == "" {
 		t.Fatal("self.next_call should be populated")
 	}
-	if plan.ChooseYourPath[guidance.BranchDelegate].NextCall == "" {
-		t.Fatal("delegate.next_call should be populated")
+	if _, ok := plan.ChooseYourPath[guidance.BranchDelegate]; ok {
+		t.Fatal("delegate branch should not be exposed before action=auto exists")
 	}
 }
 
@@ -148,10 +146,134 @@ func TestInvestigatePolicy_WhenCoverageCompleteSwitchesToAssessOrReport(t *testi
 		t.Fatalf("Gaps = %#v, want empty", plan.Gaps)
 	}
 	selfNext := plan.ChooseYourPath[guidance.BranchSelf].NextCall
-	if selfNext == `investigate(action="finding", session_id="<session_id>", description="...", source="...", severity="P2")` {
-		t.Fatalf("self.next_call stayed on finding path after full coverage: %q", selfNext)
-	}
 	if selfNext != `investigate(action="assess", session_id="<session_id>")` && selfNext != `investigate(action="report", session_id="<session_id>")` {
 		t.Fatalf("self.next_call = %q, want assess/report path", selfNext)
 	}
+}
+
+func TestInvestigatePolicy_ReportWithoutFindingsReturnsCorrectiveGuidance(t *testing.T) {
+	policy := policies.NewInvestigatePolicy()
+	state := &inv.InvestigationState{
+		Topic:           "root cause",
+		Domain:          "debugging",
+		Iteration:       0,
+		CoverageAreas:   []string{"reproduction", "isolation"},
+		CoverageChecked: map[string]bool{},
+		CreatedAt:       time.Now(),
+		LastActivityAt:  time.Now(),
+	}
+
+	plan, err := policy.BuildPlan(guidance.PolicyInput{Action: "report", StateSnapshot: state})
+	if err != nil {
+		t.Fatalf("BuildPlan(report): %v", err)
+	}
+	if plan.State != "report_blocked" {
+		t.Fatalf("State = %q, want report_blocked", plan.State)
+	}
+	if plan.ChooseYourPath == nil {
+		t.Fatal("ChooseYourPath should be populated")
+	}
+	self := plan.ChooseYourPath[guidance.BranchSelf]
+	if self.NextCall != `investigate(action="finding", session_id="<session_id>", description="...", source="...", severity="P2")` {
+		t.Fatalf("self.next_call = %q, want finding path", self.NextCall)
+	}
+	if self.Example != self.NextCall {
+		t.Fatalf("self.example = %q, want %q", self.Example, self.NextCall)
+	}
+	if len(plan.Gaps) == 0 {
+		t.Fatal("Gaps should remain populated when no findings exist")
+	}
+}
+
+func TestInvestigatePolicy_ReportWithWeakEvidenceMarksPreliminaryAndListsGaps(t *testing.T) {
+	policy := policies.NewInvestigatePolicy()
+	state := &inv.InvestigationState{
+		Topic:     "root cause",
+		Domain:    "debugging",
+		Iteration: 1,
+		Findings: []inv.Finding{
+			{ID: "f1", CoverageArea: "reproduction", Iteration: 1},
+		},
+		Corrections: []inv.Correction{{OriginalID: "f0", Iteration: 1}},
+		CoverageAreas: []string{"reproduction", "isolation"},
+		CoverageChecked: map[string]bool{
+			"reproduction": true,
+			"isolation":    true,
+		},
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+
+	plan, err := policy.BuildPlan(guidance.PolicyInput{Action: "report", StateSnapshot: state})
+	if err != nil {
+		t.Fatalf("BuildPlan(report): %v", err)
+	}
+	if plan.State != "report_preliminary" {
+		t.Fatalf("State = %q, want report_preliminary", plan.State)
+	}
+	if len(plan.Gaps) == 0 {
+		t.Fatal("Gaps should include remaining evidence gaps for preliminary report")
+	}
+	if !containsString(plan.Gaps, "convergence < 1.0") {
+		t.Fatalf("Gaps = %#v, want convergence < 1.0 gap", plan.Gaps)
+	}
+	self := plan.ChooseYourPath[guidance.BranchSelf]
+	if self.NextCall != `investigate(action="assess", session_id="<session_id>")` {
+		t.Fatalf("self.next_call = %q, want assess path", self.NextCall)
+	}
+	if self.Example != self.NextCall {
+		t.Fatalf("self.example = %q, want %q", self.Example, self.NextCall)
+	}
+	if !strings.Contains(strings.ToLower(self.Then), "preliminary") {
+		t.Fatalf("self.then = %q, want PRELIMINARY guidance", self.Then)
+	}
+}
+
+func TestInvestigatePolicy_ReportForceTrueStillMarksWeakEvidenceIncomplete(t *testing.T) {
+	policy := policies.NewInvestigatePolicy()
+	state := &inv.InvestigationState{
+		Topic:     "root cause",
+		Domain:    "debugging",
+		Iteration: 1,
+		Findings: []inv.Finding{
+			{ID: "f1", CoverageArea: "reproduction", Iteration: 1},
+		},
+		Corrections: []inv.Correction{{OriginalID: "f0", Iteration: 1}},
+		CoverageAreas: []string{"reproduction", "isolation"},
+		CoverageChecked: map[string]bool{
+			"reproduction": true,
+			"isolation":    true,
+		},
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+
+	plan, err := policy.BuildPlan(guidance.PolicyInput{
+		Action:        "report",
+		StateSnapshot: state,
+		RawResult: map[string]any{
+			"force": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan(report): %v", err)
+	}
+	if plan.State != "report_incomplete_forced" {
+		t.Fatalf("State = %q, want report_incomplete_forced", plan.State)
+	}
+	if !containsString(plan.Gaps, "convergence < 1.0") {
+		t.Fatalf("Gaps = %#v, want convergence < 1.0 gap", plan.Gaps)
+	}
+	if !strings.Contains(plan.YouAreHere, "force=true") {
+		t.Fatalf("YouAreHere = %q, want force=true marker", plan.YouAreHere)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
