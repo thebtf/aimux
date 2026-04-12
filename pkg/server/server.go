@@ -1171,14 +1171,10 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 	defer s.sendIdle(jobID)
 
 	// Wire live output: IOManager calls this with each new line (not full buffer).
-	// 1. Appends line to job progress (for status polling — returns accumulated output)
-	// 2. Pushes MCP notification with just the new line (for real-time display)
+	// sendJobProgress appends to the job store and pushes a notifications/progress
+	// event in one step — see pkg/server/progress.go.
 	args.OnOutput = func(line string) {
-		s.jobs.AppendProgress(jobID, line)
-		s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
-			"progressToken": jobID,
-			"message":       line,
-		})
+		s.sendJobProgress(jobID, line)
 	}
 
 	// Build the ordered list of CLIs to try. The primary (args.CLI) is always
@@ -2364,11 +2360,7 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		s.sendBusy(job.ID, "agent:"+agentName, timeoutSeconds*1000)
 
 		runCfg.OnOutput = func(line string) {
-			s.jobs.AppendProgress(job.ID, line)
-			s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
-				"progressToken": job.ID,
-				"message":       line,
-			})
+			s.sendJobProgress(job.ID, line)
 		}
 
 		go func() {
