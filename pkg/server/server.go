@@ -469,6 +469,9 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 // Returns an empty string if the tool is not found.
 // Used by tests to verify that registered descriptions contain required structured sections.
 func (s *Server) ToolDescription(name string) string {
+	if s == nil || s.mcp == nil {
+		return ""
+	}
 	st := s.mcp.GetTool(name)
 	if st == nil {
 		return ""

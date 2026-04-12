@@ -50,8 +50,8 @@ func TestStatefulToolDescriptions_IncludeRequiredTools(t *testing.T) {
 		if notIdx < 0 || chooseIdx < 0 || chooseIdx <= notIdx {
 			t.Fatalf("rendered description for %q has NOT: after or without CHOOSE:", tool)
 		}
-		notSection := rendered[notIdx:chooseIdx]
-		if !strings.Contains(strings.ToLower(notSection), "not") && !strings.Contains(strings.ToLower(notSection), "does not") {
+		notSection := strings.ToLower(rendered[notIdx+len("NOT:"):chooseIdx])
+		if !strings.Contains(notSection, "not") && !strings.Contains(notSection, "does not") {
 			t.Fatalf("NOT section for %q does not contain a negative statement", tool)
 		}
 	}

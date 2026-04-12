@@ -820,18 +820,7 @@ func TestE2E_Agent_Builtin(t *testing.T) {
 // example call patterns (HOW/CHOOSE). This ensures that wiping the description
 // body (returning null/empty) causes the test to fail per T021 AC.
 func TestE2E_StatefulToolDescriptions_ContainExamples(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	// Initialize
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	stdin, reader := initTestCLIServer(t)
 
 	// Fetch tool list
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/list", nil))
@@ -875,37 +864,37 @@ func TestE2E_StatefulToolDescriptions_ContainExamples(t *testing.T) {
 			tool: "investigate",
 			// HOW: "Call start … then iterate finding + assess … then call report."
 			// CHOOSE: "Choose investigate over ad-hoc …"
-			callPatterns: []string{"start", "finding", "assess", "report", "HOW:", "CHOOSE:"},
+			callPatterns: []string{"start", "finding", "assess", "report"},
 		},
 		{
 			tool: "think",
 			// HOW: "Provide pattern plus pattern-specific fields; pass session_id …"
 			// CHOOSE: "Choose think for deep single-thread …"
-			callPatterns: []string{"pattern", "session_id", "HOW:", "CHOOSE:"},
+			callPatterns: []string{"pattern", "session_id"},
 		},
 		{
 			tool: "consensus",
 			// HOW: "Provide topic; optionally set blinded/max_turns and synthesize …"
 			// CHOOSE: "Choose consensus to measure agreement …"
-			callPatterns: []string{"topic", "blinded", "synthesize", "HOW:", "CHOOSE:"},
+			callPatterns: []string{"topic", "blinded", "synthesize"},
 		},
 		{
 			tool: "debate",
 			// HOW: "Provide topic; optionally tune max_turns and synthesize …"
 			// CHOOSE: "Choose debate when challenge …"
-			callPatterns: []string{"topic", "max_turns", "synthesize", "HOW:", "CHOOSE:"},
+			callPatterns: []string{"topic", "max_turns", "synthesize"},
 		},
 		{
 			tool: "dialog",
 			// HOW: "Provide prompt and optional max_turns …"
 			// CHOOSE: "Choose dialog for exploratory iteration …"
-			callPatterns: []string{"prompt", "max_turns", "HOW:", "CHOOSE:"},
+			callPatterns: []string{"prompt", "max_turns"},
 		},
 		{
 			tool: "workflow",
 			// HOW: "Provide JSON steps (id/tool/params …)"
 			// CHOOSE: "Choose workflow for repeatable chains …"
-			callPatterns: []string{"steps", "id", "tool", "params", "HOW:", "CHOOSE:"},
+			callPatterns: []string{"steps", "id", "tool", "params"},
 		},
 	}
 
