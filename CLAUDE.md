@@ -2,15 +2,15 @@
 
 ## Project
 
-Universal MCP server multiplexing 10+ AI CLI tools (codex, gemini, claude, qwen, aider, goose, crush, gptme, cline, continue).
+Universal MCP server multiplexing 12 AI CLI tools (codex, gemini, claude, qwen, aider, goose, crush, gptme, cline, continue, droid, opencode).
 Go rewrite of mcp-aimux (TypeScript v2). Single binary, zero external runtime dependencies.
 
 ## Stack
 
 - **Language:** Go 1.25+
-- **MCP SDK:** github.com/mark3labs/mcp-go
-- **Database:** modernc.org/sqlite (pure Go SQLite)
-- **Deep Research:** google.golang.org/genai
+- **MCP SDK:** github.com/mark3labs/mcp-go v0.47.0
+- **Database:** modernc.org/sqlite v1.48.1 (pure Go SQLite, no CGO)
+- **Deep Research:** google.golang.org/genai v1.52.1 (Gemini API)
 - **Build:** `go build ./cmd/aimux/`
 - **Test:** `go test ./... -timeout 300s`
 
@@ -18,8 +18,8 @@ Go rewrite of mcp-aimux (TypeScript v2). Single binary, zero external runtime de
 
 ```bash
 go build ./...                    # build all
-go test ./... -timeout 300s       # all tests (250+, ~75s)
-go test ./test/e2e/ -v            # e2e tests only (59 tests)
+go test ./... -timeout 300s       # all tests (857 tests, 27 packages)
+go test ./test/e2e/ -v            # e2e tests only (31 tests)
 go test ./pkg/... -cover          # unit tests with coverage
 go vet ./...                      # static analysis
 ```
@@ -27,20 +27,39 @@ go vet ./...                      # static analysis
 ## Architecture
 
 ```
-cmd/aimux/       — MCP server entry point (stdio transport)
-cmd/testcli/     — 10 CLI emulators for e2e testing
-pkg/server/      — MCP tool handlers (exec, status, sessions, dialog, etc.)
-pkg/orchestrator/ — Multi-CLI strategies (consensus, debate, dialog, pair, audit)
-pkg/executor/    — Process executors (pipe, conpty, pty)
-pkg/driver/      — CLI profile loading and registry
-pkg/config/      — YAML configuration
-pkg/session/     — SQLite session/job persistence
-pkg/parser/      — JSONL/JSON output parsers
-pkg/types/       — Shared interfaces and types
-pkg/resolve/     — CLI command resolution (planned)
+cmd/aimux/           — MCP server entry point (stdio/SSE/HTTP transport)
+cmd/testcli/         — 11 CLI emulators for e2e testing
+pkg/server/          — 13 MCP tool handlers + guidance integration
+pkg/orchestrator/    — Multi-CLI strategies (consensus, debate, dialog, pair, audit, workflow)
+pkg/executor/        — Process executors (ConPTY, PTY, Pipe) + ProcessManager/IOManager
+pkg/driver/          — CLI profile loading, registry, binary probe
+pkg/config/          — YAML configuration + transport config
+pkg/session/         — SQLite session/job persistence with WAL crash recovery
+pkg/guidance/        — Policy-driven response guidance (envelope, registry, builder)
+pkg/guidance/policies/ — Tool-specific guidance policies (investigate)
+pkg/investigate/     — Investigation sessions with finding chains and severity triage
+pkg/think/           — 23 structured reasoning patterns (stateful + stateless)
+pkg/agents/          — Agent registry with project/user discovery
+pkg/skills/          — Embedded skill engine with disk overlay
+pkg/prompt/          — Prompt engine with built-in + project overlay
+pkg/routing/         — Role → CLI routing with capability-aware fallback
+pkg/resolve/         — Profile-aware CLI command resolution
+pkg/ratelimit/       — Per-tool token bucket rate limiting
+pkg/metrics/         — Per-CLI request counters, error rates, latency
+pkg/hooks/           — Before/after hook registry
+pkg/parser/          — JSONL/JSON output parsers
+pkg/tools/deepresearch/ — Gemini deep research with caching
+pkg/types/           — Shared interfaces and types
+config/cli.d/        — 12 CLI profiles (yaml)
+config/skills.d/     — 13 embedded MCP skill prompts
+config/p26/          — P26 tool classification artifact
 ```
 
-## CLI Profiles
+## MCP Tools (13)
+
+exec, status, sessions, think, investigate, consensus, debate, dialog, agents, agent, audit, deepresearch, workflow
+
+## CLI Profiles (12)
 
 Each CLI has a profile in `config/cli.d/{name}/profile.yaml` defining:
 - `binary` — executable name
@@ -49,20 +68,23 @@ Each CLI has a profile in `config/cli.d/{name}/profile.yaml` defining:
 - `stdin_threshold` — pipe via stdin above this char count
 - `completion_pattern` — regex to detect completion in stdout
 
+Supported: codex, gemini, claude, aider, goose, gptme, qwen, cline, crush, droid, opencode, continue (cn)
+
 ## Testing
 
-- **testcli:** 10 authentic CLI emulators in `cmd/testcli/` that replicate real process behavior
-  (output format, buffering, stdin EOF, stderr discipline, OTEL delay)
-- **e2e:** Binary subprocess tests via MCP JSON-RPC over stdio
+- **857 tests** across 117 test files, 27 packages
+- **testcli:** 11 authentic CLI emulators in `cmd/testcli/` that replicate real process behavior
+- **e2e:** 31 binary subprocess tests via MCP JSON-RPC over stdio
 - **unit:** Per-package tests for all core logic
+- **CI:** Race detector (Linux/macOS), golangci-lint v2, stub-detection scanner, mutation testing (gremlins, weekly)
 
 ## Known Issues
 
 - Orchestrator strategies use hardcoded `Command: cli` + `Args: ["-p", prompt]`
-  instead of profile resolution. Spec ready: `.agent/specs/orchestrator-profile-resolution/`
+  instead of profile resolution. Spec exists locally.
 - `pkg/parser/` (JSONL parser) exists but not wired into server response path
 
 ## Working Directory
 
-This is the primary project directory. All `.agent/` data lives here.
+This is the primary project directory. `.agent/` data is gitignored but lives on disk locally.
 TypeScript v2 at `D:\Dev\mcp-aimux` is the legacy version (kept for reference).

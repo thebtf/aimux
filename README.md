@@ -2,7 +2,7 @@
 
 [![Go](https://img.shields.io/badge/go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-777%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-857%20passing-brightgreen)](test/)
 [![Go Report Card](https://goreportcard.com/badge/github.com/thebtf/aimux)](https://goreportcard.com/report/github.com/thebtf/aimux)
 [![MCP Tools](https://img.shields.io/badge/MCP-13%20tools-blueviolet)](https://modelcontextprotocol.io)
 [![CLIs](https://img.shields.io/badge/CLIs-12-orange)](config/cli.d/)
@@ -23,7 +23,7 @@ aimux is a single MCP server binary that exposes all 12 CLIs as one unified inte
 
 ## Why Better
 
-One binary, zero runtime dependencies, 777 tests, 3 transports. Role-based routing sends `codereview` prompts to the model tuned for review, `debug` prompts to the model best at tracing, and `secaudit` prompts to the model trained on vulnerability patterns — without you specifying a CLI name. Five orchestration strategies let multiple models debate, audit, or pair-code together. The result ships as a static Go binary you build once and copy anywhere.
+One binary, zero runtime dependencies, 857 tests, 3 transports. Role-based routing sends `codereview` prompts to the model tuned for review, `debug` prompts to the model best at tracing, and `secaudit` prompts to the model trained on vulnerability patterns — without you specifying a CLI name. Five orchestration strategies let multiple models debate, audit, or pair-code together. Policy-driven response guidance tells the client what to do next after every tool call. The result ships as a static Go binary you build once and copy anywhere.
 
 ---
 
@@ -37,6 +37,7 @@ graph TD
         Router["Role Router\n17 roles"]
         Orchestrator["Orchestration Engine\n5 strategies"]
         Executor["Executor\nConPTY · PTY · Pipe\nProcessManager · IOManager"]
+        Guidance["Guidance Layer\nP26 classification · next-action policies"]
         DB[(SQLite\nWAL sessions)]
         Metrics["Metrics Collector\nper-CLI latency + errors"]
 
@@ -44,6 +45,7 @@ graph TD
         Orchestrator --> Executor
         Executor --> DB
         Executor --> Metrics
+        Executor --> Guidance
     end
 
     subgraph Strategies["Orchestration Strategies"]
@@ -105,7 +107,7 @@ Add to `~/.claude.json` (or your MCP client config):
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | aimux
 ```
 
-You should see all 11 tools in the response. aimux auto-detects which CLIs are installed on `$PATH` — only installed tools appear as active.
+You should see all 13 tools in the response. aimux auto-detects which CLIs are installed on `$PATH` — only installed tools appear as active.
 
 ---
 
@@ -118,6 +120,7 @@ You should see all 11 tools in the response. aimux auto-detects which CLIs are i
 - **Run async, poll by ID** — fire long jobs in the background, poll `status` when ready, never block your editor
 - **Persist sessions across restarts** — SQLite-backed session store with WAL recovery; resume a Codex session by ID
 - **Circuit breaker per CLI** — 3 consecutive failures open the circuit; cooldown prevents cascade failures
+- **Graceful shutdown** — running CLI processes are drained before termination; no orphaned subprocesses
 
 ### Orchestration Strategies
 
@@ -129,9 +132,20 @@ You should see all 11 tools in the response. aimux auto-detects which CLIs are i
 
 ### Reasoning and Investigation
 
-- **17 think patterns** — chain-of-thought, tree-of-thought, devil's advocate, SWOT, pre-mortem, scientific method, first principles, and 10 more; run solo or in multi-model consensus
-- **Convergent investigation** — iterative deep-dive with 5-level confidence scoring, convergence tracking, findings accumulation, and recall from prior runs
-- **Deep research** — delegates to Google Gemini API for multi-step grounded research with source attribution
+- **23 think patterns** — chain-of-thought, tree-of-thought, devil's advocate, SWOT, pre-mortem, scientific method, first principles, and 16 more; run solo or in multi-model consensus
+- **Convergent investigation** — iterative deep-dive with 5-level confidence scoring, convergence tracking, findings accumulation, and recall from prior runs; structured envelope output with `state`, `coverage_gaps`, `choose_your_path`, and `do_not` anti-patterns
+- **Deep research** — delegates to Google Gemini API for multi-step grounded research with source attribution, response caching, and file attachments
+
+### Guidance and Classification
+
+- **P26 classification** — every MCP tool action classified as `sync_ok`, `async_mandatory`, or `unknown`; a coverage guard test enforces classification for all new tools
+- **Policy-driven response guidance** — `pkg/guidance/` injects next-action guidance into tool responses; each tool policy defines what to do, what not to do, and branching paths based on result state
+- **Structured tool descriptions** — stateful tools use `WHAT / WHEN / WHY / HOW / NOT / CHOOSE` sections instead of prose paragraphs, making client-side tool selection unambiguous
+
+### Agents and Skills
+
+- **Agent registry** — project and user-level agent discovery; invoke named agents directly through the `agents` tool
+- **Skill engine** — embedded skill definitions with disk overlay; project-local skills override global defaults without modifying the binary
 
 ### Quality and Reliability
 
@@ -139,6 +153,7 @@ You should see all 11 tools in the response. aimux auto-detects which CLIs are i
 - **Turn validator** — catches empty output, rate-limit responses, and refusals before they reach the client
 - **Quality gate** — per-participant retry, escalate, or halt logic keeps multi-turn orchestration from degrading
 - **17 role prompts** — composable system prompts loaded from `config/prompts.d/` for each role
+- **Async progress streaming** — `handleAgentRun` streams live output via `OnOutput` callback and `notifications/progress` events; long agent runs are observable in real time
 
 ### Observability
 
@@ -181,9 +196,11 @@ aimux auto-detects installed CLIs at startup via binary probing. Uninstalled CLI
 | `debate` | Adversarial structured debate with verdict | `topic`, `pro_cli`, `con_cli`, `synthesize` |
 | `audit` | Multi-agent codebase audit: scan → validate → investigate | `path`, `mode`, `focus` |
 | `deepresearch` | Deep research via Google Gemini with file attachments and caching | `topic`, `output_format`, `model`, `force` |
-| `think` | 17 structured reasoning patterns, solo or multi-model | `prompt`, `pattern`, `clis`, `consensus` |
+| `think` | 23 structured reasoning patterns, solo or multi-model | `prompt`, `pattern`, `clis`, `consensus` |
 | `investigate` | Deep investigation with convergence tracking and recall | `question`, `domain`, `max_iterations` |
 | `agents` | Discover and invoke project agents from registry | `action`, `agent_id`, `prompt` |
+| `background` | Submit long-running tasks with role routing and progress streaming | `prompt`, `role`, `cli` |
+| `workflow` | Declarative multi-step pipeline execution | `steps`, `context` |
 
 ### MCP Resources
 
@@ -192,11 +209,23 @@ aimux auto-detects installed CLIs at startup via binary probing. Uninstalled CLI
 | `aimux://health` | Server health, active jobs, circuit breaker states |
 | `aimux://metrics` | Per-CLI request counts, latency, error rates |
 
-### MCP Prompts
+### MCP Prompts / Skills
 
 | Prompt | Use |
 |--------|-----|
-| `background` | Template for submitting background task prompts |
+| `debug` | 5-phase debug: reproduce → investigate → root-cause → fix → verify |
+| `review` | Code review with CLI-adaptive consensus/peer_review fallback |
+| `audit` | Codebase audit with P0-P3 triage routing |
+| `security` | 10-category security checklist with investigate integration |
+| `research` | 4-phase pipeline: literature → comparison → adversarial → synthesis |
+| `consensus` | Multi-model consensus with "consensus ≠ correctness" warning |
+| `investigate` | Investigation protocol with domain auto-detect and convergence |
+| `delegate` | Delegation decision tree: task size → routing (direct/exec/agent) |
+| `tdd` | TDD workflow: RED gate → GREEN gate → IMPROVE → coverage |
+| `workflow` | Declarative multi-step pipeline builder |
+| `agent-exec` | Agent-first execution: match task → agent, exec as fallback |
+| `guide` | Complete reference: tools, roles, patterns |
+| `background` | Background async execution with role routing |
 
 ---
 
@@ -428,6 +457,12 @@ echo '{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}' | aimux
 # Expected: { "result": { "resources": [{ "uri": "aimux://health", ... }] } }
 ```
 
+### Releases
+
+Pre-built binaries for Linux, macOS, and Windows are published for each tagged release via GoReleaser. Download from the [releases page](https://github.com/thebtf/aimux/releases) or install via `go install` above.
+
+Available releases: `v3.0.0`, `v3.1.0`, `v3.2.0`.
+
 ---
 
 ## Development
@@ -436,7 +471,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}' | aimux
 # Build everything
 go build ./...
 
-# Run all 462 tests (~75s on Windows)
+# Run all 857 tests (~75s on Windows)
 go test ./... -timeout 300s
 
 # Unit tests with coverage
@@ -449,16 +484,28 @@ go test ./test/e2e/ -v
 go vet ./...
 ```
 
+### CI
+
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| `ci.yml` | push / PR | `go test -race`, `go vet`, `golangci-lint` on ubuntu / windows / macos |
+| `mutation.yml` | weekly | gremlins mutation testing, 75% threshold |
+| `release.yml` | tag push | GoReleaser cross-platform binaries |
+
 ### Project layout
 
 ```
 cmd/aimux/           entry point — transport selection and server startup
 cmd/testcli/         10 CLI emulators used by the e2e test suite
-pkg/server/          MCP handlers for all 11 tools, resources, and prompts
+pkg/server/          MCP handlers for all 13 tools, resources, and prompts
 pkg/orchestrator/    5 strategies + context management + quality gate
 pkg/executor/        ConPTY / PTY / Pipe process executors
-pkg/think/           17 reasoning patterns
+pkg/think/           23 reasoning patterns
 pkg/investigate/     convergent investigation system
+pkg/guidance/        policy registry, response builder, and tool guidance policies
+pkg/guidance/policies/  per-tool guidance policies (investigate, exec, ...)
+pkg/agents/          agent registry with project and user-level discovery
+pkg/skills/          embedded skill engine with disk overlay
 pkg/hooks/           before/after execution hooks with timeout protection
 pkg/metrics/         thread-safe per-CLI metrics collector
 pkg/session/         SQLite persistence with WAL and GC
@@ -466,17 +513,19 @@ pkg/config/          YAML config loader + CLI profiles
 pkg/driver/          CLI binary detection and registry
 pkg/resolve/         profile-aware command resolution
 pkg/routing/         role-based CLI routing
-pkg/prompt/          prompt engine with recursive directory loading
+pkg/prompt/          prompt engine with overlay and recursive directory loading
 pkg/parser/          JSONL / JSON / text output normalizer
+pkg/tools/deepresearch/  Gemini deep research with caching and file attachments
 config/cli.d/        one profile.yaml per CLI
 config/prompts.d/    composable role prompt templates
+config/p26/          P26 tool classification artifact
 ```
 
 ### Stats
 
-- 13,314 LOC implementation + 8,725 LOC tests = **22,039 total**
-- **462 tests**, 0 failures
-- **26 packages**, ~73% weighted coverage
+- **857 tests** across 117 test files, 0 failures
+- **31 E2E tests** — real MCP protocol over stdio subprocess
+- **27 packages**, ~73% weighted coverage
 
 ---
 
