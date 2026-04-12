@@ -269,6 +269,148 @@ func TestInvestigatePolicy_ReportForceTrueStillMarksWeakEvidenceIncomplete(t *te
 	}
 }
 
+func TestInvestigatePolicy_AutoRunningGuidesStatusAndCancel(t *testing.T) {
+	policy := policies.NewInvestigatePolicy()
+	state := &inv.InvestigationState{
+		Topic:         "root cause",
+		Domain:        "debugging",
+		Iteration:     0,
+		CoverageAreas: []string{"reproduction", "isolation"},
+		CoverageChecked: map[string]bool{},
+		CreatedAt:     time.Now(),
+		LastActivityAt: time.Now(),
+	}
+
+	plan, err := policy.BuildPlan(guidance.PolicyInput{
+		Action:        "auto",
+		StateSnapshot: state,
+		RawResult: map[string]any{
+			"job_id":  "job-1",
+			"status":  "running",
+			"cli":     "codex",
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan(auto running): %v", err)
+	}
+	if plan.State != "delegate_running" {
+		t.Fatalf("State = %q, want delegate_running", plan.State)
+	}
+	self := plan.ChooseYourPath[guidance.BranchSelf]
+	if self.NextCall != `status(job_id="<job_id>")` {
+		t.Fatalf("self.next_call = %q, want status path", self.NextCall)
+	}
+	if self.Example != self.NextCall {
+		t.Fatalf("self.example = %q, want %q", self.Example, self.NextCall)
+	}
+	if !strings.Contains(strings.ToLower(self.Then), "cancel") {
+		t.Fatalf("self.then = %q, want cancel guidance", self.Then)
+	}
+}
+
+func TestInvestigatePolicy_AutoCompletedGuidesReport(t *testing.T) {
+	policy := policies.NewInvestigatePolicy()
+	state := &inv.InvestigationState{
+		Topic:     "root cause",
+		Domain:    "debugging",
+		Iteration: 1,
+		Findings: []inv.Finding{{ID: "f1", CoverageArea: "reproduction", Iteration: 1}},
+		CoverageAreas: []string{"reproduction"},
+		CoverageChecked: map[string]bool{"reproduction": true},
+		CreatedAt: time.Now(),
+		LastActivityAt: time.Now(),
+	}
+
+	plan, err := policy.BuildPlan(guidance.PolicyInput{
+		Action:        "auto",
+		StateSnapshot: state,
+		RawResult: map[string]any{
+			"job_id":  "job-1",
+			"status":  "completed",
+			"cli":     "codex",
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan(auto completed): %v", err)
+	}
+	if plan.State != "delegate_completed" {
+		t.Fatalf("State = %q, want delegate_completed", plan.State)
+	}
+	self := plan.ChooseYourPath[guidance.BranchSelf]
+	if self.NextCall != `investigate(action="report", session_id="<session_id>")` {
+		t.Fatalf("self.next_call = %q, want report path", self.NextCall)
+	}
+	if self.Example != self.NextCall {
+		t.Fatalf("self.example = %q, want %q", self.Example, self.NextCall)
+	}
+}
+
+func TestInvestigatePolicy_AutoFailedOffersRedelegate(t *testing.T) {
+	policy := policies.NewInvestigatePolicy()
+	state := &inv.InvestigationState{
+		Topic:     "root cause",
+		Domain:    "debugging",
+		Iteration: 0,
+		CoverageAreas: []string{"reproduction"},
+		CoverageChecked: map[string]bool{},
+		CreatedAt: time.Now(),
+		LastActivityAt: time.Now(),
+	}
+
+	plan, err := policy.BuildPlan(guidance.PolicyInput{
+		Action:        "auto",
+		StateSnapshot: state,
+		RawResult: map[string]any{
+			"job_id":  "job-1",
+			"status":  "failed",
+			"cli":     "codex",
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan(auto failed): %v", err)
+	}
+	if plan.State != "delegate_failed" {
+		t.Fatalf("State = %q, want delegate_failed", plan.State)
+	}
+	self := plan.ChooseYourPath[guidance.BranchSelf]
+	if self.NextCall != `investigate(action="auto", topic="<topic>", session_id="<session_id>")` {
+		t.Fatalf("self.next_call = %q, want re-delegate path", self.NextCall)
+	}
+}
+
+func TestInvestigatePolicy_AutoCancelledOffersResumeOrRedelegate(t *testing.T) {
+	policy := policies.NewInvestigatePolicy()
+	state := &inv.InvestigationState{
+		Topic:     "root cause",
+		Domain:    "debugging",
+		Iteration: 0,
+		CoverageAreas: []string{"reproduction"},
+		CoverageChecked: map[string]bool{},
+		CreatedAt: time.Now(),
+		LastActivityAt: time.Now(),
+	}
+
+	plan, err := policy.BuildPlan(guidance.PolicyInput{
+		Action:        "auto",
+		StateSnapshot: state,
+		RawResult: map[string]any{
+			"job_id":  "job-1",
+			"status":  "cancelled",
+			"cli":     "codex",
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan(auto cancelled): %v", err)
+	}
+	if plan.State != "delegate_cancelled" {
+		t.Fatalf("State = %q, want delegate_cancelled", plan.State)
+	}
+	self := plan.ChooseYourPath[guidance.BranchSelf]
+	if self.NextCall != `investigate(action="auto", topic="<topic>", session_id="<session_id>")` {
+		t.Fatalf("self.next_call = %q, want re-delegate path", self.NextCall)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, v := range values {
 		if v == want {
