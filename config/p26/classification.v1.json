@@ -1,0 +1,68 @@
+{
+  "schema_version": "v1",
+  "source_of_truth": {
+    "runtime_registration": "pkg/server/server.go",
+    "principle": "P26"
+  },
+  "tools": {
+    "agent": {
+      "classification": "unknown"
+    },
+    "agents": {
+      "actions": {
+        "find": "sync_ok",
+        "info": "sync_ok",
+        "list": "sync_ok",
+        "run": "unknown"
+      }
+    },
+    "audit": {
+      "classification": "unknown"
+    },
+    "consensus": {
+      "classification": "unknown"
+    },
+    "debate": {
+      "classification": "unknown"
+    },
+    "deepresearch": {
+      "classification": "unknown"
+    },
+    "dialog": {
+      "classification": "unknown"
+    },
+    "exec": {
+      "classification": "async_mandatory"
+    },
+    "investigate": {
+      "actions": {
+        "assess": "sync_ok",
+        "finding": "sync_ok",
+        "list": "sync_ok",
+        "recall": "sync_ok",
+        "report": "sync_ok",
+        "start": "sync_ok",
+        "status": "sync_ok"
+      }
+    },
+    "sessions": {
+      "actions": {
+        "cancel": "sync_ok",
+        "gc": "sync_ok",
+        "health": "sync_ok",
+        "info": "sync_ok",
+        "kill": "sync_ok",
+        "list": "sync_ok"
+      }
+    },
+    "status": {
+      "classification": "sync_ok"
+    },
+    "think": {
+      "classification": "sync_ok"
+    },
+    "workflow": {
+      "classification": "unknown"
+    }
+  }
+}
