@@ -61,7 +61,7 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 			dialogCtx := BuildDialogContext(history, budget)
 			prompt := buildDialogPromptWithContext(params.Prompt, dialogCtx, cli, responseHint)
 
-			result, err := d.executor.Run(ctx, resolveOrFallback(d.resolver, cli, prompt, params.CWD, params.Timeout))
+			result, err := d.executor.Run(ctx, resolveOrFallbackWithOpts(d.resolver, cli, prompt, params.CWD, params.Timeout, params.Model, params.Effort))
 			if err != nil {
 				// Return partial results on failure instead of bare error
 				if len(history) > 0 {

@@ -18,23 +18,23 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
-	"github.com/thebtf/aimux/pkg/hooks"
-	inv "github.com/thebtf/aimux/pkg/investigate"
-	"github.com/thebtf/aimux/pkg/metrics"
-	"github.com/thebtf/aimux/pkg/ratelimit"
-	"github.com/thebtf/aimux/pkg/think"
-	"github.com/thebtf/aimux/pkg/think/patterns"
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
+	"github.com/thebtf/aimux/pkg/hooks"
+	inv "github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/logger"
+	"github.com/thebtf/aimux/pkg/metrics"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/parser"
 	"github.com/thebtf/aimux/pkg/prompt"
+	"github.com/thebtf/aimux/pkg/ratelimit"
 	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/skills"
+	"github.com/thebtf/aimux/pkg/think"
+	"github.com/thebtf/aimux/pkg/think/patterns"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -891,7 +891,6 @@ func (s *Server) registerResources() {
 	)
 }
 
-
 // --- Tool Handlers ---
 
 func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1006,6 +1005,8 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			CLIs:    []string{cli, reviewerCLI},
 			CWD:     cwd,
 			Timeout: timeoutSec,
+			Model:   model,
+			Effort:  effort,
 			Extra: map[string]any{
 				"max_rounds": s.cfg.Server.Pair.MaxRounds,
 				"complex":    request.GetBool("complex", false),
@@ -1037,7 +1038,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 
 		s.executePairCoding(ctx, job.ID, sess.ID, pairParams, cb)
 
-		j := s.jobs.Get(job.ID)
+		j := s.jobs.GetSnapshot(job.ID)
 		if j == nil {
 			return mcp.NewToolResultError("job disappeared"), nil
 		}
@@ -1107,7 +1108,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 
 	s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
-	j := s.jobs.Get(job.ID)
+	j := s.jobs.GetSnapshot(job.ID)
 	if j == nil {
 		return mcp.NewToolResultError("job disappeared"), nil
 	}
@@ -1170,13 +1171,6 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 	s.sendBusy(jobID, "exec:"+args.CLI, args.TimeoutSeconds*1000)
 	defer s.sendIdle(jobID)
 
-	// Wire live output: IOManager calls this with each new line (not full buffer).
-	// sendJobProgress appends to the job store and pushes a notifications/progress
-	// event in one step — see pkg/server/progress.go.
-	args.OnOutput = func(line string) {
-		s.sendJobProgress(jobID, line)
-	}
-
 	// Build the ordered list of CLIs to try. The primary (args.CLI) is always
 	// first; fallbacks from the router follow (max 2 additional attempts).
 	candidates := s.buildFallbackCandidates(role, args.CLI, cb)
@@ -1200,6 +1194,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 				currentArgs = s.rebuildArgsForCLI(args, p)
 			}
 		}
+		currentArgs.OnOutput = s.progressSink(jobID, currentFormat)
 
 		result, err := s.executor.Run(ctx, currentArgs)
 
@@ -1402,7 +1397,7 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("job_id is required"), nil
 	}
 
-	j := s.jobs.Get(jobID)
+	j := s.jobs.GetSnapshot(jobID)
 	if j == nil {
 		return mcp.NewToolResultError(fmt.Sprintf("job %q not found", jobID)), nil
 	}
@@ -1455,7 +1450,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
-		jobs := s.jobs.ListBySession(sessionID)
+		jobs := s.jobs.ListBySessionSnapshot(sessionID)
 		return marshalToolResult(map[string]any{
 			"session": sess,
 			"jobs":    jobs,
@@ -1487,15 +1482,12 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
-		// Fail all running jobs for this session
-		for _, j := range s.jobs.ListBySession(sessionID) {
-			if j.Status == types.JobStatusRunning || j.Status == types.JobStatusCreated {
-				s.jobs.FailJob(j.ID, types.NewExecutorError("session killed", nil, ""))
-			}
+		// Atomically fail only still-active jobs for this session.
+		for _, j := range s.jobs.ListBySessionSnapshot(sessionID) {
+			s.jobs.FailJobIfActive(j.ID, types.NewExecutorError("session killed", nil, ""))
 		}
 		s.sessions.Delete(sessionID)
 		return mcp.NewToolResultText(`{"status":"killed"}`), nil
-
 	case "gc":
 		// Garbage collect expired sessions (idle > 1 hour)
 		collected := 0
@@ -1745,7 +1737,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 
 		s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
-		j := s.jobs.Get(job.ID)
+		j := s.jobs.GetSnapshot(job.ID)
 		if j == nil {
 			return mcp.NewToolResultError("agent job disappeared"), nil
 		}
@@ -1897,8 +1889,8 @@ func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (
 		"data":      thinkResult.Data,
 		"mode":      complexity.Recommendation,
 		"complexity": map[string]any{
-			"total":      complexity.Total,
-			"threshold":  complexity.Threshold,
+			"total":     complexity.Total,
+			"threshold": complexity.Threshold,
 			"components": map[string]any{
 				"textLength":      complexity.TextLength,
 				"subItemCount":    complexity.SubItemCount,
@@ -1989,7 +1981,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		input := inv.FindingInput{
 			Description:  desc,
 			Severity:     inv.Severity(severity),
-			Source:        source,
+			Source:       source,
 			Confidence:   inv.Confidence(confidence),
 			CoverageArea: request.GetString("coverage_area", ""),
 			Corrects:     request.GetString("corrects", ""),
@@ -2037,10 +2029,10 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		report := inv.GenerateReport(state)
 
 		result := map[string]any{
-			"report":           report,
-			"findings_count":   len(state.Findings),
+			"report":            report,
+			"findings_count":    len(state.Findings),
 			"corrections_count": len(state.Corrections),
-			"iterations":       state.Iteration,
+			"iterations":        state.Iteration,
 		}
 
 		cwd := request.GetString("cwd", "")
@@ -2071,11 +2063,11 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		}
 		result := map[string]any{
 			"topic":              state.Topic,
-			"iteration":         state.Iteration,
-			"findings_count":    len(state.Findings),
-			"corrections_count": len(state.Corrections),
+			"iteration":          state.Iteration,
+			"findings_count":     len(state.Findings),
+			"corrections_count":  len(state.Corrections),
 			"coverage_unchecked": unchecked,
-			"last_activity":     state.LastActivityAt,
+			"last_activity":      state.LastActivityAt,
 		}
 		return marshalToolResult(result)
 
@@ -2303,18 +2295,22 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 	}
 
 	// Resolve CLI: explicit param > agent meta > role routing > default
+	role := agent.Role
+	if role == "" {
+		role = "default"
+	}
+
 	cli := request.GetString("cli", "")
 	if cli == "" {
 		if v, ok := agent.Meta["cli"]; ok && v != "" {
 			cli = v
 		}
 	}
-	if cli == "" {
-		role := agent.Role
-		if role == "" {
-			role = "default"
-		}
-		if pref, resolveErr := s.router.Resolve(role); resolveErr == nil && pref.CLI != "" {
+
+	var rolePref types.RolePreference
+	if pref, resolveErr := s.router.Resolve(role); resolveErr == nil {
+		rolePref = pref
+		if cli == "" && pref.CLI != "" {
 			cli = pref.CLI
 		}
 	}
@@ -2329,6 +2325,16 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 	// Agent frontmatter overrides for model, effort, timeout
 	model := agent.Model
 	effort := agent.Effort
+	if rolePref.CLI != "" {
+		envKey := "AIMUX_ROLE_" + strings.ToUpper(strings.ReplaceAll(role, "-", "_"))
+		hasEnv := os.Getenv(envKey) != ""
+		if rolePref.Model != "" && (hasEnv || model == "") {
+			model = rolePref.Model
+		}
+		if rolePref.ReasoningEffort != "" && (hasEnv || effort == "") {
+			effort = rolePref.ReasoningEffort
+		}
+	}
 	timeoutSeconds := agent.Timeout
 	if ts := int(request.GetFloat("timeout_seconds", 0)); ts > 0 {
 		timeoutSeconds = ts
@@ -2357,9 +2363,20 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		job := s.jobs.Create(sess.ID, cli)
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
-		s.sendBusy(job.ID, "agent:"+agentName, timeoutSeconds*1000)
+		outputFormat := ""
+		if profile, err := s.registry.Get(cli); err == nil {
+			outputFormat = profile.OutputFormat
+		}
+		runCfg.OnOutput = func(resolvedCLI, line string) {
+			format := outputFormat
+			if profile, err := s.registry.Get(resolvedCLI); err == nil {
+				format = profile.OutputFormat
+			}
+			s.progressSink(job.ID, format)(line)
+		}
+		s.sendBusy(job.ID, "agent:"+agentName, agentBusyEstimateMs(timeoutSeconds, maxTurns))
 
-		runCfg.OnOutput = func(line string) {
+		runCfg.OnOutput = func(cli, line string) {
 			s.sendJobProgress(job.ID, line)
 		}
 

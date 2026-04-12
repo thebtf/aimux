@@ -52,7 +52,7 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 		go func(idx int, cli string) {
 			defer wg.Done()
 
-			result, err := c.executor.Run(ctx, resolveOrFallback(c.resolver, cli, params.Prompt, params.CWD, params.Timeout))
+			result, err := c.executor.Run(ctx, resolveOrFallbackWithOpts(c.resolver, cli, params.Prompt, params.CWD, params.Timeout, params.Model, params.Effort))
 
 			if err != nil {
 				results[idx] = opinionResult{CLI: cli, Err: err}
@@ -90,7 +90,7 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 		budget := ComputeDialogBudget(nil)
 		synthPrompt := BuildSynthesisPrompt(params.Prompt, responseTexts, budget)
 
-		synthResult, synthErr := c.executor.Run(ctx, resolveOrFallback(c.resolver, successCLIs[0], synthPrompt, params.CWD, params.Timeout))
+		synthResult, synthErr := c.executor.Run(ctx, resolveOrFallbackWithOpts(c.resolver, successCLIs[0], synthPrompt, params.CWD, params.Timeout, params.Model, params.Effort))
 		if synthErr == nil {
 			content += "\n\n---\n\n## Synthesis\n\n" + synthResult.Content
 			turns++

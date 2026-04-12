@@ -65,16 +65,18 @@ agents(action="find", query="{{"{{.Args.task}}"}}")
 
 ## Phase 3 — Execute (Agent Path)
 
-**Goal:** Dispatch to the matched agent.
+**Goal:** Dispatch to the matched agent in async mode and let a wrapper subagent poll.
 
 ```
 agent(
   agent="{{"{{matched_agent_name}}"}}" ,
-  prompt="{{"{{.Args.task}}"}}"
+  prompt="{{"{{.Args.task}}"}}",
+  async=true
 )
 ```
 
-The agent runs in its own context with its own tools and instructions. Wait for completion.
+Capture `job_id` and immediately hand off to the polling wrapper subagent per the
+mandatory rule — see Phase 5 below. Do NOT poll `status(job_id=...)` yourself.
 
 ---
 
@@ -93,6 +95,18 @@ exec(
   async=true
 )
 ```
+
+Same rule applies: capture `job_id` and proceed to Phase 5 for the wrapper handoff.
+
+---
+
+## Phase 5 — Hand off polling to a subagent wrapper (MANDATORY)
+
+Whether Phase 3 (agent path) or Phase 4 (exec fallback) produced the `job_id`, you
+MUST NOT call `status(job_id=...)` from this turn. Spawn a Sonnet polling wrapper via
+your Task/Agent tool and receive the final content from it.
+
+{{template "poll-wrapper-subagent" .}}
 
 Role inference from task keywords (same table as `/background`):
 
@@ -127,7 +141,7 @@ exec(session_id="{{"{{job_id}}"}}" , prompt="<follow-up prompt>")
 - [ ] If agents found, `agents(action="find")` used for keyword matching
 - [ ] Agent path attempted before exec fallback
 - [ ] exec fallback only used when agent match confidence is Low or no agents registered
-- [ ] Async exec jobs polled via `status(job_id=...)`
+- [ ] Async jobs polled only via polling wrapper subagent (no direct `status(job_id=...)` in main turn)
 
 ---
 

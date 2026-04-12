@@ -63,44 +63,53 @@ exec(
 
 Capture `job_id`. Mark task 1 `completed`, task 2 `in_progress`.
 
-### Step 3: Spawn background monitor agent
+### Step 3: Hand off to a polling wrapper subagent (MANDATORY)
 
-```
-Agent(
-  model="sonnet",
-  run_in_background=true,
-  description="Monitor aimux job <job_id>",
-  prompt="Poll mcp__aimux__status(job_id='<job_id>') every 10s.
-    The 'progress' field contains live CLI output (lines produced so far).
-    When status='completed': return the 'content' field.
-    When status='failed': return the 'error' field.
-    Report in under 200 words."
-)
-```
+**GATE:** You may not poll `status(job_id=...)` from your own context for any job
+dispatched in this skill. Every async dispatch MUST be followed by a Task/Agent call
+that wraps polling in a Sonnet subagent. No exceptions for coding, research, audit,
+debug, analyze, or plan work.
 
-### Step 4: React to background agent notifications
+{{template "poll-wrapper-subagent" .}}
 
-On EACH `<task-notification>` from the monitor agent, update tasks:
+Pick the sync variant unless you genuinely need to parallel-work while the job runs.
+For this skill (background execution of a single task dispatched via `exec`), sync is
+almost always correct: your main turn wants the final content, not live progress.
 
-| Monitor status | Action |
+### Step 4: Update tasks on wrapper return (sync variant)
+
+When the Task/Agent call returns:
+
+| Wrapper output | Action |
+|----------------|--------|
+| Final content | Task 2 `completed`, task 3 `in_progress` → parse result → task 3 `completed` |
+| Error message | Task 2 `completed` with error note → escalate to `/debug` |
+| TIMEOUT line | Task 2 `completed` with timeout note → investigate why the CLI stalled (issue #8, P26 hard_stall) |
+
+**IMPORTANT:** Main agent does NOT poll directly. The wrapper subagent polls in its own
+context. Main agent sees one clean tool result, not a polling loop.
+
+### Step 4b: React to notifications (async variant)
+
+If you chose `run_in_background=true` for the wrapper, react to each `<task-notification>`:
+
+| Wrapper status | Action |
 |---------------|--------|
-| Agent still running | Task 2 stays `in_progress` |
-| Agent completed with content | Task 2 `completed`, task 3 `in_progress` → parse result → task 3 `completed` |
-| Agent completed with error | Task 2 `completed` with error note. Escalate to `/debug`. |
+| Wrapper still running | Task 2 stays `in_progress` |
+| Wrapper completed with content | Task 2 `completed`, task 3 `in_progress` → parse → task 3 `completed` |
+| Wrapper completed with error | Task 2 `completed` with error note |
 
-**IMPORTANT:** Main agent does NOT poll. Main agent reacts to `<task-notification>` events
-from the background monitor. This frees the main agent to do other work while CLI executes.
+### Sync mode alternative (direct, no wrapper)
 
-### Sync mode alternative
-
-For short tasks (<10s expected), sync mode with live progress bar is acceptable:
+For short tasks (<30s expected), direct sync exec is acceptable and simpler:
 
 ```
 exec(prompt="...", role="...", async=false, timeout_seconds=30)
 ```
 
 The MCP server sends `notifications/progress` during execution — Claude Code renders
-a progress bar automatically. Use ONLY when task is known to be fast.
+a progress bar automatically. Use ONLY when task is known to be fast; for anything
+longer, prefer the polling wrapper subagent.
 
 ---
 
@@ -127,10 +136,11 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 - [ ] 3 tasks created (dispatch, executing, collect) BEFORE exec call
 - [ ] `exec` called with `async=true` and correct role
 - [ ] `job_id` captured from exec response
-- [ ] Background monitor agent spawned with job_id
-- [ ] Main agent does NOT poll — reacts to `<task-notification>` only
-- [ ] Tasks updated on each notification per phase table
-- [ ] Result read from `content` field on completion
+- [ ] **Polling wrapper subagent spawned via Task/Agent** with the captured `job_id`
+- [ ] **Main agent does NOT call `status(job_id=...)` at any point** — only the wrapper does
+- [ ] Wrapper used `subagent_type="general-purpose"` and `model="sonnet"` (no other types)
+- [ ] On wrapper return, tasks updated per phase table
+- [ ] Result read from the wrapper's final content (sync) or from `<task-notification>` (async)
 - [ ] All tasks marked completed with outcome summary
 
 ---

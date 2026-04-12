@@ -132,7 +132,7 @@ func (a *AuditPipeline) scan(ctx context.Context, params types.StrategyParams, p
 					"Severities: CRITICAL, HIGH, MEDIUM, LOW",
 				cat)
 
-			result, err := a.executor.Run(ctx, resolveOrFallback(a.resolver, cli, prompt, params.CWD, params.Timeout))
+			result, err := a.executor.Run(ctx, resolveOrFallbackWithOpts(a.resolver, cli, prompt, params.CWD, params.Timeout, params.Model, params.Effort))
 
 			if err != nil {
 				results[idx] = scanResult{err: err}
@@ -175,7 +175,7 @@ func (a *AuditPipeline) validate(ctx context.Context, params types.StrategyParam
 		sb.WriteString(fmt.Sprintf("%d. [%s] %s — %s (%s:%d)\n", i+1, f.Severity, f.Rule, f.Message, f.File, f.Line))
 	}
 
-	result, err := a.executor.Run(ctx, resolveOrFallback(a.resolver, cli, sb.String(), params.CWD, params.Timeout))
+	result, err := a.executor.Run(ctx, resolveOrFallbackWithOpts(a.resolver, cli, sb.String(), params.CWD, params.Timeout, params.Model, params.Effort))
 	if err != nil {
 		return nil, err
 	}
