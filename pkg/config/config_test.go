@@ -25,6 +25,18 @@ func TestLoad(t *testing.T) {
 	if cfg.Server.DefaultTimeoutSeconds != 300 {
 		t.Errorf("expected default_timeout_seconds=300, got %d", cfg.Server.DefaultTimeoutSeconds)
 	}
+	if cfg.Server.StreamingGraceSeconds != 60 {
+		t.Errorf("expected streaming_grace_seconds=60, got %d", cfg.Server.StreamingGraceSeconds)
+	}
+	if cfg.Server.StreamingSoftWarningSeconds != 120 {
+		t.Errorf("expected streaming_soft_warning_seconds=120, got %d", cfg.Server.StreamingSoftWarningSeconds)
+	}
+	if cfg.Server.StreamingHardStallSeconds != 600 {
+		t.Errorf("expected streaming_hard_stall_seconds=600, got %d", cfg.Server.StreamingHardStallSeconds)
+	}
+	if cfg.Server.StreamingAutoCancelSeconds != 900 {
+		t.Errorf("expected streaming_auto_cancel_seconds=900, got %d", cfg.Server.StreamingAutoCancelSeconds)
+	}
 
 	// Verify audit config
 	if cfg.Server.Audit.ScannerRole != "codereview" {
@@ -76,6 +88,41 @@ func TestLoad_CLIProfiles(t *testing.T) {
 		if profile.TimeoutSeconds == 0 {
 			t.Errorf("CLI %q has zero timeout", cli)
 		}
+	}
+}
+
+func TestLoad_AppliesStreamingDefaultsWhenOmitted(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "default.yaml")
+	cfgYAML := []byte(`
+server:
+  log_level: info
+`)
+	if err := os.WriteFile(cfgPath, cfgYAML, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cliDir := filepath.Join(tmpDir, "cli.d")
+	if err := os.Mkdir(cliDir, 0o755); err != nil {
+		t.Fatalf("create cli.d: %v", err)
+	}
+
+	cfg, err := config.Load(tmpDir)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Server.StreamingGraceSeconds != 60 {
+		t.Errorf("expected streaming_grace_seconds=60, got %d", cfg.Server.StreamingGraceSeconds)
+	}
+	if cfg.Server.StreamingSoftWarningSeconds != 120 {
+		t.Errorf("expected streaming_soft_warning_seconds=120, got %d", cfg.Server.StreamingSoftWarningSeconds)
+	}
+	if cfg.Server.StreamingHardStallSeconds != 600 {
+		t.Errorf("expected streaming_hard_stall_seconds=600, got %d", cfg.Server.StreamingHardStallSeconds)
+	}
+	if cfg.Server.StreamingAutoCancelSeconds != 900 {
+		t.Errorf("expected streaming_auto_cancel_seconds=900, got %d", cfg.Server.StreamingAutoCancelSeconds)
 	}
 }
 

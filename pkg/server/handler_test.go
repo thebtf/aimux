@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,11 +13,32 @@ import (
 	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
+	"github.com/thebtf/aimux/pkg/guidance"
+	inv "github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+type stubExecutor struct {
+	run func(ctx context.Context, args types.SpawnArgs) (*types.Result, error)
+}
+
+func (s *stubExecutor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+	if s.run != nil {
+		return s.run(ctx, args)
+	}
+	return &types.Result{Content: "stub executor output", ExitCode: 0}, nil
+}
+
+func (s *stubExecutor) Start(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
+	return nil, errors.New("stub executor does not support Start")
+}
+
+func (s *stubExecutor) Name() string { return "stub" }
+
+func (s *stubExecutor) Available() bool { return true }
 
 // testServer creates a server with echo as the mock CLI for handler tests.
 func testServer(t *testing.T) *Server {
@@ -91,6 +113,18 @@ func makeRequest(name string, args map[string]any) mcp.CallToolRequest {
 }
 
 // parseResult extracts the text content from a tool result.
+// parseGuidedResult parses a guided tool response and returns the nested "result" payload.
+// Guided responses wrap the raw handler payload under result: { ... }.
+func parseGuidedResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
+	t.Helper()
+	data := parseResult(t, result)
+	inner, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("parseGuidedResult: expected result.result map, got %T; full: %v", data["result"], data)
+	}
+	return inner
+}
+
 func parseResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
 	t.Helper()
 	if result == nil {
@@ -580,14 +614,30 @@ func TestHandleInvestigate_StartWithTopic(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	if data["session_id"] == nil {
-		t.Error("expected session_id")
+	resultData, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected nested result payload")
 	}
-	if data["topic"] != "test investigation" {
-		t.Errorf("topic = %v, want 'test investigation'", data["topic"])
+	if resultData["session_id"] == nil {
+		t.Error("expected result.session_id")
 	}
-	if data["coverage_areas"] == nil {
-		t.Error("expected coverage_areas")
+	if resultData["topic"] != "test investigation" {
+		t.Errorf("result.topic = %v, want 'test investigation'", resultData["topic"])
+	}
+	if resultData["coverage_areas"] == nil {
+		t.Error("expected result.coverage_areas")
+	}
+	if data["state"] == nil {
+		t.Error("expected state guidance field")
+	}
+	if data["how_this_tool_works"] == nil {
+		t.Error("expected how_this_tool_works guidance field")
+	}
+	if data["choose_your_path"] == nil {
+		t.Error("expected choose_your_path guidance field")
+	}
+	if data["do_not"] == nil {
+		t.Error("expected do_not guidance field")
 	}
 }
 
@@ -1440,8 +1490,85 @@ func TestHandleInvestigate_List(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	if data["active_count"] == nil {
-		t.Error("expected active_count field")
+	resultData, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected result payload")
+	}
+	if resultData["active_count"] == nil {
+		t.Error("expected result.active_count field")
+	}
+}
+
+func TestMarshalGuidedToolResult_NestsRawPayloadUnderResult(t *testing.T) {
+	state := map[string]any{"step": "start"}
+	raw := map[string]any{"session_id": "sess-123", "topic": "test investigation"}
+
+	toolResult, err := (*Server)(nil).marshalGuidedToolResult("investigate", "start", state, raw)
+	if err != nil {
+		t.Fatalf("marshalGuidedToolResult: %v", err)
+	}
+
+	data := parseResult(t, toolResult)
+	if _, exists := data["session_id"]; exists {
+		t.Fatal("unexpected top-level session_id; guided payload must be nested under result")
+	}
+
+	resultData, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested result object, got %T", data["result"])
+	}
+	if resultData["session_id"] != "sess-123" {
+		t.Fatalf("result.session_id = %v, want sess-123", resultData["session_id"])
+	}
+	if resultData["topic"] != "test investigation" {
+		t.Fatalf("result.topic = %v, want test investigation", resultData["topic"])
+	}
+}
+
+func TestGuidanceFallbackProductionMode_MissingPolicyReturnsNestedResultWithoutPanic(t *testing.T) {
+	t.Setenv("AIMUX_ENV", "")
+
+	rawGuided := map[string]any{
+		"result": map[string]any{
+			"job_id":  "job-1",
+			"session": "sess-1",
+		},
+	}
+
+	registry := guidance.NewRegistry()
+	policy, fallback, err := registry.Resolve("workflow", rawGuided)
+	if err != nil {
+		t.Fatalf("Resolve missing policy in production mode: %v", err)
+	}
+	if policy != nil {
+		t.Fatal("expected nil policy for missing workflow policy")
+	}
+	if fallback == nil {
+		t.Fatal("expected fallback envelope for missing policy")
+	}
+	if fallback.State != guidance.StateGuidanceNotImplemented {
+		t.Fatalf("fallback.State = %q, want %q", fallback.State, guidance.StateGuidanceNotImplemented)
+	}
+
+	marshaled, err := marshalToolResult(fallback)
+	if err != nil {
+		t.Fatalf("marshalToolResult(fallback): %v", err)
+	}
+
+	data := parseResult(t, marshaled)
+	if data["state"] != guidance.StateGuidanceNotImplemented {
+		t.Fatalf("state = %v, want %s", data["state"], guidance.StateGuidanceNotImplemented)
+	}
+
+	resultData, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested result object, got %T", data["result"])
+	}
+	if resultData["job_id"] != "job-1" {
+		t.Fatalf("result.job_id = %v, want job-1", resultData["job_id"])
+	}
+	if resultData["session"] != "sess-1" {
+		t.Fatalf("result.session = %v, want sess-1", resultData["session"])
 	}
 }
 
@@ -1481,9 +1608,316 @@ func TestHandleInvestigate_RecallNotFound(t *testing.T) {
 		t.Errorf("recall returned an error result: %v", result)
 	}
 	data := parseResult(t, result)
-	found, _ := data["found"].(bool)
+	resultPayload, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected result payload")
+	}
+	found, _ := resultPayload["found"].(bool)
 	if found {
 		t.Error("expected found=false for nonexistent topic")
+	}
+}
+
+func TestHandleInvestigate_FindingWhenCoverageCompletePromotesAssess(t *testing.T) {
+	srv := testServer(t)
+	startReq := makeRequest("investigate", map[string]any{
+		"action": "start",
+		"topic":  "server crash on startup",
+	})
+	startResult, err := srv.handleInvestigate(context.Background(), startReq)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := parseResult(t, startResult)
+	startResultData, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected start result payload")
+	}
+	sessionID, _ := startResultData["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("expected session_id")
+	}
+
+	areas := []string{"reproduction", "isolation", "hypothesis_formation", "root_cause_analysis", "fix_verification", "regression_prevention", "environmental_factors", "error_trail"}
+	previousGapCount := len(areas)
+	for i, area := range areas {
+		findingReq := makeRequest("investigate", map[string]any{
+			"action":        "finding",
+			"session_id":    sessionID,
+			"description":   "finding " + area,
+			"source":        "file.go:42",
+			"severity":      "P2",
+			"coverage_area": area,
+		})
+		findingResult, findErr := srv.handleInvestigate(context.Background(), findingReq)
+		if findErr != nil {
+			t.Fatalf("finding %d: %v", i, findErr)
+		}
+		data := parseResult(t, findingResult)
+		gaps, ok := data["gaps"].([]any)
+		if i < len(areas)-1 {
+			if !ok {
+				t.Fatalf("expected gaps array after finding %d, got %T", i, data["gaps"])
+			}
+			if len(gaps) >= previousGapCount {
+				t.Fatalf("gaps did not shrink after finding %d: got %d want < %d", i, len(gaps), previousGapCount)
+			}
+			previousGapCount = len(gaps)
+			continue
+		}
+		if ok && len(gaps) != 0 {
+			t.Fatalf("expected no gaps after full coverage, got %v", gaps)
+		}
+		choose, ok := data["choose_your_path"].(map[string]any)
+		if !ok {
+			t.Fatal("expected choose_your_path after full coverage")
+		}
+		self, ok := choose["self"].(map[string]any)
+		if !ok {
+			t.Fatal("expected self branch after full coverage")
+		}
+		nextCall, _ := self["next_call"].(string)
+		if nextCall != `investigate(action="assess", session_id="<session_id>")` && nextCall != `investigate(action="report", session_id="<session_id>")` {
+			t.Fatalf("expected assess/report next_call after full coverage, got %q", nextCall)
+		}
+	}
+}
+
+func TestHandleInvestigate_ReportZeroFindings_BlockedKeepsSession(t *testing.T) {
+	srv := testServer(t)
+
+	startReq := makeRequest("investigate", map[string]any{
+		"action": "start",
+		"topic":  "no findings yet",
+	})
+	startResult, err := srv.handleInvestigate(context.Background(), startReq)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := parseResult(t, startResult)
+	startPayload, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected start result payload")
+	}
+	sessionID, _ := startPayload["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("expected session_id")
+	}
+
+	reportReq := makeRequest("investigate", map[string]any{
+		"action":     "report",
+		"session_id": sessionID,
+	})
+	reportResult, err := srv.handleInvestigate(context.Background(), reportReq)
+	if err != nil {
+		t.Fatalf("investigate report: %v", err)
+	}
+	reportData := parseResult(t, reportResult)
+	if reportData["state"] != "report_blocked" {
+		t.Fatalf("state = %v, want report_blocked", reportData["state"])
+	}
+	if _, leaked := reportData["report"]; leaked {
+		t.Fatal("unexpected top-level report field leak")
+	}
+	reportPayload, ok := reportData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected report result payload")
+	}
+	reportText, _ := reportPayload["report"].(string)
+	if reportText == "" {
+		t.Fatal("expected non-empty result.report")
+	}
+	choose, ok := reportData["choose_your_path"].(map[string]any)
+	if !ok {
+		t.Fatal("expected choose_your_path")
+	}
+	self, ok := choose["self"].(map[string]any)
+	if !ok {
+		t.Fatal("expected self path")
+	}
+	nextCall, _ := self["next_call"].(string)
+	if nextCall != `investigate(action="finding", session_id="<session_id>", description="...", source="...", severity="P2")` {
+		t.Fatalf("next_call = %q, want finding corrective call", nextCall)
+	}
+
+	statusReq := makeRequest("investigate", map[string]any{
+		"action":     "status",
+		"session_id": sessionID,
+	})
+	statusResult, err := srv.handleInvestigate(context.Background(), statusReq)
+	if err != nil {
+		t.Fatalf("investigate status after blocked report: %v", err)
+	}
+	if statusResult.IsError {
+		t.Fatalf("status should remain usable after blocked report, got error result: %+v", statusResult)
+	}
+}
+
+func TestHandleInvestigate_ReportWeakEvidence_PreliminaryKeepsSession(t *testing.T) {
+	srv := testServer(t)
+
+	startReq := makeRequest("investigate", map[string]any{
+		"action": "start",
+		"topic":  "startup crash",
+	})
+	startResult, err := srv.handleInvestigate(context.Background(), startReq)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := parseResult(t, startResult)
+	startPayload, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected start result payload")
+	}
+	sessionID, _ := startPayload["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("expected session_id")
+	}
+
+	findingReq := makeRequest("investigate", map[string]any{
+		"action":      "finding",
+		"session_id":  sessionID,
+		"description": "single weak finding",
+		"source":      "main.go:42",
+		"severity":    "P2",
+	})
+	if _, err := srv.handleInvestigate(context.Background(), findingReq); err != nil {
+		t.Fatalf("investigate finding: %v", err)
+	}
+
+	reportReq := makeRequest("investigate", map[string]any{
+		"action":     "report",
+		"session_id": sessionID,
+	})
+	reportResult, err := srv.handleInvestigate(context.Background(), reportReq)
+	if err != nil {
+		t.Fatalf("investigate report: %v", err)
+	}
+	reportData := parseResult(t, reportResult)
+	if reportData["state"] != "report_preliminary" {
+		t.Fatalf("state = %v, want report_preliminary", reportData["state"])
+	}
+	if _, leaked := reportData["report"]; leaked {
+		t.Fatal("unexpected top-level report field leak")
+	}
+	reportPayload, ok := reportData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected report result payload")
+	}
+	reportText, _ := reportPayload["report"].(string)
+	if reportText == "" {
+		t.Fatal("expected non-empty result.report")
+	}
+	choose, ok := reportData["choose_your_path"].(map[string]any)
+	if !ok {
+		t.Fatal("expected choose_your_path")
+	}
+	self, ok := choose["self"].(map[string]any)
+	if !ok {
+		t.Fatal("expected self path")
+	}
+	nextCall, _ := self["next_call"].(string)
+	if nextCall != `investigate(action="assess", session_id="<session_id>")` {
+		t.Fatalf("next_call = %q, want assess corrective call", nextCall)
+	}
+
+	statusReq := makeRequest("investigate", map[string]any{
+		"action":     "status",
+		"session_id": sessionID,
+	})
+	statusResult, err := srv.handleInvestigate(context.Background(), statusReq)
+	if err != nil {
+		t.Fatalf("investigate status after preliminary report: %v", err)
+	}
+	if statusResult.IsError {
+		t.Fatalf("status should remain usable after preliminary report, got error result: %+v", statusResult)
+	}
+}
+
+func TestHandleInvestigate_ReportWeakEvidenceForce_IncompleteForcedKeepsSession(t *testing.T) {
+	srv := testServer(t)
+
+	startReq := makeRequest("investigate", map[string]any{
+		"action": "start",
+		"topic":  "startup crash",
+	})
+	startResult, err := srv.handleInvestigate(context.Background(), startReq)
+	if err != nil {
+		t.Fatalf("investigate start: %v", err)
+	}
+	startData := parseResult(t, startResult)
+	startPayload, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected start result payload")
+	}
+	sessionID, _ := startPayload["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("expected session_id")
+	}
+
+	findingReq := makeRequest("investigate", map[string]any{
+		"action":      "finding",
+		"session_id":  sessionID,
+		"description": "single weak finding",
+		"source":      "main.go:42",
+		"severity":    "P2",
+	})
+	if _, err := srv.handleInvestigate(context.Background(), findingReq); err != nil {
+		t.Fatalf("investigate finding: %v", err)
+	}
+
+	reportReq := makeRequest("investigate", map[string]any{
+		"action":     "report",
+		"session_id": sessionID,
+		"force":      true,
+	})
+	reportResult, err := srv.handleInvestigate(context.Background(), reportReq)
+	if err != nil {
+		t.Fatalf("investigate report force=true: %v", err)
+	}
+	reportData := parseResult(t, reportResult)
+	if reportData["state"] != "report_incomplete_forced" {
+		t.Fatalf("state = %v, want report_incomplete_forced", reportData["state"])
+	}
+	reportPayload, ok := reportData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected report result payload")
+	}
+	reportText, _ := reportPayload["report"].(string)
+	if reportText == "" {
+		t.Fatal("expected non-empty result.report")
+	}
+	metadata, ok := reportPayload["metadata"].(map[string]any)
+	if !ok {
+		t.Fatal("expected result.metadata")
+	}
+	force, _ := metadata["force"].(bool)
+	if !force {
+		t.Fatalf("result.metadata.force = %v, want true", metadata["force"])
+	}
+	choose, ok := reportData["choose_your_path"].(map[string]any)
+	if !ok {
+		t.Fatal("expected choose_your_path")
+	}
+	self, ok := choose["self"].(map[string]any)
+	if !ok {
+		t.Fatal("expected self path")
+	}
+	nextCall, _ := self["next_call"].(string)
+	if nextCall != `investigate(action="assess", session_id="<session_id>")` {
+		t.Fatalf("next_call = %q, want assess corrective call", nextCall)
+	}
+
+	statusReq := makeRequest("investigate", map[string]any{
+		"action":     "status",
+		"session_id": sessionID,
+	})
+	statusResult, err := srv.handleInvestigate(context.Background(), statusReq)
+	if err != nil {
+		t.Fatalf("investigate status after forced incomplete report: %v", err)
+	}
+	if statusResult.IsError {
+		t.Fatalf("status should remain usable after forced incomplete report, got error result: %+v", statusResult)
 	}
 }
 
@@ -1516,7 +1950,11 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 		t.Fatalf("investigate start: %v", err)
 	}
 	startData := parseResult(t, startResult)
-	sessionID, ok := startData["session_id"].(string)
+	startResultData, ok := startData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected start result payload")
+	}
+	sessionID, ok := startResultData["session_id"].(string)
 	if !ok || sessionID == "" {
 		t.Fatal("expected session_id from start")
 	}
@@ -1531,8 +1969,24 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 		t.Fatalf("investigate status: %v", err)
 	}
 	statusData := parseResult(t, statusResult)
-	if statusData["topic"] != "server crash on startup" {
-		t.Errorf("topic = %v, want 'server crash on startup'", statusData["topic"])
+	statusResultData, ok := statusData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected status result payload")
+	}
+	if statusResultData["session_id"] != sessionID {
+		t.Errorf("result.session_id = %v, want %q", statusResultData["session_id"], sessionID)
+	}
+	if statusResultData["topic"] != "server crash on startup" {
+		t.Errorf("result.topic = %v, want 'server crash on startup'", statusResultData["topic"])
+	}
+	if statusResultData["iteration"] == nil {
+		t.Error("expected result.iteration")
+	}
+	if statusResultData["findings_count"] == nil {
+		t.Error("expected result.findings_count")
+	}
+	if statusResultData["coverage_unchecked"] == nil {
+		t.Error("expected result.coverage_unchecked")
 	}
 
 	// 3. Finding
@@ -1548,8 +2002,26 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 		t.Fatalf("investigate finding: %v", err)
 	}
 	findingData := parseResult(t, findingResult)
-	if findingData["finding_id"] == nil {
+	findingResultData, ok := findingData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected finding result payload")
+	}
+	if findingResultData["finding_id"] == nil {
 		t.Error("expected finding_id")
+	}
+	if gaps, ok := findingData["gaps"].([]any); !ok || len(gaps) == 0 {
+		t.Fatalf("expected non-empty gaps after first finding, got %v", findingData["gaps"])
+	}
+	choose, ok := findingData["choose_your_path"].(map[string]any)
+	if !ok {
+		t.Fatal("expected choose_your_path in finding response")
+	}
+	self, ok := choose["self"].(map[string]any)
+	if !ok {
+		t.Fatal("expected self branch in finding response")
+	}
+	if nextCall, _ := self["next_call"].(string); nextCall == `investigate(action="assess", session_id="<session_id>")` || nextCall == `investigate(action="report", session_id="<session_id>")` {
+		t.Fatalf("finding next_call switched too early: %q", nextCall)
 	}
 
 	// 4. Assess
@@ -1575,8 +2047,333 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 		t.Fatalf("investigate report: %v", err)
 	}
 	reportData := parseResult(t, reportResult)
-	if reportData["report"] == nil {
+	reportResultData, ok := reportData["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected report result payload")
+	}
+	if reportResultData["report"] == nil {
 		t.Error("expected report content")
+	}
+}
+
+func TestHandleInvestigate_AutoReturnsJobIDAndPersistsDelegateResult(t *testing.T) {
+	srv := testServer(t)
+	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+		return &types.Result{Content: "delegate completed root cause found", ExitCode: 0}, nil
+	}}
+
+	autoReq := makeRequest("investigate", map[string]any{
+		"action": "auto",
+		"topic":  "startup crash in bootstrap",
+		"cli":    "codex",
+	})
+	autoResult, err := srv.handleInvestigate(context.Background(), autoReq)
+	if err != nil {
+		t.Fatalf("investigate auto: %v", err)
+	}
+	if autoResult.IsError {
+		t.Fatalf("investigate auto returned error result: %+v", autoResult)
+	}
+
+	autoData := parseGuidedResult(t, autoResult)
+	jobID, _ := autoData["job_id"].(string)
+	sessionID, _ := autoData["session_id"].(string)
+	if jobID == "" {
+		t.Fatal("expected job_id from investigate auto")
+	}
+	if sessionID == "" {
+		t.Fatal("expected session_id from investigate auto")
+	}
+	if autoData["status"] != "running" {
+		t.Fatalf("status = %v, want running", autoData["status"])
+	}
+
+	statusReq := makeRequest("status", map[string]any{"job_id": jobID})
+	finalStatus := ""
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		statusResult, statusErr := srv.handleStatus(context.Background(), statusReq)
+		if statusErr != nil {
+			t.Fatalf("handleStatus: %v", statusErr)
+		}
+		statusData := parseResult(t, statusResult)
+		finalStatus, _ = statusData["status"].(string)
+		if finalStatus == "completed" || finalStatus == "failed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if finalStatus != "completed" {
+		t.Fatalf("auto investigation job did not complete successfully, final status=%q", finalStatus)
+	}
+
+	state := inv.GetInvestigation(sessionID)
+	if state == nil {
+		t.Fatalf("expected investigation state for session %q", sessionID)
+	}
+	if len(state.Findings) == 0 {
+		t.Fatal("expected delegated completion to persist findings in investigation state")
+	}
+
+	infoReq := makeRequest("sessions", map[string]any{
+		"action":     "info",
+		"session_id": sessionID,
+	})
+	infoResult, err := srv.handleSessions(context.Background(), infoReq)
+	if err != nil {
+		t.Fatalf("handleSessions info: %v", err)
+	}
+	if infoResult.IsError {
+		t.Fatalf("handleSessions info returned error: %+v", infoResult)
+	}
+	infoData := parseResult(t, infoResult)
+	sessionData, ok := infoData["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected session payload, got %T", infoData["session"])
+	}
+	metadata, ok := sessionData["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected session metadata map, got %T", sessionData["metadata"])
+	}
+	if metadata["source"] != "delegate" {
+		t.Fatalf("session metadata source = %v, want delegate", metadata["source"])
+	}
+	if metadata["cli"] != "codex" {
+		t.Fatalf("session metadata cli = %v, want codex", metadata["cli"])
+	}
+	delegateReport, _ := metadata["delegate_report"].(string)
+	if delegateReport == "" {
+		t.Fatal("expected delegate_report in session metadata")
+	}
+}
+
+func TestHandleInvestigate_AutoCancelUsesSessionsInfrastructure(t *testing.T) {
+	srv := testServer(t)
+	blocked := make(chan struct{})
+	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+		<-ctx.Done()
+		close(blocked)
+		return nil, ctx.Err()
+	}}
+
+	autoReq := makeRequest("investigate", map[string]any{
+		"action": "auto",
+		"topic":  "cancel path coverage",
+	})
+	autoResult, err := srv.handleInvestigate(context.Background(), autoReq)
+	if err != nil {
+		t.Fatalf("investigate auto: %v", err)
+	}
+	if autoResult.IsError {
+		t.Fatalf("investigate auto returned error result: %+v", autoResult)
+	}
+	autoData := parseGuidedResult(t, autoResult)
+	jobID, _ := autoData["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("expected job_id from investigate auto")
+	}
+
+	cancelReq := makeRequest("sessions", map[string]any{
+		"action": "cancel",
+		"job_id": jobID,
+	})
+	cancelResult, err := srv.handleSessions(context.Background(), cancelReq)
+	if err != nil {
+		t.Fatalf("handleSessions cancel: %v", err)
+	}
+	if cancelResult.IsError {
+		t.Fatalf("cancel returned error result: %+v", cancelResult)
+	}
+	cancelData := parseResult(t, cancelResult)
+	if cancelData["status"] != "cancelled" {
+		t.Fatalf("cancel status = %v, want cancelled", cancelData["status"])
+	}
+
+	statusReq := makeRequest("status", map[string]any{"job_id": jobID})
+	finalStatus := ""
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		statusResult, statusErr := srv.handleStatus(context.Background(), statusReq)
+		if statusErr != nil {
+			t.Fatalf("handleStatus: %v", statusErr)
+		}
+		statusData := parseResult(t, statusResult)
+		finalStatus, _ = statusData["status"].(string)
+		if finalStatus == "failed" || finalStatus == "completed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if finalStatus != "failed" && finalStatus != "completed" {
+		t.Fatalf("expected terminal status after cancel, got %q", finalStatus)
+	}
+}
+
+// TestHandleInvestigate_AutoProgressBecomesVisibleDuringExecution verifies
+// that progress is observable via handleStatus while the delegate is running.
+// AC: poll handleStatus and assert progress is non-empty before completion.
+func TestHandleInvestigate_AutoProgressBecomesVisibleDuringExecution(t *testing.T) {
+	progressEmitted := make(chan struct{})
+	srv := testServer(t)
+	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+		// Emit a progress line via OnOutput before returning.
+		if args.OnOutput != nil {
+			args.OnOutput("analyzing startup crash: scanning goroutine stacks")
+		}
+		close(progressEmitted)
+		// Wait briefly so the job stays running long enough for polling to see progress.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		return &types.Result{Content: "root cause found: nil pointer in bootstrap", ExitCode: 0}, nil
+	}}
+
+	autoReq := makeRequest("investigate", map[string]any{
+		"action": "auto",
+		"topic":  "startup crash in bootstrap goroutine",
+		"cli":    "codex",
+	})
+	autoResult, err := srv.handleInvestigate(context.Background(), autoReq)
+	if err != nil {
+		t.Fatalf("investigate auto: %v", err)
+	}
+	if autoResult.IsError {
+		t.Fatalf("investigate auto returned error result: %+v", autoResult)
+	}
+
+	autoData := parseGuidedResult(t, autoResult)
+	jobID, _ := autoData["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("expected job_id from investigate auto")
+	}
+	if autoData["status"] != "running" {
+		t.Fatalf("initial status = %v, want running", autoData["status"])
+	}
+
+	// Wait for the stub to emit the progress line before polling.
+	select {
+	case <-progressEmitted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for stub to emit progress")
+	}
+
+	// Poll handleStatus until we observe a non-empty progress field or terminal state.
+	statusReq := makeRequest("status", map[string]any{"job_id": jobID})
+	var observedProgress string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		statusResult, statusErr := srv.handleStatus(context.Background(), statusReq)
+		if statusErr != nil {
+			t.Fatalf("handleStatus: %v", statusErr)
+		}
+		statusData := parseResult(t, statusResult)
+		if p, _ := statusData["progress"].(string); p != "" {
+			observedProgress = p
+			break
+		}
+		if st, _ := statusData["status"].(string); st == "completed" || st == "failed" {
+			// Terminal — check once more for progress; if still empty, fail.
+			if p, _ := statusData["progress"].(string); p != "" {
+				observedProgress = p
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if observedProgress == "" {
+		t.Fatal("expected non-empty progress to become visible during async auto delegation")
+	}
+}
+
+// TestHandleInvestigate_AutoCancelPreventsSuccessResult verifies that
+// cancelling a running auto job causes the job to terminate without emitting
+// a success result — the final status must NOT be "completed".
+// AC: cancel a running auto job; assert final status != "completed" and no
+//     success content leaks (job content field is empty on non-completed jobs).
+func TestHandleInvestigate_AutoCancelPreventsSuccessResult(t *testing.T) {
+	blocked := make(chan struct{})
+	srv := testServer(t)
+	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+		// Signal that execution has started, then block until context is cancelled.
+		close(blocked)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+
+	autoReq := makeRequest("investigate", map[string]any{
+		"action": "auto",
+		"topic":  "cancel prevents success scenario",
+		"cli":    "codex",
+	})
+	autoResult, err := srv.handleInvestigate(context.Background(), autoReq)
+	if err != nil {
+		t.Fatalf("investigate auto: %v", err)
+	}
+	if autoResult.IsError {
+		t.Fatalf("investigate auto returned error result: %+v", autoResult)
+	}
+	autoData := parseGuidedResult(t, autoResult)
+	jobID, _ := autoData["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("expected job_id from investigate auto")
+	}
+
+	// Wait until the goroutine is actually executing so the cancel is meaningful.
+	select {
+	case <-blocked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for executor to start")
+	}
+
+	// Cancel the running job via handleSessions.
+	cancelReq := makeRequest("sessions", map[string]any{
+		"action": "cancel",
+		"job_id": jobID,
+	})
+	cancelResult, err := srv.handleSessions(context.Background(), cancelReq)
+	if err != nil {
+		t.Fatalf("handleSessions cancel: %v", err)
+	}
+	if cancelResult.IsError {
+		t.Fatalf("cancel returned error result: %+v", cancelResult)
+	}
+
+	// Poll until the job reaches a terminal state.
+	statusReq := makeRequest("status", map[string]any{"job_id": jobID})
+	finalStatus := ""
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		statusResult, statusErr := srv.handleStatus(context.Background(), statusReq)
+		if statusErr != nil {
+			t.Fatalf("handleStatus: %v", statusErr)
+		}
+		statusData := parseResult(t, statusResult)
+		finalStatus, _ = statusData["status"].(string)
+		if finalStatus == "failed" || finalStatus == "completed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// AC: final status must NOT be "completed" — cancellation must prevent success.
+	if finalStatus == "completed" {
+		t.Fatal("cancelled job must not reach completed status — success result leaked after cancel")
+	}
+	if finalStatus == "" {
+		t.Fatalf("job did not reach a terminal state within deadline (last status=%q)", finalStatus)
+	}
+
+	// AC: verify the job holds no success content — cancelled jobs must not
+	// persist the delegate result as if execution succeeded.
+	job := srv.jobs.Get(jobID)
+	if job == nil {
+		t.Fatal("expected job to exist after cancellation")
+	}
+	if job.Content != "" {
+		t.Fatalf("cancelled job must not carry success content, got: %q", job.Content)
 	}
 }
 

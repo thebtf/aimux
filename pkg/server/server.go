@@ -21,6 +21,8 @@ import (
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
+	"github.com/thebtf/aimux/pkg/guidance"
+	"github.com/thebtf/aimux/pkg/guidance/policies"
 	"github.com/thebtf/aimux/pkg/hooks"
 	inv "github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/logger"
@@ -112,6 +114,48 @@ func marshalToolResult(data any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
+// buildGuidancePlan resolves the policy for tool from the server registry and computes the NextActionPlan.
+// Returns the plan and a boolean indicating whether plan.State is "report_ready".
+// Falls back to a zero plan when no policy is registered for the tool.
+//
+// NOTE: s may be nil during tests or early init; in that case only the zero plan is returned.
+func (s *Server) buildGuidancePlan(tool, action string, stateSnapshot, rawResult any) (guidance.NextActionPlan, bool) {
+	zero := guidance.NextActionPlan{}
+	if s == nil || s.guidanceReg == nil {
+		return zero, false
+	}
+	policy, ok := s.guidanceReg.Get(tool)
+	if !ok {
+		return zero, false
+	}
+	plan, err := policy.BuildPlan(guidance.PolicyInput{
+		Action:        action,
+		StateSnapshot: stateSnapshot,
+		RawResult:     rawResult,
+	})
+	if err != nil {
+		return zero, false
+	}
+	return plan, plan.State == "report_ready"
+}
+
+func (s *Server) marshalGuidedToolResult(tool, action string, stateSnapshot any, rawResult any) (*mcp.CallToolResult, error) {
+	plan, _ := s.buildGuidancePlan(tool, action, stateSnapshot, rawResult)
+	return s.marshalGuidedToolResultWithPlan(plan, tool, action, stateSnapshot, rawResult)
+}
+
+// marshalGuidedToolResultWithPlan assembles the guided response envelope using a pre-computed plan,
+// avoiding a redundant BuildPlan call when the caller already computed it.
+func (s *Server) marshalGuidedToolResultWithPlan(plan guidance.NextActionPlan, tool, action string, stateSnapshot, rawResult any) (*mcp.CallToolResult, error) {
+	payload := guidance.NewResponseBuilder().BuildPayload(plan, guidance.HandlerResult{
+		Tool:   tool,
+		Action: action,
+		State:  stateSnapshot,
+		Result: rawResult,
+	})
+	return marshalToolResult(payload)
+}
+
 // Server holds all dependencies for the MCP server.
 type Server struct {
 	cfg          *config.Config
@@ -134,6 +178,7 @@ type Server struct {
 	rateLimiter  *ratelimit.Limiter
 	authToken    string
 	projectDir   string // directory used for initial agent discovery
+	guidanceReg  *guidance.Registry
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -252,6 +297,12 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 
 	// Initialize think patterns
 	patterns.RegisterAll()
+
+	// Initialize guidance policy registry — extensible, registry-driven policy resolution.
+	s.guidanceReg = guidance.NewRegistry()
+	if err := s.guidanceReg.Register(policies.NewInvestigatePolicy()); err != nil {
+		log.Warn("guidance: failed to register investigate policy: %v", err)
+	}
 
 	// Initialize hooks registry with built-in telemetry
 	s.hooks = hooks.NewRegistry()
@@ -556,15 +607,7 @@ func (s *Server) registerTools() {
 	// think tool
 	s.mcp.AddTool(
 		mcp.NewTool("think",
-			mcp.WithDescription("23 reasoning patterns. "+
-				"Top patterns: decision_framework (structured tradeoff analysis), problem_decomposition (break down complexity), "+
-				"debugging_approach (systematic trace + fix), peer_review (simulate review with objections), "+
-				"research_synthesis (group findings, assess evidence). "+
-				"Stateless: think, critical_thinking, decision_framework, problem_decomposition, mental_model, metacognitive_monitoring, recursive_thinking, "+
-				"domain_modeling, architecture_analysis, stochastic_algorithm, temporal_thinking, visual_reasoning, "+
-				"source_comparison, literature_review, peer_review, replication_analysis, experimental_loop, research_synthesis. "+
-				"Stateful (pass session_id): sequential_thinking, scientific_method, debugging_approach, "+
-				"structured_argumentation, collaborative_reasoning."),
+			mcp.WithDescription(mustStatefulToolDescription("think")),
 			mcp.WithString("pattern",
 				mcp.Required(),
 				mcp.Description("Pattern name"),
@@ -665,14 +708,11 @@ func (s *Server) registerTools() {
 	// investigate tool
 	s.mcp.AddTool(
 		mcp.NewTool("investigate",
-			mcp.WithDescription("Structured deep investigation — catches wrong assumptions before they become wrong decisions. "+
-				"Auto-detects domain (security/performance/architecture/debugging/research) from topic keywords if not specified. "+
-				"Flow: start(domain?) → (finding + assess) × N → report. "+
-				"Stops only when BOTH: convergence ≥ 1.0 AND coverage ≥ 80%."),
+			mcp.WithDescription(mustStatefulToolDescription("investigate")),
 			mcp.WithString("action",
 				mcp.Required(),
-				mcp.Description("Action: start, finding, assess, report, status, list, recall"),
-				mcp.Enum("start", "finding", "assess", "report", "status", "list", "recall"),
+				mcp.Description("Action: start, finding, assess, report, auto, status, list, recall"),
+				mcp.Enum("start", "finding", "assess", "report", "auto", "status", "list", "recall"),
 			),
 			mcp.WithString("topic",
 				mcp.Description("Investigation topic (required for start, recall)"),
@@ -704,7 +744,13 @@ func (s *Server) registerTools() {
 				mcp.Description("Finding ID this corrects — creates a Correction chain (optional for action=finding)"),
 			),
 			mcp.WithString("cwd",
-				mcp.Description("Working directory for report file save (optional for action=report)"),
+				mcp.Description("Working directory for report file save (optional for action=report, auto)"),
+			),
+			mcp.WithString("cli",
+				mcp.Description("Delegate CLI override (optional for action=auto)"),
+			),
+			mcp.WithBoolean("force",
+				mcp.Description("Generate report even when evidence is incomplete (optional for action=report)"),
 			),
 		),
 		s.handleInvestigate,
@@ -713,7 +759,7 @@ func (s *Server) registerTools() {
 	// consensus tool
 	s.mcp.AddTool(
 		mcp.NewTool("consensus",
-			mcp.WithDescription("Multi-model blinded consensus with optional synthesis"),
+			mcp.WithDescription(mustStatefulToolDescription("consensus")),
 			mcp.WithString("topic",
 				mcp.Required(),
 				mcp.Description("Topic for consensus"),
@@ -737,7 +783,7 @@ func (s *Server) registerTools() {
 	// debate tool
 	s.mcp.AddTool(
 		mcp.NewTool("debate",
-			mcp.WithDescription("Structured adversarial debate with verdict synthesis"),
+			mcp.WithDescription(mustStatefulToolDescription("debate")),
 			mcp.WithString("topic",
 				mcp.Required(),
 				mcp.Description("Topic for debate"),
@@ -758,7 +804,7 @@ func (s *Server) registerTools() {
 	// dialog tool
 	s.mcp.AddTool(
 		mcp.NewTool("dialog",
-			mcp.WithDescription("Sequential multi-turn dialog between AI CLIs"),
+			mcp.WithDescription(mustStatefulToolDescription("dialog")),
 			mcp.WithString("prompt",
 				mcp.Required(),
 				mcp.Description("Dialog topic or initial prompt"),
@@ -849,7 +895,7 @@ func (s *Server) registerTools() {
 	// workflow tool
 	s.mcp.AddTool(
 		mcp.NewTool("workflow",
-			mcp.WithDescription("Execute a declarative multi-step pipeline. Each step can call exec, think, or investigate. Steps can reference previous step outputs via {{step_id.content}} templates."),
+			mcp.WithDescription(mustStatefulToolDescription("workflow")),
 			mcp.WithString("name",
 				mcp.Description("Workflow name (for logging)"),
 			),
@@ -1960,7 +2006,143 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if domainName == "" {
 			result["available_domains"] = inv.DomainNames()
 		}
-		return marshalToolResult(result)
+		return s.marshalGuidedToolResult("investigate", action, state, result)
+
+	case "auto":
+		topic := request.GetString("topic", "")
+		if topic == "" {
+			return mcp.NewToolResultError("topic required for auto"), nil
+		}
+		if err := s.checkConcurrencyLimit(); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		domainName := request.GetString("domain", "")
+		if domainName == "" {
+			domainName = inv.AutoDetectDomain(topic)
+		}
+		if inv.GetDomain(domainName) == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("unknown domain %q; valid: %v", domainName, inv.DomainNames())), nil
+		}
+
+		delegateCLI := request.GetString("cli", "")
+		var delegateModel, delegateEffort string
+		if delegateCLI == "" {
+			if pref, resolveErr := s.router.Resolve("analyze"); resolveErr == nil && pref.CLI != "" {
+				delegateCLI = pref.CLI
+				delegateModel = pref.Model
+				delegateEffort = pref.ReasoningEffort
+			}
+		}
+		if delegateCLI == "" {
+			delegateCLI = "codex"
+		}
+
+		profile, profileErr := s.registry.Get(delegateCLI)
+		if profileErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("CLI %q not configured for investigate auto", delegateCLI)), nil
+		}
+
+		cwd := request.GetString("cwd", "")
+		if cwd != "" {
+			cwd = filepath.Clean(cwd)
+			if info, err := os.Stat(cwd); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("cwd %q not found: %v", cwd, err)), nil
+			} else if !info.IsDir() {
+				return mcp.NewToolResultError(fmt.Sprintf("cwd %q is not a directory", cwd)), nil
+			}
+		}
+
+		sess := s.sessions.Create("investigate", types.SessionModeOnceStateful, cwd)
+		s.sessions.Update(sess.ID, func(ss *session.Session) {
+			ss.Metadata = map[string]any{
+				"source": "delegate",
+				"cli":    delegateCLI,
+			}
+		})
+		state := inv.CreateInvestigation(sess.ID, topic, domainName)
+		job := s.jobs.Create(sess.ID, delegateCLI)
+
+		autoPrompt := inv.BuildAutoDelegatePrompt(topic, state.CoverageAreas)
+		args := types.SpawnArgs{
+			CLI:            delegateCLI,
+			Command:        resolve.CommandBinary(profile.Command.Base),
+			Args:           resolve.BuildPromptArgs(profile, delegateModel, delegateEffort, false, autoPrompt),
+			CWD:            cwd,
+			TimeoutSeconds: profile.TimeoutSeconds,
+			OnOutput:       s.progressSink(job.ID, profile.OutputFormat),
+		}
+
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		s.jobs.RegisterCancel(job.ID, jobCancel)
+		s.sendBusy(job.ID, "investigate:auto:"+delegateCLI, profile.TimeoutSeconds*1000)
+		go func() {
+			s.jobs.StartJob(job.ID, 0)
+			s.sessions.Update(sess.ID, func(ss *session.Session) {
+				ss.Status = types.SessionStatusRunning
+			})
+			defer s.sendIdle(job.ID)
+
+			result, runErr := s.executor.Run(jobCtx, args)
+			if runErr != nil {
+				s.jobs.FailJob(job.ID, types.NewExecutorError(runErr.Error(), runErr, ""))
+				s.sessions.Update(sess.ID, func(ss *session.Session) {
+					ss.Status = types.SessionStatusFailed
+				})
+				return
+			}
+			if result.Error != nil {
+				s.jobs.FailJob(job.ID, result.Error)
+				s.sessions.Update(sess.ID, func(ss *session.Session) {
+					ss.Status = types.SessionStatusFailed
+				})
+				return
+			}
+
+			parsed, cliSessionID := parser.ParseContent(result.Content, profile.OutputFormat)
+			if cliSessionID != "" {
+				s.sessions.Update(sess.ID, func(ss *session.Session) {
+					ss.CLISessionID = cliSessionID
+				})
+			}
+
+			delegateFinding := inv.DelegateFindingFromOutput(delegateCLI, topic, parsed, state.CoverageAreas)
+			if _, _, findErr := inv.AddFinding(sess.ID, delegateFinding); findErr != nil {
+				s.jobs.FailJob(job.ID, types.NewExecutorError(findErr.Error(), findErr, ""))
+				s.sessions.Update(sess.ID, func(ss *session.Session) {
+					ss.Status = types.SessionStatusFailed
+				})
+				return
+			}
+
+			updatedState := inv.GetInvestigation(sess.ID)
+			delegateReport := ""
+			if updatedState != nil {
+				delegateReport = inv.GenerateReport(updatedState)
+			}
+			s.sessions.Update(sess.ID, func(ss *session.Session) {
+				if ss.Metadata == nil {
+					ss.Metadata = make(map[string]any)
+				}
+				ss.Metadata["source"] = "delegate"
+				ss.Metadata["cli"] = delegateCLI
+				ss.Metadata["delegate_report"] = delegateReport
+				ss.Status = types.SessionStatusCompleted
+				ss.Turns++
+			})
+			completeContent := parsed
+			if delegateReport != "" {
+				completeContent = parsed + "\n\n" + delegateReport
+			}
+			s.jobs.CompleteJob(job.ID, completeContent, result.ExitCode)
+		}()
+
+		return s.marshalGuidedToolResult("investigate", action, state, map[string]any{
+			"job_id":     job.ID,
+			"session_id": sess.ID,
+			"status":     "running",
+			"cli":        delegateCLI,
+		})
 
 	case "finding":
 		sessionID := request.GetString("session_id", "")
@@ -2003,7 +2185,8 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 				"new_claim":      correction.CorrectedClaim,
 			}
 		}
-		return marshalToolResult(result)
+		state := inv.GetInvestigation(sessionID)
+		return s.marshalGuidedToolResult("investigate", action, state, result)
 
 	case "assess":
 		sessionID := request.GetString("session_id", "")
@@ -2014,7 +2197,8 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if assessErr != nil {
 			return mcp.NewToolResultError(assessErr.Error()), nil
 		}
-		return marshalToolResult(assessResult)
+		state := inv.GetInvestigation(sessionID)
+		return s.marshalGuidedToolResult("investigate", action, state, assessResult)
 
 	case "report":
 		sessionID := request.GetString("session_id", "")
@@ -2027,12 +2211,17 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		}
 
 		report := inv.GenerateReport(state)
+		forceReport := request.GetBool("force", false)
 
 		result := map[string]any{
 			"report":            report,
 			"findings_count":    len(state.Findings),
 			"corrections_count": len(state.Corrections),
 			"iterations":        state.Iteration,
+			"force":             forceReport,
+			"metadata": map[string]any{
+				"force": forceReport,
+			},
 		}
 
 		cwd := request.GetString("cwd", "")
@@ -2043,8 +2232,11 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			}
 		}
 
-		inv.DeleteInvestigation(sessionID)
-		return marshalToolResult(result)
+		reportPlan, isReady := s.buildGuidancePlan("investigate", action, state, result)
+		if isReady {
+			inv.DeleteInvestigation(sessionID)
+		}
+		return s.marshalGuidedToolResultWithPlan(reportPlan, "investigate", action, state, result)
 
 	case "status":
 		sessionID := request.GetString("session_id", "")
@@ -2062,6 +2254,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			}
 		}
 		result := map[string]any{
+			"session_id":         sessionID,
 			"topic":              state.Topic,
 			"iteration":          state.Iteration,
 			"findings_count":     len(state.Findings),
@@ -2069,7 +2262,7 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			"coverage_unchecked": unchecked,
 			"last_activity":      state.LastActivityAt,
 		}
-		return marshalToolResult(result)
+		return s.marshalGuidedToolResult("investigate", action, state, result)
 
 	case "list":
 		active := inv.ListInvestigations()
@@ -2078,12 +2271,13 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			cwd, _ = os.Getwd()
 		}
 		savedReports, _ := inv.ListReports(cwd)
-		return marshalToolResult(map[string]any{
+		result := map[string]any{
 			"active_investigations": active,
 			"active_count":          len(active),
 			"saved_reports":         savedReports,
 			"saved_count":           len(savedReports),
-		})
+		}
+		return s.marshalGuidedToolResult("investigate", action, nil, result)
 
 	case "recall":
 		topic := request.GetString("topic", "")
@@ -2105,19 +2299,21 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			for _, r := range reports {
 				topics = append(topics, r.Topic)
 			}
-			return marshalToolResult(map[string]any{
+			result := map[string]any{
 				"found":            false,
 				"message":          fmt.Sprintf("No report found matching %q", topic),
 				"available_topics": topics,
-			})
+			}
+			return s.marshalGuidedToolResult("investigate", action, nil, result)
 		}
-		return marshalToolResult(map[string]any{
+		payload := map[string]any{
 			"found":    true,
 			"filename": result.Filename,
 			"topic":    result.Topic,
 			"date":     result.Date,
 			"content":  result.Content,
-		})
+		}
+		return s.marshalGuidedToolResult("investigate", action, nil, payload)
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil

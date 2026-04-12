@@ -10,6 +10,10 @@ server:
   session_ttl_hours: 24
   gc_interval_seconds: 300
   progress_interval_seconds: 15
+  streaming_grace_seconds: 60
+  streaming_soft_warning_seconds: 120
+  streaming_hard_stall_seconds: 600
+  streaming_auto_cancel_seconds: 900
   default_async: false
   default_timeout_seconds: 300
 

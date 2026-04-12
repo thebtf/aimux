@@ -19,6 +19,7 @@ type Session struct {
 	Status       types.SessionStatus `json:"status"`
 	Turns        int                 `json:"turns"`
 	CWD          string              `json:"cwd"`
+	Metadata     map[string]any      `json:"metadata,omitempty"`
 	CreatedAt    time.Time           `json:"created_at"`
 	LastActiveAt time.Time           `json:"last_active_at"`
 }
@@ -68,11 +69,49 @@ func (r *Registry) Import(s *Session) {
 	r.sessions[s.ID] = s
 }
 
-// Get returns a session by ID, or nil if not found.
+func cloneSession(s *Session) *Session {
+	if s == nil {
+		return nil
+	}
+
+	cp := *s
+	if s.Metadata != nil {
+		metadata := make(map[string]any, len(s.Metadata))
+		for k, v := range s.Metadata {
+			metadata[k] = deepCopyValue(v)
+		}
+		cp.Metadata = metadata
+	}
+	return &cp
+}
+
+// deepCopyValue performs a recursive copy of map[string]any and []any values
+// to prevent metadata snapshots from sharing mutable reference types with the original.
+// Scalar values (string, int, bool, float64, nil, etc.) are returned as-is since they are immutable.
+func deepCopyValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, vv := range val {
+			out[k] = deepCopyValue(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, vv := range val {
+			out[i] = deepCopyValue(vv)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// Get returns a detached session snapshot by ID, or nil if not found.
 func (r *Registry) Get(id string) *Session {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.sessions[id]
+	return cloneSession(r.sessions[id])
 }
 
 // Update modifies a session atomically via a callback.
@@ -89,7 +128,7 @@ func (r *Registry) Update(id string, fn func(s *Session)) bool {
 	return true
 }
 
-// List returns all sessions matching the optional status filter.
+// List returns detached session snapshots matching the optional status filter.
 func (r *Registry) List(statusFilter types.SessionStatus) []*Session {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -97,7 +136,7 @@ func (r *Registry) List(statusFilter types.SessionStatus) []*Session {
 	var result []*Session
 	for _, s := range r.sessions {
 		if statusFilter == "" || s.Status == statusFilter {
-			result = append(result, s)
+			result = append(result, cloneSession(s))
 		}
 	}
 	return result

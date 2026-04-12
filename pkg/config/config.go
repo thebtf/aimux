@@ -13,16 +13,20 @@ import (
 
 // ServerConfig holds all server-level configuration.
 type ServerConfig struct {
-	LogLevel              string `yaml:"log_level"`
-	LogFile               string `yaml:"log_file"`
-	DBPath                string `yaml:"db_path"`
-	MaxConcurrentJobs     int    `yaml:"max_concurrent_jobs"`
-	MaxPromptBytes        int    `yaml:"max_prompt_bytes"`
-	SessionTTLHours       int    `yaml:"session_ttl_hours"`
-	GCIntervalSeconds     int    `yaml:"gc_interval_seconds"`
-	ProgressIntervalSeconds int  `yaml:"progress_interval_seconds"`
-	DefaultAsync          bool   `yaml:"default_async"`
-	DefaultTimeoutSeconds int    `yaml:"default_timeout_seconds"`
+	LogLevel                    string `yaml:"log_level"`
+	LogFile                     string `yaml:"log_file"`
+	DBPath                      string `yaml:"db_path"`
+	MaxConcurrentJobs           int    `yaml:"max_concurrent_jobs"`
+	MaxPromptBytes              int    `yaml:"max_prompt_bytes"`
+	SessionTTLHours             int    `yaml:"session_ttl_hours"`
+	GCIntervalSeconds           int    `yaml:"gc_interval_seconds"`
+	ProgressIntervalSeconds     int    `yaml:"progress_interval_seconds"`
+	StreamingGraceSeconds       int    `yaml:"streaming_grace_seconds"`
+	StreamingSoftWarningSeconds int    `yaml:"streaming_soft_warning_seconds"`
+	StreamingHardStallSeconds   int    `yaml:"streaming_hard_stall_seconds"`
+	StreamingAutoCancelSeconds  int    `yaml:"streaming_auto_cancel_seconds"`
+	DefaultAsync                bool   `yaml:"default_async"`
+	DefaultTimeoutSeconds       int    `yaml:"default_timeout_seconds"`
 
 	RateLimitRPS   float64 `yaml:"rate_limit_rps"`
 	RateLimitBurst int     `yaml:"rate_limit_burst"`
@@ -39,12 +43,12 @@ type ServerConfig struct {
 
 // AuditConfig holds audit pipeline settings.
 type AuditConfig struct {
-	ScannerRole            string `yaml:"scanner_role"`
-	ValidatorRole          string `yaml:"validator_role"`
-	DefaultMode            string `yaml:"default_mode"`
-	ParallelScanners       int    `yaml:"parallel_scanners"`
-	ScannerTimeoutSeconds  int    `yaml:"scanner_timeout_seconds"`
-	ValidatorTimeoutSeconds int   `yaml:"validator_timeout_seconds"`
+	ScannerRole             string `yaml:"scanner_role"`
+	ValidatorRole           string `yaml:"validator_role"`
+	DefaultMode             string `yaml:"default_mode"`
+	ParallelScanners        int    `yaml:"parallel_scanners"`
+	ScannerTimeoutSeconds   int    `yaml:"scanner_timeout_seconds"`
+	ValidatorTimeoutSeconds int    `yaml:"validator_timeout_seconds"`
 }
 
 // PairConfig holds pair coding settings.
@@ -58,10 +62,10 @@ type PairConfig struct {
 
 // ConsensusConfig holds consensus tool settings.
 type ConsensusConfig struct {
-	DefaultBlinded         bool `yaml:"default_blinded"`
-	DefaultSynthesize      bool `yaml:"default_synthesize"`
-	MaxTurns               int  `yaml:"max_turns"`
-	TimeoutPerTurnSeconds  int  `yaml:"timeout_per_turn_seconds"`
+	DefaultBlinded        bool `yaml:"default_blinded"`
+	DefaultSynthesize     bool `yaml:"default_synthesize"`
+	MaxTurns              int  `yaml:"max_turns"`
+	TimeoutPerTurnSeconds int  `yaml:"timeout_per_turn_seconds"`
 }
 
 // DebateConfig holds debate tool settings.
@@ -85,48 +89,48 @@ type ThinkConfig struct {
 
 // TransportConfig holds transport selection settings.
 type TransportConfig struct {
-	Type     string `yaml:"type"`      // "stdio" (default), "sse", "http"
-	Port     string `yaml:"port"`      // ":8080" for SSE/HTTP
-	Endpoint string `yaml:"endpoint"`  // "/mcp" for HTTP
-	TLSCert  string `yaml:"tls_cert"`  // Path to TLS certificate
-	TLSKey   string `yaml:"tls_key"`   // Path to TLS key
+	Type     string `yaml:"type"`     // "stdio" (default), "sse", "http"
+	Port     string `yaml:"port"`     // ":8080" for SSE/HTTP
+	Endpoint string `yaml:"endpoint"` // "/mcp" for HTTP
+	TLSCert  string `yaml:"tls_cert"` // Path to TLS certificate
+	TLSKey   string `yaml:"tls_key"`  // Path to TLS key
 }
 
 // CircuitBreakerConfig holds circuit breaker settings.
 type CircuitBreakerConfig struct {
-	FailureThreshold  int `yaml:"failure_threshold"`
-	CooldownSeconds   int `yaml:"cooldown_seconds"`
-	HalfOpenMaxCalls  int `yaml:"half_open_max_calls"`
+	FailureThreshold int `yaml:"failure_threshold"`
+	CooldownSeconds  int `yaml:"cooldown_seconds"`
+	HalfOpenMaxCalls int `yaml:"half_open_max_calls"`
 }
 
 // Config is the root configuration structure.
 type Config struct {
-	Server         ServerConfig                       `yaml:"server"`
-	Roles          map[string]types.RolePreference     `yaml:"roles"`
-	CircuitBreaker CircuitBreakerConfig                `yaml:"circuit_breaker"`
-	CLIProfiles    map[string]*CLIProfile              `yaml:"-"` // loaded from cli.d/
-	ConfigDir      string                              `yaml:"-"` // directory containing config files
+	Server         ServerConfig                    `yaml:"server"`
+	Roles          map[string]types.RolePreference `yaml:"roles"`
+	CircuitBreaker CircuitBreakerConfig            `yaml:"circuit_breaker"`
+	CLIProfiles    map[string]*CLIProfile          `yaml:"-"` // loaded from cli.d/
+	ConfigDir      string                          `yaml:"-"` // directory containing config files
 }
 
 // CLIProfile represents a single CLI plugin configuration.
 type CLIProfile struct {
-	Name        string             `yaml:"name"`
-	Binary      string             `yaml:"binary"`
-	DisplayName string             `yaml:"display_name"`
-	Features    types.CLIFeatures  `yaml:"features"`
-	OutputFormat string            `yaml:"output_format"`
-	Command     CommandConfig      `yaml:"command"`
-	PromptFlag  string             `yaml:"prompt_flag"`
-	PromptFlagType string          `yaml:"prompt_flag_type"`
-	DefaultModel string            `yaml:"default_model"`
-	ModelFlag   string             `yaml:"model_flag"`
-	Reasoning   *ReasoningConfig   `yaml:"reasoning,omitempty"`
-	TimeoutSeconds int             `yaml:"timeout_seconds"`
-	StdinThreshold int             `yaml:"stdin_threshold"`
-	CompletionPattern string       `yaml:"completion_pattern,omitempty"`
-	ReadOnlyFlags []string         `yaml:"read_only_flags"`
-	HeadlessFlags []string         `yaml:"headless_flags,omitempty"`
-	SearchPaths   []string         `yaml:"search_paths,omitempty"`
+	Name              string            `yaml:"name"`
+	Binary            string            `yaml:"binary"`
+	DisplayName       string            `yaml:"display_name"`
+	Features          types.CLIFeatures `yaml:"features"`
+	OutputFormat      string            `yaml:"output_format"`
+	Command           CommandConfig     `yaml:"command"`
+	PromptFlag        string            `yaml:"prompt_flag"`
+	PromptFlagType    string            `yaml:"prompt_flag_type"`
+	DefaultModel      string            `yaml:"default_model"`
+	ModelFlag         string            `yaml:"model_flag"`
+	Reasoning         *ReasoningConfig  `yaml:"reasoning,omitempty"`
+	TimeoutSeconds    int               `yaml:"timeout_seconds"`
+	StdinThreshold    int               `yaml:"stdin_threshold"`
+	CompletionPattern string            `yaml:"completion_pattern,omitempty"`
+	ReadOnlyFlags     []string          `yaml:"read_only_flags"`
+	HeadlessFlags     []string          `yaml:"headless_flags,omitempty"`
+	SearchPaths       []string          `yaml:"search_paths,omitempty"`
 
 	// Capabilities lists what task types this CLI supports (e.g., coding, review, analysis).
 	// Used by the fallback router to find a capable substitute when the primary CLI fails.
@@ -235,6 +239,18 @@ func applyDefaults(cfg *Config) {
 	}
 	if s.DefaultTimeoutSeconds == 0 {
 		s.DefaultTimeoutSeconds = 300
+	}
+	if s.StreamingGraceSeconds == 0 {
+		s.StreamingGraceSeconds = 60
+	}
+	if s.StreamingSoftWarningSeconds == 0 {
+		s.StreamingSoftWarningSeconds = 120
+	}
+	if s.StreamingHardStallSeconds == 0 {
+		s.StreamingHardStallSeconds = 600
+	}
+	if s.StreamingAutoCancelSeconds == 0 {
+		s.StreamingAutoCancelSeconds = 900
 	}
 
 	cb := &cfg.CircuitBreaker

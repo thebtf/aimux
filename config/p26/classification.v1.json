@@ -37,6 +37,7 @@
     "investigate": {
       "actions": {
         "assess": "sync_ok",
+        "auto": "async_mandatory",
         "finding": "sync_ok",
         "list": "sync_ok",
         "recall": "sync_ok",
