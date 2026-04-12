@@ -2197,6 +2197,174 @@ func TestHandleInvestigate_AutoCancelUsesSessionsInfrastructure(t *testing.T) {
 	}
 }
 
+// TestHandleInvestigate_AutoProgressBecomesVisibleDuringExecution verifies
+// that progress is observable via handleStatus while the delegate is running.
+// AC: poll handleStatus and assert progress is non-empty before completion.
+func TestHandleInvestigate_AutoProgressBecomesVisibleDuringExecution(t *testing.T) {
+	progressEmitted := make(chan struct{})
+	srv := testServer(t)
+	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+		// Emit a progress line via OnOutput before returning.
+		if args.OnOutput != nil {
+			args.OnOutput("analyzing startup crash: scanning goroutine stacks")
+		}
+		close(progressEmitted)
+		// Wait briefly so the job stays running long enough for polling to see progress.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		return &types.Result{Content: "root cause found: nil pointer in bootstrap", ExitCode: 0}, nil
+	}}
+
+	autoReq := makeRequest("investigate", map[string]any{
+		"action": "auto",
+		"topic":  "startup crash in bootstrap goroutine",
+		"cli":    "codex",
+	})
+	autoResult, err := srv.handleInvestigate(context.Background(), autoReq)
+	if err != nil {
+		t.Fatalf("investigate auto: %v", err)
+	}
+	if autoResult.IsError {
+		t.Fatalf("investigate auto returned error result: %+v", autoResult)
+	}
+
+	autoData := parseResult(t, autoResult)
+	jobID, _ := autoData["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("expected job_id from investigate auto")
+	}
+	if autoData["status"] != "running" {
+		t.Fatalf("initial status = %v, want running", autoData["status"])
+	}
+
+	// Wait for the stub to emit the progress line before polling.
+	select {
+	case <-progressEmitted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for stub to emit progress")
+	}
+
+	// Poll handleStatus until we observe a non-empty progress field or terminal state.
+	statusReq := makeRequest("status", map[string]any{"job_id": jobID})
+	var observedProgress string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		statusResult, statusErr := srv.handleStatus(context.Background(), statusReq)
+		if statusErr != nil {
+			t.Fatalf("handleStatus: %v", statusErr)
+		}
+		statusData := parseResult(t, statusResult)
+		if p, _ := statusData["progress"].(string); p != "" {
+			observedProgress = p
+			break
+		}
+		if st, _ := statusData["status"].(string); st == "completed" || st == "failed" {
+			// Terminal — check once more for progress; if still empty, fail.
+			if p, _ := statusData["progress"].(string); p != "" {
+				observedProgress = p
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if observedProgress == "" {
+		t.Fatal("expected non-empty progress to become visible during async auto delegation")
+	}
+}
+
+// TestHandleInvestigate_AutoCancelPreventsSuccessResult verifies that
+// cancelling a running auto job causes the job to terminate without emitting
+// a success result — the final status must NOT be "completed".
+// AC: cancel a running auto job; assert final status != "completed" and no
+//     success content leaks (job content field is empty on non-completed jobs).
+func TestHandleInvestigate_AutoCancelPreventsSuccessResult(t *testing.T) {
+	blocked := make(chan struct{})
+	srv := testServer(t)
+	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+		// Signal that execution has started, then block until context is cancelled.
+		close(blocked)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+
+	autoReq := makeRequest("investigate", map[string]any{
+		"action": "auto",
+		"topic":  "cancel prevents success scenario",
+		"cli":    "codex",
+	})
+	autoResult, err := srv.handleInvestigate(context.Background(), autoReq)
+	if err != nil {
+		t.Fatalf("investigate auto: %v", err)
+	}
+	if autoResult.IsError {
+		t.Fatalf("investigate auto returned error result: %+v", autoResult)
+	}
+	autoData := parseResult(t, autoResult)
+	jobID, _ := autoData["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("expected job_id from investigate auto")
+	}
+
+	// Wait until the goroutine is actually executing so the cancel is meaningful.
+	select {
+	case <-blocked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for executor to start")
+	}
+
+	// Cancel the running job via handleSessions.
+	cancelReq := makeRequest("sessions", map[string]any{
+		"action": "cancel",
+		"job_id": jobID,
+	})
+	cancelResult, err := srv.handleSessions(context.Background(), cancelReq)
+	if err != nil {
+		t.Fatalf("handleSessions cancel: %v", err)
+	}
+	if cancelResult.IsError {
+		t.Fatalf("cancel returned error result: %+v", cancelResult)
+	}
+
+	// Poll until the job reaches a terminal state.
+	statusReq := makeRequest("status", map[string]any{"job_id": jobID})
+	finalStatus := ""
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		statusResult, statusErr := srv.handleStatus(context.Background(), statusReq)
+		if statusErr != nil {
+			t.Fatalf("handleStatus: %v", statusErr)
+		}
+		statusData := parseResult(t, statusResult)
+		finalStatus, _ = statusData["status"].(string)
+		if finalStatus == "failed" || finalStatus == "completed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// AC: final status must NOT be "completed" — cancellation must prevent success.
+	if finalStatus == "completed" {
+		t.Fatal("cancelled job must not reach completed status — success result leaked after cancel")
+	}
+	if finalStatus == "" {
+		t.Fatalf("job did not reach a terminal state within deadline (last status=%q)", finalStatus)
+	}
+
+	// AC: verify the job holds no success content — cancelled jobs must not
+	// persist the delegate result as if execution succeeded.
+	job := srv.jobs.Get(jobID)
+	if job == nil {
+		t.Fatal("expected job to exist after cancellation")
+	}
+	if job.Content != "" {
+		t.Fatalf("cancelled job must not carry success content, got: %q", job.Content)
+	}
+}
+
 // --- CheckConcurrencyLimit ---
 
 func TestCheckConcurrencyLimit_NoLimit(t *testing.T) {
