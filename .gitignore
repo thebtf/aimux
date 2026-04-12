@@ -18,14 +18,10 @@ Thumbs.db
 /vendor/
 .gocache/
 
-# Agent state (public repo — keep specs, exclude working data)
-.agent/CONTINUITY.md
-.agent/autopilot.local.md
-.agent/pre-compact-*.json
-.agent/data/
-.agent/reports/
-.agent/plans/
-.agent/scratch/
+# Agent state and local tooling
+.agent/
+.serena/
+aimux.exe~
 
 # Test artifacts
 coverage.out
