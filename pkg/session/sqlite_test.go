@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
@@ -87,6 +88,49 @@ func TestRestoreJobs_CompletingBecomeFailed(t *testing.T) {
 	}
 	if restored.Status != types.JobStatusFailed {
 		t.Errorf("status = %q, want failed (completing → failed on restart)", restored.Status)
+	}
+	if restored.Error == nil || !strings.Contains(restored.Error.Message, "process restarted") {
+		t.Errorf("error = %+v, want 'process restarted'", restored.Error)
+	}
+}
+
+func TestRestoreJobs_BackdatedRunningRestoredAndFailed(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	store, err := session.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	jm := session.NewJobManager()
+	job := jm.Create("session-4", "codex")
+	jm.StartJob(job.ID, 777)
+
+	backdated := jm.Get(job.ID)
+	backdated.CreatedAt = time.Now().Add(-2 * time.Hour)
+	backdated.ProgressUpdatedAt = backdated.CreatedAt
+
+	if err := store.SnapshotJob(backdated); err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
+
+	jm2 := session.NewJobManager()
+	n, err := store.RestoreJobs(jm2)
+	if err != nil {
+		t.Fatalf("RestoreJobs: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("restored %d jobs, want 1", n)
+	}
+
+	restored := jm2.Get(job.ID)
+	if restored == nil {
+		t.Fatal("backdated running job was not restored")
+	}
+	if restored.Status != types.JobStatusFailed {
+		t.Errorf("status = %q, want failed (running → failed on restart)", restored.Status)
 	}
 	if restored.Error == nil || !strings.Contains(restored.Error.Message, "process restarted") {
 		t.Errorf("error = %+v, want 'process restarted'", restored.Error)

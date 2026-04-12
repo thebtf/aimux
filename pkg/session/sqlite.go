@@ -171,18 +171,22 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	return tx.Commit()
 }
 
-// RestoreJobs loads completed and failed jobs from SQLite into the JobManager.
+// RestoreJobs loads jobs from SQLite into the JobManager.
 // Running jobs are marked as failed (process died mid-execution).
 // Called once at server startup to survive process restarts.
-// Only jobs created within the last hour are restored to avoid loading ancient history.
+// Non-terminal jobs are always restored; terminal historical rows are kept to a 1-hour window.
 func (s *Store) RestoreJobs(jobs *JobManager) (int, error) {
 	rows, err := s.db.Query(`
 		SELECT id, session_id, cli, status, progress, content, exit_code,
 		       error_json, poll_count, pheromones_json, pipeline_json, pid,
 		       created_at, progress_updated_at, completed_at
 		FROM jobs
-		WHERE created_at > datetime('now', '-1 hour')
-		ORDER BY created_at DESC`)
+		WHERE status NOT IN (?, ?)
+		   OR (status IN (?, ?) AND unixepoch(created_at) > unixepoch('now', '-1 hour'))
+		ORDER BY created_at DESC`,
+		types.JobStatusCompleted, types.JobStatusFailed,
+		types.JobStatusCompleted, types.JobStatusFailed,
+	)
 	if err != nil {
 		return 0, fmt.Errorf("query jobs: %w", err)
 	}
