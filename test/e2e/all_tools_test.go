@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -809,5 +810,139 @@ func TestE2E_Agent_Builtin(t *testing.T) {
 	}
 	if data["content"] == nil {
 		t.Error("missing content")
+	}
+}
+
+// --- Stateful Tool Descriptions ---
+
+// TestE2E_StatefulToolDescriptions_ContainExamples verifies that each stateful
+// tool description is non-trivial and contains structured guidance sections with
+// example call patterns (HOW/CHOOSE). This ensures that wiping the description
+// body (returning null/empty) causes the test to fail per T021 AC.
+func TestE2E_StatefulToolDescriptions_ContainExamples(t *testing.T) {
+	bin := buildBinary(t)
+	_, stdin, reader := startServer(t, bin)
+
+	// Initialize
+	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
+	}))
+	if _, err := readResponse(reader, 5*time.Second); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	// Fetch tool list
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/list", nil))
+	resp, err := readResponse(reader, 5*time.Second)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result object in tools/list response: %v", resp)
+	}
+	toolsRaw, ok := result["tools"].([]any)
+	if !ok {
+		t.Fatalf("expected tools array in tools/list result: %v", result)
+	}
+
+	// Build name → description index from the live registration
+	descByName := make(map[string]string, len(toolsRaw))
+	for _, raw := range toolsRaw {
+		tool, _ := raw.(map[string]any)
+		name, _ := tool["name"].(string)
+		desc, _ := tool["description"].(string)
+		if name != "" {
+			descByName[name] = desc
+		}
+	}
+
+	// statefulTools lists the six tools that must carry structured guidance.
+	// Each entry carries:
+	//   - callPatterns: substrings expected inside the HOW or CHOOSE section that
+	//     represent concrete invocation examples or action names.
+	//     If the description body is replaced with null/empty these will all be absent.
+	type statefulToolCase struct {
+		tool         string
+		callPatterns []string // at least one must appear
+	}
+
+	cases := []statefulToolCase{
+		{
+			tool: "investigate",
+			// HOW: "Call start … then iterate finding + assess … then call report."
+			// CHOOSE: "Choose investigate over ad-hoc …"
+			callPatterns: []string{"start", "finding", "assess", "report", "HOW:", "CHOOSE:"},
+		},
+		{
+			tool: "think",
+			// HOW: "Provide pattern plus pattern-specific fields; pass session_id …"
+			// CHOOSE: "Choose think for deep single-thread …"
+			callPatterns: []string{"pattern", "session_id", "HOW:", "CHOOSE:"},
+		},
+		{
+			tool: "consensus",
+			// HOW: "Provide topic; optionally set blinded/max_turns and synthesize …"
+			// CHOOSE: "Choose consensus to measure agreement …"
+			callPatterns: []string{"topic", "blinded", "synthesize", "HOW:", "CHOOSE:"},
+		},
+		{
+			tool: "debate",
+			// HOW: "Provide topic; optionally tune max_turns and synthesize …"
+			// CHOOSE: "Choose debate when challenge …"
+			callPatterns: []string{"topic", "max_turns", "synthesize", "HOW:", "CHOOSE:"},
+		},
+		{
+			tool: "dialog",
+			// HOW: "Provide prompt and optional max_turns …"
+			// CHOOSE: "Choose dialog for exploratory iteration …"
+			callPatterns: []string{"prompt", "max_turns", "HOW:", "CHOOSE:"},
+		},
+		{
+			tool: "workflow",
+			// HOW: "Provide JSON steps (id/tool/params …)"
+			// CHOOSE: "Choose workflow for repeatable chains …"
+			callPatterns: []string{"steps", "id", "tool", "params", "HOW:", "CHOOSE:"},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.tool, func(t *testing.T) {
+			desc, found := descByName[tc.tool]
+			if !found {
+				t.Fatalf("tool %q not found in tools/list response", tc.tool)
+			}
+
+			// AC: description must be non-empty / non-minimal (>100 chars)
+			if len(desc) <= 100 {
+				t.Errorf("tool %q description too short (%d chars), expected structured guidance content >100 chars", tc.tool, len(desc))
+			}
+
+			// AC: description must contain at least one example call pattern
+			found = false
+			for _, pattern := range tc.callPatterns {
+				if strings.Contains(desc, pattern) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("tool %q description contains none of the expected example patterns %v\ndescription:\n%s", tc.tool, tc.callPatterns, desc)
+			}
+
+			// AC: HOW section must be present (structured guidance, not free-form text)
+			if !strings.Contains(desc, "HOW:") {
+				t.Errorf("tool %q description missing HOW: section", tc.tool)
+			}
+
+			// AC: CHOOSE section must be present (example call guidance for operators)
+			if !strings.Contains(desc, "CHOOSE:") {
+				t.Errorf("tool %q description missing CHOOSE: section", tc.tool)
+			}
+		})
 	}
 }
