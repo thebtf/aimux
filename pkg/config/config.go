@@ -127,6 +127,10 @@ type CLIProfile struct {
 	Reasoning         *ReasoningConfig  `yaml:"reasoning,omitempty"`
 	TimeoutSeconds    int               `yaml:"timeout_seconds"`
 	StdinThreshold    int               `yaml:"stdin_threshold"`
+	// StdinSentinel is an optional argument appended to args when the prompt is
+	// delivered via stdin. Codex CLI requires "-" to signal stdin reading.
+	// Leave empty for CLIs that read stdin implicitly (Gemini, Aider, etc.).
+	StdinSentinel     string            `yaml:"stdin_sentinel,omitempty"`
 	CompletionPattern string            `yaml:"completion_pattern,omitempty"`
 	ReadOnlyFlags     []string          `yaml:"read_only_flags"`
 	HeadlessFlags     []string          `yaml:"headless_flags,omitempty"`

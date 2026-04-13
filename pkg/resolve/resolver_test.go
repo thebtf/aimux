@@ -19,6 +19,7 @@ func testProfiles() map[string]*config.CLIProfile {
 			HeadlessFlags:     []string{"--full-auto"},
 			PromptFlag:        "-p",
 			StdinThreshold:    6000,
+			StdinSentinel:     "-",
 			CompletionPattern: `turn\.completed`,
 		},
 		"gemini": {
@@ -130,7 +131,7 @@ func TestProfileResolver_MultiWordCommandBase(t *testing.T) {
 func TestProfileResolver_StdinAlwaysUsed(t *testing.T) {
 	r := NewProfileResolver(testProfiles())
 
-	// Short prompt — still goes via stdin
+	// Short prompt — still goes via stdin; args contain headless flags + stdin sentinel only
 	sa, err := r.ResolveSpawnArgs("codex", "hello")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -138,8 +139,9 @@ func TestProfileResolver_StdinAlwaysUsed(t *testing.T) {
 	if sa.Stdin != "hello" {
 		t.Errorf("Stdin = %q, want %q", sa.Stdin, "hello")
 	}
+	assertSliceEqual(t, sa.Args, []string{"--full-auto", "-"})
 
-	// Long prompt — also via stdin
+	// Long prompt — also via stdin; prompt must not appear in Args
 	longPrompt := strings.Repeat("x", 50000)
 	sa2, err := r.ResolveSpawnArgs("codex", longPrompt)
 	if err != nil {
@@ -148,10 +150,9 @@ func TestProfileResolver_StdinAlwaysUsed(t *testing.T) {
 	if sa2.Stdin != longPrompt {
 		t.Error("expected stdin to contain the long prompt")
 	}
-	for _, arg := range sa2.Args {
-		if len(arg) > 100 {
-			t.Error("long prompt should not be in Args")
-		}
+	assertSliceEqual(t, sa2.Args, []string{"--full-auto", "-"})
+	if strings.Contains(strings.Join(sa2.Args, " "), longPrompt) {
+		t.Error("long prompt should not be in Args")
 	}
 }
 

@@ -37,6 +37,14 @@ func (r *ProfileResolver) ResolveSpawnArgsWithOpts(cli string, prompt string, mo
 	// Build args without prompt; prompt goes in SpawnArgs.Stdin.
 	args := BuildPromptArgs(profile, model, effort, false, "")
 
+	// Codex CLI requires an explicit "-" sentinel as a positional argument to
+	// signal that the prompt should be read from stdin. Without it, codex exec
+	// ignores stdin and exits with an error. Other CLIs (Gemini, Aider, etc.)
+	// read stdin directly and do not need the sentinel.
+	if profile.StdinSentinel != "" {
+		args = append(args, profile.StdinSentinel)
+	}
+
 	// Use resolved full path if available (found outside PATH by discovery)
 	command := CommandBinary(profile.Command.Base)
 	if profile.ResolvedPath != "" {
