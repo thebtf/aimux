@@ -112,3 +112,161 @@ func TestApplyStallGuidance_AutoCancelForMax(t *testing.T) {
 		t.Errorf("TierAutoCancel should set auto_cancel_recommended=true, got %v", result)
 	}
 }
+
+// --- handleStatus stall guidance integration tests ---
+
+// testServerWithStallCfg returns a test server with canonical stall thresholds populated.
+// testServer leaves all streaming threshold fields at zero, which collapses every tier
+// to TierAutoCancel. Stall-specific tests must use this helper instead.
+func testServerWithStallCfg(t *testing.T) *Server {
+	t.Helper()
+	srv := testServer(t)
+	srv.cfg.Server.StreamingGraceSeconds = 60
+	srv.cfg.Server.StreamingSoftWarningSeconds = 120
+	srv.cfg.Server.StreamingHardStallSeconds = 600
+	srv.cfg.Server.StreamingAutoCancelSeconds = 900
+	return srv
+}
+
+// stallStatus creates a running job, injects lastOutputAt, and returns the
+// parsed handleStatus response map.
+func stallStatus(t *testing.T, srv *Server, lastOutputAt time.Time) map[string]any {
+	t.Helper()
+
+	sess := srv.sessions.Create("codex", types.SessionModeLive, t.TempDir())
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 1)
+
+	// Inject the desired lastOutputAt directly into the live job to avoid sleeping.
+	liveJob := srv.jobs.Get(job.ID)
+	if liveJob == nil {
+		t.Fatal("live job not found after create/start")
+	}
+	liveJob.LastOutputAt = lastOutputAt
+
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "status",
+			Arguments: map[string]any{"job_id": job.ID},
+		},
+	}
+
+	result, err := srv.handleStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	if result == nil || len(result.Content) == 0 {
+		t.Fatal("handleStatus returned nil or empty result")
+	}
+
+	text, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", result.Content[0])
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text.Text), &data); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+	return data
+}
+
+func TestHandleStatus_RunningJob_WithinGrace_NoStallGuidance(t *testing.T) {
+	srv := testServerWithStallCfg(t)
+	data := stallStatus(t, srv, time.Now().Add(-30*time.Second))
+
+	if _, ok := data["stall_warning"]; ok {
+		t.Error("unexpected stall_warning within grace period")
+	}
+	if _, ok := data["stall_alert"]; ok {
+		t.Error("unexpected stall_alert within grace period")
+	}
+	if _, ok := data["auto_cancel_recommended"]; ok {
+		t.Error("unexpected auto_cancel_recommended within grace period")
+	}
+}
+
+func TestHandleStatus_RunningJob_SoftWarning(t *testing.T) {
+	srv := testServerWithStallCfg(t)
+	// 130s ago — exceeds soft-warning threshold (120s default)
+	data := stallStatus(t, srv, time.Now().Add(-130*time.Second))
+
+	if data["stall_warning"] == nil {
+		t.Error("expected stall_warning for job silent 130s")
+	}
+	if _, ok := data["stall_alert"]; ok {
+		t.Error("stall_alert should not appear at soft-warning tier")
+	}
+	if _, ok := data["auto_cancel_recommended"]; ok {
+		t.Error("auto_cancel_recommended should not appear at soft-warning tier")
+	}
+}
+
+func TestHandleStatus_RunningJob_HardStall(t *testing.T) {
+	srv := testServerWithStallCfg(t)
+	// 650s ago — exceeds hard-stall threshold (600s default)
+	data := stallStatus(t, srv, time.Now().Add(-650*time.Second))
+
+	if data["stall_alert"] == nil {
+		t.Error("expected stall_alert for job silent 650s")
+	}
+	if data["recommended_action"] != "cancel" {
+		t.Errorf("recommended_action = %v, want cancel", data["recommended_action"])
+	}
+	if _, ok := data["auto_cancel_recommended"]; ok {
+		t.Error("auto_cancel_recommended should not appear at hard-stall tier")
+	}
+}
+
+func TestHandleStatus_RunningJob_AutoCancel(t *testing.T) {
+	srv := testServerWithStallCfg(t)
+	// 950s ago — exceeds auto-cancel threshold (900s default)
+	data := stallStatus(t, srv, time.Now().Add(-950*time.Second))
+
+	if data["stall_alert"] == nil {
+		t.Error("expected stall_alert for job silent 950s")
+	}
+	if data["recommended_action"] != "cancel" {
+		t.Errorf("recommended_action = %v, want cancel", data["recommended_action"])
+	}
+	autoCancelRec, _ := data["auto_cancel_recommended"].(bool)
+	if !autoCancelRec {
+		t.Error("expected auto_cancel_recommended=true for job silent 950s")
+	}
+}
+
+func TestHandleStatus_CompletedJob_NoStallGuidance(t *testing.T) {
+	srv := testServerWithStallCfg(t)
+
+	sess := srv.sessions.Create("codex", types.SessionModeLive, t.TempDir())
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 1)
+	srv.jobs.CompleteJob(job.ID, "done", 0)
+
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "status",
+			Arguments: map[string]any{"job_id": job.ID},
+		},
+	}
+
+	result, err := srv.handleStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+
+	text, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", result.Content[0])
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text.Text), &data); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+
+	if _, ok := data["stall_warning"]; ok {
+		t.Error("completed job should not carry stall_warning")
+	}
+	if _, ok := data["stall_alert"]; ok {
+		t.Error("completed job should not carry stall_alert")
+	}
+}

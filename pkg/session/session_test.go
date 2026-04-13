@@ -339,3 +339,75 @@ func TestJobManager_GetSnapshot_MutationDoesNotAffectStoredJob(t *testing.T) {
 		t.Fatalf("live pipeline = %#v, want total=10", live.Pipeline)
 	}
 }
+
+// --- T022: LastOutputAt ---
+
+func TestJobManager_FreshJob_LastOutputAtIsZero(t *testing.T) {
+	jm := session.NewJobManager()
+	job := jm.Create("session-1", "codex")
+
+	if !job.LastOutputAt.IsZero() {
+		t.Errorf("fresh job LastOutputAt should be zero, got %v", job.LastOutputAt)
+	}
+}
+
+func TestJobManager_AppendProgress_UpdatesLastOutputAt(t *testing.T) {
+	jm := session.NewJobManager()
+	job := jm.Create("session-1", "codex")
+	jm.StartJob(job.ID, 1)
+
+	before := time.Now()
+	ok := jm.AppendProgress(job.ID, "line one")
+	after := time.Now()
+
+	if !ok {
+		t.Fatal("AppendProgress returned false")
+	}
+
+	j := jm.Get(job.ID)
+	if j.LastOutputAt.IsZero() {
+		t.Fatal("LastOutputAt should be set after AppendProgress")
+	}
+	if j.LastOutputAt.Before(before) || j.LastOutputAt.After(after) {
+		t.Errorf("LastOutputAt %v outside [%v, %v]", j.LastOutputAt, before, after)
+	}
+}
+
+func TestJobManager_AppendProgress_MultipleLines_LastOutputAtAdvances(t *testing.T) {
+	jm := session.NewJobManager()
+	job := jm.Create("session-1", "codex")
+	jm.StartJob(job.ID, 1)
+
+	jm.AppendProgress(job.ID, "first")
+	first := jm.Get(job.ID).LastOutputAt
+
+	// Ensure measurable time passes on any platform.
+	time.Sleep(2 * time.Millisecond)
+
+	jm.AppendProgress(job.ID, "second")
+	second := jm.Get(job.ID).LastOutputAt
+
+	if !second.After(first) {
+		t.Errorf("second LastOutputAt %v should be after first %v", second, first)
+	}
+}
+
+func TestJobManager_GetSnapshot_IncludesLastOutputAt(t *testing.T) {
+	jm := session.NewJobManager()
+	job := jm.Create("session-1", "codex")
+	jm.StartJob(job.ID, 1)
+	jm.AppendProgress(job.ID, "output")
+
+	live := jm.Get(job.ID)
+	snapshot := jm.GetSnapshot(job.ID)
+
+	if snapshot == nil {
+		t.Fatal("snapshot should exist")
+	}
+	if snapshot.LastOutputAt.IsZero() {
+		t.Fatal("snapshot LastOutputAt should be set")
+	}
+	if !snapshot.LastOutputAt.Equal(live.LastOutputAt) {
+		t.Errorf("snapshot LastOutputAt %v != live %v", snapshot.LastOutputAt, live.LastOutputAt)
+	}
+}
