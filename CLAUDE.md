@@ -29,7 +29,7 @@ go vet ./...                      # static analysis
 ```
 cmd/aimux/           — MCP server entry point (stdio/SSE/HTTP transport)
 cmd/testcli/         — 11 CLI emulators for e2e testing
-pkg/server/          — 13 MCP tool handlers + guidance integration + stall detection + model fallback
+pkg/server/          — 13 MCP tool handlers (split: server_exec, server_orchestrate, server_agents, server_investigate, server_transport) + stall detection + model fallback
 pkg/orchestrator/    — Multi-CLI strategies (consensus, debate, dialog, pair, audit, workflow)
 pkg/executor/        — Process executors (ConPTY, PTY, Pipe) + ProcessManager/IOManager + error classification + model cooldown
 pkg/driver/          — CLI profile loading, registry, binary probe
