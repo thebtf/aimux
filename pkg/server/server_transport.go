@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -9,10 +11,21 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// ServeStdio starts the MCP server on stdio transport.
+// ServeStdio starts the MCP server on stdio transport using os.Stdin/os.Stdout.
 func (s *Server) ServeStdio() error {
 	s.log.Info("MCP server starting on stdio (aimux v%s)", serverVersion)
 	return server.ServeStdio(s.mcp)
+}
+
+// StdioHandler returns a handler function compatible with muxcore engine.Handler.
+// The handler wraps the MCP server's stdio transport, accepting custom stdin/stdout
+// from the engine's IPC layer instead of hardcoded os.Stdin/os.Stdout.
+func (s *Server) StdioHandler() func(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
+	return func(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
+		s.log.Info("MCP server starting on engine stdio (aimux v%s)", serverVersion)
+		stdioSrv := server.NewStdioServer(s.mcp)
+		return stdioSrv.Listen(ctx, stdin, stdout)
+	}
 }
 
 // ServeSSE starts the MCP server with Server-Sent Events transport.

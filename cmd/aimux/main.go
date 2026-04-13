@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 
 	"github.com/thebtf/aimux/pkg/config"
@@ -10,6 +13,7 @@ import (
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/routing"
 	aimuxServer "github.com/thebtf/aimux/pkg/server"
+	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
 const version = "3.0.0-dev"
@@ -75,8 +79,25 @@ func run() error {
 		log.Info("aimux v%s ready — serving MCP on HTTP at %s", version, port)
 		return srv.ServeHTTP(port)
 	default:
-		log.Info("aimux v%s ready — serving MCP on stdio", version)
-		return srv.ServeStdio()
+		if os.Getenv("AIMUX_NO_ENGINE") == "1" {
+			log.Info("aimux v%s ready — serving MCP on stdio (engine bypassed)", version)
+			return srv.ServeStdio()
+		}
+		log.Info("aimux v%s ready — serving MCP via muxcore engine", version)
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer cancel()
+		eng, engErr := engine.New(engine.Config{
+			Name:       "aimux",
+			Handler:    srv.StdioHandler(),
+			Persistent: true,
+		})
+		if engErr != nil {
+			return fmt.Errorf("engine init: %w", engErr)
+		}
+		if runErr := eng.Run(ctx); runErr != nil && !errors.Is(runErr, context.Canceled) {
+			return fmt.Errorf("engine: %w", runErr)
+		}
+		return nil
 	}
 }
 
