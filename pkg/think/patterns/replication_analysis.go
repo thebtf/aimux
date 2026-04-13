@@ -68,7 +68,7 @@ func (p *replicationAnalysisPattern) Handle(validInput map[string]any, sessionID
 		"risks":                  risks,
 		"estimatedEffort":        effort,
 		"criticalAssumptions":    criticalAssumptions,
-		"guidance":               BuildGuidance("replication_analysis", "full", []string{"originalMethod", "resources", "constraints"}),
+		"guidance":               BuildGuidance("replication_analysis", replicationDepth(validInput), []string{"originalMethod", "resources", "constraints"}),
 	}
 
 	// Tier 2A: text analysis
@@ -82,6 +82,18 @@ func (p *replicationAnalysisPattern) Handle(validInput map[string]any, sessionID
 	}
 
 	return think.MakeThinkResult("replication_analysis", data, sessionID, nil, "", nil), nil
+}
+
+// replicationDepth returns "full" only when all optional fields are present;
+// otherwise returns "basic" so guidance is appropriately scoped.
+func replicationDepth(validInput map[string]any) string {
+	_, hasMethod := validInput["originalMethod"]
+	_, hasResources := validInput["resources"]
+	_, hasConstraints := validInput["constraints"]
+	if hasMethod && hasResources && hasConstraints {
+		return "full"
+	}
+	return "basic"
 }
 
 func buildRequirements(claim, method string) []string {

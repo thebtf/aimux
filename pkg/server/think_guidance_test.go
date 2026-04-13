@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/thebtf/aimux/pkg/guidance"
 	"github.com/thebtf/aimux/pkg/guidance/policies"
 )
 
@@ -198,10 +199,11 @@ func TestThinkPolicy_BuildPlanOneShot(t *testing.T) {
 		IsStateful: false,
 	}
 
-	plan := pol.BuildPlanTyped(input)
-	if plan == nil {
-		t.Fatal("BuildPlanTyped returned nil")
+	result, err := pol.BuildPlan(guidance.PolicyInput{StateSnapshot: input})
+	if err != nil {
+		t.Fatalf("BuildPlan returned error: %v", err)
 	}
+	plan := &result
 	if plan.State != "complete" {
 		t.Errorf("state = %q, want complete", plan.State)
 	}
@@ -224,10 +226,11 @@ func TestThinkPolicy_BuildPlanStateful(t *testing.T) {
 		StepNumber: 0,
 	}
 
-	plan := pol.BuildPlanTyped(input)
-	if plan == nil {
-		t.Fatal("BuildPlanTyped returned nil")
+	result, err := pol.BuildPlan(guidance.PolicyInput{StateSnapshot: input})
+	if err != nil {
+		t.Fatalf("BuildPlan returned error: %v", err)
 	}
+	plan := &result
 	if plan.State == "complete" {
 		t.Errorf("stateful pattern first step should not be complete, got state=%q", plan.State)
 	}

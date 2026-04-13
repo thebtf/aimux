@@ -105,6 +105,16 @@ var SecurityDomain = DomainAlgorithm{
 		"authentication", "authorization", "input_validation", "output_encoding",
 		"secrets_management", "dependency_vulnerabilities", "transport_security", "error_disclosure",
 	},
+	Methods: map[string]string{
+		"authentication":           "Audit session management, token storage, and expiry. Test with invalid/expired tokens. Check MFA enforcement.",
+		"authorization":            "Test every protected endpoint with no credentials, wrong role, and a valid but unprivileged token. Check for IDOR.",
+		"input_validation":         "Fuzz inputs with special characters, oversized payloads, null bytes, and injection payloads. Check every system boundary.",
+		"output_encoding":          "Trace user-controlled data to render points. Verify HTML, JS, URL, and SQL escaping is context-aware.",
+		"secrets_management":       "Grep source for hardcoded secrets. Audit env var access patterns. Check for secrets in logs or error messages.",
+		"dependency_vulnerabilities": "Run `govulncheck ./...` or equivalent. Check transitive deps. Cross-reference CVE databases.",
+		"transport_security":       "Verify TLS version and cipher suites. Check certificate pinning for mobile clients. Test for HSTS.",
+		"error_disclosure":         "Trigger errors deliberately. Check that stack traces and internal details are not exposed to clients.",
+	},
 	Patterns: []PatternEntry{
 		{Indicator: "Hardcoded secrets, API keys, or passwords in source code", Severity: SeverityP0, FixApproach: "Move to environment variables or a secrets manager. Rotate the exposed credential immediately."},
 		{Indicator: "SQL or command injection via unsanitized user input", Severity: SeverityP0, FixApproach: "Use parameterized queries or prepared statements. Never concatenate user input into queries."},
@@ -134,6 +144,16 @@ var PerformanceDomain = DomainAlgorithm{
 	CoverageAreas: []string{
 		"cpu_hotspots", "memory_allocation", "io_bottlenecks", "database_queries",
 		"network_calls", "concurrency", "caching", "algorithm_complexity",
+	},
+	Methods: map[string]string{
+		"cpu_hotspots":       "Profile with pprof CPU sampling. Identify top 5 call sites by CPU time. Look for hot loops with avoidable work.",
+		"memory_allocation":  "Profile with pprof heap sampling. Check allocation rate vs. live objects. Look for sync.Pool candidates.",
+		"io_bottlenecks":     "Measure with pprof block or trace. Identify synchronous IO in hot paths. Check for missing bufio usage.",
+		"database_queries":   "Enable query logging. Look for N+1 patterns. Run EXPLAIN on slow queries. Check index usage.",
+		"network_calls":      "Trace outbound calls with timing. Check for sequential calls that could be parallelised. Verify connection reuse.",
+		"concurrency":        "Run with -race. Check goroutine count under load. Look for unbounded goroutine launch without lifecycle control.",
+		"caching":            "Measure cache hit rate. Check TTL vs. data freshness requirements. Look for negative caching opportunities.",
+		"algorithm_complexity": "Identify loops that grow with input size. Check sort/search usage for large inputs. Look for O(n^2) patterns.",
 	},
 	Patterns: []PatternEntry{
 		{Indicator: "N+1 query pattern — query inside loop", Severity: SeverityP1, FixApproach: "Batch queries or use eager loading. Fetch all needed data in one query outside the loop."},
@@ -214,13 +234,48 @@ var domainRegistry = map[string]*DomainAlgorithm{
 	"research":     &ResearchDomain,
 }
 
-// GetDomain returns the domain algorithm for the given name.
-// Returns GenericDomain for empty name or "generic". Returns nil for unknown domains.
+// GetDomain returns a deep copy of the domain algorithm for the given name.
+// Returns a copy of GenericDomain for empty name or "generic".
+// Returns nil for unknown domains.
+// Deep copy is required to prevent callers from mutating the package-level vars.
 func GetDomain(name string) *DomainAlgorithm {
 	if name == "" {
-		return &GenericDomain
+		return copyDomain(&GenericDomain)
 	}
-	return domainRegistry[name]
+	d := domainRegistry[name]
+	if d == nil {
+		return nil
+	}
+	return copyDomain(d)
+}
+
+// copyDomain returns a shallow-field copy of d with all slice and map fields
+// deep-copied so callers cannot mutate the package-level domain variables.
+func copyDomain(d *DomainAlgorithm) *DomainAlgorithm {
+	out := *d // copy scalar fields
+
+	out.CoverageAreas = append([]string(nil), d.CoverageAreas...)
+	out.AntiPatterns = append([]string(nil), d.AntiPatterns...)
+
+	out.Methods = make(map[string]string, len(d.Methods))
+	for k, v := range d.Methods {
+		out.Methods[k] = v
+	}
+
+	out.Patterns = make([]PatternEntry, len(d.Patterns))
+	copy(out.Patterns, d.Patterns)
+
+	out.Angles = make([]DomainAngle, len(d.Angles))
+	for i, a := range d.Angles {
+		ac := a
+		ac.ThinkParams = make(map[string]string, len(a.ThinkParams))
+		for k, v := range a.ThinkParams {
+			ac.ThinkParams[k] = v
+		}
+		out.Angles[i] = ac
+	}
+
+	return &out
 }
 
 // DomainNames returns all registered domain names.

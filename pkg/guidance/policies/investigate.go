@@ -1,6 +1,7 @@
 package policies
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -320,6 +321,20 @@ func asBool(value any) (bool, bool) {
 			return true, true
 		}
 		if v == 0 {
+			return false, true
+		}
+	case json.Number:
+		// json.Number is produced by json.Decoder in UseNumber mode.
+		// Treat the string representation the same as a plain string.
+		normalized := strings.TrimSpace(string(v))
+		switch normalized {
+		case "1":
+			return true, true
+		case "0":
+			return false, true
+		case "true":
+			return true, true
+		case "false":
 			return false, true
 		}
 	}
