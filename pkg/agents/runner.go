@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -137,9 +138,11 @@ func RunAgent(ctx context.Context, cfg RunConfig) (*RunResult, error) {
 // depend on pkg/executor directly.
 //
 // On quota error: marks model cooled down, tries next model.
-// On transient error: retries same model once, then moves to next.
+// On transient error: retries same model once, then applies full classification to retry result.
 // On fatal error: returns immediately.
 // On success: returns result.
+// When all models are on cooldown the error contains "rate limit" so callers can
+// distinguish it from a hard failure.
 func runWithModelFallbackAgent(
 	ctx context.Context,
 	exec types.Executor,
@@ -156,13 +159,14 @@ func runWithModelFallbackAgent(
 
 	available := tracker.FilterAvailable(cli, modelChain)
 	if len(available) == 0 {
-		return nil, fmt.Errorf("all models on cooldown for CLI %s", cli)
+		// Include "rate limit" so callers can treat this as a retriable condition.
+		return nil, fmt.Errorf("all models on cooldown (rate limit) for CLI %s", cli)
 	}
 
 	var lastErr error
 	for _, model := range available {
 		args := baseArgs
-		args.Args = replaceModelFlagAgent(baseArgs.Args, modelFlag, model)
+		args.Args = executor.ReplaceModelFlag(baseArgs.Args, modelFlag, model)
 
 		result, err := exec.Run(ctx, args)
 
@@ -176,95 +180,56 @@ func runWithModelFallbackAgent(
 			stderr = err.Error()
 		}
 
-		errClass := classifyAgentError(content, stderr, exitCode)
+		errClass := executor.ClassifyError(content, stderr, exitCode)
 
 		switch errClass {
-		case agentErrorNone:
+		case executor.ErrorClassNone:
 			return result, err
 
-		case agentErrorQuota:
+		case executor.ErrorClassQuota:
 			tracker.MarkCooledDown(cli, model, cooldownDuration)
 			lastErr = fmt.Errorf("quota exceeded for %s:%s", cli, model)
 			continue
 
-		case agentErrorTransient:
-			// Retry same model once on transient errors.
+		case executor.ErrorClassTransient:
+			// Retry same model once, then apply full classification to the retry result.
 			result2, err2 := exec.Run(ctx, args)
-			if result2 != nil && classifyAgentError(result2.Content, "", result2.ExitCode) == agentErrorNone {
-				return result2, err2
+			var c2, s2 string
+			var ec2 int
+			if result2 != nil {
+				c2 = result2.Content
+				ec2 = result2.ExitCode
 			}
-			lastErr = fmt.Errorf("transient error on %s:%s after retry", cli, model)
-			continue
+			if err2 != nil {
+				s2 = err2.Error()
+			}
+			retryClass := executor.ClassifyError(c2, s2, ec2)
+			switch retryClass {
+			case executor.ErrorClassNone:
+				return result2, err2
+			case executor.ErrorClassQuota:
+				tracker.MarkCooledDown(cli, model, cooldownDuration)
+				lastErr = fmt.Errorf("quota exceeded for %s:%s (on transient retry)", cli, model)
+				continue
+			case executor.ErrorClassFatal:
+				if err2 == nil {
+					err2 = fmt.Errorf("fatal error detected in output")
+				}
+				return result2, fmt.Errorf("fatal error on %s:%s: %w", cli, model, err2)
+			default:
+				lastErr = fmt.Errorf("transient error on %s:%s after retry", cli, model)
+				continue
+			}
 
-		case agentErrorFatal:
+		case executor.ErrorClassFatal:
+			if err == nil {
+				err = fmt.Errorf("fatal error detected in output")
+			}
 			return result, fmt.Errorf("fatal error on %s:%s: %w", cli, model, err)
 		}
 	}
 
 	return nil, fmt.Errorf("all models exhausted for CLI %s: %w", cli, lastErr)
-}
-
-// agentErrorClass mirrors executor.ErrorClass without importing pkg/executor.
-type agentErrorClass int
-
-const (
-	agentErrorNone      agentErrorClass = iota
-	agentErrorQuota
-	agentErrorTransient
-	agentErrorFatal
-)
-
-// classifyAgentError replicates the error classification logic from pkg/executor
-// without importing that package. Quota takes priority over transient.
-func classifyAgentError(content, stderr string, exitCode int) agentErrorClass {
-	if exitCode == 0 {
-		return agentErrorNone
-	}
-	lc := strings.ToLower(content)
-	ls := strings.ToLower(stderr)
-	quotaPatterns := []string{"usage limit", "hit your usage limit", "rate limit", "429", "quota exceeded"}
-	transientPatterns := []string{"connection refused", "timeout", "econnreset", "etimedout", "enotfound", "dns resolution"}
-	fatalPatterns := []string{"authentication", "invalid api key", "model not found", "unauthorized"}
-
-	for _, p := range quotaPatterns {
-		if strings.Contains(lc, p) || strings.Contains(ls, p) {
-			return agentErrorQuota
-		}
-	}
-	for _, p := range transientPatterns {
-		if strings.Contains(lc, p) || strings.Contains(ls, p) {
-			return agentErrorTransient
-		}
-	}
-	for _, p := range fatalPatterns {
-		if strings.Contains(lc, p) || strings.Contains(ls, p) {
-			return agentErrorFatal
-		}
-	}
-	return agentErrorNone
-}
-
-// replaceModelFlagAgent swaps or appends the model flag in an args slice.
-// When the flag is already present its value is replaced; when absent the flag+value is appended.
-func replaceModelFlagAgent(args []string, modelFlag, newModel string) []string {
-	if modelFlag == "" {
-		return args
-	}
-	result := make([]string, 0, len(args)+2)
-	replaced := false
-	for i := 0; i < len(args); i++ {
-		if args[i] == modelFlag && i+1 < len(args) {
-			result = append(result, modelFlag, newModel)
-			i++ // skip old model value
-			replaced = true
-		} else {
-			result = append(result, args[i])
-		}
-	}
-	if !replaced {
-		result = append(result, modelFlag, newModel)
-	}
-	return result
 }
 
 // buildSystemPrompt assembles the full first-turn prompt for the agent.

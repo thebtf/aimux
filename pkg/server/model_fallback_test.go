@@ -114,7 +114,7 @@ func TestModelFallback_QuotaThenSuccess(t *testing.T) {
 		Args:    []string{"-p", "hello"},
 	}
 
-	result, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs, "")
+	result, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs)
 	if err != nil {
 		t.Fatalf("runWithModelFallback: unexpected error: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestModelFallback_AllModelsQuota_FallsToNextCLI(t *testing.T) {
 		Args:    []string{"-p", "hello"},
 	}
 
-	_, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs, "")
+	_, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs)
 	if err == nil {
 		t.Fatal("expected error when all models are quota-limited")
 	}
@@ -194,7 +194,7 @@ func TestModelFallback_TransientRetry_NoCooldown(t *testing.T) {
 		Args:    []string{"-p", "hello"},
 	}
 
-	result, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs, "")
+	result, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestModelFallback_CooldownPreventsReuse(t *testing.T) {
 		Args:    []string{"-p", "hello"},
 	}
 
-	result, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs, "")
+	result, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

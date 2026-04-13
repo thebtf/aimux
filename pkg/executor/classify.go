@@ -79,3 +79,27 @@ func matchesAny(s string, patterns []string) bool {
 	}
 	return false
 }
+
+// ReplaceModelFlag swaps or appends the model flag and its value in an args slice.
+// When the flag is already present its value is replaced; when absent the flag+value is appended.
+// Returns args unchanged when modelFlag is empty.
+func ReplaceModelFlag(args []string, modelFlag, newModel string) []string {
+	if modelFlag == "" {
+		return args
+	}
+	result := make([]string, 0, len(args)+2)
+	replaced := false
+	for i := 0; i < len(args); i++ {
+		if args[i] == modelFlag && i+1 < len(args) {
+			result = append(result, modelFlag, newModel)
+			i++ // skip old model value
+			replaced = true
+		} else {
+			result = append(result, args[i])
+		}
+	}
+	if !replaced {
+		result = append(result, modelFlag, newModel)
+	}
+	return result
+}
