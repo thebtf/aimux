@@ -147,6 +147,13 @@ type CLIProfile struct {
 	// This is a profile-internal concern — role-config does not know about it.
 	ModelFallback []string `yaml:"model_fallback,omitempty"`
 
+	// FallbackSuffixStrip defines suffixes to strip from the current model name
+	// to generate fallback models dynamically. E.g., ["-spark"] means if the active
+	// model is "gpt-5.3-codex-spark", the fallback is "gpt-5.3-codex".
+	// This survives model version upgrades — no hardcoded model names needed.
+	// Applied AFTER ModelFallback is exhausted (or when ModelFallback is empty).
+	FallbackSuffixStrip []string `yaml:"fallback_suffix_strip,omitempty"`
+
 	// CooldownSeconds is how long a rate-limited model stays on cooldown before
 	// being retried. Only quota errors trigger cooldown (not transient/fatal).
 	// Default: 300 (5 minutes).
