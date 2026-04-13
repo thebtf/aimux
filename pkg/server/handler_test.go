@@ -92,7 +92,7 @@ func testServer(t *testing.T) *Server {
 				ModelFlag:   "-m",
 				Reasoning: &config.ReasoningConfig{
 					Flag:              "-c",
-					FlagValueTemplate: "model_reasoning_effort=%s",
+					FlagValueTemplate: "model_reasoning_effort={{.Level}}",
 					Levels:            []string{"low", "medium", "high", "xhigh"},
 				},
 				TimeoutSeconds: 10,
