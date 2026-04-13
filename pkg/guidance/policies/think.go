@@ -4,18 +4,8 @@ import (
 	"fmt"
 
 	"github.com/thebtf/aimux/pkg/guidance"
+	"github.com/thebtf/aimux/pkg/think"
 )
-
-// statefulPatterns is the authoritative set of think patterns that maintain session state
-// across multiple calls. All other patterns are one-shot.
-var statefulPatterns = map[string]bool{
-	"sequential_thinking":     true,
-	"scientific_method":       true,
-	"debugging_approach":      true,
-	"experimental_loop":       true,
-	"structured_argumentation": true,
-	"collaborative_reasoning": true,
-}
 
 // ThinkPolicyInput carries context from the think handler to the policy.
 type ThinkPolicyInput struct {
@@ -58,8 +48,9 @@ func (p *ThinkPolicy) buildPlanTyped(input ThinkPolicyInput) *guidance.NextActio
 }
 
 // IsStatefulPattern reports whether the named pattern maintains session state.
+// Delegates to think.IsStatefulPattern which reads from the canonical meta registry.
 func IsStatefulPattern(pattern string) bool {
-	return statefulPatterns[pattern]
+	return think.IsStatefulPattern(pattern)
 }
 
 // extractThinkInput converts the opaque StateSnapshot to a ThinkPolicyInput.
