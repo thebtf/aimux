@@ -8,6 +8,42 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
+// liveProgress returns an OnOutput callback that sends notifications/progress
+// to all MCP clients in real time. Works for both sync and async tool calls.
+// For async calls, wrap with jobProgress() to also persist to job store.
+func (s *Server) liveProgress(toolName string) func(cli, line string) {
+	return func(cli, line string) {
+		if s.mcp == nil {
+			return
+		}
+		s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
+			"progressToken": toolName,
+			"message":       line,
+		})
+	}
+}
+
+// jobProgress returns an OnOutput callback that both sends live notifications
+// AND persists progress to the job store. Use for async tool calls.
+func (s *Server) jobProgress(jobID string) func(cli, line string) {
+	return func(cli, line string) {
+		s.sendJobProgress(jobID, line)
+	}
+}
+
+// jobProgressFormatted returns an OnOutput callback that normalizes output
+// (strips JSONL framing) before persisting and notifying. Use for async
+// tool calls with CLIs that emit structured output (codex jsonl, etc.).
+func (s *Server) jobProgressFormatted(jobID, outputFormat string) func(resolvedCLI, line string) {
+	return func(resolvedCLI, line string) {
+		format := outputFormat
+		if profile, err := s.registry.Get(resolvedCLI); err == nil {
+			format = profile.OutputFormat
+		}
+		s.progressSink(jobID, format)(line)
+	}
+}
+
 // sendJobProgress appends a progress line to the job store and pushes a
 // notifications/progress MCP notification so clients receive real-time output.
 // This single method is the canonical path for both exec and agent handlers —

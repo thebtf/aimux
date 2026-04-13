@@ -137,44 +137,78 @@ type AgentCandidate struct {
 
 // ListCandidates returns a compact list of agents for the calling LLM to choose from.
 // Each entry has name + a "when to use" summary derived from the description.
-// Sorted alphabetically. Limited to maxResults entries.
-func ListCandidates(registry *Registry, maxResults int) []AgentCandidate {
+//
+// When prompt is non-empty the list is ranked by relevance score descending
+// (using the same keyword scoring as AutoSelectAgent), so the most relevant
+// agents appear first even if maxResults would otherwise hide them.
+// When prompt is empty the list is sorted alphabetically for stable output.
+// Limited to maxResults entries (0 = no limit).
+func ListCandidates(registry *Registry, prompt string, maxResults int) []AgentCandidate {
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
 
-	candidates := make([]AgentCandidate, 0, len(registry.agents))
+	keywords := ExtractKeywords(prompt)
+
+	type scoredCandidate struct {
+		AgentCandidate
+		score int
+	}
+
+	scored := make([]scoredCandidate, 0, len(registry.agents))
 	for _, a := range registry.agents {
 		when := a.Description
 		if when == "" {
 			when = a.Domain
 		}
-		// Truncate long descriptions to keep response compact
-		if len(when) > 120 {
-			when = when[:117] + "..."
+		// Truncate long descriptions (rune-safe)
+		runes := []rune(when)
+		if len(runes) > 120 {
+			when = string(runes[:117]) + "..."
 		}
-		candidates = append(candidates, AgentCandidate{
-			Name: a.Name,
-			When: when,
-			Role: a.Role,
+		total := 0
+		for _, kw := range keywords {
+			total += scoreMatch(a, kw)
+		}
+		scored = append(scored, scoredCandidate{
+			AgentCandidate: AgentCandidate{
+				Name: a.Name,
+				When: when,
+				Role: a.Role,
+			},
+			score: total,
 		})
 	}
 
-	// Sort by name for stable output
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Name < candidates[j].Name
-	})
+	if len(keywords) > 0 {
+		// Sort by score descending; tiebreak alphabetically.
+		sort.Slice(scored, func(i, j int) bool {
+			if scored[i].score != scored[j].score {
+				return scored[i].score > scored[j].score
+			}
+			return scored[i].Name < scored[j].Name
+		})
+	} else {
+		sort.Slice(scored, func(i, j int) bool {
+			return scored[i].Name < scored[j].Name
+		})
+	}
 
-	if maxResults > 0 && len(candidates) > maxResults {
-		candidates = candidates[:maxResults]
+	if maxResults > 0 && len(scored) > maxResults {
+		scored = scored[:maxResults]
+	}
+
+	candidates := make([]AgentCandidate, len(scored))
+	for i, s := range scored {
+		candidates[i] = s.AgentCandidate
 	}
 	return candidates
 }
 
 // fallbackLocked returns the best available default agent.
-// Prefers "general" (broad-purpose, no domain bias) over "implementer".
+// Prefers "generic" (literal instruction follower) over "implementer".
 // Caller MUST hold registry.mu.RLock.
 func fallbackLocked(registry *Registry) *Agent {
-	if a, ok := registry.agents["general"]; ok {
+	if a, ok := registry.agents["generic"]; ok {
 		return a
 	}
 	return registry.agents["implementer"]

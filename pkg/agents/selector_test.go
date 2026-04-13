@@ -20,7 +20,7 @@ func TestAutoSelectAgent(t *testing.T) {
 		},
 		{
 			prompt:   "investigate the memory leak",
-			wantName: "general", // "investigate" only matches debugger content (score 1), below threshold 3
+			wantName: "generic", // "investigate" only matches debugger content (score 1), below threshold 3
 		},
 		{
 			prompt:   "debugger trace the crash",
@@ -53,7 +53,7 @@ func TestAutoSelectAgent_EmptyPromptFallsBackToGeneral(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected fallback to general, got nil")
 	}
-	if got.Name != "general" {
+	if got.Name != "generic" {
 		t.Errorf("fallback agent = %q, want general", got.Name)
 	}
 	if score != 0 {
@@ -69,7 +69,7 @@ func TestAutoSelectAgent_NoMatchFallsBackToGeneral(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected fallback to general, got nil")
 	}
-	if got.Name != "general" {
+	if got.Name != "generic" {
 		t.Errorf("fallback agent = %q, want general", got.Name)
 	}
 	_ = score
@@ -100,7 +100,7 @@ func TestAutoSelectAgent_LowScoreFallsBack(t *testing.T) {
 	if got.Name == "alpha-bravo" {
 		t.Errorf("low-score agent alpha-bravo was selected (score %d), expected general/implementer fallback", score)
 	}
-	if got.Name != "general" && got.Name != "implementer" {
+	if got.Name != "generic" && got.Name != "implementer" {
 		t.Errorf("fallback agent = %q (score %d), want general or implementer", got.Name, score)
 	}
 }
@@ -126,7 +126,7 @@ func TestAutoSelectAgent_HighScoreSelected(t *testing.T) {
 
 // TestAutoSelectAgent_GenericPromptUsesGeneral verifies that the canonical
 // false-positive case — "Respond with 'test'" — does not match "incident-responder"
-// or any other agent and falls back to "general".
+// or any other agent and falls back to "generic".
 func TestAutoSelectAgent_GenericPromptUsesGeneral(t *testing.T) {
 	reg := agents.NewRegistry()
 	// Simulate a plugin agent that previously caused a false positive.
@@ -146,7 +146,7 @@ func TestAutoSelectAgent_GenericPromptUsesGeneral(t *testing.T) {
 	if got.Name == "incident-responder" {
 		t.Errorf("false positive: AutoSelectAgent matched incident-responder (score %d) for generic prompt", score)
 	}
-	if got.Name != "general" && got.Name != "implementer" {
+	if got.Name != "generic" && got.Name != "implementer" {
 		t.Errorf("expected general/implementer fallback, got %q (score %d)", got.Name, score)
 	}
 }
