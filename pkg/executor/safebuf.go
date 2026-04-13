@@ -30,6 +30,13 @@ func (sb *SafeBuffer) Len() int {
 	return sb.buf.Len()
 }
 
+// Bytes returns a copy of the buffer contents as a byte slice.
+func (sb *SafeBuffer) Bytes() []byte {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return append([]byte(nil), sb.buf.Bytes()...)
+}
+
 // Reset clears the buffer contents.
 func (sb *SafeBuffer) Reset() {
 	sb.mu.Lock()

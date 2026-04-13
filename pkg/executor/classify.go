@@ -6,10 +6,11 @@ import "strings"
 type ErrorClass int
 
 const (
-	ErrorClassNone      ErrorClass = iota // success or unrecognised error
+	ErrorClassNone      ErrorClass = iota // success (exit 0)
 	ErrorClassQuota                       // rate limit — model fallback + cooldown
 	ErrorClassTransient                   // network — retry same model
 	ErrorClassFatal                       // auth/config — skip CLI entirely
+	ErrorClassUnknown                     // non-zero exit with unrecognised message
 )
 
 // quotaPatterns are substrings that indicate a quota or rate-limit error.
@@ -66,7 +67,7 @@ func ClassifyError(content, stderr string, exitCode int) ErrorClass {
 		return ErrorClassFatal
 	}
 
-	return ErrorClassNone
+	return ErrorClassUnknown
 }
 
 // matchesAny reports whether s contains any of the given substrings.
@@ -89,10 +90,16 @@ func ReplaceModelFlag(args []string, modelFlag, newModel string) []string {
 	}
 	result := make([]string, 0, len(args)+2)
 	replaced := false
+	eqPrefix := modelFlag + "="
 	for i := 0; i < len(args); i++ {
 		if args[i] == modelFlag && i+1 < len(args) {
+			// Space-separated form: --model value
 			result = append(result, modelFlag, newModel)
 			i++ // skip old model value
+			replaced = true
+		} else if strings.HasPrefix(args[i], eqPrefix) {
+			// Equals form: --model=value
+			result = append(result, eqPrefix+newModel)
 			replaced = true
 		} else {
 			result = append(result, args[i])

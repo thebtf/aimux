@@ -50,10 +50,13 @@ func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		stdout.Close() // prevent fd leak
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		stdout.Close() // prevent fd leak
+		stderr.Close() // prevent fd leak
 		return nil, fmt.Errorf("start process: %w", err)
 	}
 
