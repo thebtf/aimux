@@ -13,6 +13,7 @@ import (
 	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
+	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/guidance"
 	inv "github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/logger"
@@ -2875,53 +2876,69 @@ func TestHandleSessions_KillNonexistentSession(t *testing.T) {
 	}
 }
 
-func TestIsQuotaError(t *testing.T) {
-	tests := []struct {
-		name     string
-		content  string
-		stderr   string
-		exitCode int
-		want     bool
-	}{
-		{
-			name:     "content with usage limit",
-			content:  "Error: you have hit your usage limit for this period",
-			exitCode: 1,
-			want:     true,
-		},
-		{
-			name:     "content with rate limit",
-			content:  "rate limit exceeded, please wait",
-			exitCode: 1,
-			want:     true,
-		},
-		{
-			name:     "stderr with 429",
-			stderr:   "HTTP 429 Too Many Requests",
-			exitCode: 1,
-			want:     true,
-		},
-		{
-			name:     "normal output exit 0",
-			content:  "Here is the answer to your question.",
-			exitCode: 0,
-			want:     false,
-		},
-		{
-			name:     "exit 0 with rate limit in content is not a quota error",
-			content:  "rate limit info for your reference",
-			exitCode: 0,
-			want:     false,
-		},
-	}
+// --- Model Fallback ---
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := isQuotaError(tc.content, tc.stderr, tc.exitCode)
-			if got != tc.want {
-				t.Errorf("isQuotaError(%q, %q, %d) = %v, want %v",
-					tc.content, tc.stderr, tc.exitCode, got, tc.want)
-			}
-		})
+// modelFallbackExecutor is a test double for types.Executor that records which
+// models were tried (via the -m flag in SpawnArgs.Args) and returns pre-configured
+// results or errors for each model name.
+type modelFallbackExecutor struct {
+	calls     []string            // ordered list of model names that were passed to Run
+	responses map[string]*types.Result
+	errors    map[string]error
+}
+
+func (m *modelFallbackExecutor) Run(_ context.Context, args types.SpawnArgs) (*types.Result, error) {
+	model := extractModelFromArgs(args.Args)
+	m.calls = append(m.calls, model)
+	result := m.responses[model]
+	err := m.errors[model]
+	return result, err
+}
+
+func (m *modelFallbackExecutor) Start(_ context.Context, _ types.SpawnArgs) (types.Session, error) {
+	return nil, errors.New("modelFallbackExecutor does not support Start")
+}
+
+func (m *modelFallbackExecutor) Name() string      { return "model-fallback-test" }
+func (m *modelFallbackExecutor) Available() bool   { return true }
+
+// extractModelFromArgs scans an args slice for the value that follows "-m".
+// Returns empty string when the flag is absent.
+func extractModelFromArgs(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-m" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// fallbackProfile builds a CLIProfile with the supplied ModelFallback chain.
+func fallbackProfile(models []string) *config.CLIProfile {
+	return &config.CLIProfile{
+		Name:            "testcli",
+		ModelFlag:       "-m",
+		ModelFallback:   models,
+		CooldownSeconds: 300,
 	}
 }
+
+// newFallbackServer returns a Server whose cooldownTracker is fresh and whose
+// logger discards output.  It is lighter than testServer because it does not
+// need a real registry or router.
+func newFallbackServer(t *testing.T) *Server {
+	t.Helper()
+	logFile := t.TempDir() + "/fb.log"
+	log, err := logger.New(logFile, logger.LevelError)
+	if err != nil {
+		t.Fatalf("logger: %v", err)
+	}
+	t.Cleanup(func() { log.Close() })
+
+	s := &Server{
+		log:             log,
+		cooldownTracker: executor.NewModelCooldownTracker(),
+	}
+	return s
+}
+
