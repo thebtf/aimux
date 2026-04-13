@@ -6,11 +6,21 @@ import (
 	"time"
 )
 
+const (
+	// investigationTTL is the maximum lifetime of an inactive investigation.
+	investigationTTL = 30 * time.Minute
+	// maxFindingsPerInvestigation caps the total number of findings to prevent unbounded growth.
+	maxFindingsPerInvestigation = 100
+	// maxFindingDescriptionBytes caps finding description size.
+	maxFindingDescriptionBytes = 2048
+)
+
 var (
 	investigations sync.Map // map[string]*InvestigationState
 )
 
-// CreateInvestigation starts a new investigation session.
+// CreateInvestigation starts a new investigation session and registers a 30-minute
+// cleanup timer that removes the session when it has been idle for the full TTL.
 func CreateInvestigation(sessionID, topic, domainName string) *InvestigationState {
 	domain := GetDomain(domainName)
 	if domain == nil {
@@ -30,6 +40,19 @@ func CreateInvestigation(sessionID, topic, domainName string) *InvestigationStat
 		LastActivityAt:     time.Now(),
 	}
 	investigations.Store(sessionID, state)
+
+	// Cleanup timer: fires after TTL and removes the session if still idle.
+	time.AfterFunc(investigationTTL, func() {
+		val, ok := investigations.Load(sessionID)
+		if !ok {
+			return
+		}
+		s := val.(*InvestigationState)
+		if time.Since(s.LastActivityAt) >= investigationTTL {
+			investigations.Delete(sessionID)
+		}
+	})
+
 	return state
 }
 
@@ -73,6 +96,14 @@ func AddFinding(sessionID string, input FindingInput) (*Finding, *Correction, er
 		return nil, nil, fmt.Errorf("investigation %q not found", sessionID)
 	}
 	state := val.(*InvestigationState)
+
+	// Enforce size limits.
+	if len(state.Findings) >= maxFindingsPerInvestigation {
+		return nil, nil, fmt.Errorf("investigation %q has reached the maximum of %d findings", sessionID, maxFindingsPerInvestigation)
+	}
+	if len(input.Description) > maxFindingDescriptionBytes {
+		return nil, nil, fmt.Errorf("finding description exceeds maximum length of %d bytes", maxFindingDescriptionBytes)
+	}
 
 	// Default confidence
 	confidence := input.Confidence

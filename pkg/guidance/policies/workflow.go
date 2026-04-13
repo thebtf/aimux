@@ -40,16 +40,7 @@ func (p *WorkflowPolicy) BuildPlan(input guidance.PolicyInput) (guidance.NextAct
 }
 
 func extractWorkflowInput(snapshot any) WorkflowPolicyInput {
-	if snapshot == nil {
-		return WorkflowPolicyInput{}
-	}
-	if wpi, ok := snapshot.(*WorkflowPolicyInput); ok && wpi != nil {
-		return *wpi
-	}
-	if wpi, ok := snapshot.(WorkflowPolicyInput); ok {
-		return wpi
-	}
-	return WorkflowPolicyInput{}
+	return extractInput[WorkflowPolicyInput](snapshot)
 }
 
 func buildWorkflowPlan(input WorkflowPolicyInput) guidance.NextActionPlan {

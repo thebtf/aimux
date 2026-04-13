@@ -7,16 +7,23 @@ import (
 	"github.com/thebtf/aimux/pkg/think"
 )
 
+// ThinkCallSpec is a strongly-typed representation of a think call.
+// It replaces the fragile string-template approach used previously.
+type ThinkCallSpec struct {
+	Pattern string
+	Params  map[string]any
+}
+
 // DispatchThinkCall executes a think pattern in-process and returns the result.
 // This enables investigate to use think tools for self-enrichment without
 // external MCP round-trips.
-func DispatchThinkCall(pattern string, params map[string]any) (*think.ThinkResult, error) {
-	handler := think.GetPattern(pattern)
+func DispatchThinkCall(spec ThinkCallSpec) (*think.ThinkResult, error) {
+	handler := think.GetPattern(spec.Pattern)
 	if handler == nil {
-		return nil, fmt.Errorf("think pattern %q not found", pattern)
+		return nil, fmt.Errorf("think pattern %q not found", spec.Pattern)
 	}
 
-	validInput, err := handler.Validate(params)
+	validInput, err := handler.Validate(spec.Params)
 	if err != nil {
 		return nil, fmt.Errorf("think validate: %w", err)
 	}
@@ -27,50 +34,6 @@ func DispatchThinkCall(pattern string, params map[string]any) (*think.ThinkResul
 	}
 
 	return result, nil
-}
-
-// ParseSuggestedThinkCall extracts pattern and params from a suggested think call string.
-// Format: mcp__aimux__think({ pattern: "X", key: "value", ... })
-func ParseSuggestedThinkCall(suggestion string) (pattern string, params map[string]any, err error) {
-	// Extract content between ({ and })
-	start := strings.Index(suggestion, "({")
-	end := strings.LastIndex(suggestion, "})")
-	if start < 0 || end < 0 || end <= start {
-		return "", nil, fmt.Errorf("cannot parse think call: %q", suggestion)
-	}
-
-	inner := strings.TrimSpace(suggestion[start+2 : end])
-
-	params = make(map[string]any)
-	// Parse key: "value" pairs
-	for _, part := range strings.Split(inner, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(part, ":")
-		if colonIdx < 0 {
-			continue
-		}
-
-		key := strings.TrimSpace(part[:colonIdx])
-		val := strings.TrimSpace(part[colonIdx+1:])
-		// Remove quotes
-		val = strings.Trim(val, "\"")
-
-		if key == "pattern" {
-			pattern = val
-		} else {
-			params[key] = val
-		}
-	}
-
-	if pattern == "" {
-		return "", nil, fmt.Errorf("no pattern found in think call: %q", suggestion)
-	}
-
-	return pattern, params, nil
 }
 
 // ThinkFindingFromResult creates a FindingInput from a think result for auto-dispatch.

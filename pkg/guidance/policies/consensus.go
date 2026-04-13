@@ -36,16 +36,7 @@ func (p *ConsensusPolicy) BuildPlan(input guidance.PolicyInput) (guidance.NextAc
 }
 
 func extractConsensusInput(snapshot any) ConsensusPolicyInput {
-	if snapshot == nil {
-		return ConsensusPolicyInput{}
-	}
-	if cpi, ok := snapshot.(*ConsensusPolicyInput); ok && cpi != nil {
-		return *cpi
-	}
-	if cpi, ok := snapshot.(ConsensusPolicyInput); ok {
-		return cpi
-	}
-	return ConsensusPolicyInput{}
+	return extractInput[ConsensusPolicyInput](snapshot)
 }
 
 func buildConsensusPlan(input ConsensusPolicyInput) guidance.NextActionPlan {
@@ -72,6 +63,12 @@ func buildConsensusPlan(input ConsensusPolicyInput) guidance.NextActionPlan {
 func consensusState(input ConsensusPolicyInput) string {
 	status := strings.TrimSpace(strings.ToLower(input.Status))
 	switch {
+	case status == "failed":
+		return "failed"
+	case status == "cancelled":
+		return "cancelled"
+	case status == "":
+		return "unknown"
 	case status == "running":
 		return "polling"
 	case input.Synthesize:

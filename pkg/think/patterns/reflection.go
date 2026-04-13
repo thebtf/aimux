@@ -1,5 +1,7 @@
 package patterns
 
+import "strconv"
+
 // ReflectionDirective is an advisory hint returned to the agent when
 // a pattern detects the agent may be rushing or missing evidence.
 type ReflectionDirective struct {
@@ -36,7 +38,7 @@ func ValidateEvidenceGate(findingsCount, requiredCount int) *ReflectionDirective
 			[]string{
 				"Document all observed symptoms",
 				"Reproduce the issue in a controlled environment",
-				"Collect at least " + intToStr(requiredCount) + " distinct findings before forming a hypothesis",
+				"Collect at least " + strconv.Itoa(requiredCount) + " distinct findings before forming a hypothesis",
 			},
 		)
 	}
@@ -61,22 +63,3 @@ func ValidateConfidence(confidence float64, evidenceCount int) *ReflectionDirect
 	return nil
 }
 
-// intToStr converts an int to its decimal string representation without importing strconv.
-func intToStr(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	buf := make([]byte, 0, 10)
-	for n > 0 {
-		buf = append([]byte{byte('0' + n%10)}, buf...)
-		n /= 10
-	}
-	if neg {
-		buf = append([]byte{'-'}, buf...)
-	}
-	return string(buf)
-}

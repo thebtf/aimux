@@ -37,16 +37,7 @@ func (p *DialogPolicy) BuildPlan(input guidance.PolicyInput) (guidance.NextActio
 }
 
 func extractDialogInput(snapshot any) DialogPolicyInput {
-	if snapshot == nil {
-		return DialogPolicyInput{}
-	}
-	if dpi, ok := snapshot.(*DialogPolicyInput); ok && dpi != nil {
-		return *dpi
-	}
-	if dpi, ok := snapshot.(DialogPolicyInput); ok {
-		return dpi
-	}
-	return DialogPolicyInput{}
+	return extractInput[DialogPolicyInput](snapshot)
 }
 
 func buildDialogPlan(input DialogPolicyInput) guidance.NextActionPlan {
@@ -76,6 +67,12 @@ func buildDialogPlan(input DialogPolicyInput) guidance.NextActionPlan {
 }
 
 func dialogState(input DialogPolicyInput) string {
+	switch input.Status {
+	case "error":
+		return "error"
+	case "cancelled":
+		return "cancelled"
+	}
 	if input.Status == "completed" && input.Turns > 0 {
 		return "complete"
 	}

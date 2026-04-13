@@ -134,15 +134,7 @@ func RunAgent(ctx context.Context, cfg RunConfig) (*RunResult, error) {
 }
 
 // runWithModelFallbackAgent iterates the model fallback chain for a single executor call.
-// It uses the types.ModelCooldownTracker interface so the agents package does not
-// depend on pkg/executor directly.
-//
-// On quota error: marks model cooled down, tries next model.
-// On transient error: retries same model once, then applies full classification to retry result.
-// On fatal error: returns immediately.
-// On success: returns result.
-// When all models are on cooldown the error contains "rate limit" so callers can
-// distinguish it from a hard failure.
+// Delegates to executor.RunWithModelFallback for the canonical state machine.
 func runWithModelFallbackAgent(
 	ctx context.Context,
 	exec types.Executor,
@@ -153,83 +145,7 @@ func runWithModelFallbackAgent(
 	baseArgs types.SpawnArgs,
 ) (*types.Result, error) {
 	cooldownDuration := time.Duration(cooldownSeconds) * time.Second
-	if cooldownDuration == 0 {
-		cooldownDuration = 5 * time.Minute
-	}
-
-	available := tracker.FilterAvailable(cli, modelChain)
-	if len(available) == 0 {
-		// Include "rate limit" so callers can treat this as a retriable condition.
-		return nil, fmt.Errorf("all models on cooldown (rate limit) for CLI %s", cli)
-	}
-
-	var lastErr error
-	for _, model := range available {
-		args := baseArgs
-		args.Args = executor.ReplaceModelFlag(baseArgs.Args, modelFlag, model)
-
-		result, err := exec.Run(ctx, args)
-
-		var content, stderr string
-		var exitCode int
-		if result != nil {
-			content = result.Content
-			exitCode = result.ExitCode
-		}
-		if err != nil {
-			stderr = err.Error()
-		}
-
-		errClass := executor.ClassifyError(content, stderr, exitCode)
-
-		switch errClass {
-		case executor.ErrorClassNone:
-			return result, err
-
-		case executor.ErrorClassQuota:
-			tracker.MarkCooledDown(cli, model, cooldownDuration)
-			lastErr = fmt.Errorf("quota exceeded for %s:%s", cli, model)
-			continue
-
-		case executor.ErrorClassTransient:
-			// Retry same model once, then apply full classification to the retry result.
-			result2, err2 := exec.Run(ctx, args)
-			var c2, s2 string
-			var ec2 int
-			if result2 != nil {
-				c2 = result2.Content
-				ec2 = result2.ExitCode
-			}
-			if err2 != nil {
-				s2 = err2.Error()
-			}
-			retryClass := executor.ClassifyError(c2, s2, ec2)
-			switch retryClass {
-			case executor.ErrorClassNone:
-				return result2, err2
-			case executor.ErrorClassQuota:
-				tracker.MarkCooledDown(cli, model, cooldownDuration)
-				lastErr = fmt.Errorf("quota exceeded for %s:%s (on transient retry)", cli, model)
-				continue
-			case executor.ErrorClassFatal:
-				if err2 == nil {
-					err2 = fmt.Errorf("fatal error detected in output")
-				}
-				return result2, fmt.Errorf("fatal error on %s:%s: %w", cli, model, err2)
-			default:
-				lastErr = fmt.Errorf("transient error on %s:%s after retry", cli, model)
-				continue
-			}
-
-		case executor.ErrorClassFatal:
-			if err == nil {
-				err = fmt.Errorf("fatal error detected in output")
-			}
-			return result, fmt.Errorf("fatal error on %s:%s: %w", cli, model, err)
-		}
-	}
-
-	return nil, fmt.Errorf("all models exhausted for CLI %s: %w", cli, lastErr)
+	return executor.RunWithModelFallback(ctx, exec, baseArgs, modelChain, modelFlag, tracker, cooldownDuration, nil)
 }
 
 // buildSystemPrompt assembles the full first-turn prompt for the agent.
@@ -311,10 +227,10 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 }
 
 // isComplete checks whether the CLI has finished its work.
-// Returns true when the response is empty (CLI exited with no output)
-// or when it contains the TASK_COMPLETE signal for backward compatibility
-// with agents that explicitly emit the completion marker.
+// Returns true only when the response contains the TASK_COMPLETE signal.
+// An empty response is not treated as completion — the CLI may have produced
+// no output yet, and collapsing that to "done" would silently swallow results.
 func isComplete(response string) bool {
-	return response == "" || strings.Contains(strings.ToUpper(response), strings.ToUpper(CompletionSignal))
+	return strings.Contains(strings.ToUpper(response), strings.ToUpper(CompletionSignal))
 }
 

@@ -50,9 +50,9 @@ func (p *ThinkPolicy) BuildPlan(input guidance.PolicyInput) (guidance.NextAction
 	return buildThinkPlan(tpi), nil
 }
 
-// BuildPlanTyped is the strongly-typed entry point used by callers that already
-// have a ThinkPolicyInput and want to avoid an interface round-trip.
-func (p *ThinkPolicy) BuildPlanTyped(input ThinkPolicyInput) *guidance.NextActionPlan {
+// buildPlanTyped is the strongly-typed entry point used by callers within this
+// package that already have a ThinkPolicyInput and want to avoid an interface round-trip.
+func (p *ThinkPolicy) buildPlanTyped(input ThinkPolicyInput) *guidance.NextActionPlan {
 	plan := buildThinkPlan(input)
 	return &plan
 }
@@ -65,16 +65,7 @@ func IsStatefulPattern(pattern string) bool {
 // extractThinkInput converts the opaque StateSnapshot to a ThinkPolicyInput.
 // Returns a safe default if the snapshot is absent or has an unexpected type.
 func extractThinkInput(snapshot any) ThinkPolicyInput {
-	if snapshot == nil {
-		return ThinkPolicyInput{}
-	}
-	if tpi, ok := snapshot.(*ThinkPolicyInput); ok && tpi != nil {
-		return *tpi
-	}
-	if tpi, ok := snapshot.(ThinkPolicyInput); ok {
-		return tpi
-	}
-	return ThinkPolicyInput{}
+	return extractInput[ThinkPolicyInput](snapshot)
 }
 
 // buildThinkPlan is the pure policy function — no I/O, no side effects.

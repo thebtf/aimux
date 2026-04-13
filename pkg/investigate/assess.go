@@ -74,14 +74,22 @@ func Assess(sessionID string) (*AssessResult, error) {
 	angle := angles[angleIdx]
 	suggestedAngle := fmt.Sprintf("%s: %s", angle.Label, angle.Description)
 
-	// Build think call suggestion
-	thinkParams := make([]string, 0)
+	// Build the think call spec directly — no string serialisation needed.
+	resolvedParams := make(map[string]any, len(angle.ThinkParams))
 	for k, v := range angle.ThinkParams {
-		resolved := strings.ReplaceAll(v, "{topic}", state.Topic)
-		thinkParams = append(thinkParams, fmt.Sprintf(`%s: "%s"`, k, resolved))
+		resolvedParams[k] = strings.ReplaceAll(v, "{topic}", state.Topic)
+	}
+	thinkSpec := ThinkCallSpec{
+		Pattern: angle.ThinkPattern,
+		Params:  resolvedParams,
+	}
+	// Produce a human-readable representation for the SuggestedThinkCall field.
+	thinkParamParts := make([]string, 0, len(resolvedParams))
+	for k, v := range resolvedParams {
+		thinkParamParts = append(thinkParamParts, fmt.Sprintf(`%s: "%v"`, k, v))
 	}
 	suggestedThinkCall := fmt.Sprintf(`mcp__aimux__think({ pattern: "%s", %s })`,
-		angle.ThinkPattern, strings.Join(thinkParams, ", "))
+		thinkSpec.Pattern, strings.Join(thinkParamParts, ", "))
 
 	// Anti-pattern warnings (rotate, 1-2 per assess)
 	var antiPatternWarnings []string
@@ -188,19 +196,17 @@ func Assess(sessionID string) (*AssessResult, error) {
 			coverage*100, strings.Join(unchecked, ", "))
 	}
 
-	// Auto-dispatch: execute suggested think call and add result as finding
+	// Auto-dispatch: execute suggested think call and add result as finding.
+	// Uses the already-built thinkSpec to avoid re-parsing the human-readable string.
 	var autoDispatched bool
 	var autoDispatchResult string
-	if recommendation == "CONTINUE" && suggestedThinkCall != "" {
-		pattern, params, parseErr := ParseSuggestedThinkCall(suggestedThinkCall)
-		if parseErr == nil {
-			thinkResult, dispatchErr := DispatchThinkCall(pattern, params)
-			if dispatchErr == nil {
-				autoDispatched = true
-				finding := ThinkFindingFromResult(thinkResult, sessionID)
-				AddFinding(sessionID, finding)
-				autoDispatchResult = fmt.Sprintf("think:%s returned %d data fields", pattern, len(thinkResult.Data))
-			}
+	if recommendation == "CONTINUE" && thinkSpec.Pattern != "" {
+		thinkResult, dispatchErr := DispatchThinkCall(thinkSpec)
+		if dispatchErr == nil {
+			autoDispatched = true
+			finding := ThinkFindingFromResult(thinkResult, sessionID)
+			AddFinding(sessionID, finding)
+			autoDispatchResult = fmt.Sprintf("think:%s returned %d data fields", thinkSpec.Pattern, len(thinkResult.Data))
 		}
 	}
 

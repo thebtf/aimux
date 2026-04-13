@@ -113,32 +113,38 @@ func (p *experimentalLoopPattern) Handle(validInput map[string]any, sessionID st
 	return think.MakeThinkResult("experimental_loop", data, sessionID, nil, "experimental_loop", nil), nil
 }
 
-// suggestAction returns "pivot" if the last 3+ experiments show no improvement,
-// "stop" if experiment count is very high, otherwise "continue".
-func suggestAction(experiments []any, latestImproved bool) string {
+// suggestAction returns "pivot" if the last 3+ consecutive experiments each show
+// no improvement over the running max metric, "stop" if the experiment count is
+// very high, otherwise "continue".
+func suggestAction(experiments []any, _ bool) string {
 	n := len(experiments)
 	if n >= 10 {
 		return "stop"
 	}
-	if n >= 3 && !latestImproved {
-		// Check if last 3 showed no improvement (metric stayed same or fell).
+
+	if n >= 3 {
+		// Walk experiments in order to compute the running max at each position,
+		// then count how many trailing experiments failed to beat it.
+		runningMax := 0.0
 		noImprovementStreak := 0
-		for i := n - 1; i >= 0 && noImprovementStreak < 3; i-- {
-			e, ok := experiments[i].(map[string]any)
+		for _, raw := range experiments {
+			e, ok := raw.(map[string]any)
 			if !ok {
-				break
+				noImprovementStreak = 0
+				continue
 			}
 			m, _ := e["metric"].(float64)
-			if i == n-1 {
-				// Compare to previous best is tracked externally; just count zero-metric entries.
-				if m == 0 {
-					noImprovementStreak++
-				}
+			if m > runningMax {
+				runningMax = m
+				noImprovementStreak = 0
+			} else {
+				noImprovementStreak++
 			}
 		}
-		if n >= 3 && !latestImproved {
+		if noImprovementStreak >= 3 {
 			return "pivot"
 		}
 	}
+
 	return "continue"
 }

@@ -38,16 +38,7 @@ func (p *DebatePolicy) BuildPlan(input guidance.PolicyInput) (guidance.NextActio
 }
 
 func extractDebateInput(snapshot any) DebatePolicyInput {
-	if snapshot == nil {
-		return DebatePolicyInput{}
-	}
-	if dpi, ok := snapshot.(*DebatePolicyInput); ok && dpi != nil {
-		return *dpi
-	}
-	if dpi, ok := snapshot.(DebatePolicyInput); ok {
-		return dpi
-	}
-	return DebatePolicyInput{}
+	return extractInput[DebatePolicyInput](snapshot)
 }
 
 func buildDebatePlan(input DebatePolicyInput) guidance.NextActionPlan {
