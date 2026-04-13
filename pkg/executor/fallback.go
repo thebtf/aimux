@@ -33,7 +33,7 @@ func RunWithModelFallback(
 	cli := baseArgs.CLI
 
 	if cooldownDuration == 0 {
-		cooldownDuration = 5 * time.Minute
+		cooldownDuration = 24 * time.Hour // default: 24h (spark weekly limits can exhaust for days)
 	}
 
 	available := cooldown.FilterAvailable(cli, models)

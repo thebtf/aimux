@@ -51,8 +51,11 @@ model_fallback: []
 fallback_suffix_strip:
   - "-spark"
 
-# Cooldown duration (seconds) for rate-limited models. Default: 300 (5 min).
-cooldown_seconds: 300
+# Cooldown duration (seconds) for rate-limited models.
+# Spark has weekly limits that can be exhausted for days — short cooldowns
+# just waste requests. 86400s (24h) means one probe per day.
+# The base model (-codex without -spark) is always available.
+cooldown_seconds: 86400
 
 # Timeout defaults
 timeout_seconds: 3600
