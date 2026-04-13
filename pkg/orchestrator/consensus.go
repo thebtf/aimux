@@ -64,12 +64,14 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 
 	wg.Wait()
 
-	// Collect successful opinions with compaction
+	// Collect successful opinions with compaction; track failed CLIs
 	var opinions []string
 	var responseTexts []string
 	var successCLIs []string
+	var failedCLIs []string
 	for _, r := range results {
 		if r.Err != nil {
+			failedCLIs = append(failedCLIs, r.CLI)
 			continue
 		}
 		compacted := CompactTurnContent(r.Content, 0)
@@ -84,6 +86,16 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 
 	content := strings.Join(opinions, "\n\n---\n\n")
 	turns := len(successCLIs)
+
+	// Determine status: partial when at least one participant failed
+	status := "completed"
+	var extra map[string]any
+	if len(failedCLIs) > 0 {
+		status = "partial"
+		extra = map[string]any{
+			"failed_clis": failedCLIs,
+		}
+	}
 
 	// Phase 2: Optional synthesis with budget-aware prompt
 	if synthesize && len(successCLIs) > 1 {
@@ -101,8 +113,9 @@ func (c *ParallelConsensus) Execute(ctx context.Context, params types.StrategyPa
 
 	return &types.StrategyResult{
 		Content:      content,
-		Status:       "completed",
+		Status:       status,
 		Turns:        turns,
 		Participants: successCLIs,
+		Extra:        extra,
 	}, nil
 }

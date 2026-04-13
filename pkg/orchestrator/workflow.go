@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/types"
@@ -12,11 +13,13 @@ import (
 
 // WorkflowStep defines one step in a workflow pipeline.
 type WorkflowStep struct {
-	ID        string         `json:"id"`
-	Tool      string         `json:"tool"`      // "exec", "think", "investigate"
-	Params    map[string]any `json:"params"`
-	Condition string         `json:"condition,omitempty"` // simple condition: "{{prev.content}} contains 'FINDING'"
-	OnError   string         `json:"on_error,omitempty"` // "stop" (default), "skip", "retry"
+	ID           string         `json:"id"`
+	Tool         string         `json:"tool"`           // "exec", "think", "investigate"
+	Params       map[string]any `json:"params"`
+	Condition    string         `json:"condition,omitempty"`    // simple condition: "{{prev.content}} contains 'FINDING'"
+	OnError      string         `json:"on_error,omitempty"`     // "stop" (default), "skip", "retry"
+	RetryCount   int            `json:"retry_count,omitempty"`  // number of retries on failure (default 1)
+	RetryDelayMS int            `json:"retry_delay_ms,omitempty"` // delay between retries in milliseconds (default 0)
 }
 
 // WorkflowDefinition defines a complete workflow.
@@ -119,9 +122,24 @@ func (w *WorkflowStrategy) Execute(ctx context.Context, params types.StrategyPar
 
 			switch onError {
 			case "retry":
-				// One retry
-				sr = w.executeStep(ctx, step, def.Input, results, params.CWD)
-				if sr.Status == "failed" {
+				// Retry loop: retry_count defaults to 1; retry_delay_ms defaults to 0
+				retryCount := step.RetryCount
+				if retryCount <= 0 {
+					retryCount = 1
+				}
+				retryDelayMS := step.RetryDelayMS
+				retrySucceeded := false
+				for attempt := 0; attempt < retryCount; attempt++ {
+					if retryDelayMS > 0 {
+						time.Sleep(time.Duration(retryDelayMS) * time.Millisecond)
+					}
+					sr = w.executeStep(ctx, step, def.Input, results, params.CWD)
+					if sr.Status != "failed" {
+						retrySucceeded = true
+						break
+					}
+				}
+				if !retrySucceeded {
 					results[step.ID] = &sr
 					stepResults = append(stepResults, sr)
 					overallStatus = "failed"
@@ -311,7 +329,10 @@ func (w *WorkflowStrategy) interpolateParams(params map[string]any, input string
 }
 
 // interpolate replaces {{input}}, {{step_id.content}}, {{step_id.status}} in a string.
+// User-supplied input is escaped first to prevent injection via {{ template syntax.
 func (w *WorkflowStrategy) interpolate(s, input string, results map[string]*StepResult) string {
+	// Escape {{ in user input to prevent template injection before substitution
+	input = strings.ReplaceAll(input, "{{", "\\{\\{")
 	s = strings.ReplaceAll(s, "{{input}}", input)
 
 	for id, sr := range results {

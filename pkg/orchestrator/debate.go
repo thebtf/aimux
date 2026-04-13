@@ -36,6 +36,7 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 		return nil, fmt.Errorf("debate requires at least 2 participants, got %d", len(participants))
 	}
 
+	// debate defaults synthesize=true (verdict expected); consensus defaults false (raw opinions may suffice)
 	synthesize := true
 	if s, ok := params.Extra["synthesize"].(bool); ok {
 		synthesize = s
@@ -56,6 +57,8 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 	var history []debateEntry
 	totalTurns := 0
 
+	qg := NewQualityGate(0) // default max retries
+
 	for turn := 0; turn < maxTurns; turn++ {
 		participantIdx := turn % len(participants)
 		cli := participants[participantIdx]
@@ -67,6 +70,15 @@ func (d *StructuredDebate) Execute(ctx context.Context, params types.StrategyPar
 		result, err := d.executor.Run(ctx, resolveOrFallbackWithOpts(d.resolver, cli, prompt, params.CWD, params.Timeout, params.Model, params.Effort))
 		if err != nil {
 			return nil, fmt.Errorf("debate turn %d (%s) failed: %w", totalTurns, cli, err)
+		}
+
+		// Quality gate: evaluate turn content; re-prompt once on low-quality output
+		if action := qg.Evaluate(cli, result.Content, "", 0); action == QualityRetry {
+			retryPrompt := buildDebatePrompt(params.Prompt, history, cli, stance) +
+				"\n\nYour previous response was below quality threshold. Please provide a substantive argument."
+			if retryResult, retryErr := d.executor.Run(ctx, resolveOrFallbackWithOpts(d.resolver, cli, retryPrompt, params.CWD, params.Timeout, params.Model, params.Effort)); retryErr == nil {
+				result = retryResult
+			}
 		}
 
 		history = append(history, debateEntry{

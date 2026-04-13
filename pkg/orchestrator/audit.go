@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -208,21 +209,66 @@ func (a *AuditPipeline) validate(ctx context.Context, params types.StrategyParam
 		if v, ok := verdictMap[i]; ok {
 			validated[i].Confidence = v
 		} else {
-			validated[i].Confidence = types.AuditConfidenceConfirmed
+			validated[i].Confidence = types.AuditConfidenceUnconfirmed
 		}
 	}
 
 	return validated, nil
 }
 
-// investigate runs deep investigation on HIGH+ findings.
+// investigate runs deep investigation on HIGH+ findings using pkg/investigate.
 func (a *AuditPipeline) investigate(ctx context.Context, params types.StrategyParams, findings []auditFinding) []string {
 	var reports []string
 	for _, f := range findings {
 		if f.Severity != "CRITICAL" && f.Severity != "HIGH" {
 			continue
 		}
-		reports = append(reports, fmt.Sprintf("Investigated: [%s] %s — %s", f.Severity, f.Rule, f.Message))
+
+		// Derive a unique session ID for this finding
+		sessionID := fmt.Sprintf("audit-%s-%s", f.Severity, f.Rule)
+
+		topic := fmt.Sprintf("[%s] %s — %s", f.Severity, f.Rule, f.Message)
+
+		// Map audit severity to investigate domain; generic catches all
+		domainName := "generic"
+		if f.Severity == "CRITICAL" {
+			domainName = "security"
+		}
+
+		investigate.CreateInvestigation(sessionID, topic, domainName)
+
+		severity := investigate.SeverityP1
+		if f.Severity == "CRITICAL" {
+			severity = investigate.SeverityP0
+		}
+
+		source := f.File
+		if source == "" {
+			source = "audit-scanner"
+		}
+
+		investigate.AddFinding(sessionID, investigate.FindingInput{
+			Description:  f.Message,
+			Severity:     severity,
+			Source:       source,
+			Confidence:   investigate.ConfidenceVerified,
+			CoverageArea: f.Rule,
+		})
+
+		assessment, err := investigate.Assess(sessionID)
+		if err != nil {
+			reports = append(reports, fmt.Sprintf("[%s] %s — assessment error: %v", f.Severity, f.Rule, err))
+			continue
+		}
+
+		reports = append(reports, fmt.Sprintf(
+			"[%s] %s — convergence=%.0f%% coverage=%.0f%% recommendation=%s: %s",
+			f.Severity, f.Rule,
+			assessment.ConvergenceScore*100,
+			assessment.CoverageScore*100,
+			assessment.Recommendation,
+			assessment.Message,
+		))
 	}
 	return reports
 }
