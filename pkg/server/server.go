@@ -837,9 +837,9 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(
 		mcp.NewTool("agents",
 			mcp.WithDescription("PRIMARY tool for task execution. "+
-				"Routes tasks to the best agent automatically. "+
-				"Just provide a prompt — agent selection, CLI routing, and model configuration happen automatically. "+
-				"Actions: run (execute task), list (show agents), find (search agents)."),
+				"Actions: run (execute task with agent=<name>), list (show agents), find (search agents). "+
+				"For run: specify agent=<name> to select the agent. If omitted, returns a candidate list for you to choose from. "+
+				"Use find(prompt=<query>) to search agents by keyword, or list to see all available agents with descriptions."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: list, run, info, find"),
@@ -1725,15 +1725,15 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		agentName := request.GetString("agent", "")
 		var agent *agents.Agent
 		if agentName == "" {
-			// Auto-select: score all registered agents against prompt keywords.
-			var score int
-			agent, score = agents.AutoSelectAgent(s.agentReg, prompt)
-			if agent == nil {
-				return mcp.NewToolResultError("no agents registered and no fallback available"), nil
-			}
-			agentName = agent.Name
-			keywords := agents.ExtractKeywords(prompt)
-			s.log.Info("agent auto-selected: %s (score: %d, keywords: %v)", agent.Name, score, keywords)
+			// Return candidate list instead of auto-selecting.
+			// The calling LLM knows the task context better than keyword matching.
+			candidates := agents.ListCandidates(s.agentReg, 20)
+			return marshalToolResult(map[string]any{
+				"action":  "choose_agent",
+				"message": "No agent specified. Review the candidates below and call again with agent=<name>.",
+				"candidates": candidates,
+				"hint":    "Pick the agent whose 'when' description best matches your task. Use the 'agent' tool directly with agent=<name> for fastest execution.",
+			})
 		} else {
 			var agentErr error
 			agent, agentErr = s.agentReg.Get(agentName)

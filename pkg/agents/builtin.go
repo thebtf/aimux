@@ -39,6 +39,15 @@ var builtinAgents = []*Agent{
 		MaxTurns:    1,
 		Source:      "builtin",
 	},
+	{
+		Name:        "general",
+		Description: "General-purpose assistant for any task",
+		Role:        "coding",
+		Domain:      "general",
+		Content:     "You are a general-purpose assistant. Execute the given task directly and completely. Follow instructions precisely.",
+		MaxTurns:    1,
+		Source:      "builtin",
+	},
 }
 
 // RegisterBuiltins adds the built-in generic agents to the registry.
