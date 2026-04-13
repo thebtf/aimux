@@ -139,7 +139,11 @@ func (w *WAL) Truncate() error {
 	if err := os.Rename(tmpName, name); err != nil {
 		os.Remove(tmpName)
 		// Reopen the original file even on rename failure.
-		w.file, _ = os.OpenFile(name, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		var reopenErr error
+		w.file, reopenErr = os.OpenFile(name, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if reopenErr != nil {
+			return fmt.Errorf("truncate WAL (rename failed: %v, reopen also failed: %w)", err, reopenErr)
+		}
 		return fmt.Errorf("truncate WAL (rename): %w", err)
 	}
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)

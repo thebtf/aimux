@@ -93,15 +93,25 @@ func migrate(db *sql.DB) error {
 	}
 
 	// Migration 1: add metadata_json column to sessions.
+	// Wrapped in an explicit transaction so the ALTER + version bump are atomic.
 	if version < 1 {
-		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN metadata_json TEXT`); err != nil {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 1: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN metadata_json TEXT`); err != nil {
 			// Column may already exist in databases created before schema_version was introduced.
 			if !strings.Contains(err.Error(), "duplicate column name") {
+				tx.Rollback()
 				return err
 			}
 		}
-		if _, err := db.Exec(`INSERT INTO schema_version (version) VALUES (1)`); err != nil {
+		if _, err := tx.Exec(`INSERT INTO schema_version (version) VALUES (1)`); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("bump schema_version to 1: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 1: %w", err)
 		}
 	}
 
