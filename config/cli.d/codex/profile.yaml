@@ -43,6 +43,15 @@ reasoning:
   flag_value_template: 'model_reasoning_effort=%s'
   levels: [low, medium, high, xhigh]
 
+# Model fallback chain — on quota error (rate limit), try next model before switching CLI.
+# First entry is primary. Empty = no model fallback.
+model_fallback:
+  - gpt-5.3-codex-spark
+  - gpt-5.3-codex
+
+# Cooldown duration (seconds) for rate-limited models. Default: 300 (5 min).
+cooldown_seconds: 300
+
 # Timeout defaults
 timeout_seconds: 3600
 

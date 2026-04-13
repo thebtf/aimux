@@ -140,6 +140,17 @@ type CLIProfile struct {
 	// Used by the fallback router to find a capable substitute when the primary CLI fails.
 	Capabilities []string `yaml:"capabilities,omitempty"`
 
+	// ModelFallback is an ordered list of models to try when a rate limit (quota error)
+	// is hit. The first entry is the primary model. On quota error, the next model in
+	// the chain is tried. Empty = no model fallback (current behavior).
+	// This is a profile-internal concern — role-config does not know about it.
+	ModelFallback []string `yaml:"model_fallback,omitempty"`
+
+	// CooldownSeconds is how long a rate-limited model stays on cooldown before
+	// being retried. Only quota errors trigger cooldown (not transient/fatal).
+	// Default: 300 (5 minutes).
+	CooldownSeconds int `yaml:"cooldown_seconds,omitempty"`
+
 	// ResolvedPath is set at runtime by discovery — full path to the binary.
 	// Not serialized to YAML. Used by executor when binary is not in PATH.
 	ResolvedPath string `yaml:"-" json:"resolved_path,omitempty"`
