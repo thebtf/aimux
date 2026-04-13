@@ -272,11 +272,17 @@ func TestE2E_Think_BasicPatterns(t *testing.T) {
 		t.Run(tc.pattern, func(t *testing.T) {
 			resp := initAndCall(t, "think", tc.params)
 			data := extractToolJSON(t, resp)
-			if data["pattern"] != tc.pattern {
-				t.Errorf("pattern = %v, want %v", data["pattern"], tc.pattern)
+			// think responses are wrapped in the guidance envelope; domain fields are
+			// nested under the "result" key.
+			inner, ok := data["result"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected nested result payload, got %T: %v", data["result"], data["result"])
 			}
-			if data["mode"] != "solo" {
-				t.Errorf("mode = %v, want solo", data["mode"])
+			if inner["pattern"] != tc.pattern {
+				t.Errorf("pattern = %v, want %v", inner["pattern"], tc.pattern)
+			}
+			if inner["mode"] != "solo" {
+				t.Errorf("mode = %v, want solo", inner["mode"])
 			}
 		})
 	}
@@ -960,7 +966,7 @@ func TestE2E_GuidedToolMatrix(t *testing.T) {
 				"action": "start",
 				"topic":  "matrix sweep test topic",
 			},
-			wantState:   "gathering",
+			wantState:   "notebook_ready",
 			resultField: "session_id",
 		},
 		{

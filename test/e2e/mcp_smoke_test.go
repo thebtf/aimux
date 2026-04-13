@@ -425,11 +425,17 @@ func TestE2E_ThinkTool(t *testing.T) {
 	var thinkResult map[string]any
 	json.Unmarshal([]byte(text), &thinkResult)
 
-	if thinkResult["pattern"] != "critical_thinking" {
-		t.Errorf("pattern = %v, want critical_thinking", thinkResult["pattern"])
+	// think responses are wrapped in the guidance envelope; domain fields are
+	// nested under the "result" key.
+	inner, ok := thinkResult["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested result payload under 'result' key, got %T: %v", thinkResult["result"], thinkResult["result"])
 	}
-	if thinkResult["mode"] != "solo" {
-		t.Errorf("mode = %v, want solo", thinkResult["mode"])
+	if inner["pattern"] != "critical_thinking" {
+		t.Errorf("pattern = %v, want critical_thinking", inner["pattern"])
+	}
+	if inner["mode"] != "solo" {
+		t.Errorf("mode = %v, want solo", inner["mode"])
 	}
 }
 

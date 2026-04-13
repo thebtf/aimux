@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	orch "github.com/thebtf/aimux/pkg/orchestrator"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,15 @@ import (
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+// testBinary returns a platform-appropriate binary that is guaranteed to exist.
+// echo is a shell builtin on Windows and cannot be found via exec.LookPath; use cmd instead.
+func testBinary() string {
+	if runtime.GOOS == "windows" {
+		return "cmd"
+	}
+	return "echo"
+}
 
 type stubExecutor struct {
 	run func(ctx context.Context, args types.SpawnArgs) (*types.Result, error)
@@ -74,9 +85,9 @@ func testServer(t *testing.T) *Server {
 		CLIProfiles: map[string]*config.CLIProfile{
 			"codex": {
 				Name:        "codex",
-				Binary:      "echo",
+				Binary:      testBinary(),
 				DisplayName: "Test CLI",
-				Command:     config.CommandConfig{Base: "echo"},
+				Command:     config.CommandConfig{Base: testBinary()},
 				PromptFlag:  "-p",
 				ModelFlag:   "-m",
 				Reasoning: &config.ReasoningConfig{
@@ -84,6 +95,16 @@ func testServer(t *testing.T) *Server {
 					FlagValueTemplate: "model_reasoning_effort=%s",
 					Levels:            []string{"low", "medium", "high", "xhigh"},
 				},
+				TimeoutSeconds: 10,
+				Features:       types.CLIFeatures{Headless: true},
+			},
+			"gemini": {
+				Name:           "gemini",
+				Binary:         testBinary(),
+				DisplayName:    "Test CLI 2",
+				Command:        config.CommandConfig{Base: testBinary()},
+				PromptFlag:     "-p",
+				ModelFlag:      "-m",
 				TimeoutSeconds: 10,
 				Features:       types.CLIFeatures{Headless: true},
 			},
@@ -98,9 +119,27 @@ func testServer(t *testing.T) *Server {
 	t.Cleanup(func() { log.Close() })
 
 	reg := driver.NewRegistry(cfg.CLIProfiles)
-	router := routing.NewRouter(cfg.Roles, []string{"codex"})
+	reg.Probe()
+	router := routing.NewRouter(cfg.Roles, []string{"codex", "gemini"})
 
-	return New(cfg, log, reg, router)
+	srv := New(cfg, log, reg, router)
+
+	// Re-register orchestrator strategies backed by a stub executor so that
+	// consensus/debate/dialog handler tests do not launch real CLI processes.
+	// The stub always returns a minimal completed result, letting the handlers
+	// reach the guidance-envelope assembly stage without spawning subprocesses.
+	// srv.executor is intentionally NOT replaced so that single-executor handler
+	// tests (e.g. agent run) continue to use the real executor path.
+	orchStub := &stubExecutor{
+		run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+			return &types.Result{Content: "stub response", ExitCode: 0}, nil
+		},
+	}
+	srv.orchestrator.Register(orch.NewParallelConsensus(orchStub, nil))
+	srv.orchestrator.Register(orch.NewStructuredDebate(orchStub, nil))
+	srv.orchestrator.Register(orch.NewSequentialDialog(orchStub, nil))
+
+	return srv
 }
 
 // makeRequest builds a CallToolRequest with the given arguments.
@@ -111,6 +150,63 @@ func makeRequest(name string, args map[string]any) mcp.CallToolRequest {
 			Arguments: args,
 		},
 	}
+}
+
+// testServerSingleCLI creates a test server with only one CLI (codex).
+// Use this for tests that verify error behavior when fewer than 2 CLIs are available.
+func testServerSingleCLI(t *testing.T) *Server {
+	t.Helper()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			LogLevel:              "error",
+			LogFile:               t.TempDir() + "/test.log",
+			DefaultTimeoutSeconds: 10,
+			Pair:                  config.PairConfig{MaxRounds: 2},
+			Audit: config.AuditConfig{
+				ScannerRole:      "codereview",
+				ValidatorRole:    "analyze",
+				ParallelScanners: 1,
+			},
+		},
+		Roles: map[string]types.RolePreference{
+			"default":    {CLI: "codex"},
+			"coding":     {CLI: "codex"},
+			"codereview": {CLI: "codex"},
+			"thinkdeep":  {CLI: "codex"},
+			"analyze":    {CLI: "codex"},
+		},
+		CircuitBreaker: config.CircuitBreakerConfig{
+			FailureThreshold: 3,
+			CooldownSeconds:  5,
+			HalfOpenMaxCalls: 1,
+		},
+		CLIProfiles: map[string]*config.CLIProfile{
+			"codex": {
+				Name:           "codex",
+				Binary:         testBinary(),
+				DisplayName:    "Test CLI",
+				Command:        config.CommandConfig{Base: testBinary()},
+				PromptFlag:     "-p",
+				ModelFlag:      "-m",
+				TimeoutSeconds: 10,
+				Features:       types.CLIFeatures{Headless: true},
+			},
+		},
+		ConfigDir: t.TempDir(),
+	}
+
+	log, err := logger.New(cfg.Server.LogFile, logger.LevelError)
+	if err != nil {
+		t.Fatalf("logger: %v", err)
+	}
+	t.Cleanup(func() { log.Close() })
+
+	reg := driver.NewRegistry(cfg.CLIProfiles)
+	reg.Probe()
+	router := routing.NewRouter(cfg.Roles, []string{"codex"})
+
+	return New(cfg, log, reg, router)
 }
 
 // parseResult extracts the text content from a tool result.
@@ -1139,8 +1235,8 @@ func TestHandleSessions_InvalidAction(t *testing.T) {
 // --- Consensus: Insufficient CLIs ---
 
 func TestHandleConsensus_InsufficientCLIs(t *testing.T) {
-	srv := testServer(t)
-	// testServer has only 1 CLI (codex) — consensus requires 2
+	srv := testServerSingleCLI(t)
+	// testServerSingleCLI has only 1 CLI (codex) — consensus requires 2
 	req := makeRequest("consensus", map[string]any{
 		"topic": "test topic",
 	})
@@ -1158,7 +1254,7 @@ func TestHandleConsensus_InsufficientCLIs(t *testing.T) {
 // --- Dialog: Insufficient CLIs ---
 
 func TestHandleDialog_InsufficientCLIs(t *testing.T) {
-	srv := testServer(t)
+	srv := testServerSingleCLI(t)
 	req := makeRequest("dialog", map[string]any{
 		"prompt": "test prompt",
 	})
@@ -1176,7 +1272,7 @@ func TestHandleDialog_InsufficientCLIs(t *testing.T) {
 // --- Debate: Insufficient CLIs ---
 
 func TestHandleDebate_InsufficientCLIs(t *testing.T) {
-	srv := testServer(t)
+	srv := testServerSingleCLI(t)
 	req := makeRequest("debate", map[string]any{
 		"topic": "test topic",
 	})

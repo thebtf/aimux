@@ -1281,17 +1281,24 @@ func TestE2E_Orchestrator_ConsensusMultiCLI(t *testing.T) {
 		t.Fatalf("response not JSON: %v\nraw: %s", err, text)
 	}
 
-	status, _ := data["status"].(string)
+	// Consensus responses are wrapped in the guidance envelope; domain fields
+	// (status, participants, content) are nested under the "result" key.
+	inner, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested result payload under 'result' key, got %T", data["result"])
+	}
+
+	status, _ := inner["status"].(string)
 	if status != "completed" {
 		t.Errorf("status = %q, want completed", status)
 	}
 
-	participants, _ := data["participants"].([]any)
+	participants, _ := inner["participants"].([]any)
 	if len(participants) < 2 {
 		t.Errorf("participants = %v, want at least 2", participants)
 	}
 
-	content, _ := data["content"].(string)
+	content, _ := inner["content"].(string)
 	if content == "" {
 		t.Error("consensus content is empty")
 	}
@@ -1328,17 +1335,24 @@ func TestE2E_Orchestrator_DialogMultiCLI(t *testing.T) {
 		t.Fatalf("response not JSON: %v\nraw: %s", err, text)
 	}
 
-	status, _ := data["status"].(string)
+	// Dialog responses are wrapped in the guidance envelope; domain fields
+	// (status, turns, participants) are nested under the "result" key.
+	inner, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested result payload under 'result' key, got %T", data["result"])
+	}
+
+	status, _ := inner["status"].(string)
 	if status != "completed" {
 		t.Errorf("status = %q, want completed", status)
 	}
 
-	turns, _ := data["turns"].(float64)
+	turns, _ := inner["turns"].(float64)
 	if turns < 2 {
 		t.Errorf("turns = %v, want at least 2", turns)
 	}
 
-	participants, _ := data["participants"].([]any)
+	participants, _ := inner["participants"].([]any)
 	if len(participants) < 2 {
 		t.Errorf("participants = %v, want at least 2", participants)
 	}
@@ -1375,12 +1389,19 @@ func TestE2E_Orchestrator_SynthesisStdinPiping(t *testing.T) {
 		t.Fatalf("response not JSON: %v\nraw: %s", err, text)
 	}
 
-	status, _ := data["status"].(string)
+	// Consensus responses are wrapped in the guidance envelope; domain fields
+	// (status, content) are nested under the "result" key.
+	inner, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested result payload under 'result' key, got %T", data["result"])
+	}
+
+	status, _ := inner["status"].(string)
 	if status != "completed" {
 		t.Errorf("status = %q, want completed", status)
 	}
 
-	content, _ := data["content"].(string)
+	content, _ := inner["content"].(string)
 	if content == "" {
 		t.Error("consensus content is empty — stdin piping may have failed")
 	}
