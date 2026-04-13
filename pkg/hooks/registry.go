@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"context"
 	"log"
 	"sync"
 	"time"
@@ -70,7 +71,7 @@ func (r *Registry) Remove(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	filtered := r.beforeHooks[:0]
+	filtered := make([]beforeEntry, 0, len(r.beforeHooks))
 	for _, h := range r.beforeHooks {
 		if h.Name != name {
 			filtered = append(filtered, h)
@@ -78,7 +79,7 @@ func (r *Registry) Remove(name string) {
 	}
 	r.beforeHooks = filtered
 
-	filteredAfter := r.afterHooks[:0]
+	filteredAfter := make([]afterEntry, 0, len(r.afterHooks))
 	for _, h := range r.afterHooks {
 		if h.Name != name {
 			filteredAfter = append(filteredAfter, h)
@@ -174,12 +175,19 @@ func (r *Registry) RunAfter(ctx AfterHookContext) AfterHookResult {
 	return final
 }
 
+// runBeforeWithTimeout executes fn in a goroutine with a deadline context.
+// A context.WithTimeout is created and passed to the goroutine via closure so
+// that hook implementations can respect cancellation. The timeout is enforced
+// by the caller via a select; hook goroutines outlive the timeout if the hook
+// ignores the context.
 func runBeforeWithTimeout(fn BeforeHookFn, ctx BeforeHookContext, timeout time.Duration) (result BeforeHookResult, ok bool) {
 	type outcome struct {
 		result BeforeHookResult
 		ok     bool
 	}
 	ch := make(chan outcome, 1)
+	tctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -193,17 +201,21 @@ func runBeforeWithTimeout(fn BeforeHookFn, ctx BeforeHookContext, timeout time.D
 	select {
 	case o := <-ch:
 		return o.result, o.ok
-	case <-time.After(timeout):
+	case <-tctx.Done():
 		return BeforeHookResult{}, false
 	}
 }
 
+// runAfterWithTimeout executes fn in a goroutine with a deadline context.
+// Hook goroutines outlive the timeout if the hook ignores the context.
 func runAfterWithTimeout(fn AfterHookFn, ctx AfterHookContext, timeout time.Duration) (result AfterHookResult, ok bool) {
 	type outcome struct {
 		result AfterHookResult
 		ok     bool
 	}
 	ch := make(chan outcome, 1)
+	tctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -217,7 +229,7 @@ func runAfterWithTimeout(fn AfterHookFn, ctx AfterHookContext, timeout time.Dura
 	select {
 	case o := <-ch:
 		return o.result, o.ok
-	case <-time.After(timeout):
+	case <-tctx.Done():
 		return AfterHookResult{}, false
 	}
 }

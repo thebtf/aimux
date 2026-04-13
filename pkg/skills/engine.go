@@ -156,7 +156,10 @@ func (e *Engine) Load(embedded fs.FS, diskDir string) error {
 			}
 			skills[slug] = meta
 
-			if _, tmplErr := root.New(slug).Parse(meta.Body); tmplErr != nil {
+			// Option("missingkey=zero") must be set on each named template
+			// individually: text/template checks the option on the executing template,
+			// not on the root. Clone() preserves these per-template options.
+			if _, tmplErr := root.New(slug).Option("missingkey=zero").Funcs(placeholderFuncMap()).Parse(meta.Body); tmplErr != nil {
 				return fmt.Errorf("template parse %s: %w", path, tmplErr)
 			}
 
@@ -185,6 +188,9 @@ func (e *Engine) Load(embedded fs.FS, diskDir string) error {
 // Render executes the named skill template with the provided SkillData.
 // data.RelatedSkills is populated from engine metadata before rendering.
 // Template panics are caught and returned as errors rather than crashing.
+//
+// The cached template set (compiled once at Load time) is cloned per-render so
+// that per-call FuncMap values can be injected without re-parsing template bodies.
 func (e *Engine) Render(name string, data *SkillData) (out string, renderErr error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -206,17 +212,15 @@ func (e *Engine) Render(name string, data *SkillData) (out string, renderErr err
 	}
 	data.RelatedSkills = related
 
-	// Build a fresh template set per-render.
-	// Option("missingkey=zero") is set on every individual named template because
-	// text/template checks the option on the specific template being executed, not the root.
-	// Funcs must be called before Parse, so we chain: New(slug).Option(...).Funcs(...).Parse(body).
+	// Clone the pre-compiled template set and inject per-render funcs.
+	// Cloning copies the parsed AST without re-parsing; Funcs() replaces the
+	// placeholder functions that were installed at Load() time.
 	funcMap := SkillFuncMap(data)
-	set := template.New("").Funcs(funcMap) // root anchor (never executed)
-	for slug, sm := range e.skills {
-		if _, parseErr := set.New(slug).Option("missingkey=zero").Funcs(funcMap).Parse(sm.Body); parseErr != nil {
-			return "", fmt.Errorf("re-parse skill %q: %w", slug, parseErr)
-		}
+	set, cloneErr := e.templates.Clone()
+	if cloneErr != nil {
+		return "", fmt.Errorf("clone template set: %w", cloneErr)
 	}
+	set.Funcs(funcMap)
 
 	// Recover from panics produced by invalid template actions (e.g. {{call .BadFunc}}).
 	defer func() {

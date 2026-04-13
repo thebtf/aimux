@@ -14,18 +14,19 @@ import (
 
 // Agent represents a discovered agent definition.
 type Agent struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Role        string            `json:"role,omitempty" yaml:"role,omitempty"`
-	Model       string            `json:"model,omitempty" yaml:"model,omitempty"`
-	Effort      string            `json:"effort,omitempty" yaml:"effort,omitempty"`
-	Timeout     int               `json:"timeout,omitempty" yaml:"timeout,omitempty"`
-	Domain      string            `json:"domain,omitempty"`
-	Source      string            `json:"source"` // file path or source identifier
-	Content     string            `json:"content,omitempty"`
-	Tools       []string          `json:"tools,omitempty"`
-	MaxTurns    int               `json:"max_turns,omitempty"`
-	Meta        map[string]string `json:"meta,omitempty"`
+	Name          string            `json:"name"`
+	Description   string            `json:"description,omitempty"`
+	Role          string            `json:"role,omitempty" yaml:"role,omitempty"`
+	Model         string            `json:"model,omitempty" yaml:"model,omitempty"`
+	Effort        string            `json:"effort,omitempty" yaml:"effort,omitempty"`
+	Timeout       int               `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Domain        string            `json:"domain,omitempty"`
+	Source        string            `json:"source"` // file path or source identifier
+	Content       string            `json:"content,omitempty"`
+	ContentPrefix string            `json:"-"` // first 200 runes of Content, pre-computed at registration
+	Tools         []string          `json:"tools,omitempty"`
+	MaxTurns      int               `json:"max_turns,omitempty"`
+	Meta          map[string]string `json:"meta,omitempty"`
 }
 
 // Registry discovers and manages agents from multiple sources.
@@ -170,10 +171,12 @@ func (r *Registry) scanPluginDir(dir, pluginName, pluginVersion, agentNamePrefix
 
 		baseName := strings.TrimSuffix(entry.Name(), ".md")
 		fullName := agentNamePrefix + baseName
+		contentStr := string(content)
 		agent := &Agent{
-			Name:    fullName,
-			Source:  path,
-			Content: string(content),
+			Name:          fullName,
+			Source:        path,
+			Content:       contentStr,
+			ContentPrefix: computeContentPrefix(contentStr),
 			Meta: map[string]string{
 				"source_type":    "plugin",
 				"plugin":         pluginName,
@@ -182,7 +185,7 @@ func (r *Registry) scanPluginDir(dir, pluginName, pluginVersion, agentNamePrefix
 		}
 
 		// Parse YAML frontmatter if present
-		parseFrontmatter(agent, string(content))
+		parseFrontmatter(agent, contentStr)
 
 		r.mu.Lock()
 		r.agents[fullName] = agent
@@ -191,12 +194,15 @@ func (r *Registry) scanPluginDir(dir, pluginName, pluginVersion, agentNamePrefix
 }
 
 // scanDir reads all .md files in a directory as agent definitions.
+// Agents are collected into a local map first, then inserted with a single lock
+// acquisition to reduce contention during bulk discovery.
 func (r *Registry) scanDir(dir, source string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return // directory doesn't exist — skip silently
 	}
 
+	local := make(map[string]*Agent)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -209,20 +215,30 @@ func (r *Registry) scanDir(dir, source string) {
 		}
 
 		name := strings.TrimSuffix(entry.Name(), ".md")
+		contentStr := string(content)
 		agent := &Agent{
-			Name:    name,
-			Source:  path,
-			Content: string(content),
-			Meta:    map[string]string{"source_type": source},
+			Name:          name,
+			Source:        path,
+			Content:       contentStr,
+			ContentPrefix: computeContentPrefix(contentStr),
+			Meta:          map[string]string{"source_type": source},
 		}
 
 		// Parse YAML frontmatter if present
-		parseFrontmatter(agent, string(content))
+		parseFrontmatter(agent, contentStr)
 
-		r.mu.Lock()
-		r.agents[name] = agent
-		r.mu.Unlock()
+		local[name] = agent
 	}
+
+	if len(local) == 0 {
+		return
+	}
+
+	r.mu.Lock()
+	for name, agent := range local {
+		r.agents[name] = agent
+	}
+	r.mu.Unlock()
 }
 
 // Get returns an agent by name.
@@ -258,21 +274,12 @@ func (r *Registry) Find(query string) []*Agent {
 	var matches []*Agent
 
 	for _, a := range r.agents {
-		// Search content prefix (first ~200 runes) to avoid scanning huge files
-		contentPrefix := a.Content
-		if len(contentPrefix) > 200 {
-			// Truncate at rune boundary to avoid splitting multi-byte chars
-			runes := []rune(contentPrefix)
-			if len(runes) > 200 {
-				contentPrefix = string(runes[:200])
-			}
-		}
-
+		// Use pre-computed ContentPrefix (first 200 runes, set at registration).
 		if strings.Contains(strings.ToLower(a.Name), query) ||
 			strings.Contains(strings.ToLower(a.Description), query) ||
 			strings.Contains(strings.ToLower(a.Domain), query) ||
 			strings.Contains(strings.ToLower(a.Role), query) ||
-			strings.Contains(strings.ToLower(contentPrefix), query) {
+			strings.Contains(strings.ToLower(a.ContentPrefix), query) {
 			matches = append(matches, a)
 		}
 	}
@@ -281,10 +288,24 @@ func (r *Registry) Find(query string) []*Agent {
 }
 
 // Register manually adds an agent (for built-in agents).
+// ContentPrefix is computed here if not already set.
 func (r *Registry) Register(agent *Agent) {
+	if agent.ContentPrefix == "" && agent.Content != "" {
+		agent.ContentPrefix = computeContentPrefix(agent.Content)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.agents[agent.Name] = agent
+}
+
+// computeContentPrefix returns the first 200 runes of content as a string.
+// Pre-computed at registration to avoid per-call []rune allocation during scoring.
+func computeContentPrefix(content string) string {
+	runes := []rune(content)
+	if len(runes) <= 200 {
+		return content
+	}
+	return string(runes[:200])
 }
 
 // parseFrontmatter extracts YAML frontmatter fields from agent content.

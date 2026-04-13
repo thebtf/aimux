@@ -51,7 +51,7 @@ func BuildPromptArgs(profile *config.CLIProfile, model, effort string, readOnly 
 
 	if effort != "" && profile.Reasoning != nil {
 		if profile.Reasoning.FlagValueTemplate != "" {
-			val := strings.ReplaceAll(profile.Reasoning.FlagValueTemplate, "%s", effort)
+			val := strings.ReplaceAll(profile.Reasoning.FlagValueTemplate, "{{.Level}}", effort)
 			args = append(args, profile.Reasoning.Flag, val)
 		} else {
 			args = append(args, profile.Reasoning.Flag, effort)

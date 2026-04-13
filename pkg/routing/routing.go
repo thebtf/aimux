@@ -39,9 +39,10 @@ var AdvisoryRoles = map[string]bool{
 
 // Router resolves roles to CLI preferences.
 type Router struct {
-	defaults    map[string]types.RolePreference
-	enabledCLIs map[string]bool
-	profiles    map[string]*config.CLIProfile
+	defaults        map[string]types.RolePreference
+	enabledCLIs     map[string]bool
+	enabledCLIsSorted []string // sorted slice for deterministic fallback iteration
+	profiles        map[string]*config.CLIProfile
 }
 
 // NewRouter creates a router with configured defaults and enabled CLIs.
@@ -51,15 +52,21 @@ func NewRouter(defaults map[string]types.RolePreference, enabledCLIs []string) *
 		enabled[cli] = true
 	}
 
+	// Sort once at construction so fallback iteration is deterministic.
+	sorted := make([]string, len(enabledCLIs))
+	copy(sorted, enabledCLIs)
+	sort.Strings(sorted)
+
 	return &Router{
-		defaults:    defaults,
-		enabledCLIs: enabled,
+		defaults:          defaults,
+		enabledCLIs:       enabled,
+		enabledCLIsSorted: sorted,
 	}
 }
 
 // NewRouterWithProfiles creates a router that can use capability-based fallback.
 func NewRouterWithProfiles(defaults map[string]types.RolePreference, enabledCLIs []string, profiles map[string]*config.CLIProfile) *Router {
-	r := NewRouter(defaults, enabledCLIs)
+	r := NewRouter(defaults, enabledCLIs) // sorted slice set by NewRouter
 	r.profiles = profiles
 	return r
 }
@@ -88,8 +95,8 @@ func (r *Router) Resolve(role string) (types.RolePreference, error) {
 		}
 	}
 
-	// Fallback: first enabled CLI
-	for cli := range r.enabledCLIs {
+	// Fallback: first enabled CLI in sorted order for deterministic behavior.
+	for _, cli := range r.enabledCLIsSorted {
 		return types.RolePreference{CLI: cli}, nil
 	}
 
@@ -125,13 +132,13 @@ func (r *Router) ResolveWithFallback(role string) []types.RolePreference {
 	}
 
 	var fallbacks []candidate
-	for cli := range r.enabledCLIs {
+	for _, cli := range r.enabledCLIsSorted {
 		if cli == primary.CLI {
 			continue // will be prepended as primary
 		}
 		hasCapability := r.cliHasCapability(cli, role)
 		fallbacks = append(fallbacks, candidate{
-			pref:         types.RolePreference{CLI: cli},
+			pref:          types.RolePreference{CLI: cli},
 			hasCapability: hasCapability,
 		})
 	}

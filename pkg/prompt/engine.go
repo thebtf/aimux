@@ -4,6 +4,7 @@ package prompt
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,9 @@ func (e *Engine) Load() error {
 			}
 
 			tmplName := strings.TrimSuffix(strings.TrimSuffix(name, ".md"), ".txt")
+			if _, exists := e.templates[tmplName]; exists {
+				log.Printf("[aimux:prompt] template name collision: %q overwritten by %s", tmplName, path)
+			}
 			e.templates[tmplName] = &Template{
 				Name:    tmplName,
 				Content: string(content),

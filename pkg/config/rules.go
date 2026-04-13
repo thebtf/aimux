@@ -89,23 +89,29 @@ func loadStubRulesFile(path string) (*StubDetectionConfig, error) {
 // mergeStubRules merges project overrides into built-in config.
 // Project rules with matching ID override the built-in rule.
 // New project rules are appended.
+// A copy of builtin is returned — the original is never mutated.
 func mergeStubRules(builtin, project *StubDetectionConfig) *StubDetectionConfig {
+	merged := &StubDetectionConfig{
+		Rules:              append([]StubRule{}, builtin.Rules...),
+		AdditionalPatterns: append([]string{}, builtin.AdditionalPatterns...),
+	}
+
 	ruleMap := make(map[string]int)
-	for i, r := range builtin.Rules {
+	for i, r := range merged.Rules {
 		ruleMap[r.ID] = i
 	}
 
 	for _, pr := range project.Rules {
 		if idx, ok := ruleMap[pr.ID]; ok {
-			builtin.Rules[idx] = pr // override
+			merged.Rules[idx] = pr // override
 		} else {
-			builtin.Rules = append(builtin.Rules, pr) // append new
+			merged.Rules = append(merged.Rules, pr) // append new
 		}
 	}
 
 	if len(project.AdditionalPatterns) > 0 {
-		builtin.AdditionalPatterns = append(builtin.AdditionalPatterns, project.AdditionalPatterns...)
+		merged.AdditionalPatterns = append(merged.AdditionalPatterns, project.AdditionalPatterns...)
 	}
 
-	return builtin
+	return merged
 }
