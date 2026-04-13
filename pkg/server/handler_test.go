@@ -518,6 +518,172 @@ func TestHandleThink_MissingPattern(t *testing.T) {
 	}
 }
 
+// --- T032: Guidance Compatibility ---
+// These tests verify the guidance envelope contract:
+//   - Guided tools (investigate, think) still accept the same input parameters they
+//     accepted before the guidance layer was introduced.
+//   - Non-guided tools (exec, status, sessions) return flat results with no envelope.
+//   - The guidance envelope does not leak "state"/"result" wrapper keys into
+//     non-guided tool responses.
+
+// TestGuidedTool_Investigate_AcceptsInputParameters verifies that the investigate
+// handler accepts its documented input parameters after guidance was introduced.
+// Regression guard: guidance wrapping must not break the handler input contract.
+func TestGuidedTool_Investigate_AcceptsInputParameters(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "start",
+		"topic":  "compat regression check",
+		"domain": "debugging",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+
+	data := parseResult(t, result)
+	// Envelope must be present.
+	if data["state"] == nil {
+		t.Error("guided investigate response must have state field")
+	}
+	if data["result"] == nil {
+		t.Error("guided investigate response must have result field")
+	}
+	// Input parameters must have been accepted — session_id is created from topic.
+	inner, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("investigate result must be a map, got %T", data["result"])
+	}
+	if inner["session_id"] == nil {
+		t.Error("investigate start must return result.session_id")
+	}
+	if inner["topic"] != "compat regression check" {
+		t.Errorf("result.topic = %v, want 'compat regression check'", inner["topic"])
+	}
+}
+
+// TestGuidedTool_Think_AcceptsInputParameters verifies that the think handler accepts
+// its documented input parameters after guidance wrapping was introduced.
+func TestGuidedTool_Think_AcceptsInputParameters(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("think", map[string]any{
+		"pattern": "decision_framework",
+		"decision": "switch to event sourcing",
+	})
+
+	result, err := srv.handleThink(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleThink: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+
+	data := parseResult(t, result)
+	if data["state"] == nil {
+		t.Error("guided think response must have state field")
+	}
+	inner, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("think result must be a map, got %T", data["result"])
+	}
+	if inner["pattern"] != "decision_framework" {
+		t.Errorf("result.pattern = %v, want decision_framework", inner["pattern"])
+	}
+}
+
+// TestNonGuidedTool_Exec_ReturnsFlatResult verifies that exec returns a flat
+// result with no guidance envelope wrapper keys (state, result nesting).
+func TestNonGuidedTool_Exec_ReturnsFlatResult(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("exec", map[string]any{
+		"prompt": "flat result check",
+		"cli":    "codex",
+		"async":  true,
+	})
+
+	result, err := srv.handleExec(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleExec: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	data := parseResult(t, result)
+	// exec must have a flat job_id/status — not nested under "result".
+	if data["job_id"] == nil {
+		t.Error("exec async must have top-level job_id")
+	}
+	if data["status"] == nil {
+		t.Error("exec async must have top-level status")
+	}
+	// Guidance envelope keys must not leak into exec responses.
+	if data["state"] != nil {
+		t.Errorf("exec must not have guidance state key, got: %v", data["state"])
+	}
+	if _, hasResultKey := data["result"]; hasResultKey {
+		t.Error("exec must not wrap payload in a guidance result envelope")
+	}
+}
+
+// TestNonGuidedTool_Status_ReturnsFlatResult verifies that status returns a flat
+// result with no guidance envelope leakage.
+func TestNonGuidedTool_Status_ReturnsFlatResult(t *testing.T) {
+	srv := testServer(t)
+
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 0)
+	srv.jobs.CompleteJob(job.ID, "output", 0)
+
+	req := makeRequest("status", map[string]any{"job_id": job.ID})
+	result, err := srv.handleStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["status"] != "completed" {
+		t.Errorf("status = %v, want completed", data["status"])
+	}
+	// Guidance envelope must not appear in status response.
+	if data["state"] != nil {
+		t.Errorf("status must not have guidance state key, got: %v", data["state"])
+	}
+	if _, hasResultKey := data["result"]; hasResultKey {
+		t.Error("status must not wrap payload in a guidance result envelope")
+	}
+}
+
+// TestNonGuidedTool_Sessions_ReturnsFlatResult verifies that the sessions health
+// action returns a flat result with no guidance envelope leakage.
+func TestNonGuidedTool_Sessions_ReturnsFlatResult(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{"action": "health"})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["total_sessions"] == nil {
+		t.Error("sessions health must have total_sessions")
+	}
+	// Guidance envelope must not appear in sessions response.
+	if data["state"] != nil {
+		t.Errorf("sessions must not have guidance state key, got: %v", data["state"])
+	}
+	if _, hasResultKey := data["result"]; hasResultKey {
+		t.Error("sessions must not wrap payload in a guidance result envelope")
+	}
+}
+
 // --- Consensus Handler ---
 
 func TestHandleConsensus_MissingPrompt(t *testing.T) {

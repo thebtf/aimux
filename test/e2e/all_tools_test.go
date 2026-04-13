@@ -935,3 +935,76 @@ func TestE2E_StatefulToolDescriptions_ContainExamples(t *testing.T) {
 		})
 	}
 }
+
+// T033 — Guided tool matrix sweep.
+//
+// For each guided tool (investigate, think) calls the tool via MCP and verifies:
+//  1. The response contains top-level "state" and "result" guidance envelope keys.
+//  2. The "state" value is tool-specific (not the generic "guidance_not_implemented" fallback).
+//  3. The "result" payload contains the expected domain fields for that tool.
+//
+// Consensus / debate / dialog are skipped when fewer than 2 CLIs are available because
+// they require multi-model dispatch which fails in the single-CLI test environment.
+func TestE2E_GuidedToolMatrix(t *testing.T) {
+	type guidedCase struct {
+		tool        string
+		args        map[string]any
+		wantState   string // exact state value expected; empty = any non-generic value
+		resultField string // a field that must exist inside the nested result payload
+	}
+
+	cases := []guidedCase{
+		{
+			tool: "investigate",
+			args: map[string]any{
+				"action": "start",
+				"topic":  "matrix sweep test topic",
+			},
+			wantState:   "gathering",
+			resultField: "session_id",
+		},
+		{
+			tool: "think",
+			args: map[string]any{
+				"pattern": "critical_thinking",
+				"issue":   "matrix sweep think test",
+			},
+			wantState:   "complete",
+			resultField: "pattern",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.tool, func(t *testing.T) {
+			resp := initAndCall(t, tc.tool, tc.args)
+			data := extractToolJSON(t, resp)
+
+			// AC1: guidance envelope keys must be present.
+			state, hasState := data["state"].(string)
+			if !hasState || state == "" {
+				t.Errorf("%s: response missing top-level state field; got %v", tc.tool, data["state"])
+			}
+			if _, hasResult := data["result"]; !hasResult {
+				t.Errorf("%s: response missing top-level result field", tc.tool)
+			}
+
+			// AC2: state must be tool-specific, not the generic fallback.
+			if state == "guidance_not_implemented" {
+				t.Errorf("%s: state = %q is the generic fallback — tool policy not registered", tc.tool, state)
+			}
+			if tc.wantState != "" && state != tc.wantState {
+				t.Errorf("%s: state = %q, want %q", tc.tool, state, tc.wantState)
+			}
+
+			// AC3: result payload must contain the expected domain field.
+			inner, ok := data["result"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s: result is %T, want map[string]any", tc.tool, data["result"])
+			}
+			if inner[tc.resultField] == nil {
+				t.Errorf("%s: result.%s missing; full result: %v", tc.tool, tc.resultField, inner)
+			}
+		})
+	}
+}
