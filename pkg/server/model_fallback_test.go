@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -286,6 +288,78 @@ func TestModelFallback_NoFallbackConfig_ExistingBehavior(t *testing.T) {
 	// Exactly one executor call — no model-fallback iteration.
 	if callCount.Load() != 1 {
 		t.Errorf("executor call count = %d, want 1 (no fallback chain)", callCount.Load())
+	}
+}
+
+// --- T013: TestModelFallback_ExecHandler_RateLimitTriggersFallback ---
+
+// TestModelFallback_ExecHandler_RateLimitTriggersFallback is an end-to-end handler test.
+// It exercises handleExec → executeJob → runWithModelFallback with a rate limit on the
+// primary model, verifying the fallback model produces the successful result.
+func TestModelFallback_ExecHandler_RateLimitTriggersFallback(t *testing.T) {
+	srv := testServer(t)
+
+	// Configure codex profile with model fallback chain.
+	profile, err := srv.registry.Get("codex")
+	if err != nil {
+		t.Skipf("codex profile not available: %v", err)
+	}
+	profile.ModelFallback = []string{"spark", "default"}
+	profile.CooldownSeconds = 60
+	profile.ModelFlag = "-m"
+
+	var mu sync.Mutex
+	var calls []string
+	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+		model := modelFromArgs(args.Args)
+		mu.Lock()
+		calls = append(calls, model)
+		mu.Unlock()
+		if model == "spark" {
+			return &types.Result{Content: "You've hit your usage limit", ExitCode: 1}, nil
+		}
+		return &types.Result{Content: "success from default", ExitCode: 0}, nil
+	}}
+
+	req := makeRequest("exec", map[string]any{
+		"prompt": "test fallback",
+		"cli":    "codex",
+		"async":  true,
+	})
+	result, execErr := srv.handleExec(context.Background(), req)
+	if execErr != nil {
+		t.Fatalf("handleExec: %v", execErr)
+	}
+	data := parseResult(t, result)
+	jobID, _ := data["job_id"].(string)
+	if jobID == "" {
+		t.Fatal("missing job_id")
+	}
+
+	waitJobDone(t, srv, jobID, 5*time.Second)
+
+	j := srv.jobs.GetSnapshot(jobID)
+	if j == nil {
+		t.Fatal("job not found")
+	}
+	if j.Status != types.JobStatusCompleted {
+		t.Errorf("job status = %v, want completed; content = %s; error = %v", j.Status, j.Content, j.Error)
+	}
+	if !strings.Contains(j.Content, "success from default") {
+		t.Errorf("content = %q, want fallback model output", j.Content)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) < 2 {
+		t.Fatalf("expected 2+ calls (spark → default), got %d: %v", len(calls), calls)
+	}
+	if calls[0] != "spark" {
+		t.Errorf("first call model = %q, want spark", calls[0])
+	}
+	// Verify spark is on cooldown after the rate limit.
+	if srv.cooldownTracker.IsAvailable("codex", "spark") {
+		t.Error("spark should be on cooldown after quota error")
 	}
 }
 
