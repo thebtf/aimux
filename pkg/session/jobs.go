@@ -84,6 +84,21 @@ func (m *JobManager) Create(sessionID, cli string) *Job {
 	return j
 }
 
+// UpdateJobFields applies a mutation function to a job under the write lock.
+// Used by WAL recovery to update status/content without exposing the raw pointer.
+// Returns false if the job does not exist.
+func (m *JobManager) UpdateJobFields(id string, fn func(*Job)) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	j, ok := m.jobs[id]
+	if !ok {
+		return false
+	}
+	fn(j)
+	return true
+}
+
 // Import inserts a job from recovery (WAL replay). Thread-safe.
 func (m *JobManager) Import(j *Job) {
 	m.mu.Lock()
@@ -332,6 +347,22 @@ func (m *JobManager) ListBySessionSnapshot(sessionID string) []*Job {
 	for _, j := range m.jobs {
 		if j.SessionID == sessionID {
 			result = append(result, cloneJob(j))
+		}
+	}
+	return result
+}
+
+// ListNonTerminal returns all jobs that are not yet in a terminal state
+// (i.e. Created, Running, or Completing). Used by SnapshotAll to ensure
+// in-flight jobs survive process restarts.
+func (m *JobManager) ListNonTerminal() []*Job {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []*Job
+	for _, j := range m.jobs {
+		if j.Status != types.JobStatusCompleted && j.Status != types.JobStatusFailed {
+			result = append(result, j)
 		}
 	}
 	return result

@@ -68,14 +68,14 @@ func RecoverFromWAL(walPath string, sessions *Registry, jobs *JobManager) error 
 			if err := json.Unmarshal(entry.Data, &update); err != nil {
 				continue
 			}
-			if j := jobs.Get(entry.ID); j != nil {
+			jobs.UpdateJobFields(entry.ID, func(j *Job) {
 				if update.Status != "" {
 					j.Status = update.Status
 				}
 				if update.Content != "" {
 					j.Content = update.Content
 				}
-			}
+			})
 		}
 	}
 

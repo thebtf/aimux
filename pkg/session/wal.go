@@ -110,18 +110,45 @@ func (w *WAL) Close() error {
 }
 
 // Truncate clears the WAL after a successful SQLite snapshot.
-// Reopens the file to work around O_APPEND semantics on Windows.
+// Uses a write-then-rename sequence so the WAL is never in a partially-empty
+// state if the process dies mid-truncation.
 func (w *WAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	name := w.file.Name()
+	dir := filepath.Dir(name)
+
+	// Write an empty temp file in the same directory so os.Rename is atomic
+	// (same filesystem, POSIX rename guarantee).
+	tmp, err := os.CreateTemp(dir, "wal-trunc-*.tmp")
+	if err != nil {
+		return fmt.Errorf("truncate WAL (create temp): %w", err)
+	}
+	tmpName := tmp.Name()
+
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("truncate WAL (close temp): %w", err)
+	}
+
+	// Close the old file handle BEFORE rename — Windows holds file locks.
 	w.file.Close()
 
-	// Rewrite as empty file
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_APPEND|os.O_WRONLY, 0o644)
+	// Rename temp over the live WAL — atomic on POSIX, best-effort on Windows.
+	if err := os.Rename(tmpName, name); err != nil {
+		os.Remove(tmpName)
+		// Reopen the original file even on rename failure.
+		var reopenErr error
+		w.file, reopenErr = os.OpenFile(name, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if reopenErr != nil {
+			return fmt.Errorf("truncate WAL (rename failed: %v, reopen also failed: %w)", err, reopenErr)
+		}
+		return fmt.Errorf("truncate WAL (rename): %w", err)
+	}
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		return fmt.Errorf("truncate WAL: %w", err)
+		return fmt.Errorf("truncate WAL (reopen): %w", err)
 	}
 	w.file = f
 	return nil
