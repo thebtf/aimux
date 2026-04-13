@@ -49,6 +49,10 @@ timeout_seconds: 3600
 # Stdin piping threshold (chars)
 stdin_threshold: 6000
 
+# Codex exec requires "-" as a positional arg to read prompt from stdin.
+# Without it, codex exec ignores stdin and exits with error code 2.
+stdin_sentinel: "-"
+
 # Completion pattern for early termination
 completion_pattern: "turn\\.completed"
 

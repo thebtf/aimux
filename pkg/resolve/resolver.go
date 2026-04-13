@@ -32,7 +32,18 @@ func (r *ProfileResolver) ResolveSpawnArgsWithOpts(cli string, prompt string, mo
 		return types.SpawnArgs{}, fmt.Errorf("CLI %q not configured", cli)
 	}
 
-	args := BuildPromptArgs(profile, model, effort, false, prompt)
+	// Always pipe prompt via stdin to avoid Windows 8191 char command line limit,
+	// shell escaping issues, and dual code paths. All supported CLIs accept stdin.
+	// Build args without prompt; prompt goes in SpawnArgs.Stdin.
+	args := BuildPromptArgs(profile, model, effort, false, "")
+
+	// Codex CLI requires an explicit "-" sentinel as a positional argument to
+	// signal that the prompt should be read from stdin. Without it, codex exec
+	// ignores stdin and exits with an error. Other CLIs (Gemini, Aider, etc.)
+	// read stdin directly and do not need the sentinel.
+	if profile.StdinSentinel != "" {
+		args = append(args, profile.StdinSentinel)
+	}
 
 	// Use resolved full path if available (found outside PATH by discovery)
 	command := CommandBinary(profile.Command.Base)
@@ -40,18 +51,11 @@ func (r *ProfileResolver) ResolveSpawnArgsWithOpts(cli string, prompt string, mo
 		command = profile.ResolvedPath
 	}
 
-	sa := types.SpawnArgs{
+	return types.SpawnArgs{
 		CLI:               cli,
 		Command:           command,
 		Args:              args,
+		Stdin:             prompt,
 		CompletionPattern: profile.CompletionPattern,
-	}
-
-	// Stdin piping for long prompts (Windows 8191 char limit)
-	if profile.StdinThreshold > 0 && len(prompt) > profile.StdinThreshold {
-		sa.Stdin = prompt
-		sa.Args = BuildPromptArgs(profile, model, effort, false, "")
-	}
-
-	return sa, nil
+	}, nil
 }
