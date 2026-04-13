@@ -65,9 +65,14 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 	defer ptmx.Close()
 
-	// Write stdin via PTY
+	// Write stdin via PTY (context-aware to avoid leaking goroutine)
 	if args.Stdin != "" {
 		go func() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			ptmx.Write([]byte(args.Stdin))
 			ptmx.Write([]byte{4}) // EOT
 		}()
