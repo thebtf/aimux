@@ -490,12 +490,17 @@ func TestHandleThink_Basic(t *testing.T) {
 		t.Fatalf("handleThink: %v", err)
 	}
 
+	// handleThink now returns a guided envelope; raw fields are nested under result.
 	data := parseResult(t, result)
-	if data["pattern"] != "critical_thinking" {
-		t.Errorf("pattern = %v, want critical_thinking", data["pattern"])
+	resultPayload, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result payload under result key, got %T", data["result"])
 	}
-	if data["mode"] != "solo" {
-		t.Errorf("mode = %v, want solo", data["mode"])
+	if resultPayload["pattern"] != "critical_thinking" {
+		t.Errorf("result.pattern = %v, want critical_thinking", resultPayload["pattern"])
+	}
+	if resultPayload["mode"] != "solo" {
+		t.Errorf("result.mode = %v, want solo", resultPayload["mode"])
 	}
 }
 
