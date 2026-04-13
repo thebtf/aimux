@@ -31,8 +31,10 @@ command:
 prompt_flag: ""
 prompt_flag_type: "positional"
 
-# Default model (passed via -m when input.model not set)
-default_model: ""
+# Default model (passed via -m when input.model not set).
+# Must be set for suffix-strip fallback to work — fallback needs to know
+# the current model name to strip the suffix and try the base model.
+default_model: "gpt-5.3-codex-spark"
 
 # Model flag
 model_flag: "-m"
