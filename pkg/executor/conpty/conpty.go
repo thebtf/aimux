@@ -7,17 +7,49 @@
 package conpty
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+const stderrCapBytes = 64 * 1024
+
+// cappedBuffer is an io.Writer that discards writes once the cap is reached.
+// Used to drain stderr without unbounded memory growth.
+type cappedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	cap int
+}
+
+func (cb *cappedBuffer) Write(p []byte) (int, error) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	remaining := cb.cap - cb.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	return cb.buf.Write(p)
+}
+
+func (cb *cappedBuffer) String() string {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.buf.String()
+}
 
 // Executor spawns CLI processes via Windows ConPTY for unbuffered text output.
 // On Windows, processes see a TTY → line-buffered output without --json overhead.
@@ -75,6 +107,18 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 	defer executor.SharedPM.Cleanup(handle)
 
+	// T003: drain stderr into a capped buffer in the background.
+	// ProcessManager.Spawn() always creates a stderr pipe. If the subprocess
+	// writes >64KB to stderr, the OS pipe buffer fills and the subprocess blocks.
+	// Note: when a true CreatePseudoConsole implementation is added, stderr will
+	// merge onto the console output pipe and this goroutine will drain an empty pipe.
+	stderrBuf := &cappedBuffer{cap: stderrCapBytes}
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		io.Copy(stderrBuf, handle.Stderr) //nolint:errcheck // drain only
+	}()
+
 	// Data plane (IOManager strips ANSI per line — no need for pipeline.StripANSI here)
 	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern, args.OnOutput)
 	iom.StreamLines()
@@ -89,6 +133,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	select {
 	case waitErr := <-handle.Done:
 		iom.Drain(1 * time.Second)
+		<-stderrDone
 		content := iom.Collect()
 		exitCode := 0
 		if waitErr != nil {
@@ -99,19 +144,21 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 					fmt.Sprintf("%s failed", args.Command), waitErr, content)
 			}
 		}
-		return &types.Result{Content: content, ExitCode: exitCode, DurationMS: time.Since(start).Milliseconds()}, nil
+		return &types.Result{Content: content, Stderr: stderrBuf.String(), ExitCode: exitCode, DurationMS: time.Since(start).Milliseconds()}, nil
 
 	case <-iom.PatternMatched():
 		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
-		return &types.Result{Content: iom.Collect(), ExitCode: 0, DurationMS: time.Since(start).Milliseconds()}, nil
+		<-stderrDone
+		return &types.Result{Content: iom.Collect(), Stderr: stderrBuf.String(), ExitCode: 0, DurationMS: time.Since(start).Milliseconds()}, nil
 
 	case <-timerC:
 		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
+		<-stderrDone
 		content := iom.Collect()
 		return &types.Result{
-			Content: content, ExitCode: 124, Partial: true,
+			Content: content, Stderr: stderrBuf.String(), ExitCode: 124, Partial: true,
 			DurationMS: time.Since(start).Milliseconds(),
 			Error: types.NewTimeoutError(fmt.Sprintf("ConPTY timed out after %ds", args.TimeoutSeconds), content),
 		}, nil
@@ -119,9 +166,10 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	case <-ctx.Done():
 		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
+		<-stderrDone
 		content := iom.Collect()
 		return &types.Result{
-			Content: content, ExitCode: 130, Partial: true,
+			Content: content, Stderr: stderrBuf.String(), ExitCode: 130, Partial: true,
 			DurationMS: time.Since(start).Milliseconds(),
 			Error: types.NewExecutorError("ConPTY cancelled", ctx.Err(), content),
 		}, nil
@@ -132,6 +180,11 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 // Persistent sessions (multi-turn, stateful) are handled by the Pipe executor,
 // which manages process lifecycle and stdin/stdout independently.
 // ConPTY executor is designed for single-shot Run() calls with unbuffered output.
+//
+// T003 note: ConPTY merges stdout and stderr onto a single pseudo-console output
+// pipe by design (Windows CreatePseudoConsole API behavior). There is no
+// separate stderr stream to drain — all subprocess output (including stderr)
+// flows through handle.Stdout and is captured by IOManager.
 func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
 	if !e.available {
 		return nil, types.NewExecutorError("ConPTY not available on this platform", nil, "")
