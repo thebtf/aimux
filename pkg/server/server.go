@@ -305,6 +305,9 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	if err := s.guidanceReg.Register(policies.NewInvestigatePolicy()); err != nil {
 		log.Warn("guidance: failed to register investigate policy: %v", err)
 	}
+	if err := s.guidanceReg.Register(policies.NewThinkPolicy()); err != nil {
+		log.Warn("guidance: failed to register think policy: %v", err)
+	}
 
 	// Initialize hooks registry with built-in telemetry
 	s.hooks = hooks.NewRegistry()
@@ -2094,11 +2097,24 @@ func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (
 		response["computed_fields"] = thinkResult.ComputedFields
 	}
 
-	data, err := json.Marshal(response)
-	if err != nil {
-		return mcp.NewToolResultError("internal error: failed to marshal response"), nil
+	// Extract step number from result data so the policy can produce accurate state labels.
+	stepNumber := 0
+	if n, ok := thinkResult.Data["thoughtNumber"]; ok {
+		switch v := n.(type) {
+		case int:
+			stepNumber = v
+		case float64:
+			stepNumber = int(v)
+		}
 	}
-	return mcp.NewToolResultText(string(data)), nil
+
+	thinkState := &policies.ThinkPolicyInput{
+		Pattern:    patternName,
+		SessionID:  thinkResult.SessionID,
+		IsStateful: policies.IsStatefulPattern(patternName),
+		StepNumber: stepNumber,
+	}
+	return s.marshalGuidedToolResult("think", patternName, thinkState, response)
 }
 
 // --- Investigate Handler ---
