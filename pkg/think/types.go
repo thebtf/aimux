@@ -2,13 +2,18 @@
 // session state management, and complexity scoring for auto-consensus mode.
 package think
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // ThinkResult is the universal return type for all pattern handlers.
 type ThinkResult struct {
 	Pattern              string         `json:"pattern"`
 	Status               string         `json:"status"`
 	Timestamp            string         `json:"timestamp"`
+	Summary              string         `json:"summary,omitempty"`
 	Data                 map[string]any `json:"data"`
 	SessionID            string         `json:"session_id,omitempty"`
 	Metadata             map[string]any `json:"metadata,omitempty"`
@@ -97,4 +102,59 @@ func MakeErrorResult(pattern string, errMsg string) *ThinkResult {
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Data:      map[string]any{"error": errMsg},
 	}
+}
+
+// GenerateSummary builds a human-readable one-line summary from a ThinkResult.
+// If the result already has a Summary set by the pattern handler, it is returned as-is.
+func GenerateSummary(r *ThinkResult, mode string) string {
+	if r.Summary != "" {
+		return r.Summary
+	}
+	if r.Status == "failed" {
+		if errMsg, ok := r.Data["error"].(string); ok {
+			return fmt.Sprintf("[%s] Failed: %s", r.Pattern, errMsg)
+		}
+		return fmt.Sprintf("[%s] Failed", r.Pattern)
+	}
+
+	parts := []string{fmt.Sprintf("[%s]", r.Pattern)}
+
+	// Extract the most useful fields from data for a readable summary.
+	if suggested, ok := r.Data["suggestedPattern"].(string); ok && suggested != "" && suggested != r.Pattern {
+		parts = append(parts, fmt.Sprintf("Suggested pattern: %s.", suggested))
+	}
+	if decision, ok := r.Data["decision"].(string); ok && decision != "" {
+		parts = append(parts, truncate(decision, 80))
+	}
+	if conclusion, ok := r.Data["conclusion"].(string); ok && conclusion != "" {
+		parts = append(parts, truncate(conclusion, 80))
+	}
+	if recommendation, ok := r.Data["recommendation"].(string); ok && recommendation != "" {
+		parts = append(parts, truncate(recommendation, 80))
+	}
+	if thought, ok := r.Data["thought"].(string); ok && thought != "" && len(parts) == 1 {
+		parts = append(parts, truncate(thought, 100))
+	}
+
+	// Add keywords if present and summary is still short.
+	if keywords, ok := r.Data["keywords"].([]string); ok && len(keywords) > 0 && len(parts) <= 2 {
+		kw := keywords
+		if len(kw) > 5 {
+			kw = kw[:5]
+		}
+		parts = append(parts, fmt.Sprintf("Key: %s.", strings.Join(kw, ", ")))
+	}
+
+	if mode != "" {
+		parts = append(parts, fmt.Sprintf("Mode: %s.", mode))
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }

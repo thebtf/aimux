@@ -2096,9 +2096,11 @@ func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (
 	complexity := think.CalculateComplexity(patternName, input, 60)
 
 	// Build response with mode indicator
+	summary := think.GenerateSummary(thinkResult, complexity.Recommendation)
 	response := map[string]any{
 		"pattern":   thinkResult.Pattern,
 		"status":    thinkResult.Status,
+		"summary":   summary,
 		"timestamp": thinkResult.Timestamp,
 		"data":      thinkResult.Data,
 		"mode":      complexity.Recommendation,
