@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -12,6 +13,9 @@ const (
 	DefaultMaxTurnChars  = 20000
 	RecentTurnCount      = 2 // Number of recent turns to keep at full content
 )
+
+// reBlankCollapse matches three or more consecutive newlines for collapsing to two.
+var reBlankCollapse = regexp.MustCompile(`\n{3,}`)
 
 // ComputeDialogBudget takes context window sizes (in tokens) for each participant
 // and returns a budget in characters: min(contextWindows) * SafetyFactor * CharsPerToken.
@@ -51,9 +55,7 @@ func CompactTurnContent(content string, maxChars int) string {
 	result := strings.Join(trimmed, "\n")
 
 	// Collapse consecutive blank lines (3+ newlines -> 2 newlines)
-	for strings.Contains(result, "\n\n\n") {
-		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
-	}
+	result = reBlankCollapse.ReplaceAllString(result, "\n\n")
 
 	if len(result) <= maxChars {
 		return result

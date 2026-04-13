@@ -27,6 +27,7 @@ func (d *SequentialDialog) Name() string { return "dialog" }
 // Execute runs a sequential dialog: each participant responds in turn,
 // seeing all previous responses. Continues until max_turns or convergence.
 func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyParams) (*types.StrategyResult, error) {
+	// maxTurns is NEW turns only; prior turn count from history does not reduce the budget
 	maxTurns := params.MaxTurns
 	if maxTurns == 0 {
 		maxTurns = 6
@@ -52,6 +53,8 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 		}
 	}
 	totalTurns := len(history) // continue numbering from prior session
+
+	qg := NewQualityGate(0) // default max retries
 
 	for turn := 0; turn < maxTurns; turn++ {
 		for _, cli := range participants {
@@ -80,6 +83,16 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 					}, nil
 				}
 				return nil, fmt.Errorf("dialog turn %d (%s) failed: %w", totalTurns, cli, err)
+			}
+
+			// Quality gate: evaluate turn content; re-prompt once on low-quality output
+			if action := qg.Evaluate(cli, result.Content, "", 0); action == QualityRetry {
+				retryPrompt := buildDialogPromptWithContext(
+					params.Prompt+"\n\nYour previous response was below quality threshold. Please provide a substantive response.",
+					dialogCtx, cli, responseHint)
+				if retryResult, retryErr := d.executor.Run(ctx, resolveOrFallbackWithOpts(d.resolver, cli, retryPrompt, params.CWD, params.Timeout, params.Model, params.Effort)); retryErr == nil {
+					result = retryResult
+				}
 			}
 
 			history = append(history, turnEntry{

@@ -179,8 +179,8 @@ func (p *PairCoding) Execute(ctx context.Context, params types.StrategyParams) (
 // reviewHunks sends each hunk to the reviewer for validation.
 // Loads review-checklist.md from prompts.d/ if available (includes anti-stub rules).
 func (p *PairCoding) reviewHunks(ctx context.Context, hunks []DiffHunk, reviewerCLI string, params types.StrategyParams) ([]types.HunkReview, error) {
-	// Load review checklist from prompts.d/ (includes 7th criterion: Completeness/anti-stub)
-	checklist := loadReviewChecklist()
+	// Load review checklist from prompts.d/ relative to CWD (includes 7th criterion: Completeness/anti-stub)
+	checklist := loadReviewChecklist(params.CWD)
 
 	// Build review prompt with checklist + hunks
 	var sb strings.Builder
@@ -199,13 +199,14 @@ func (p *PairCoding) reviewHunks(ctx context.Context, hunks []DiffHunk, reviewer
 	// Parse review response
 	reviews, parseErr := parseReviewResponse(reviewResult.Content, len(hunks))
 	if parseErr != nil {
-		// If parsing fails, assume all approved (graceful degradation)
+		// Parsing failed — log raw response and request changes for safety
+		fmt.Printf("pair: reviewer parse failure: %v\nraw response:\n%s\n", parseErr, reviewResult.Content)
 		reviews = make([]types.HunkReview, len(hunks))
 		for i := range reviews {
 			reviews[i] = types.HunkReview{
 				HunkIndex: i,
-				Verdict:   types.ReviewApproved,
-				Comment:   "reviewer response unparseable — auto-approved",
+				Verdict:   types.ReviewChangesRequested,
+				Comment:   fmt.Sprintf("reviewer response unparseable (parse error: %v) — changes requested", parseErr),
 			}
 		}
 	}
@@ -290,20 +291,31 @@ func buildReprompt(originalPrompt string, reviews []types.HunkReview) string {
 }
 
 // loadReviewChecklist loads review-checklist.md from prompts.d/ directories.
+// cwd is the working directory of the current task; checklist is searched relative to it first.
 // Falls back to a minimal hardcoded checklist if file not found.
-func loadReviewChecklist() string {
-	// Search in common locations
-	searchPaths := []string{
-		"config/prompts.d/review-checklist.md",
-		filepath.Join("..", "config", "prompts.d", "review-checklist.md"),
+func loadReviewChecklist(cwd string) string {
+	// Build search paths: CWD-relative paths take priority, then AIMUX_CONFIG_DIR, then fallbacks
+	var searchPaths []string
+
+	if cwd != "" {
+		searchPaths = append(searchPaths,
+			filepath.Join(cwd, "config", "prompts.d", "review-checklist.md"),
+			filepath.Join(cwd, "prompts.d", "review-checklist.md"),
+		)
 	}
 
 	// Also check AIMUX_CONFIG_DIR
 	if configDir := os.Getenv("AIMUX_CONFIG_DIR"); configDir != "" {
-		searchPaths = append([]string{
+		searchPaths = append(searchPaths,
 			filepath.Join(configDir, "prompts.d", "review-checklist.md"),
-		}, searchPaths...)
+		)
 	}
+
+	// Static fallbacks (relative to process CWD — preserved for backward compat)
+	searchPaths = append(searchPaths,
+		"config/prompts.d/review-checklist.md",
+		filepath.Join("..", "config", "prompts.d", "review-checklist.md"),
+	)
 
 	for _, path := range searchPaths {
 		data, err := os.ReadFile(path)
