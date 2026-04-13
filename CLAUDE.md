@@ -29,14 +29,14 @@ go vet ./...                      # static analysis
 ```
 cmd/aimux/           — MCP server entry point (stdio/SSE/HTTP transport)
 cmd/testcli/         — 11 CLI emulators for e2e testing
-pkg/server/          — 13 MCP tool handlers + guidance integration
+pkg/server/          — 13 MCP tool handlers + guidance integration + stall detection + model fallback
 pkg/orchestrator/    — Multi-CLI strategies (consensus, debate, dialog, pair, audit, workflow)
-pkg/executor/        — Process executors (ConPTY, PTY, Pipe) + ProcessManager/IOManager
+pkg/executor/        — Process executors (ConPTY, PTY, Pipe) + ProcessManager/IOManager + error classification + model cooldown
 pkg/driver/          — CLI profile loading, registry, binary probe
 pkg/config/          — YAML configuration + transport config
 pkg/session/         — SQLite session/job persistence with WAL crash recovery
 pkg/guidance/        — Policy-driven response guidance (envelope, registry, builder)
-pkg/guidance/policies/ — Tool-specific guidance policies (investigate)
+pkg/guidance/policies/ — Tool-specific guidance policies (think, investigate, consensus, debate, dialog, workflow)
 pkg/investigate/     — Investigation sessions with finding chains and severity triage
 pkg/think/           — 23 structured reasoning patterns (stateful + stateless)
 pkg/agents/          — Agent registry with project/user discovery
@@ -65,7 +65,9 @@ Each CLI has a profile in `config/cli.d/{name}/profile.yaml` defining:
 - `binary` — executable name
 - `command.base` — full command template (may include subcommands)
 - `prompt_flag` — how prompt is passed (`-p`, `--message`, positional)
-- `stdin_threshold` — pipe via stdin above this char count
+- `stdin_sentinel` — positional arg for stdin mode (e.g. "-" for codex)
+- `model_fallback` — ordered list of models to try on quota errors
+- `cooldown_seconds` — per-model cooldown after rate limit
 - `completion_pattern` — regex to detect completion in stdout
 
 Supported: codex, gemini, claude, aider, goose, gptme, qwen, cline, crush, droid, opencode, continue (cn)
