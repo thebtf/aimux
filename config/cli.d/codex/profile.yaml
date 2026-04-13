@@ -43,11 +43,13 @@ reasoning:
   flag_value_template: 'model_reasoning_effort={{.Level}}'
   levels: [low, medium, high, xhigh]
 
-# Model fallback chain — on quota error (rate limit), try next model before switching CLI.
-# First entry is primary. Empty = no model fallback.
-model_fallback:
-  - gpt-5.3-codex-spark
-  - gpt-5.3-codex
+# Model fallback — on quota error (rate limit), try next model before switching CLI.
+# fallback_suffix_strip: dynamically strip these suffixes to generate fallback models.
+# E.g., "-spark" means gpt-X-codex-spark → gpt-X-codex (survives version upgrades).
+# model_fallback: explicit list (applied before suffix strip). Empty = suffix strip only.
+model_fallback: []
+fallback_suffix_strip:
+  - "-spark"
 
 # Cooldown duration (seconds) for rate-limited models. Default: 300 (5 min).
 cooldown_seconds: 300

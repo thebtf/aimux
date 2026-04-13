@@ -251,11 +251,14 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 	}
 
 	// T011: wire model-fallback chain from the resolved CLI profile.
-	if agentProfile, profileErr := s.registry.Get(cli); profileErr == nil && len(agentProfile.ModelFallback) > 0 {
-		runCfg.ModelFallback = agentProfile.ModelFallback
-		runCfg.ModelFlag = agentProfile.ModelFlag
-		runCfg.CooldownSeconds = agentProfile.CooldownSeconds
-		runCfg.CooldownTracker = s.cooldownTracker
+	if agentProfile, profileErr := s.registry.Get(cli); profileErr == nil {
+		if len(agentProfile.ModelFallback) > 0 || len(agentProfile.FallbackSuffixStrip) > 0 {
+			runCfg.ModelFallback = agentProfile.ModelFallback
+			runCfg.FallbackSuffixStrip = agentProfile.FallbackSuffixStrip
+			runCfg.ModelFlag = agentProfile.ModelFlag
+			runCfg.CooldownSeconds = agentProfile.CooldownSeconds
+			runCfg.CooldownTracker = s.cooldownTracker
+		}
 	}
 
 	if async {

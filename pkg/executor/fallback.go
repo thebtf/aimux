@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/types"
@@ -115,4 +116,62 @@ func RunWithModelFallback(
 	}
 
 	return nil, fmt.Errorf("all models exhausted for CLI %s: %w", cli, lastErr)
+}
+
+// DetectModelFromArgs extracts the current model value from a CLI args slice.
+// Returns "" if no model flag is found.
+func DetectModelFromArgs(args []string, modelFlag string) string {
+	if modelFlag == "" {
+		return ""
+	}
+	eqPrefix := modelFlag + "="
+	for i := 0; i < len(args); i++ {
+		if args[i] == modelFlag && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(args[i], eqPrefix) {
+			return strings.TrimPrefix(args[i], eqPrefix)
+		}
+	}
+	return ""
+}
+
+// BuildModelChain constructs the full fallback chain from explicit models and
+// suffix-strip rules. The current model (from args) is detected and suffix-stripped
+// variants are appended after the explicit list.
+//
+// Example: currentModel="gpt-5.3-codex-spark", explicit=[], suffixes=["-spark"]
+// → chain=["gpt-5.3-codex-spark", "gpt-5.3-codex"]
+//
+// This survives model version upgrades — no hardcoded model names needed.
+func BuildModelChain(currentModel string, explicitModels []string, suffixStrip []string) []string {
+	seen := make(map[string]bool)
+	var chain []string
+
+	// Start with explicit models if provided.
+	for _, m := range explicitModels {
+		if !seen[m] {
+			chain = append(chain, m)
+			seen[m] = true
+		}
+	}
+
+	// If current model is not in the explicit list, prepend it.
+	if currentModel != "" && !seen[currentModel] {
+		chain = append([]string{currentModel}, chain...)
+		seen[currentModel] = true
+	}
+
+	// Generate suffix-stripped variants from the current model.
+	for _, suffix := range suffixStrip {
+		if strings.HasSuffix(currentModel, suffix) {
+			stripped := strings.TrimSuffix(currentModel, suffix)
+			if stripped != "" && !seen[stripped] {
+				chain = append(chain, stripped)
+				seen[stripped] = true
+			}
+		}
+	}
+
+	return chain
 }

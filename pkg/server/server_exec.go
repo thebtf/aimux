@@ -334,7 +334,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		var result *types.Result
 		var err error
 		candProfile, profileErr := s.registry.Get(cand.CLI)
-		if profileErr == nil && len(candProfile.ModelFallback) > 0 && candProfile.ModelFlag != "" {
+		if profileErr == nil && (len(candProfile.ModelFallback) > 0 || len(candProfile.FallbackSuffixStrip) > 0) && candProfile.ModelFlag != "" {
 			result, err = s.runWithModelFallback(ctx, s.executor, candProfile, currentArgs)
 		} else {
 			result, err = s.executor.Run(ctx, currentArgs)
@@ -537,15 +537,18 @@ func (s *Server) runWithModelFallback(
 	baseArgs types.SpawnArgs,
 ) (*types.Result, error) {
 	cooldownDuration := time.Duration(profile.CooldownSeconds) * time.Second
+	// Detect current model from args to feed into suffix-strip chain.
+	currentModel := executor.DetectModelFromArgs(baseArgs.Args, profile.ModelFlag)
+	models := executor.BuildModelChain(currentModel, profile.ModelFallback, profile.FallbackSuffixStrip)
 	return executor.RunWithModelFallback(
 		ctx,
 		exec,
 		baseArgs,
-		profile.ModelFallback,
+		models,
 		profile.ModelFlag,
 		s.cooldownTracker,
 		cooldownDuration,
-		func(format string, args ...any) { s.log.Info(format, args...) },
+		func(format string, args ...any) { s.log.Warn(format, args...) },
 	)
 }
 

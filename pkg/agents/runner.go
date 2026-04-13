@@ -28,10 +28,11 @@ type RunConfig struct {
 	Executor        types.Executor              // process executor
 	Resolver        types.CLIResolver           // CLI resolver
 	OnOutput        func(cli, line string)      // forwarded to SpawnArgs.OnOutput with resolved CLI context
-	ModelFallback   []string                    // ordered model fallback chain (from profile)
-	ModelFlag       string                      // CLI flag for model (e.g. "-m")
-	CooldownTracker types.ModelCooldownTracker  // optional: cooldown tracker for rate-limited models
-	CooldownSeconds int                         // cooldown duration after quota error
+	ModelFallback       []string                    // ordered model fallback chain (from profile)
+	FallbackSuffixStrip []string                    // suffix-strip rules for dynamic fallback
+	ModelFlag           string                      // CLI flag for model (e.g. "-m")
+	CooldownTracker     types.ModelCooldownTracker  // optional: cooldown tracker for rate-limited models
+	CooldownSeconds     int                         // cooldown duration after quota error
 }
 
 // RunResult holds the outcome of an agent run.
@@ -90,8 +91,10 @@ func RunAgent(ctx context.Context, cfg RunConfig) (*RunResult, error) {
 
 		// T011: use model fallback chain when the config carries fallback models and a tracker.
 		var result *types.Result
-		if cfg.CooldownTracker != nil && len(cfg.ModelFallback) > 0 && cfg.ModelFlag != "" {
-			result, err = runWithModelFallbackAgent(ctx, cfg.Executor, cfg.CooldownTracker, cfg.CLI, cfg.ModelFlag, cfg.ModelFallback, cfg.CooldownSeconds, args)
+		currentModel := executor.DetectModelFromArgs(args.Args, cfg.ModelFlag)
+		models := executor.BuildModelChain(currentModel, cfg.ModelFallback, cfg.FallbackSuffixStrip)
+		if cfg.CooldownTracker != nil && len(models) > 0 && cfg.ModelFlag != "" {
+			result, err = runWithModelFallbackAgent(ctx, cfg.Executor, cfg.CooldownTracker, cfg.CLI, cfg.ModelFlag, models, cfg.CooldownSeconds, args)
 		} else {
 			result, err = cfg.Executor.Run(ctx, args)
 		}
