@@ -79,10 +79,29 @@ func run() error {
 		log.Info("aimux v%s ready — serving MCP on HTTP at %s", version, port)
 		return srv.ServeHTTP(port)
 	default:
-		if os.Getenv("AIMUX_NO_ENGINE") == "1" {
-			log.Info("aimux v%s ready — serving MCP on stdio (engine bypassed)", version)
+		// Engine mode activates automatically when:
+		// 1. --muxcore-daemon flag is present (daemon re-exec), OR
+		// 2. MCP_MUX_SESSION_ID env var is set (running behind mcp-mux proxy)
+		// Otherwise: direct stdio (CC spawns aimux via .mcp.json pipe)
+		useEngine := false
+		for _, arg := range os.Args {
+			if arg == "--muxcore-daemon" {
+				useEngine = true
+				break
+			}
+		}
+		if os.Getenv("MCP_MUX_SESSION_ID") != "" {
+			useEngine = true
+		}
+		if os.Getenv("AIMUX_ENGINE") == "1" {
+			useEngine = true // explicit opt-in
+		}
+
+		if !useEngine {
+			log.Info("aimux v%s ready — serving MCP on stdio", version)
 			return srv.ServeStdio()
 		}
+
 		log.Info("aimux v%s ready — serving MCP via muxcore engine", version)
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer cancel()
