@@ -63,9 +63,10 @@ func TestProfileResolver_BasicResolution(t *testing.T) {
 	if sa.Command != "gemini" {
 		t.Errorf("Command = %q, want %q", sa.Command, "gemini")
 	}
-	assertSliceEqual(t, sa.Args, []string{"-p", "hello world"})
-	if sa.Stdin != "" {
-		t.Errorf("Stdin should be empty, got %q", sa.Stdin)
+	// Prompt always goes via stdin, not args — no prompt flag in args
+	assertSliceEqual(t, sa.Args, []string{})
+	if sa.Stdin != "hello world" {
+		t.Errorf("Stdin = %q, want %q", sa.Stdin, "hello world")
 	}
 }
 
@@ -86,7 +87,11 @@ func TestProfileResolver_PositionalPrompt(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	assertSliceEqual(t, sa.Args, []string{"fix bug"})
+	// Prompt goes via stdin, not as positional arg
+	assertSliceEqual(t, sa.Args, []string{})
+	if sa.Stdin != "fix bug" {
+		t.Errorf("Stdin = %q, want %q", sa.Stdin, "fix bug")
+	}
 }
 
 func TestProfileResolver_LongFlagPrompt(t *testing.T) {
@@ -97,7 +102,11 @@ func TestProfileResolver_LongFlagPrompt(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	assertSliceEqual(t, sa.Args, []string{"--message", "fix the bug"})
+	// Prompt via stdin, no --message flag in args
+	assertSliceEqual(t, sa.Args, []string{})
+	if sa.Stdin != "fix the bug" {
+		t.Errorf("Stdin = %q, want %q", sa.Stdin, "fix the bug")
+	}
 }
 
 func TestProfileResolver_MultiWordCommandBase(t *testing.T) {
@@ -111,58 +120,38 @@ func TestProfileResolver_MultiWordCommandBase(t *testing.T) {
 	if sa.Command != "testcli" {
 		t.Errorf("Command = %q, want %q", sa.Command, "testcli")
 	}
-	// base args (codex --json --full-auto) + --full-auto (headless codex) + -p hello
-	// Note: profile Name is "testcli-codex", not "codex", so headless --full-auto is NOT added
-	// because the headless check is `profile.Name == "codex"`
-	assertSliceEqual(t, sa.Args, []string{"codex", "--json", "--full-auto", "-p", "hello"})
+	// base args (codex --json --full-auto) only — prompt goes via stdin
+	assertSliceEqual(t, sa.Args, []string{"codex", "--json", "--full-auto"})
+	if sa.Stdin != "hello" {
+		t.Errorf("Stdin = %q, want %q", sa.Stdin, "hello")
+	}
 }
 
-func TestProfileResolver_StdinPiping(t *testing.T) {
+func TestProfileResolver_StdinAlwaysUsed(t *testing.T) {
 	r := NewProfileResolver(testProfiles())
 
-	longPrompt := strings.Repeat("x", 7000) // exceeds 6000 threshold
-	sa, err := r.ResolveSpawnArgs("codex", longPrompt)
+	// Short prompt — still goes via stdin
+	sa, err := r.ResolveSpawnArgs("codex", "hello")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if sa.Stdin != "hello" {
+		t.Errorf("Stdin = %q, want %q", sa.Stdin, "hello")
+	}
 
-	if sa.Stdin != longPrompt {
+	// Long prompt — also via stdin
+	longPrompt := strings.Repeat("x", 50000)
+	sa2, err := r.ResolveSpawnArgs("codex", longPrompt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sa2.Stdin != longPrompt {
 		t.Error("expected stdin to contain the long prompt")
 	}
-	// Args should NOT contain the prompt (piped via stdin)
-	for _, arg := range sa.Args {
-		if arg == longPrompt {
-			t.Error("long prompt should not be in Args when piped via stdin")
+	for _, arg := range sa2.Args {
+		if len(arg) > 100 {
+			t.Error("long prompt should not be in Args")
 		}
-	}
-}
-
-func TestProfileResolver_StdinNotTriggeredBelowThreshold(t *testing.T) {
-	r := NewProfileResolver(testProfiles())
-
-	shortPrompt := "hello"
-	sa, err := r.ResolveSpawnArgs("codex", shortPrompt)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if sa.Stdin != "" {
-		t.Errorf("Stdin should be empty for short prompts, got %d chars", len(sa.Stdin))
-	}
-}
-
-func TestProfileResolver_StdinNotTriggeredZeroThreshold(t *testing.T) {
-	r := NewProfileResolver(testProfiles())
-
-	longPrompt := strings.Repeat("x", 7000)
-	sa, err := r.ResolveSpawnArgs("aider", longPrompt)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// aider has StdinThreshold=0, so no stdin piping
-	if sa.Stdin != "" {
-		t.Error("Stdin should be empty when threshold is 0")
 	}
 }
 
