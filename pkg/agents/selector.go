@@ -1,6 +1,9 @@
 package agents
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // stopWords are common English words that carry no task-relevant signal.
 var stopWords = map[string]bool{
@@ -15,6 +18,11 @@ var stopWords = map[string]bool{
 	"using": true, "use": true, "please": true, "need": true, "want": true,
 	"help": true, "should": true, "would": true, "could": true,
 	"make": true, "some": true, "its": true, "into": true, "also": true,
+	// Verbs and qualifiers that cause false-positive prefix matches against agent names.
+	"respond": true, "exactly": true, "nothing": true, "else": true,
+	"just": true, "only": true, "about": true, "like": true,
+	"then": true, "than": true, "more": true, "each": true,
+	"every": true, "still": true, "after": true, "before": true,
 }
 
 // ExtractKeywords returns the first 5 significant words from a prompt,
@@ -82,9 +90,16 @@ func scoreMatch(a *Agent, keyword string) int {
 	return score
 }
 
+// minScoreThreshold is the minimum total score an agent must reach to beat the
+// fallback. A threshold of 3 requires at least one name-level match (worth 3
+// points), preventing weak content/role-only overlaps (score 1-2) from winning
+// with 154+ registered agents where accidental prefix collisions are common.
+const minScoreThreshold = 3
+
 // AutoSelectAgent picks the best agent for a prompt using keyword scoring.
-// If no agent scores above zero, it falls back to the "implementer" built-in.
-// The second return value is the score of the selected agent.
+// An agent must reach minScoreThreshold to beat the fallback; scores below
+// that indicate accidental keyword overlap rather than genuine intent.
+// The second return value is the score of the selected agent (0 for fallback).
 func AutoSelectAgent(registry *Registry, prompt string) (*Agent, int) {
 	keywords := ExtractKeywords(prompt)
 
@@ -111,14 +126,60 @@ func AutoSelectAgent(registry *Registry, prompt string) (*Agent, int) {
 		}
 	}
 
-	if best.agent == nil || best.score == 0 {
+	if best.agent == nil || best.score < minScoreThreshold {
 		return fallbackLocked(registry), 0
 	}
 	return best.agent, best.score
 }
 
-// fallbackLocked returns the "implementer" built-in agent.
+// AgentCandidate is a compact agent summary for LLM-driven selection.
+type AgentCandidate struct {
+	Name string `json:"name"`
+	When string `json:"when"`
+	Role string `json:"role,omitempty"`
+}
+
+// ListCandidates returns a compact list of agents for the calling LLM to choose from.
+// Each entry has name + a "when to use" summary derived from the description.
+// Sorted alphabetically. Limited to maxResults entries.
+func ListCandidates(registry *Registry, maxResults int) []AgentCandidate {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+
+	candidates := make([]AgentCandidate, 0, len(registry.agents))
+	for _, a := range registry.agents {
+		when := a.Description
+		if when == "" {
+			when = a.Domain
+		}
+		// Truncate long descriptions to keep response compact
+		if len(when) > 120 {
+			when = when[:117] + "..."
+		}
+		candidates = append(candidates, AgentCandidate{
+			Name: a.Name,
+			When: when,
+			Role: a.Role,
+		})
+	}
+
+	// Sort by name for stable output
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Name < candidates[j].Name
+	})
+
+	if maxResults > 0 && len(candidates) > maxResults {
+		candidates = candidates[:maxResults]
+	}
+	return candidates
+}
+
+// fallbackLocked returns the best available default agent.
+// Prefers "general" (broad-purpose, no domain bias) over "implementer".
 // Caller MUST hold registry.mu.RLock.
 func fallbackLocked(registry *Registry) *Agent {
+	if a, ok := registry.agents["general"]; ok {
+		return a
+	}
 	return registry.agents["implementer"]
 }
