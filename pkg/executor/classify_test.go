@@ -1,0 +1,112 @@
+package executor
+
+import "testing"
+
+// TestClassifyError_QuotaPatterns verifies that usage-limit and rate-limit messages
+// in either stdout or stderr are classified as ErrorClassQuota.
+func TestClassifyError_UsageLimitInContent(t *testing.T) {
+	got := ClassifyError("Error: you have hit your usage limit for this period", "", 1)
+	if got != ErrorClassQuota {
+		t.Fatalf("expected ErrorClassQuota, got %v", got)
+	}
+}
+
+func TestClassifyError_RateLimitInContent(t *testing.T) {
+	got := ClassifyError("rate limit exceeded, please wait", "", 1)
+	if got != ErrorClassQuota {
+		t.Fatalf("expected ErrorClassQuota, got %v", got)
+	}
+}
+
+func TestClassifyError_429InStderr(t *testing.T) {
+	got := ClassifyError("", "HTTP 429 Too Many Requests", 1)
+	if got != ErrorClassQuota {
+		t.Fatalf("expected ErrorClassQuota, got %v", got)
+	}
+}
+
+func TestClassifyError_QuotaExceededInStderr(t *testing.T) {
+	got := ClassifyError("", "quota exceeded: monthly cap reached", 1)
+	if got != ErrorClassQuota {
+		t.Fatalf("expected ErrorClassQuota, got %v", got)
+	}
+}
+
+// TestClassifyError_TransientPatterns verifies that network errors are classified
+// as ErrorClassTransient.
+func TestClassifyError_ConnectionRefusedInContent(t *testing.T) {
+	got := ClassifyError("connection refused to api.example.com:443", "", 1)
+	if got != ErrorClassTransient {
+		t.Fatalf("expected ErrorClassTransient, got %v", got)
+	}
+}
+
+func TestClassifyError_TimeoutInStderr(t *testing.T) {
+	got := ClassifyError("", "request timeout after 30s", 1)
+	if got != ErrorClassTransient {
+		t.Fatalf("expected ErrorClassTransient, got %v", got)
+	}
+}
+
+func TestClassifyError_ETIMEDOUTInStderr(t *testing.T) {
+	got := ClassifyError("", "ETIMEDOUT: connect ETIMEDOUT 1.2.3.4:443", 1)
+	if got != ErrorClassTransient {
+		t.Fatalf("expected ErrorClassTransient, got %v", got)
+	}
+}
+
+func TestClassifyError_DNSResolutionInContent(t *testing.T) {
+	got := ClassifyError("DNS resolution failed for api.example.com", "", 1)
+	if got != ErrorClassTransient {
+		t.Fatalf("expected ErrorClassTransient, got %v", got)
+	}
+}
+
+// TestClassifyError_FatalPatterns verifies that auth and configuration errors
+// are classified as ErrorClassFatal.
+func TestClassifyError_AuthenticationInStderr(t *testing.T) {
+	got := ClassifyError("", "authentication failed: bad credentials", 1)
+	if got != ErrorClassFatal {
+		t.Fatalf("expected ErrorClassFatal, got %v", got)
+	}
+}
+
+func TestClassifyError_InvalidAPIKeyInContent(t *testing.T) {
+	got := ClassifyError("Error: invalid api key provided", "", 1)
+	if got != ErrorClassFatal {
+		t.Fatalf("expected ErrorClassFatal, got %v", got)
+	}
+}
+
+func TestClassifyError_ModelNotFoundInStderr(t *testing.T) {
+	got := ClassifyError("", "model not found: gpt-99-turbo", 1)
+	if got != ErrorClassFatal {
+		t.Fatalf("expected ErrorClassFatal, got %v", got)
+	}
+}
+
+// TestClassifyError_None verifies that clean output with exit code 0 is not an error.
+func TestClassifyError_NormalOutputExitZero(t *testing.T) {
+	got := ClassifyError("Here is the answer to your question.", "", 0)
+	if got != ErrorClassNone {
+		t.Fatalf("expected ErrorClassNone, got %v", got)
+	}
+}
+
+// TestClassifyError_ExitZeroOverridesRateLimit verifies that exit code 0 always
+// wins, even when the output text contains rate-limit language.
+func TestClassifyError_ExitZeroWithRateLimitText(t *testing.T) {
+	got := ClassifyError("You have hit your usage limit", "rate limit info logged", 0)
+	if got != ErrorClassNone {
+		t.Fatalf("expected ErrorClassNone (exit 0 overrides content), got %v", got)
+	}
+}
+
+// TestClassifyError_QuotaWinsOverTransient verifies that when both quota and
+// transient patterns appear (across content and stderr), quota takes priority.
+func TestClassifyError_QuotaInContentTransientInStderr(t *testing.T) {
+	got := ClassifyError("rate limit reached", "ETIMEDOUT connecting to API", 1)
+	if got != ErrorClassQuota {
+		t.Fatalf("expected ErrorClassQuota to win over ErrorClassTransient, got %v", got)
+	}
+}
