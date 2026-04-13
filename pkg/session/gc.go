@@ -58,10 +58,8 @@ func (g *GCReaper) collect() {
 		if sess.Status == types.SessionStatusCompleted || sess.Status == types.SessionStatusFailed {
 			g.sessions.Delete(sess.ID)
 			reaped++
-		}
-
-		// Reap stuck sessions (created but never started, >1h)
-		if sess.Status == types.SessionStatusCreated && age > time.Hour {
+		} else if sess.Status == types.SessionStatusCreated && age > time.Hour {
+			// Reap stuck sessions (created but never started, >1h)
 			g.sessions.Update(sess.ID, func(s *Session) {
 				s.Status = types.SessionStatusExpired
 			})

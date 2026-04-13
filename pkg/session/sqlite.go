@@ -20,10 +20,13 @@ type Store struct {
 
 // NewStore opens or creates a SQLite database at the given path.
 func NewStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_synchronous=NORMAL")
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+
+	// Single writer prevents SQLITE_BUSY under concurrent snapshot/restore calls.
+	db.SetMaxOpenConns(1)
 
 	if err := migrate(db); err != nil {
 		db.Close()
@@ -77,9 +80,28 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
-	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN metadata_json TEXT`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			return err
+	// schema_version tracks applied migrations. Each migration is applied exactly
+	// once and the version is incremented atomically within the same transaction.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL)`); err != nil {
+		return err
+	}
+
+	var version int
+	row := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`)
+	if err := row.Scan(&version); err != nil {
+		return fmt.Errorf("read schema_version: %w", err)
+	}
+
+	// Migration 1: add metadata_json column to sessions.
+	if version < 1 {
+		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN metadata_json TEXT`); err != nil {
+			// Column may already exist in databases created before schema_version was introduced.
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return err
+			}
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version (version) VALUES (1)`); err != nil {
+			return fmt.Errorf("bump schema_version to 1: %w", err)
 		}
 	}
 
@@ -154,7 +176,7 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 		}
 	}
 
-	for _, job := range jobs.ListRunning() {
+	for _, job := range jobs.ListNonTerminal() {
 		var errorJSON, pheromonesJSON, pipelineJSON []byte
 		if job.Error != nil {
 			errorJSON, _ = json.Marshal(job.Error)

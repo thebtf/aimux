@@ -1,6 +1,7 @@
 package think
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -117,18 +118,33 @@ func ClearSessions() {
 
 // GCSessions removes sessions that haven't been accessed within the given TTL.
 // Returns the number of sessions removed.
+// Sessions whose LastAccessedAt timestamp cannot be parsed are treated as
+// expired and removed; the parse failure is logged so operators can detect
+// data corruption.
 func GCSessions(ttl time.Duration) int {
 	sessionsMu.Lock()
 	defer sessionsMu.Unlock()
 
 	cutoff := time.Now().Add(-ttl)
 	removed := 0
+	parseErrors := 0
 	for id, s := range sessions {
 		lastAccessed, err := time.Parse(time.RFC3339, s.LastAccessedAt)
-		if err != nil || lastAccessed.Before(cutoff) {
+		if err != nil {
+			parseErrors++
+			log.Printf("think: GCSessions: session %s has unparseable LastAccessedAt %q, treating as expired: %v",
+				id, s.LastAccessedAt, err)
+			delete(sessions, id)
+			removed++
+			continue
+		}
+		if lastAccessed.Before(cutoff) {
 			delete(sessions, id)
 			removed++
 		}
+	}
+	if parseErrors > 0 {
+		log.Printf("think: GCSessions: removed %d sessions with corrupt timestamps", parseErrors)
 	}
 	return removed
 }
