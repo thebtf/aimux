@@ -70,6 +70,9 @@ func (l *Limiter) Allow(tool string) bool {
 	if b.tokens > b.burst {
 		b.tokens = b.burst
 	}
+	// lastFill is updated before the rejection check: this is correct for a token
+	// bucket because the fill interval starts from the last observed time regardless
+	// of whether this particular request is accepted or rejected.
 	b.lastFill = now
 
 	if b.tokens < 1 {

@@ -30,7 +30,8 @@ type ServerConfig struct {
 
 	RateLimitRPS   float64 `yaml:"rate_limit_rps"`
 	RateLimitBurst int     `yaml:"rate_limit_burst"`
-	AuthToken      string  `yaml:"auth_token"`
+	// AuthToken is read from AIMUX_AUTH_TOKEN env var. Do not hardcode in config files.
+	AuthToken string `yaml:"auth_token"`
 
 	Transport TransportConfig `yaml:"transport"`
 	Audit     AuditConfig     `yaml:"audit"`

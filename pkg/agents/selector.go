@@ -67,6 +67,8 @@ func tokenContains(text, keyword string) bool {
 // scoreMatch returns how well an agent matches a single keyword.
 // Scoring: name match = 3, domain match = 2, role match = 1, content match = 1.
 // Uses prefix-aware matching so "investigate" matches "investigation", etc.
+// ContentPrefix (first 200 runes) is pre-computed at registration to avoid
+// per-call []rune allocation.
 func scoreMatch(a *Agent, keyword string) int {
 	score := 0
 	if tokenContains(strings.ToLower(a.Name), keyword) {
@@ -78,13 +80,7 @@ func scoreMatch(a *Agent, keyword string) int {
 	if tokenContains(strings.ToLower(a.Role), keyword) {
 		score += 1
 	}
-	// Search content prefix (first 200 runes) — same limit as Find().
-	contentPrefix := a.Content
-	runes := []rune(contentPrefix)
-	if len(runes) > 200 {
-		contentPrefix = string(runes[:200])
-	}
-	if tokenContains(strings.ToLower(contentPrefix), keyword) {
+	if tokenContains(strings.ToLower(a.ContentPrefix), keyword) {
 		score += 1
 	}
 	return score
