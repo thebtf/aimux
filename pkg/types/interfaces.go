@@ -1,6 +1,9 @@
 package types
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Executor spawns and manages CLI processes.
 // Three implementations: ConPTY (Windows), PTY (Linux/Mac), Pipe (fallback).
@@ -55,6 +58,15 @@ type Strategy interface {
 // When nil, strategies fall back to legacy behavior (Command=cli, Args=["-p", prompt]).
 type CLIResolver interface {
 	ResolveSpawnArgs(cli string, prompt string) (SpawnArgs, error)
+}
+
+// ModelCooldownTracker tracks rate-limited models to skip them during fallback.
+// Passed to agent runner so it can participate in model fallback without
+// depending on the executor package directly.
+type ModelCooldownTracker interface {
+	MarkCooledDown(cli, model string, duration time.Duration)
+	IsAvailable(cli, model string) bool
+	FilterAvailable(cli string, models []string) []string
 }
 
 // ModelledCLIResolver extends CLIResolver with model and effort overrides.

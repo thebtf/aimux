@@ -24,9 +24,13 @@ type RunConfig struct {
 	Timeout  int                    // per-turn timeout in seconds
 	Model    string                 // model override (passed to CLI via profile model flag)
 	Effort   string                 // reasoning effort override (passed to CLI via profile effort flag)
-	Executor types.Executor         // process executor
-	Resolver types.CLIResolver      // CLI resolver
-	OnOutput func(cli, line string) // forwarded to SpawnArgs.OnOutput with resolved CLI context
+	Executor        types.Executor              // process executor
+	Resolver        types.CLIResolver           // CLI resolver
+	OnOutput        func(cli, line string)      // forwarded to SpawnArgs.OnOutput with resolved CLI context
+	ModelFallback   []string                    // ordered model fallback chain (from profile)
+	ModelFlag       string                      // CLI flag for model (e.g. "-m")
+	CooldownTracker types.ModelCooldownTracker  // optional: cooldown tracker for rate-limited models
+	CooldownSeconds int                         // cooldown duration after quota error
 }
 
 // RunResult holds the outcome of an agent run.
@@ -83,7 +87,13 @@ func RunAgent(ctx context.Context, cfg RunConfig) (*RunResult, error) {
 			}, fmt.Errorf("turn %d: resolve args: %w", turn, err)
 		}
 
-		result, err := cfg.Executor.Run(ctx, args)
+		// T011: use model fallback chain when the config carries fallback models and a tracker.
+		var result *types.Result
+		if cfg.CooldownTracker != nil && len(cfg.ModelFallback) > 0 && cfg.ModelFlag != "" {
+			result, err = runWithModelFallbackAgent(ctx, cfg.Executor, cfg.CooldownTracker, cfg.CLI, cfg.ModelFlag, cfg.ModelFallback, cfg.CooldownSeconds, args)
+		} else {
+			result, err = cfg.Executor.Run(ctx, args)
+		}
 		if err != nil {
 			return &RunResult{
 				Content:    finalContent.String(),
@@ -120,6 +130,141 @@ func RunAgent(ctx context.Context, cfg RunConfig) (*RunResult, error) {
 		TurnLog:    turnLog,
 		DurationMS: time.Since(start).Milliseconds(),
 	}, nil
+}
+
+// runWithModelFallbackAgent iterates the model fallback chain for a single executor call.
+// It uses the types.ModelCooldownTracker interface so the agents package does not
+// depend on pkg/executor directly.
+//
+// On quota error: marks model cooled down, tries next model.
+// On transient error: retries same model once, then moves to next.
+// On fatal error: returns immediately.
+// On success: returns result.
+func runWithModelFallbackAgent(
+	ctx context.Context,
+	exec types.Executor,
+	tracker types.ModelCooldownTracker,
+	cli, modelFlag string,
+	modelChain []string,
+	cooldownSeconds int,
+	baseArgs types.SpawnArgs,
+) (*types.Result, error) {
+	cooldownDuration := time.Duration(cooldownSeconds) * time.Second
+	if cooldownDuration == 0 {
+		cooldownDuration = 5 * time.Minute
+	}
+
+	available := tracker.FilterAvailable(cli, modelChain)
+	if len(available) == 0 {
+		return nil, fmt.Errorf("all models on cooldown for CLI %s", cli)
+	}
+
+	var lastErr error
+	for _, model := range available {
+		args := baseArgs
+		args.Args = replaceModelFlagAgent(baseArgs.Args, modelFlag, model)
+
+		result, err := exec.Run(ctx, args)
+
+		var content, stderr string
+		var exitCode int
+		if result != nil {
+			content = result.Content
+			exitCode = result.ExitCode
+		}
+		if err != nil {
+			stderr = err.Error()
+		}
+
+		errClass := classifyAgentError(content, stderr, exitCode)
+
+		switch errClass {
+		case agentErrorNone:
+			return result, err
+
+		case agentErrorQuota:
+			tracker.MarkCooledDown(cli, model, cooldownDuration)
+			lastErr = fmt.Errorf("quota exceeded for %s:%s", cli, model)
+			continue
+
+		case agentErrorTransient:
+			// Retry same model once on transient errors.
+			result2, err2 := exec.Run(ctx, args)
+			if result2 != nil && classifyAgentError(result2.Content, "", result2.ExitCode) == agentErrorNone {
+				return result2, err2
+			}
+			lastErr = fmt.Errorf("transient error on %s:%s after retry", cli, model)
+			continue
+
+		case agentErrorFatal:
+			return result, fmt.Errorf("fatal error on %s:%s: %w", cli, model, err)
+		}
+	}
+
+	return nil, fmt.Errorf("all models exhausted for CLI %s: %w", cli, lastErr)
+}
+
+// agentErrorClass mirrors executor.ErrorClass without importing pkg/executor.
+type agentErrorClass int
+
+const (
+	agentErrorNone      agentErrorClass = iota
+	agentErrorQuota
+	agentErrorTransient
+	agentErrorFatal
+)
+
+// classifyAgentError replicates the error classification logic from pkg/executor
+// without importing that package. Quota takes priority over transient.
+func classifyAgentError(content, stderr string, exitCode int) agentErrorClass {
+	if exitCode == 0 {
+		return agentErrorNone
+	}
+	lc := strings.ToLower(content)
+	ls := strings.ToLower(stderr)
+	quotaPatterns := []string{"usage limit", "hit your usage limit", "rate limit", "429", "quota exceeded"}
+	transientPatterns := []string{"connection refused", "timeout", "econnreset", "etimedout", "enotfound", "dns resolution"}
+	fatalPatterns := []string{"authentication", "invalid api key", "model not found", "unauthorized"}
+
+	for _, p := range quotaPatterns {
+		if strings.Contains(lc, p) || strings.Contains(ls, p) {
+			return agentErrorQuota
+		}
+	}
+	for _, p := range transientPatterns {
+		if strings.Contains(lc, p) || strings.Contains(ls, p) {
+			return agentErrorTransient
+		}
+	}
+	for _, p := range fatalPatterns {
+		if strings.Contains(lc, p) || strings.Contains(ls, p) {
+			return agentErrorFatal
+		}
+	}
+	return agentErrorNone
+}
+
+// replaceModelFlagAgent swaps or appends the model flag in an args slice.
+// When the flag is already present its value is replaced; when absent the flag+value is appended.
+func replaceModelFlagAgent(args []string, modelFlag, newModel string) []string {
+	if modelFlag == "" {
+		return args
+	}
+	result := make([]string, 0, len(args)+2)
+	replaced := false
+	for i := 0; i < len(args); i++ {
+		if args[i] == modelFlag && i+1 < len(args) {
+			result = append(result, modelFlag, newModel)
+			i++ // skip old model value
+			replaced = true
+		} else {
+			result = append(result, args[i])
+		}
+	}
+	if !replaced {
+		result = append(result, modelFlag, newModel)
+	}
+	return result
 }
 
 // buildSystemPrompt assembles the full first-turn prompt for the agent.
@@ -207,3 +352,4 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 func isComplete(response string) bool {
 	return response == "" || strings.Contains(strings.ToUpper(response), strings.ToUpper(CompletionSignal))
 }
+

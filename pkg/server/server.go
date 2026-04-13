@@ -176,9 +176,10 @@ type Server struct {
 	gcCancel     context.CancelFunc
 	skillEngine  *skills.Engine
 	rateLimiter  *ratelimit.Limiter
-	authToken    string
-	projectDir   string // directory used for initial agent discovery
-	guidanceReg  *guidance.Registry
+	authToken        string
+	projectDir       string // directory used for initial agent discovery
+	guidanceReg      *guidance.Registry
+	cooldownTracker  *executor.ModelCooldownTracker
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -195,7 +196,8 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 			CooldownSeconds:  cfg.CircuitBreaker.CooldownSeconds,
 			HalfOpenMaxCalls: cfg.CircuitBreaker.HalfOpenMaxCalls,
 		}),
-		executor: selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
+		executor:        selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
+		cooldownTracker: executor.NewModelCooldownTracker(),
 	}
 	s.metrics = metrics.New()
 
@@ -1256,7 +1258,16 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		}
 		currentArgs.OnOutput = s.progressSink(jobID, currentFormat)
 
-		result, err := s.executor.Run(ctx, currentArgs)
+		// Model fallback: if current CLI profile has a fallback chain, try all
+		// models before moving to the next CLI.
+		var result *types.Result
+		var err error
+		candProfile, profileErr := s.registry.Get(cand.CLI)
+		if profileErr == nil && len(candProfile.ModelFallback) > 0 {
+			result, err = s.runWithModelFallback(ctx, s.executor, candProfile, currentArgs, "")
+		} else {
+			result, err = s.executor.Run(ctx, currentArgs)
+		}
 
 		if err != nil {
 			currentCB.RecordFailure(false)
@@ -1444,6 +1455,100 @@ func isRetriableError(msg string) bool {
 // Used to trigger model fallback (try next model on same CLI) before CLI fallback.
 func isQuotaError(content, stderr string, exitCode int) bool {
 	return executor.ClassifyError(content, stderr, exitCode) == executor.ErrorClassQuota
+}
+
+// runWithModelFallback tries each model in the profile's ModelFallback chain.
+// On quota error: marks model cooled down, tries next model.
+// On transient error: retries same model once.
+// On fatal/unknown error: returns immediately.
+// On success: returns result.
+func (s *Server) runWithModelFallback(
+	ctx context.Context,
+	exec types.Executor,
+	profile *config.CLIProfile,
+	baseArgs types.SpawnArgs,
+	currentModel string,
+) (*types.Result, error) {
+	cooldownDuration := time.Duration(profile.CooldownSeconds) * time.Second
+	if cooldownDuration == 0 {
+		cooldownDuration = 5 * time.Minute
+	}
+
+	available := s.cooldownTracker.FilterAvailable(profile.Name, profile.ModelFallback)
+	if len(available) == 0 {
+		return nil, fmt.Errorf("all models on cooldown for CLI %s", profile.Name)
+	}
+
+	var lastErr error
+	for _, model := range available {
+		// Rebuild args with this model's -m flag
+		args := baseArgs
+		args.Args = replaceModelFlag(baseArgs.Args, profile.ModelFlag, model)
+
+		result, err := exec.Run(ctx, args)
+
+		// Classify the error
+		var content, stderr string
+		var exitCode int
+		if result != nil {
+			content = result.Content
+			exitCode = result.ExitCode
+		}
+		if err != nil {
+			stderr = err.Error()
+		}
+
+		errClass := executor.ClassifyError(content, stderr, exitCode)
+
+		switch errClass {
+		case executor.ErrorClassNone:
+			return result, err // success (or non-classified error)
+
+		case executor.ErrorClassQuota:
+			s.cooldownTracker.MarkCooledDown(profile.Name, model, cooldownDuration)
+			s.log.Info("model fallback: cli=%s model=%s → next (reason: quota, cooldown: %ds)",
+				profile.Name, model, profile.CooldownSeconds)
+			lastErr = fmt.Errorf("quota exceeded for %s:%s", profile.Name, model)
+			continue // try next model
+
+		case executor.ErrorClassTransient:
+			// Retry same model once
+			s.log.Info("model fallback: cli=%s model=%s transient error, retrying once", profile.Name, model)
+			result2, err2 := exec.Run(ctx, args)
+			if result2 != nil && executor.ClassifyError(result2.Content, "", result2.ExitCode) == executor.ErrorClassNone {
+				return result2, err2
+			}
+			lastErr = fmt.Errorf("transient error on %s:%s after retry", profile.Name, model)
+			continue // try next model after failed retry
+
+		case executor.ErrorClassFatal:
+			return result, fmt.Errorf("fatal error on %s:%s: %w", profile.Name, model, err)
+		}
+	}
+
+	return nil, fmt.Errorf("all models exhausted for CLI %s: %w", profile.Name, lastErr)
+}
+
+// replaceModelFlag swaps or appends the -m <model> flag in args.
+func replaceModelFlag(args []string, modelFlag, newModel string) []string {
+	if modelFlag == "" {
+		return args
+	}
+	result := make([]string, 0, len(args)+2)
+	replaced := false
+	for i := 0; i < len(args); i++ {
+		if args[i] == modelFlag && i+1 < len(args) {
+			result = append(result, modelFlag, newModel)
+			i++ // skip old model value
+			replaced = true
+		} else {
+			result = append(result, args[i])
+		}
+	}
+	if !replaced {
+		result = append(result, modelFlag, newModel)
+	}
+	return result
 }
 
 // isRetriableValidationError returns true when validation errors indicate a
@@ -2569,6 +2674,14 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		Effort:   effort,
 		Executor: s.executor,
 		Resolver: cliResolver,
+	}
+
+	// T011: wire model-fallback chain from the resolved CLI profile.
+	if agentProfile, profileErr := s.registry.Get(cli); profileErr == nil && len(agentProfile.ModelFallback) > 0 {
+		runCfg.ModelFallback = agentProfile.ModelFallback
+		runCfg.ModelFlag = agentProfile.ModelFlag
+		runCfg.CooldownSeconds = agentProfile.CooldownSeconds
+		runCfg.CooldownTracker = s.cooldownTracker
 	}
 
 	if async {
