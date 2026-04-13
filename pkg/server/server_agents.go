@@ -75,7 +75,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		if agentName == "" {
 			// Return candidate list instead of auto-selecting.
 			// The calling LLM knows the task context better than keyword matching.
-			candidates := agents.ListCandidates(s.agentReg, 20)
+			candidates := agents.ListCandidates(s.agentReg, prompt, 20)
 			return marshalToolResult(map[string]any{
 				"action":  "choose_agent",
 				"message": "No agent specified. Review the candidates below and call again with agent=<name>.",
