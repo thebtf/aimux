@@ -1263,8 +1263,8 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		var result *types.Result
 		var err error
 		candProfile, profileErr := s.registry.Get(cand.CLI)
-		if profileErr == nil && len(candProfile.ModelFallback) > 0 {
-			result, err = s.runWithModelFallback(ctx, s.executor, candProfile, currentArgs, "")
+		if profileErr == nil && len(candProfile.ModelFallback) > 0 && candProfile.ModelFlag != "" {
+			result, err = s.runWithModelFallback(ctx, s.executor, candProfile, currentArgs)
 		} else {
 			result, err = s.executor.Run(ctx, currentArgs)
 		}
@@ -1459,15 +1459,16 @@ func isQuotaError(content, stderr string, exitCode int) bool {
 
 // runWithModelFallback tries each model in the profile's ModelFallback chain.
 // On quota error: marks model cooled down, tries next model.
-// On transient error: retries same model once.
-// On fatal/unknown error: returns immediately.
+// On transient error: retries same model once, then applies full classification to the retry result.
+// On fatal error: returns immediately.
 // On success: returns result.
+// When all models are on cooldown the returned error contains "rate limit" so that
+// executeJob's isRetriableError check will advance to the next CLI.
 func (s *Server) runWithModelFallback(
 	ctx context.Context,
 	exec types.Executor,
 	profile *config.CLIProfile,
 	baseArgs types.SpawnArgs,
-	currentModel string,
 ) (*types.Result, error) {
 	cooldownDuration := time.Duration(profile.CooldownSeconds) * time.Second
 	if cooldownDuration == 0 {
@@ -1476,18 +1477,19 @@ func (s *Server) runWithModelFallback(
 
 	available := s.cooldownTracker.FilterAvailable(profile.Name, profile.ModelFallback)
 	if len(available) == 0 {
-		return nil, fmt.Errorf("all models on cooldown for CLI %s", profile.Name)
+		// Include "rate limit" so isRetriableError triggers CLI-level fallback.
+		return nil, fmt.Errorf("all models on cooldown (rate limit) for CLI %s", profile.Name)
 	}
 
 	var lastErr error
 	for _, model := range available {
-		// Rebuild args with this model's -m flag
+		// Rebuild args with this model's -m flag.
 		args := baseArgs
 		args.Args = replaceModelFlag(baseArgs.Args, profile.ModelFlag, model)
 
 		result, err := exec.Run(ctx, args)
 
-		// Classify the error
+		// Classify the error using both stdout and stderr.
 		var content, stderr string
 		var exitCode int
 		if result != nil {
@@ -1502,7 +1504,7 @@ func (s *Server) runWithModelFallback(
 
 		switch errClass {
 		case executor.ErrorClassNone:
-			return result, err // success (or non-classified error)
+			return result, err // success
 
 		case executor.ErrorClassQuota:
 			s.cooldownTracker.MarkCooledDown(profile.Name, model, cooldownDuration)
@@ -1512,16 +1514,40 @@ func (s *Server) runWithModelFallback(
 			continue // try next model
 
 		case executor.ErrorClassTransient:
-			// Retry same model once
+			// Retry same model once, then apply full classification to the retry result.
 			s.log.Info("model fallback: cli=%s model=%s transient error, retrying once", profile.Name, model)
 			result2, err2 := exec.Run(ctx, args)
-			if result2 != nil && executor.ClassifyError(result2.Content, "", result2.ExitCode) == executor.ErrorClassNone {
-				return result2, err2
+			var c2, s2 string
+			var ec2 int
+			if result2 != nil {
+				c2 = result2.Content
+				ec2 = result2.ExitCode
 			}
-			lastErr = fmt.Errorf("transient error on %s:%s after retry", profile.Name, model)
-			continue // try next model after failed retry
+			if err2 != nil {
+				s2 = err2.Error()
+			}
+			retryClass := executor.ClassifyError(c2, s2, ec2)
+			switch retryClass {
+			case executor.ErrorClassNone:
+				return result2, err2
+			case executor.ErrorClassQuota:
+				s.cooldownTracker.MarkCooledDown(profile.Name, model, cooldownDuration)
+				lastErr = fmt.Errorf("quota exceeded for %s:%s (on transient retry)", profile.Name, model)
+				continue
+			case executor.ErrorClassFatal:
+				if err2 == nil {
+					err2 = fmt.Errorf("fatal error detected in output")
+				}
+				return result2, fmt.Errorf("fatal error on %s:%s: %w", profile.Name, model, err2)
+			default:
+				lastErr = fmt.Errorf("transient error on %s:%s after retry", profile.Name, model)
+				continue // try next model
+			}
 
 		case executor.ErrorClassFatal:
+			if err == nil {
+				err = fmt.Errorf("fatal error detected in output")
+			}
 			return result, fmt.Errorf("fatal error on %s:%s: %w", profile.Name, model, err)
 		}
 	}
@@ -1530,25 +1556,9 @@ func (s *Server) runWithModelFallback(
 }
 
 // replaceModelFlag swaps or appends the -m <model> flag in args.
+// Delegates to executor.ReplaceModelFlag for the canonical implementation.
 func replaceModelFlag(args []string, modelFlag, newModel string) []string {
-	if modelFlag == "" {
-		return args
-	}
-	result := make([]string, 0, len(args)+2)
-	replaced := false
-	for i := 0; i < len(args); i++ {
-		if args[i] == modelFlag && i+1 < len(args) {
-			result = append(result, modelFlag, newModel)
-			i++ // skip old model value
-			replaced = true
-		} else {
-			result = append(result, args[i])
-		}
-	}
-	if !replaced {
-		result = append(result, modelFlag, newModel)
-	}
-	return result
+	return executor.ReplaceModelFlag(args, modelFlag, newModel)
 }
 
 // isRetriableValidationError returns true when validation errors indicate a
