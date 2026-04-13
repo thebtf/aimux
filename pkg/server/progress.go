@@ -63,10 +63,12 @@ func (s *Server) progressSink(jobID, outputFormat string) func(string) {
 			return
 		}
 		s.jobs.AppendProgress(jobID, normalized)
-		s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
-			"progressToken": jobID,
-			"message":       normalized,
-		})
+		if s.mcp != nil {
+			s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
+				"progressToken": jobID,
+				"message":       normalized,
+			})
+		}
 	}
 }
 
@@ -75,8 +77,6 @@ func (s *Server) progressSink(jobID, outputFormat string) func(string) {
 func (b *ProgressBridge) Forward(ctx context.Context, events <-chan types.Event, onProgress func(string)) {
 	ticker := time.NewTicker(b.interval)
 	defer ticker.Stop()
-
-	lastContent := ""
 
 	for {
 		select {
@@ -89,10 +89,9 @@ func (b *ProgressBridge) Forward(ctx context.Context, events <-chan types.Event,
 			}
 			switch evt.Type {
 			case types.EventTypeProgress:
-				lastContent = evt.Content
 				onProgress(evt.Content)
 			case types.EventTypeContent:
-				lastContent = evt.Content
+				// content events are not forwarded as progress
 			case types.EventTypeComplete:
 				return
 			case types.EventTypeError:
@@ -100,12 +99,8 @@ func (b *ProgressBridge) Forward(ctx context.Context, events <-chan types.Event,
 			}
 
 		case <-ticker.C:
-			// Send keepalive progress notification even if no new events
-			if lastContent != "" {
-				onProgress(lastContent)
-			} else {
-				onProgress("working...")
-			}
+			// Send a distinct keepalive message — never replay stale content.
+			onProgress("...still working")
 		}
 	}
 }
