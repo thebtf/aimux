@@ -17,6 +17,11 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
+// T003 note: pty.Start() attaches the PTY master to the process's stdin, stdout,
+// AND stderr simultaneously. There is no separate stderr file descriptor to drain.
+// Both stdout and stderr output flow through ptmx, so IOManager captures all of it.
+// No additional stderr draining is needed or possible for the PTY executor.
+
 // Executor spawns CLI processes via Unix PTY for unbuffered text output.
 type Executor struct {
 	available bool
@@ -60,9 +65,14 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 	defer ptmx.Close()
 
-	// Write stdin via PTY
+	// Write stdin via PTY (context-aware to avoid leaking goroutine)
 	if args.Stdin != "" {
 		go func() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			ptmx.Write([]byte(args.Stdin))
 			ptmx.Write([]byte{4}) // EOT
 		}()

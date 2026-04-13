@@ -71,6 +71,7 @@ type Result struct {
 	SessionID    string      `json:"session_id"`
 	CLISessionID string      `json:"cli_session_id,omitempty"`
 	Content      string      `json:"content"`
+	Stderr       string      `json:"stderr,omitempty"`
 	ExitCode     int         `json:"exit_code"`
 	Error        *TypedError `json:"error,omitempty"`
 	Partial      bool        `json:"partial"`

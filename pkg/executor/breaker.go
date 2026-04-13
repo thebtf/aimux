@@ -69,6 +69,25 @@ func (cb *CircuitBreaker) Allow() bool {
 	}
 }
 
+// CanAllow checks whether the breaker would allow a request without
+// advancing state. Unlike Allow(), this is side-effect-free and safe
+// to call in read-only queries like AvailableCLIs.
+func (cb *CircuitBreaker) CanAllow() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	switch cb.state {
+	case BreakerClosed:
+		return true
+	case BreakerOpen:
+		return time.Since(cb.lastFailure) > cb.cooldownDuration
+	case BreakerHalfOpen:
+		return cb.halfOpenAttempts < cb.halfOpenMaxCalls
+	default:
+		return false
+	}
+}
+
 // RecordSuccess records a successful call. Resets the breaker to closed.
 func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
@@ -155,7 +174,7 @@ func (r *BreakerRegistry) Get(cli string) *CircuitBreaker {
 func (r *BreakerRegistry) AvailableCLIs(clis []string) []string {
 	var available []string
 	for _, cli := range clis {
-		if r.Get(cli).Allow() {
+		if r.Get(cli).CanAllow() {
 			available = append(available, cli)
 		}
 	}

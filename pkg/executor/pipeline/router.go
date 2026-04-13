@@ -26,13 +26,25 @@ func RouteEvents(in <-chan types.Event) RouteResult {
 		for evt := range in {
 			switch evt.Type {
 			case types.EventTypeProgress:
-				progress <- evt
+				select {
+				case progress <- evt:
+				default: // drop if consumer is not reading progress
+				}
 			case types.EventTypeContent:
-				content <- evt
+				select {
+				case content <- evt:
+				default: // drop if consumer is not reading content
+				}
 			case types.EventTypeComplete:
-				complete <- evt
+				select {
+				case complete <- evt:
+				default: // drop if consumer is not reading complete
+				}
 			case types.EventTypeError:
-				errors <- evt
+				select {
+				case errors <- evt:
+				default: // drop if consumer is not reading errors
+				}
 			}
 		}
 	}()

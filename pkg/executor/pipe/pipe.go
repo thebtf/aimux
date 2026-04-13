@@ -18,6 +18,13 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
+const (
+	// defaultInactivitySeconds is the fallback when SpawnArgs.InactivitySeconds is 0.
+	defaultInactivitySeconds = 5
+	// stderrCapBytes is the maximum stderr captured per process (64 KiB).
+	stderrCapBytes = 64 * 1024
+)
+
 // Executor spawns CLI processes via stdin/stdout pipes.
 type Executor struct{}
 
@@ -54,6 +61,16 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 	defer executor.SharedPM.Cleanup(handle)
 
+	// T003: drain stderr into a capped buffer in the background.
+	// Without draining, a process that writes >64KB to stderr will block forever
+	// because the OS pipe buffer fills up.
+	stderrBuf := &cappedBuffer{cap: stderrCapBytes}
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		io.Copy(stderrBuf, handle.Stderr) //nolint:errcheck // drain only; errors are non-fatal
+	}()
+
 	// Data plane: stream I/O with optional live progress callback
 	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern, args.OnOutput)
 	iom.StreamLines()
@@ -70,6 +87,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	select {
 	case waitErr := <-handle.Done:
 		iom.Drain(1 * time.Second)
+		<-stderrDone
 		content := iom.Collect()
 		exitCode := 0
 		if waitErr != nil {
@@ -82,6 +100,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		}
 		return &types.Result{
 			Content:    content,
+			Stderr:     stderrBuf.String(),
 			ExitCode:   exitCode,
 			DurationMS: time.Since(start).Milliseconds(),
 		}, nil
@@ -89,8 +108,10 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	case <-iom.PatternMatched():
 		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
+		<-stderrDone
 		return &types.Result{
 			Content:    iom.Collect(),
+			Stderr:     stderrBuf.String(),
 			ExitCode:   0,
 			DurationMS: time.Since(start).Milliseconds(),
 		}, nil
@@ -98,9 +119,11 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	case <-timerC:
 		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
+		<-stderrDone
 		content := iom.Collect()
 		return &types.Result{
 			Content:    content,
+			Stderr:     stderrBuf.String(),
 			ExitCode:   124,
 			Partial:    true,
 			DurationMS: time.Since(start).Milliseconds(),
@@ -111,13 +134,15 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	case <-ctx.Done():
 		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
+		<-stderrDone
 		content := iom.Collect()
 		return &types.Result{
 			Content:    content,
+			Stderr:     stderrBuf.String(),
 			ExitCode:   130,
 			Partial:    true,
 			DurationMS: time.Since(start).Milliseconds(),
-			Error: types.NewExecutorError("cancelled", ctx.Err(), content),
+			Error:      types.NewExecutorError("cancelled", ctx.Err(), content),
 		}, nil
 	}
 }
@@ -129,6 +154,156 @@ var sessionPM = executor.NewProcessManager()
 // SessionProcessManager returns the ProcessManager used for persistent sessions.
 func SessionProcessManager() *executor.ProcessManager {
 	return sessionPM
+}
+
+// readChunk is a single read result from the lifetime reader goroutine.
+type readChunk struct {
+	data []byte
+	err  error
+}
+
+// pipeSession holds a persistent CLI process for multi-turn interaction.
+//
+// Goroutine architecture (T001 fix):
+//
+//	One "lifetime reader" goroutine is started in Start() and lives until
+//	stdout is closed (either by the process exiting or by Close()). It
+//	continuously reads from s.stdout and sends chunks to s.readCh.
+//
+//	Send() consumes chunks from s.readCh using an inactivity timer.  When
+//	no new data arrives for inactivityTimeout the response is considered
+//	complete and Send() returns — the lifetime reader keeps running.
+//
+//	On Close(), s.stdout is closed, which causes the next Read in the
+//	lifetime reader to return io.EOF, ending the goroutine cleanly.
+type pipeSession struct {
+	id     string
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	handle *executor.ProcessHandle
+
+	// inactivityTimeout is derived from SpawnArgs.InactivitySeconds at Start().
+	inactivityTimeout time.Duration
+
+	// readCh carries chunks from the lifetime reader to Send().
+	// Buffered to reduce blocking between bursts.
+	readCh chan readChunk
+
+	// readerDone is closed when the lifetime reader goroutine exits.
+	readerDone chan struct{}
+
+	// closeOnce ensures Close() only runs its cleanup once.
+	closeOnce sync.Once
+
+	// mu serialises concurrent Send() calls (sessions are single-turn at a time).
+	mu sync.Mutex
+}
+
+func (s *pipeSession) ID() string { return s.id }
+
+// Send writes prompt to stdin and reads the response via the lifetime reader.
+//
+// Inactivity detection: the timer is reset on each incoming chunk.  When it
+// fires without new data the response is treated as complete and Send returns
+// with Partial=true.  The lifetime reader goroutine is NOT stopped — it
+// persists for future Send() calls.
+func (s *pipeSession) Send(ctx context.Context, prompt string) (*types.Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	start := time.Now()
+
+	_, err := fmt.Fprintln(s.stdin, prompt)
+	if err != nil {
+		return nil, types.NewExecutorError("failed to write to stdin", err, "")
+	}
+
+	var buf bytes.Buffer
+	timer := time.NewTimer(s.inactivityTimeout)
+	defer timer.Stop()
+
+	partial := false
+	for {
+		select {
+		case c := <-s.readCh:
+			if len(c.data) > 0 {
+				buf.Write(c.data)
+				// Reset inactivity timer — more data may still be coming.
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(s.inactivityTimeout)
+			}
+			if c.err != nil {
+				// stdout closed (process exited or Close was called) — done.
+				goto done
+			}
+
+		case <-timer.C:
+			// No new data for inactivityTimeout — treat as end of response.
+			// The lifetime reader goroutine stays running for subsequent Send()s.
+			partial = true
+			goto done
+
+		case <-ctx.Done():
+			partial = true
+			goto done
+		}
+	}
+
+done:
+	return &types.Result{
+		Content:    buf.String(),
+		Partial:    partial,
+		DurationMS: time.Since(start).Milliseconds(),
+	}, nil
+}
+
+func (s *pipeSession) Stream(ctx context.Context, prompt string) (<-chan types.Event, error) {
+	ch := make(chan types.Event, 64)
+
+	go func() {
+		defer close(ch)
+		result, err := s.Send(ctx, prompt)
+		if err != nil {
+			ch <- types.Event{Type: types.EventTypeError, Error: err}
+			return
+		}
+		ch <- types.Event{Type: types.EventTypeContent, Content: result.Content}
+		ch <- types.Event{Type: types.EventTypeComplete}
+	}()
+
+	return ch, nil
+}
+
+// Close terminates the session.  It closes stdout (which causes the lifetime
+// reader goroutine to exit via EOF) and kills the underlying process.
+func (s *pipeSession) Close() error {
+	s.closeOnce.Do(func() {
+		// Close stdout first so the lifetime reader unblocks and exits.
+		_ = s.stdout.Close()
+		// Wait for the reader to exit before killing — avoids a race on the handle.
+		<-s.readerDone
+		_ = s.stdin.Close()
+		sessionPM.Kill(s.handle)
+		sessionPM.Cleanup(s.handle)
+	})
+	return nil
+}
+
+func (s *pipeSession) Alive() bool {
+	return sessionPM.IsAlive(s.handle)
+}
+
+func (s *pipeSession) PID() int {
+	if s.handle != nil {
+		return s.handle.PID
+	}
+	return 0
 }
 
 // Start begins a persistent session via stdin/stdout pipes.
@@ -152,139 +327,70 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 			fmt.Sprintf("failed to start %s", args.Command), err, "")
 	}
 
-	return &pipeSession{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: handle.Stdout,
-		handle: handle,
-		ctx:    ctx,
-	}, nil
-}
-
-type pipeSession struct {
-	id     string
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	handle *executor.ProcessHandle
-	ctx    context.Context
-	mu     sync.Mutex
-}
-
-func (s *pipeSession) ID() string { return s.id }
-
-func (s *pipeSession) Send(ctx context.Context, prompt string) (*types.Result, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	start := time.Now()
-
-	_, err := fmt.Fprintln(s.stdin, prompt)
-	if err != nil {
-		return nil, types.NewExecutorError("failed to write to stdin", err, "")
+	// T002: derive inactivity timeout from args; fall back to 5s default.
+	inactivity := time.Duration(args.InactivitySeconds) * time.Second
+	if args.InactivitySeconds <= 0 {
+		inactivity = defaultInactivitySeconds * time.Second
 	}
 
-	// Read response with inactivity timeout (500ms without new data = response complete).
-	// A single long-running reader goroutine owns its buffer — no shared-slice data race.
-	// On timeout/cancel we close stdout to unblock the blocking Read call.
-	const inactivityTimeout = 500 * time.Millisecond
-
-	type chunk struct {
-		data []byte
-		err  error
+	sess := &pipeSession{
+		cmd:               cmd,
+		stdin:             stdin,
+		stdout:            handle.Stdout,
+		handle:            handle,
+		inactivityTimeout: inactivity,
+		readCh:            make(chan readChunk, 32),
+		readerDone:        make(chan struct{}),
 	}
-	readCh := make(chan chunk, 16)
 
-	// Single reader goroutine — owns its own tmp buffer exclusively.
+	// T001: start the single lifetime reader goroutine.
+	// It owns the stdout pipe exclusively and sends all data to readCh.
+	// It exits when stdout returns any error (EOF, closed pipe, etc.).
 	go func() {
+		defer close(sess.readerDone)
 		tmp := make([]byte, 4096)
 		for {
-			n, readErr := s.stdout.Read(tmp)
+			n, readErr := sess.stdout.Read(tmp)
 			if n > 0 {
 				cp := make([]byte, n)
 				copy(cp, tmp[:n])
-				readCh <- chunk{data: cp}
+				sess.readCh <- readChunk{data: cp}
 			}
 			if readErr != nil {
-				readCh <- chunk{err: readErr}
+				sess.readCh <- readChunk{err: readErr}
 				return
 			}
 		}
 	}()
 
-	var buf bytes.Buffer
-	timer := time.NewTimer(inactivityTimeout)
-	defer timer.Stop()
+	return sess, nil
+}
 
-	for {
-		select {
-		case c := <-readCh:
-			if len(c.data) > 0 {
-				buf.Write(c.data)
-				// Reset inactivity timer — more data may be coming.
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timer.Reset(inactivityTimeout)
-			}
-			if c.err != nil {
-				// Pipe closed or EOF — reader goroutine has exited.
-				goto done
-			}
-		case <-timer.C:
-			// No data for 500ms — treat as end of response.
-			// Close stdout to unblock the reader goroutine so it exits cleanly.
-			_ = s.stdout.Close()
-			goto done
-		case <-ctx.Done():
-			_ = s.stdout.Close()
-			goto done
-		}
+// cappedBuffer is an io.Writer that discards writes once the cap is reached.
+// Used to drain stderr without unbounded memory growth.
+type cappedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	cap int
+}
+
+func (cb *cappedBuffer) Write(p []byte) (int, error) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	remaining := cb.cap - cb.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil // silently discard; still report success to io.Copy
 	}
-
-done:
-	return &types.Result{
-		Content:    buf.String(),
-		DurationMS: time.Since(start).Milliseconds(),
-	}, nil
-}
-
-func (s *pipeSession) Stream(ctx context.Context, prompt string) (<-chan types.Event, error) {
-	ch := make(chan types.Event, 64)
-
-	go func() {
-		defer close(ch)
-		result, err := s.Send(ctx, prompt)
-		if err != nil {
-			ch <- types.Event{Type: types.EventTypeError, Error: err}
-			return
-		}
-		ch <- types.Event{Type: types.EventTypeContent, Content: result.Content}
-		ch <- types.Event{Type: types.EventTypeComplete}
-	}()
-
-	return ch, nil
-}
-
-func (s *pipeSession) Close() error {
-	_ = s.stdin.Close()
-	sessionPM.Kill(s.handle)
-	sessionPM.Cleanup(s.handle)
-	return nil
-}
-
-func (s *pipeSession) Alive() bool {
-	return sessionPM.IsAlive(s.handle)
-}
-
-func (s *pipeSession) PID() int {
-	if s.handle != nil {
-		return s.handle.PID
+	if len(p) > remaining {
+		p = p[:remaining]
 	}
-	return 0
+	return cb.buf.Write(p)
+}
+
+func (cb *cappedBuffer) String() string {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.buf.String()
 }
 
 func mergeEnv(extra map[string]string) []string {
@@ -294,4 +400,3 @@ func mergeEnv(extra map[string]string) []string {
 	}
 	return env
 }
-
