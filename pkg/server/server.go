@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -389,19 +390,22 @@ func (s *Server) ServeSSE(addr string) error {
 	if !isLocalhostAddr(addr) {
 		s.log.Warn("SSE transport bound to non-localhost address %s", addr)
 	}
-	sseServer := server.NewSSEServer(s.mcp)
 	if s.authToken == "" {
-		return sseServer.Start(addr)
+		return server.NewSSEServer(s.mcp).Start(addr)
 	}
 	s.log.Info("SSE transport: bearer token authentication enabled")
+	// Build the http.Server first so WithHTTPServer can be passed to the single
+	// NewSSEServer call. The handler is set after construction to avoid a
+	// chicken-and-egg reference, but the http.Server addr is configured upfront.
 	httpSrv := &http.Server{
-		Addr:         addr,
-		Handler:      bearerAuthMiddleware(s.authToken, sseServer),
-		ReadTimeout:  30 * time.Second,
+		Addr:        addr,
+		ReadTimeout: 30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-	return server.NewSSEServer(s.mcp, server.WithHTTPServer(httpSrv)).Start(addr)
+	sseServer := server.NewSSEServer(s.mcp, server.WithHTTPServer(httpSrv))
+	httpSrv.Handler = bearerAuthMiddleware(s.authToken, sseServer)
+	return sseServer.Start(addr)
 }
 
 // ServeHTTP starts the MCP server with StreamableHTTP transport.
@@ -412,20 +416,20 @@ func (s *Server) ServeHTTP(addr string, opts ...server.StreamableHTTPOption) err
 	if !isLocalhostAddr(addr) {
 		s.log.Warn("HTTP transport bound to non-localhost address %s", addr)
 	}
-	httpMCPServer := server.NewStreamableHTTPServer(s.mcp, opts...)
 	if s.authToken == "" {
-		return httpMCPServer.Start(addr)
+		return server.NewStreamableHTTPServer(s.mcp, opts...).Start(addr)
 	}
 	s.log.Info("HTTP transport: bearer token authentication enabled")
 	httpSrv := &http.Server{
-		Addr:         addr,
-		Handler:      bearerAuthMiddleware(s.authToken, httpMCPServer),
-		ReadTimeout:  30 * time.Second,
+		Addr:        addr,
+		ReadTimeout: 30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-	authOpts := append(opts, server.WithStreamableHTTPServer(httpSrv))
-	return server.NewStreamableHTTPServer(s.mcp, authOpts...).Start(addr)
+	allOpts := append(opts, server.WithStreamableHTTPServer(httpSrv))
+	httpMCPServer := server.NewStreamableHTTPServer(s.mcp, allOpts...)
+	httpSrv.Handler = bearerAuthMiddleware(s.authToken, httpMCPServer)
+	return httpMCPServer.Start(addr)
 }
 
 // ensureLocalhostBinding rewrites bare port specs and 0.0.0.0 to 127.0.0.1 to
@@ -456,7 +460,8 @@ func bearerAuthMiddleware(token string, next http.Handler) http.Handler {
 	}
 	expected := "Bearer " + token
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != expected {
+		got := r.Header.Get("Authorization")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -1090,14 +1095,13 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			},
 		}
 
-		sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
-		job := s.jobs.Create(sess.ID, cli)
-		s.log.Info("exec: PairCoding driver=%s reviewer=%s job=%s async=%v", cli, reviewerCLI, job.ID, async)
-
 		if async {
 			if err := s.checkConcurrencyLimit(); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
+			sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+			job := s.jobs.Create(sess.ID, cli)
+			s.log.Info("exec: PairCoding driver=%s reviewer=%s job=%s async=%v", cli, reviewerCLI, job.ID, async)
 			jobCtx, jobCancel := context.WithCancel(context.Background())
 			s.jobs.RegisterCancel(job.ID, jobCancel)
 			s.sendBusy(job.ID, "pair_coding", pairParams.Timeout*1000)
@@ -1113,6 +1117,9 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			return marshalToolResult(result)
 		}
 
+		sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+		job := s.jobs.Create(sess.ID, cli)
+		s.log.Info("exec: PairCoding driver=%s reviewer=%s job=%s async=%v", cli, reviewerCLI, job.ID, async)
 		s.executePairCoding(ctx, job.ID, sess.ID, pairParams, cb)
 
 		j := s.jobs.GetSnapshot(job.ID)
@@ -1147,9 +1154,6 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	prompt = s.injectBootstrap(role, prompt)
 
 	// Non-coding roles: direct execution
-	sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
-	job := s.jobs.Create(sess.ID, cli)
-
 	args := types.SpawnArgs{
 		CLI:            cli,
 		Command:        resolve.CommandBinary(profile.Command.Base),
@@ -1165,12 +1169,13 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		s.log.Info("exec: stdin piping activated (prompt=%d chars, threshold=%d)", len(prompt), profile.StdinThreshold)
 	}
 
-	s.log.Info("exec: cli=%s role=%s job=%s async=%v", cli, role, job.ID, async)
-
 	if async {
 		if err := s.checkConcurrencyLimit(); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+		job := s.jobs.Create(sess.ID, cli)
+		s.log.Info("exec: cli=%s role=%s job=%s async=%v", cli, role, job.ID, async)
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
 		go s.executeJob(jobCtx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
@@ -1183,6 +1188,9 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		return marshalToolResult(result)
 	}
 
+	sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+	job := s.jobs.Create(sess.ID, cli)
+	s.log.Info("exec: cli=%s role=%s job=%s async=%v", cli, role, job.ID, async)
 	s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
 	j := s.jobs.GetSnapshot(job.ID)
@@ -1523,7 +1531,7 @@ func (s *Server) runWithModelFallback(
 
 		case executor.ErrorClassQuota:
 			s.cooldownTracker.MarkCooledDown(profile.Name, model, cooldownDuration)
-			s.log.Info("model fallback: cli=%s model=%s → next (reason: quota, cooldown: %ds)",
+			s.log.Warn("model fallback: cli=%s model=%s → next (reason: quota, cooldown: %ds)",
 				profile.Name, model, profile.CooldownSeconds)
 			lastErr = fmt.Errorf("quota exceeded for %s:%s", profile.Name, model)
 			continue // try next model
@@ -1918,9 +1926,6 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		}
 
 		readOnly := routing.IsAdvisory(role)
-		sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
-		job := s.jobs.Create(sess.ID, cli)
-
 		args := types.SpawnArgs{
 			CLI:            cli,
 			Command:        resolve.CommandBinary(profile.Command.Base),
@@ -1929,8 +1934,6 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			TimeoutSeconds: profile.TimeoutSeconds,
 		}
 
-		s.log.Info("agents: run agent=%s cli=%s role=%s job=%s", agentName, cli, role, job.ID)
-
 		cb := s.breakers.Get(cli)
 		async := request.GetBool("async", false)
 
@@ -1938,6 +1941,9 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			if err := s.checkConcurrencyLimit(); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
+			sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+			job := s.jobs.Create(sess.ID, cli)
+			s.log.Info("agents: run agent=%s cli=%s role=%s job=%s", agentName, cli, role, job.ID)
 			jobCtx, jobCancel := context.WithCancel(context.Background())
 			s.jobs.RegisterCancel(job.ID, jobCancel)
 			go s.executeJob(jobCtx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
@@ -1949,6 +1955,9 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			})
 		}
 
+		sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
+		job := s.jobs.Create(sess.ID, cli)
+		s.log.Info("agents: run agent=%s cli=%s role=%s job=%s", agentName, cli, role, job.ID)
 		s.executeJob(ctx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
 
 		j := s.jobs.GetSnapshot(job.ID)
@@ -1998,11 +2007,13 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 		}
 		sess := s.sessions.Create("audit", types.SessionModeOnceStateless, cwd)
 		job := s.jobs.Create(sess.ID, "audit")
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		s.jobs.RegisterCancel(job.ID, jobCancel)
 		s.sendBusy(job.ID, "audit", 0)
 		go func() {
 			defer s.sendIdle(job.ID)
 			s.jobs.StartJob(job.ID, 0)
-			result, stratErr := s.orchestrator.Execute(context.Background(), "audit", params)
+			result, stratErr := s.orchestrator.Execute(jobCtx, "audit", params)
 			if stratErr != nil {
 				s.jobs.FailJob(job.ID, types.NewExecutorError(stratErr.Error(), stratErr, ""))
 				return
@@ -2149,6 +2160,23 @@ func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (
 }
 
 // --- Investigate Handler ---
+
+// validateCWD validates that cwd is an existing directory when non-empty.
+// Returns nil when cwd is empty (no validation needed).
+func validateCWD(cwd string) error {
+	if cwd == "" {
+		return nil
+	}
+	cwd = filepath.Clean(cwd)
+	info, err := os.Stat(cwd)
+	if err != nil {
+		return fmt.Errorf("cwd %q not found: %w", cwd, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("cwd %q is not a directory", cwd)
+	}
+	return nil
+}
 
 func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	action, err := request.RequireString("action")
@@ -2409,9 +2437,12 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 
 		cwd := request.GetString("cwd", "")
 		if cwd != "" {
-			filepath, saveErr := inv.SaveReport(cwd, state.Topic, report)
+			if err := validateCWD(cwd); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			savedPath, saveErr := inv.SaveReport(cwd, state.Topic, report)
 			if saveErr == nil {
-				result["saved_to"] = filepath
+				result["saved_to"] = savedPath
 			}
 		}
 
@@ -2450,7 +2481,11 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 	case "list":
 		active := inv.ListInvestigations()
 		cwd := request.GetString("cwd", "")
-		if cwd == "" {
+		if cwd != "" {
+			if err := validateCWD(cwd); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+		} else {
 			cwd, _ = os.Getwd()
 		}
 		savedReports, _ := inv.ListReports(cwd)
@@ -2468,7 +2503,11 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			return mcp.NewToolResultError("topic required for recall"), nil
 		}
 		cwd := request.GetString("cwd", "")
-		if cwd == "" {
+		if cwd != "" {
+			if err := validateCWD(cwd); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+		} else {
 			cwd, _ = os.Getwd()
 		}
 		result, err := inv.RecallReport(cwd, topic)
@@ -2761,17 +2800,6 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		job := s.jobs.Create(sess.ID, cli)
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		s.jobs.RegisterCancel(job.ID, jobCancel)
-		outputFormat := ""
-		if profile, err := s.registry.Get(cli); err == nil {
-			outputFormat = profile.OutputFormat
-		}
-		runCfg.OnOutput = func(resolvedCLI, line string) {
-			format := outputFormat
-			if profile, err := s.registry.Get(resolvedCLI); err == nil {
-				format = profile.OutputFormat
-			}
-			s.progressSink(job.ID, format)(line)
-		}
 		s.sendBusy(job.ID, "agent:"+agentName, agentBusyEstimateMs(timeoutSeconds, maxTurns))
 
 		runCfg.OnOutput = func(cli, line string) {
@@ -2951,11 +2979,13 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 		}
 		sess := s.sessions.Create("workflow", types.SessionModeOnceStateless, "")
 		job := s.jobs.Create(sess.ID, "workflow")
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		s.jobs.RegisterCancel(job.ID, jobCancel)
 		s.sendBusy(job.ID, "workflow", 0)
 		go func() {
 			defer s.sendIdle(job.ID)
 			s.jobs.StartJob(job.ID, 0)
-			result, stratErr := s.orchestrator.Execute(context.Background(), "workflow", params)
+			result, stratErr := s.orchestrator.Execute(jobCtx, "workflow", params)
 			if stratErr != nil {
 				s.jobs.FailJob(job.ID, types.NewExecutorError(stratErr.Error(), stratErr, ""))
 				return

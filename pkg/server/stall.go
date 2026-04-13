@@ -27,7 +27,7 @@ const (
 // known-good baseline). The function itself only needs a timestamp and config.
 //
 // Tier boundaries (defaults):
-//   - < grace (60s)   → TierNone
+//   - < grace (60s)   → TierNone  (startup allowance; StreamingGraceSeconds)
 //   - ≥ grace, < soft (120s) → TierNone  (grace is a startup allowance, not a tier)
 //   - ≥ soft (120s)   → TierSoftWarning
 //   - ≥ hard (600s)   → TierHardStall
@@ -38,6 +38,11 @@ func evaluateInactivityTier(lastOutputAt time.Time, cfg *config.ServerConfig) In
 	}
 
 	silent := time.Since(lastOutputAt)
+
+	graceDur := time.Duration(cfg.StreamingGraceSeconds) * time.Second
+	if graceDur > 0 && silent < graceDur {
+		return TierNone
+	}
 
 	autoCancelDur := time.Duration(cfg.StreamingAutoCancelSeconds) * time.Second
 	hardStallDur := time.Duration(cfg.StreamingHardStallSeconds) * time.Second
@@ -65,7 +70,7 @@ func applyStallGuidance(result map[string]any, tier InactivityTier) {
 		result["stall_alert"] = "No output for 600s. Consider cancelling."
 		result["recommended_action"] = "cancel"
 	case TierAutoCancel:
-		result["stall_alert"] = "No output for 600s. Consider cancelling."
+		result["stall_alert"] = "No output for 900s. Auto-cancel recommended."
 		result["recommended_action"] = "cancel"
 		result["auto_cancel_recommended"] = true
 	}
