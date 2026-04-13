@@ -1590,6 +1590,17 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		}
 	}
 
+	if j.Status == types.JobStatusRunning {
+		// Use LastOutputAt when available; fall back to CreatedAt for jobs that
+		// have never produced a line of output yet (zero value).
+		baseline := j.LastOutputAt
+		if baseline.IsZero() {
+			baseline = j.CreatedAt
+		}
+		tier := evaluateInactivityTier(baseline, &s.cfg.Server)
+		applyStallGuidance(result, tier)
+	}
+
 	if pollCount >= 3 {
 		result["warning"] = "Polling detected. Prefer background tasks over polling."
 	}
