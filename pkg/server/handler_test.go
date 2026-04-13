@@ -2874,3 +2874,54 @@ func TestHandleSessions_KillNonexistentSession(t *testing.T) {
 		t.Error("expected error for killing nonexistent session")
 	}
 }
+
+func TestIsQuotaError(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		stderr   string
+		exitCode int
+		want     bool
+	}{
+		{
+			name:     "content with usage limit",
+			content:  "Error: you have hit your usage limit for this period",
+			exitCode: 1,
+			want:     true,
+		},
+		{
+			name:     "content with rate limit",
+			content:  "rate limit exceeded, please wait",
+			exitCode: 1,
+			want:     true,
+		},
+		{
+			name:     "stderr with 429",
+			stderr:   "HTTP 429 Too Many Requests",
+			exitCode: 1,
+			want:     true,
+		},
+		{
+			name:     "normal output exit 0",
+			content:  "Here is the answer to your question.",
+			exitCode: 0,
+			want:     false,
+		},
+		{
+			name:     "exit 0 with rate limit in content is not a quota error",
+			content:  "rate limit info for your reference",
+			exitCode: 0,
+			want:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isQuotaError(tc.content, tc.stderr, tc.exitCode)
+			if got != tc.want {
+				t.Errorf("isQuotaError(%q, %q, %d) = %v, want %v",
+					tc.content, tc.stderr, tc.exitCode, got, tc.want)
+			}
+		})
+	}
+}

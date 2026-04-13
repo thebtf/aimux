@@ -1440,6 +1440,12 @@ func isRetriableError(msg string) bool {
 	return false
 }
 
+// isQuotaError returns true if the error indicates a model-level quota/rate limit.
+// Used to trigger model fallback (try next model on same CLI) before CLI fallback.
+func isQuotaError(content, stderr string, exitCode int) bool {
+	return executor.ClassifyError(content, stderr, exitCode) == executor.ErrorClassQuota
+}
+
 // isRetriableValidationError returns true when validation errors indicate a
 // transient infrastructure problem rather than a permanent content issue.
 func isRetriableValidationError(errors []string) bool {
