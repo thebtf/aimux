@@ -305,6 +305,21 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	if err := s.guidanceReg.Register(policies.NewInvestigatePolicy()); err != nil {
 		log.Warn("guidance: failed to register investigate policy: %v", err)
 	}
+	if err := s.guidanceReg.Register(policies.NewThinkPolicy()); err != nil {
+		log.Warn("guidance: failed to register think policy: %v", err)
+	}
+	if err := s.guidanceReg.Register(policies.NewConsensusPolicy()); err != nil {
+		log.Warn("guidance: failed to register consensus policy: %v", err)
+	}
+	if err := s.guidanceReg.Register(policies.NewDebatePolicy()); err != nil {
+		log.Warn("guidance: failed to register debate policy: %v", err)
+	}
+	if err := s.guidanceReg.Register(policies.NewDialogPolicy()); err != nil {
+		log.Warn("guidance: failed to register dialog policy: %v", err)
+	}
+	if err := s.guidanceReg.Register(policies.NewWorkflowPolicy()); err != nil {
+		log.Warn("guidance: failed to register workflow policy: %v", err)
+	}
 
 	// Initialize hooks registry with built-in telemetry
 	s.hooks = hooks.NewRegistry()
@@ -1600,6 +1615,17 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		}
 	}
 
+	if j.Status == types.JobStatusRunning {
+		// Use LastOutputAt when available; fall back to CreatedAt for jobs that
+		// have never produced a line of output yet (zero value).
+		baseline := j.LastOutputAt
+		if baseline.IsZero() {
+			baseline = j.CreatedAt
+		}
+		tier := evaluateInactivityTier(baseline, &s.cfg.Server)
+		applyStallGuidance(result, tier)
+	}
+
 	if pollCount >= 3 {
 		result["warning"] = "Polling detected. Prefer background tasks over polling."
 	}
@@ -1763,13 +1789,20 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		ss.Turns = result.Turns
 	})
 
-	return marshalToolResult(map[string]any{
+	rawPayload := map[string]any{
 		"session_id":   sess.ID,
 		"status":       result.Status,
 		"turns":        result.Turns,
 		"content":      result.Content,
 		"participants": result.Participants,
-	})
+	}
+	dialogState := &policies.DialogPolicyInput{
+		SessionID:    sess.ID,
+		Turns:        result.Turns,
+		Status:       result.Status,
+		Participants: result.Participants,
+	}
+	return s.marshalGuidedToolResult("dialog", "", dialogState, rawPayload)
 }
 
 // findDialogTurnHistory scans jobs for the most recent dialog turn history
@@ -2093,11 +2126,24 @@ func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (
 		response["computed_fields"] = thinkResult.ComputedFields
 	}
 
-	data, err := json.Marshal(response)
-	if err != nil {
-		return mcp.NewToolResultError("internal error: failed to marshal response"), nil
+	// Extract step number from result data so the policy can produce accurate state labels.
+	stepNumber := 0
+	if n, ok := thinkResult.Data["thoughtNumber"]; ok {
+		switch v := n.(type) {
+		case int:
+			stepNumber = v
+		case float64:
+			stepNumber = int(v)
+		}
 	}
-	return mcp.NewToolResultText(string(data)), nil
+
+	thinkState := &policies.ThinkPolicyInput{
+		Pattern:    patternName,
+		SessionID:  thinkResult.SessionID,
+		IsStateful: policies.IsStatefulPattern(patternName),
+		StepNumber: stepNumber,
+	}
+	return s.marshalGuidedToolResult("think", patternName, thinkState, response)
 }
 
 // --- Investigate Handler ---
@@ -2503,7 +2549,12 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("consensus failed: %v", err)), nil
 	}
-	return marshalToolResult(result)
+	consensusState := &policies.ConsensusPolicyInput{
+		Synthesize: synthesize,
+		Turns:      result.Turns,
+		Status:     result.Status,
+	}
+	return s.marshalGuidedToolResult("consensus", "", consensusState, result)
 }
 
 // --- DeepResearch Handler ---
@@ -2597,7 +2648,13 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("debate failed: %v", err)), nil
 	}
-	return marshalToolResult(result)
+	debateState := &policies.DebatePolicyInput{
+		Turns:      result.Turns,
+		MaxTurns:   params.MaxTurns,
+		Synthesize: synthesize,
+		Status:     result.Status,
+	}
+	return s.marshalGuidedToolResult("debate", "", debateState, result)
 }
 
 // --- Agent Run Handler ---
@@ -2910,7 +2967,39 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("workflow failed: %v", err)), nil
 	}
-	return marshalToolResult(result)
+	workflowState := buildWorkflowPolicyInput(name, result)
+	return s.marshalGuidedToolResult("workflow", "", workflowState, result)
+}
+
+// buildWorkflowPolicyInput derives a WorkflowPolicyInput from the raw strategy result.
+func buildWorkflowPolicyInput(name string, result *types.StrategyResult) *policies.WorkflowPolicyInput {
+	input := &policies.WorkflowPolicyInput{
+		Name:       name,
+		TotalSteps: result.Turns,
+		Status:     result.Status,
+	}
+
+	wfResult, ok := result.Extra["workflow"].(orch.WorkflowResult)
+	if !ok {
+		return input
+	}
+
+	completed := 0
+	failedAt := 0
+	for i, step := range wfResult.Steps {
+		switch step.Status {
+		case "completed":
+			completed++
+		case "failed":
+			if failedAt == 0 {
+				failedAt = i + 1
+			}
+		}
+	}
+	input.TotalSteps = len(wfResult.Steps)
+	input.CompletedSteps = completed
+	input.FailedAtStep = failedAt
+	return input
 }
 
 // selectBestExecutor returns the best available executor for the current platform.

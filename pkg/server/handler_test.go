@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	orch "github.com/thebtf/aimux/pkg/orchestrator"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,15 @@ import (
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+// testBinary returns a platform-appropriate binary that is guaranteed to exist.
+// echo is a shell builtin on Windows and cannot be found via exec.LookPath; use cmd instead.
+func testBinary() string {
+	if runtime.GOOS == "windows" {
+		return "cmd"
+	}
+	return "echo"
+}
 
 type stubExecutor struct {
 	run func(ctx context.Context, args types.SpawnArgs) (*types.Result, error)
@@ -74,9 +85,9 @@ func testServer(t *testing.T) *Server {
 		CLIProfiles: map[string]*config.CLIProfile{
 			"codex": {
 				Name:        "codex",
-				Binary:      "echo",
+				Binary:      testBinary(),
 				DisplayName: "Test CLI",
-				Command:     config.CommandConfig{Base: "echo"},
+				Command:     config.CommandConfig{Base: testBinary()},
 				PromptFlag:  "-p",
 				ModelFlag:   "-m",
 				Reasoning: &config.ReasoningConfig{
@@ -84,6 +95,16 @@ func testServer(t *testing.T) *Server {
 					FlagValueTemplate: "model_reasoning_effort=%s",
 					Levels:            []string{"low", "medium", "high", "xhigh"},
 				},
+				TimeoutSeconds: 10,
+				Features:       types.CLIFeatures{Headless: true},
+			},
+			"gemini": {
+				Name:           "gemini",
+				Binary:         testBinary(),
+				DisplayName:    "Test CLI 2",
+				Command:        config.CommandConfig{Base: testBinary()},
+				PromptFlag:     "-p",
+				ModelFlag:      "-m",
 				TimeoutSeconds: 10,
 				Features:       types.CLIFeatures{Headless: true},
 			},
@@ -98,9 +119,27 @@ func testServer(t *testing.T) *Server {
 	t.Cleanup(func() { log.Close() })
 
 	reg := driver.NewRegistry(cfg.CLIProfiles)
-	router := routing.NewRouter(cfg.Roles, []string{"codex"})
+	reg.Probe()
+	router := routing.NewRouter(cfg.Roles, []string{"codex", "gemini"})
 
-	return New(cfg, log, reg, router)
+	srv := New(cfg, log, reg, router)
+
+	// Re-register orchestrator strategies backed by a stub executor so that
+	// consensus/debate/dialog handler tests do not launch real CLI processes.
+	// The stub always returns a minimal completed result, letting the handlers
+	// reach the guidance-envelope assembly stage without spawning subprocesses.
+	// srv.executor is intentionally NOT replaced so that single-executor handler
+	// tests (e.g. agent run) continue to use the real executor path.
+	orchStub := &stubExecutor{
+		run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+			return &types.Result{Content: "stub response", ExitCode: 0}, nil
+		},
+	}
+	srv.orchestrator.Register(orch.NewParallelConsensus(orchStub, nil))
+	srv.orchestrator.Register(orch.NewStructuredDebate(orchStub, nil))
+	srv.orchestrator.Register(orch.NewSequentialDialog(orchStub, nil))
+
+	return srv
 }
 
 // makeRequest builds a CallToolRequest with the given arguments.
@@ -111,6 +150,63 @@ func makeRequest(name string, args map[string]any) mcp.CallToolRequest {
 			Arguments: args,
 		},
 	}
+}
+
+// testServerSingleCLI creates a test server with only one CLI (codex).
+// Use this for tests that verify error behavior when fewer than 2 CLIs are available.
+func testServerSingleCLI(t *testing.T) *Server {
+	t.Helper()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			LogLevel:              "error",
+			LogFile:               t.TempDir() + "/test.log",
+			DefaultTimeoutSeconds: 10,
+			Pair:                  config.PairConfig{MaxRounds: 2},
+			Audit: config.AuditConfig{
+				ScannerRole:      "codereview",
+				ValidatorRole:    "analyze",
+				ParallelScanners: 1,
+			},
+		},
+		Roles: map[string]types.RolePreference{
+			"default":    {CLI: "codex"},
+			"coding":     {CLI: "codex"},
+			"codereview": {CLI: "codex"},
+			"thinkdeep":  {CLI: "codex"},
+			"analyze":    {CLI: "codex"},
+		},
+		CircuitBreaker: config.CircuitBreakerConfig{
+			FailureThreshold: 3,
+			CooldownSeconds:  5,
+			HalfOpenMaxCalls: 1,
+		},
+		CLIProfiles: map[string]*config.CLIProfile{
+			"codex": {
+				Name:           "codex",
+				Binary:         testBinary(),
+				DisplayName:    "Test CLI",
+				Command:        config.CommandConfig{Base: testBinary()},
+				PromptFlag:     "-p",
+				ModelFlag:      "-m",
+				TimeoutSeconds: 10,
+				Features:       types.CLIFeatures{Headless: true},
+			},
+		},
+		ConfigDir: t.TempDir(),
+	}
+
+	log, err := logger.New(cfg.Server.LogFile, logger.LevelError)
+	if err != nil {
+		t.Fatalf("logger: %v", err)
+	}
+	t.Cleanup(func() { log.Close() })
+
+	reg := driver.NewRegistry(cfg.CLIProfiles)
+	reg.Probe()
+	router := routing.NewRouter(cfg.Roles, []string{"codex"})
+
+	return New(cfg, log, reg, router)
 }
 
 // parseResult extracts the text content from a tool result.
@@ -490,12 +586,17 @@ func TestHandleThink_Basic(t *testing.T) {
 		t.Fatalf("handleThink: %v", err)
 	}
 
+	// handleThink now returns a guided envelope; raw fields are nested under result.
 	data := parseResult(t, result)
-	if data["pattern"] != "critical_thinking" {
-		t.Errorf("pattern = %v, want critical_thinking", data["pattern"])
+	resultPayload, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result payload under result key, got %T", data["result"])
 	}
-	if data["mode"] != "solo" {
-		t.Errorf("mode = %v, want solo", data["mode"])
+	if resultPayload["pattern"] != "critical_thinking" {
+		t.Errorf("result.pattern = %v, want critical_thinking", resultPayload["pattern"])
+	}
+	if resultPayload["mode"] != "solo" {
+		t.Errorf("result.mode = %v, want solo", resultPayload["mode"])
 	}
 }
 
@@ -510,6 +611,172 @@ func TestHandleThink_MissingPattern(t *testing.T) {
 
 	if !result.IsError {
 		t.Error("expected error for missing pattern")
+	}
+}
+
+// --- T032: Guidance Compatibility ---
+// These tests verify the guidance envelope contract:
+//   - Guided tools (investigate, think) still accept the same input parameters they
+//     accepted before the guidance layer was introduced.
+//   - Non-guided tools (exec, status, sessions) return flat results with no envelope.
+//   - The guidance envelope does not leak "state"/"result" wrapper keys into
+//     non-guided tool responses.
+
+// TestGuidedTool_Investigate_AcceptsInputParameters verifies that the investigate
+// handler accepts its documented input parameters after guidance was introduced.
+// Regression guard: guidance wrapping must not break the handler input contract.
+func TestGuidedTool_Investigate_AcceptsInputParameters(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "start",
+		"topic":  "compat regression check",
+		"domain": "debugging",
+	})
+
+	result, err := srv.handleInvestigate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleInvestigate: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+
+	data := parseResult(t, result)
+	// Envelope must be present.
+	if data["state"] == nil {
+		t.Error("guided investigate response must have state field")
+	}
+	if data["result"] == nil {
+		t.Error("guided investigate response must have result field")
+	}
+	// Input parameters must have been accepted — session_id is created from topic.
+	inner, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("investigate result must be a map, got %T", data["result"])
+	}
+	if inner["session_id"] == nil {
+		t.Error("investigate start must return result.session_id")
+	}
+	if inner["topic"] != "compat regression check" {
+		t.Errorf("result.topic = %v, want 'compat regression check'", inner["topic"])
+	}
+}
+
+// TestGuidedTool_Think_AcceptsInputParameters verifies that the think handler accepts
+// its documented input parameters after guidance wrapping was introduced.
+func TestGuidedTool_Think_AcceptsInputParameters(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("think", map[string]any{
+		"pattern": "decision_framework",
+		"decision": "switch to event sourcing",
+	})
+
+	result, err := srv.handleThink(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleThink: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+
+	data := parseResult(t, result)
+	if data["state"] == nil {
+		t.Error("guided think response must have state field")
+	}
+	inner, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("think result must be a map, got %T", data["result"])
+	}
+	if inner["pattern"] != "decision_framework" {
+		t.Errorf("result.pattern = %v, want decision_framework", inner["pattern"])
+	}
+}
+
+// TestNonGuidedTool_Exec_ReturnsFlatResult verifies that exec returns a flat
+// result with no guidance envelope wrapper keys (state, result nesting).
+func TestNonGuidedTool_Exec_ReturnsFlatResult(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("exec", map[string]any{
+		"prompt": "flat result check",
+		"cli":    "codex",
+		"async":  true,
+	})
+
+	result, err := srv.handleExec(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleExec: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	data := parseResult(t, result)
+	// exec must have a flat job_id/status — not nested under "result".
+	if data["job_id"] == nil {
+		t.Error("exec async must have top-level job_id")
+	}
+	if data["status"] == nil {
+		t.Error("exec async must have top-level status")
+	}
+	// Guidance envelope keys must not leak into exec responses.
+	if data["state"] != nil {
+		t.Errorf("exec must not have guidance state key, got: %v", data["state"])
+	}
+	if _, hasResultKey := data["result"]; hasResultKey {
+		t.Error("exec must not wrap payload in a guidance result envelope")
+	}
+}
+
+// TestNonGuidedTool_Status_ReturnsFlatResult verifies that status returns a flat
+// result with no guidance envelope leakage.
+func TestNonGuidedTool_Status_ReturnsFlatResult(t *testing.T) {
+	srv := testServer(t)
+
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 0)
+	srv.jobs.CompleteJob(job.ID, "output", 0)
+
+	req := makeRequest("status", map[string]any{"job_id": job.ID})
+	result, err := srv.handleStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["status"] != "completed" {
+		t.Errorf("status = %v, want completed", data["status"])
+	}
+	// Guidance envelope must not appear in status response.
+	if data["state"] != nil {
+		t.Errorf("status must not have guidance state key, got: %v", data["state"])
+	}
+	if _, hasResultKey := data["result"]; hasResultKey {
+		t.Error("status must not wrap payload in a guidance result envelope")
+	}
+}
+
+// TestNonGuidedTool_Sessions_ReturnsFlatResult verifies that the sessions health
+// action returns a flat result with no guidance envelope leakage.
+func TestNonGuidedTool_Sessions_ReturnsFlatResult(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("sessions", map[string]any{"action": "health"})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	data := parseResult(t, result)
+	if data["total_sessions"] == nil {
+		t.Error("sessions health must have total_sessions")
+	}
+	// Guidance envelope must not appear in sessions response.
+	if data["state"] != nil {
+		t.Errorf("sessions must not have guidance state key, got: %v", data["state"])
+	}
+	if _, hasResultKey := data["result"]; hasResultKey {
+		t.Error("sessions must not wrap payload in a guidance result envelope")
 	}
 }
 
@@ -968,8 +1235,8 @@ func TestHandleSessions_InvalidAction(t *testing.T) {
 // --- Consensus: Insufficient CLIs ---
 
 func TestHandleConsensus_InsufficientCLIs(t *testing.T) {
-	srv := testServer(t)
-	// testServer has only 1 CLI (codex) — consensus requires 2
+	srv := testServerSingleCLI(t)
+	// testServerSingleCLI has only 1 CLI (codex) — consensus requires 2
 	req := makeRequest("consensus", map[string]any{
 		"topic": "test topic",
 	})
@@ -987,7 +1254,7 @@ func TestHandleConsensus_InsufficientCLIs(t *testing.T) {
 // --- Dialog: Insufficient CLIs ---
 
 func TestHandleDialog_InsufficientCLIs(t *testing.T) {
-	srv := testServer(t)
+	srv := testServerSingleCLI(t)
 	req := makeRequest("dialog", map[string]any{
 		"prompt": "test prompt",
 	})
@@ -1005,7 +1272,7 @@ func TestHandleDialog_InsufficientCLIs(t *testing.T) {
 // --- Debate: Insufficient CLIs ---
 
 func TestHandleDebate_InsufficientCLIs(t *testing.T) {
-	srv := testServer(t)
+	srv := testServerSingleCLI(t)
 	req := makeRequest("debate", map[string]any{
 		"topic": "test topic",
 	})

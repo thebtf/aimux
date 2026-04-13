@@ -25,6 +25,7 @@ type Job struct {
 	PID               int                  `json:"pid"`
 	CreatedAt         time.Time            `json:"created_at"`
 	ProgressUpdatedAt time.Time            `json:"progress_updated_at"`
+	LastOutputAt      time.Time            `json:"last_output_at,omitempty"`
 	CompletedAt       *time.Time           `json:"completed_at,omitempty"`
 }
 
@@ -197,7 +198,9 @@ func (m *JobManager) AppendProgress(id, line string) bool {
 		j.Progress += "\n"
 	}
 	j.Progress += line
-	j.ProgressUpdatedAt = time.Now()
+	now := time.Now()
+	j.ProgressUpdatedAt = now
+	j.LastOutputAt = now
 	return true
 }
 
