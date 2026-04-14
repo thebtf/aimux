@@ -86,8 +86,8 @@ github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
 github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
-github.com/thebtf/mcp-mux/muxcore v0.17.1 h1:LQrDq1q9RuJM5pUXfo6JVNAt2yhuSJj1kQPclJXh4AU=
-github.com/thebtf/mcp-mux/muxcore v0.17.1/go.mod h1:y7XcVEo6g9mYpbZogClriDmOoNk0E/Efzd69CYdjFlY=
+github.com/thebtf/mcp-mux/muxcore v0.18.0 h1:T80IbqCHZd5nUwdbuB0QhLgs+B59NEZ0T+a/cyjBZoA=
+github.com/thebtf/mcp-mux/muxcore v0.18.0/go.mod h1:y7XcVEo6g9mYpbZogClriDmOoNk0E/Efzd69CYdjFlY=
 github.com/thejerf/suture/v4 v4.0.6 h1:QsuCEsCqb03xF9tPAsWAj8QOAJBgQI1c0VqJNaingg8=
 github.com/thejerf/suture/v4 v4.0.6/go.mod h1:gu9Y4dXNUWFrByqRt30Rm9/UZ0wzRSt9AJS6xu/ZGxU=
 github.com/yosida95/uritemplate/v3 v3.0.2 h1:Ed3Oyj9yrmi9087+NczuL5BwkIc4wvTb5zIM+UJPGz4=
