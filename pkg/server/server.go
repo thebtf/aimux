@@ -905,9 +905,11 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 
 	case "health":
 		running := s.jobs.ListRunning()
+		snap := s.metrics.Snapshot()
 		return marshalToolResult(map[string]any{
 			"total_sessions": s.sessions.Count(),
 			"running_jobs":   len(running),
+			"per_project":    snap.PerProject,
 		})
 
 	case "cancel":
