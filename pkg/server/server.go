@@ -928,10 +928,22 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 	case "list":
 		statusFilter := request.GetString("status", "")
 		sessions := s.sessions.List(types.SessionStatus(statusFilter))
-		return marshalToolResult(map[string]any{
+		result := map[string]any{
 			"sessions": sessions,
 			"count":    len(sessions),
-		})
+		}
+		// Include Loom tasks filtered by ProjectContext.ID when available.
+		if s.loom != nil {
+			projectID := projectIDFromContext(ctx)
+			if projectID != "" {
+				tasks, taskErr := s.loom.List(projectID)
+				if taskErr == nil && len(tasks) > 0 {
+					result["tasks"] = tasks
+					result["task_count"] = len(tasks)
+				}
+			}
+		}
+		return marshalToolResult(result)
 
 	case "info":
 		sessionID := request.GetString("session_id", "")
@@ -951,21 +963,37 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 	case "health":
 		running := s.jobs.ListRunning()
 		snap := s.metrics.Snapshot()
-		return marshalToolResult(map[string]any{
+		health := map[string]any{
 			"total_sessions": s.sessions.Count(),
 			"running_jobs":   len(running),
 			"per_project":    snap.PerProject,
-		})
+		}
+		// Include Loom task counts when available.
+		if s.loom != nil {
+			projectID := projectIDFromContext(ctx)
+			if projectID != "" {
+				if tasks, err := s.loom.List(projectID); err == nil {
+					health["loom_tasks"] = len(tasks)
+				}
+			}
+		}
+		return marshalToolResult(health)
 
 	case "cancel":
 		jobID := request.GetString("job_id", "")
 		if jobID == "" {
 			return mcp.NewToolResultError("job_id required for cancel"), nil
 		}
-		if !s.jobs.CancelJob(jobID) {
-			return mcp.NewToolResultError("job not found"), nil
+		// Try legacy JobManager first, then Loom.
+		if s.jobs.CancelJob(jobID) {
+			return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
 		}
-		return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
+		if s.loom != nil {
+			if err := s.loom.Cancel(jobID); err == nil {
+				return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
+			}
+		}
+		return mcp.NewToolResultError("job not found"), nil
 
 	case "kill":
 		sessionID := request.GetString("session_id", "")
