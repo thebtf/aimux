@@ -74,25 +74,14 @@ func expectError(t *testing.T, resp map[string]any) {
 // --- Exec Tool ---
 
 func TestE2E_Exec_Async(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	// Initialize
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	stdin, reader := initTestCLIServer(t)
 
 	// Exec async
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
 		"name": "exec",
 		"arguments": map[string]any{
 			"prompt": "async test",
-			"cli":    "echo-cli",
+			"cli":    "codex",
 			"async":  true,
 		},
 	}))
@@ -181,23 +170,12 @@ func TestE2E_Sessions_Info_NotFound(t *testing.T) {
 }
 
 func TestE2E_Sessions_Kill(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	// Initialize
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	stdin, reader := initTestCLIServer(t)
 
 	// Create a session via exec
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
 		"name":      "exec",
-		"arguments": map[string]any{"prompt": "for kill", "cli": "echo-cli"},
+		"arguments": map[string]any{"prompt": "for kill", "cli": "codex"},
 	}))
 	execResp, _ := readResponse(reader, 10*time.Second)
 	execData := extractToolJSON(t, execResp)
@@ -763,20 +741,7 @@ func TestE2E_Dialog_MissingPrompt(t *testing.T) {
 // --- Agents Tool ---
 
 func TestE2E_Agent_Builtin(t *testing.T) {
-	// First list agents to get a real builtin name. Use same server process so the
-	// discovered registry from startup is shared with the later agent call.
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	// Initialize
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	stdin, reader := initTestCLIServer(t)
 
 	// List agents
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
@@ -804,6 +769,7 @@ func TestE2E_Agent_Builtin(t *testing.T) {
 		"arguments": map[string]any{
 			"agent":  agentName,
 			"prompt": "test prompt",
+			"cwd":    t.TempDir(),
 		},
 	}))
 	resp, err := readResponse(reader, 10*time.Second)

@@ -24,6 +24,26 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 	switch action {
 	case "list":
 		agentList := s.agentReg.List()
+
+		// Merge per-project agent overlay (SessionHandler mode).
+		// Overlay agents shadow shared agents with the same name.
+		if overlay := ProjectAgentsFromContext(ctx); len(overlay) > 0 {
+			seen := make(map[string]struct{}, len(overlay))
+			merged := make([]*agents.Agent, 0, len(agentList)+len(overlay))
+			// Add overlay agents first (higher priority).
+			for _, a := range overlay {
+				seen[a.Name] = struct{}{}
+				merged = append(merged, a)
+			}
+			// Add shared agents not shadowed by overlay.
+			for _, a := range agentList {
+				if _, shadowed := seen[a.Name]; !shadowed {
+					merged = append(merged, a)
+				}
+			}
+			agentList = merged
+		}
+
 		// Return summaries without full content (content can be 500KB+ total)
 		summaries := make([]map[string]any, len(agentList))
 		for i, a := range agentList {
@@ -51,9 +71,15 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		if agentName == "" {
 			return mcp.NewToolResultError("agent name required for info"), nil
 		}
-		agent, agentErr := s.agentReg.Get(agentName)
-		if agentErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+		// Check per-project overlay first so project-only agents are visible in info.
+		overlay := ProjectAgentsFromContext(ctx)
+		agent := findAgentInOverlay(overlay, agentName)
+		if agent == nil {
+			var agentErr error
+			agent, agentErr = s.agentReg.Get(agentName)
+			if agentErr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+			}
 		}
 		return marshalToolResult(agent)
 
@@ -67,9 +93,13 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultError("cwd is required — specify the working directory for the agent"), nil
 		}
 
-		// Auto-discover agents from the caller's project directory if it differs
-		// from the initial discovery path. Additive — does not remove existing agents.
-		if cwd != "" && cwd != s.projectDir {
+		// In SessionHandler mode, project agents are discovered on connect and stored
+		// in the per-project overlay (via ProjectAgentsFromContext). The additive Discover
+		// call is only needed in direct stdio mode (no ProjectContext) — using the
+		// ProjectContext presence as the reliable indicator avoids false negatives when
+		// a project has no agents (empty overlay).
+		overlay := ProjectAgentsFromContext(ctx)
+		if _, isSession := ProjectContextFromContext(ctx); !isSession && cwd != "" && cwd != s.projectDir {
 			s.agentReg.Discover(cwd, "")
 		}
 
@@ -86,10 +116,14 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 				"hint":    "Pick the agent whose 'when' description best matches your task. Use the 'agent' tool directly with agent=<name> for fastest execution.",
 			})
 		} else {
-			var agentErr error
-			agent, agentErr = s.agentReg.Get(agentName)
-			if agentErr != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+			// Check overlay first (project-specific agents), then shared registry.
+			agent = findAgentInOverlay(overlay, agentName)
+			if agent == nil {
+				var agentErr error
+				agent, agentErr = s.agentReg.Get(agentName)
+				if agentErr != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+				}
 			}
 		}
 
@@ -114,17 +148,24 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultError(fmt.Sprintf("CLI %q not configured for agent role %q", cli, role)), nil
 		}
 
+		// Inject per-session environment from ProjectContext.
+		var sessionEnv map[string]string
+		if pc, ok := ProjectContextFromContext(ctx); ok {
+			sessionEnv = pc.Env
+		}
+
 		readOnly := routing.IsAdvisory(role)
 		args := types.SpawnArgs{
 			CLI:            cli,
 			Command:        resolve.CommandBinary(profile.Command.Base),
 			Args:           resolve.BuildPromptArgs(profile, pref.Model, pref.ReasoningEffort, readOnly, fullPrompt),
 			CWD:            cwd,
+			Env:            sessionEnv,
 			TimeoutSeconds: profile.TimeoutSeconds,
 		}
 
 		cb := s.breakers.Get(cli)
-		async := request.GetBool("async", false)
+		async := request.GetBool("async", true) // P26: async_mandatory for agents run
 
 		if async {
 			if err := s.checkConcurrencyLimit(); err != nil {
@@ -182,14 +223,23 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError("prompt is required"), nil
 	}
 
-	agent, agentErr := s.agentReg.Get(agentName)
-	if agentErr != nil {
-		available := s.agentReg.List()
-		names := make([]string, len(available))
-		for i, a := range available {
-			names[i] = a.Name
+	// Check per-project overlay first, then shared registry.
+	overlay := ProjectAgentsFromContext(ctx)
+	agent := findAgentInOverlay(overlay, agentName)
+	if agent == nil {
+		var agentErr error
+		agent, agentErr = s.agentReg.Get(agentName)
+		if agentErr != nil {
+			available := s.agentReg.List()
+			// Include project-overlay agents in the available list so the error
+			// message shows both shared and project-specific agent names.
+			available = append(available, overlay...)
+			names := make([]string, len(available))
+			for i, a := range available {
+				names[i] = a.Name
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found; available: %v", agentName, names)), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("agent %q not found; available: %v", agentName, names)), nil
 	}
 
 	// Resolve CLI: explicit param > agent meta > role routing > default
@@ -221,7 +271,7 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError("cwd is required — specify the working directory for the agent"), nil
 	}
 	maxTurns := int(request.GetFloat("max_turns", 0))
-	async := request.GetBool("async", false)
+	async := request.GetBool("async", true) // P26: async_mandatory for agent tool
 
 	// Agent frontmatter overrides for model, effort, timeout
 	model := agent.Model
@@ -243,6 +293,12 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 
 	cliResolver := resolve.NewProfileResolver(s.cfg.CLIProfiles)
 
+	// Inject per-session environment from ProjectContext.
+	var agentEnv map[string]string
+	if pc, ok := ProjectContextFromContext(ctx); ok {
+		agentEnv = pc.Env
+	}
+
 	runCfg := agents.RunConfig{
 		Agent:    agent,
 		CLI:      cli,
@@ -254,6 +310,7 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		Effort:   effort,
 		Executor: s.executor,
 		Resolver: cliResolver,
+		Env:      agentEnv,
 	}
 
 	// T011: wire model-fallback chain from the resolved CLI profile.
@@ -319,10 +376,23 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 	return marshalToolResult(map[string]any{
 		"agent":       agentName,
 		"cli":         cli,
+		"model":       model,
+		"effort":      effort,
 		"status":      result.Status,
 		"turns":       result.Turns,
 		"content":     result.Content,
 		"duration_ms": result.DurationMS,
 		"turn_log":    result.TurnLog,
 	})
+}
+
+// findAgentInOverlay searches the per-project agent overlay by name.
+// Returns nil if overlay is empty or agent not found.
+func findAgentInOverlay(overlay []*agents.Agent, name string) *agents.Agent {
+	for _, a := range overlay {
+		if a.Name == name {
+			return a
+		}
+	}
+	return nil
 }

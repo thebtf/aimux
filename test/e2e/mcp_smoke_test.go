@@ -175,62 +175,28 @@ func startServer(t *testing.T, binPath string) (*exec.Cmd, io.WriteCloser, *bufi
 }
 
 func TestE2E_Initialize(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
+	// initTestCLIServer already performs initialize handshake.
+	// We verify it succeeds by getting a working stdin/reader pair.
+	stdin, reader := initTestCLIServer(t)
 
-	// Send initialize request
-	req := jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	})
-	fmt.Fprint(stdin, req)
-
+	// Verify the server responds to subsequent requests (confirms init worked).
+	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/list", map[string]any{}))
 	resp, err := readResponse(reader, 5*time.Second)
 	if err != nil {
-		t.Fatalf("initialize response: %v", err)
+		t.Fatalf("tools/list after init: %v", err)
 	}
-
-	// Verify response structure
 	result, ok := resp["result"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected result object, got %v", resp)
 	}
-
-	serverInfo, _ := result["serverInfo"].(map[string]any)
-	if serverInfo == nil {
-		t.Fatal("missing serverInfo")
+	tools, _ := result["tools"].([]any)
+	if len(tools) == 0 {
+		t.Error("no tools returned after initialize")
 	}
-	if serverInfo["name"] != "aimux" {
-		t.Errorf("serverInfo.name = %v, want aimux", serverInfo["name"])
-	}
-
-	caps, _ := result["capabilities"].(map[string]any)
-	if caps == nil {
-		t.Fatal("missing capabilities")
-	}
-	if caps["tools"] == nil {
-		t.Error("missing tools capability")
-	}
-
-	// Send initialized notification
-	fmt.Fprint(stdin, jsonRPCNotification("notifications/initialized"))
 }
 
 func TestE2E_ToolsList(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	// Initialize first
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	_, err := readResponse(reader, 5*time.Second)
-	if err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	stdin, reader := initTestCLIServer(t)
 
 	// Send tools/list
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/list", nil))
@@ -273,25 +239,14 @@ func TestE2E_ToolsList(t *testing.T) {
 }
 
 func TestE2E_ExecSync(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
+	stdin, reader := initTestCLIServer(t)
 
-	// Initialize
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
-
-	// Call exec tool with echo CLI — should echo prompt back
+	// Call exec tool — should return CLI output
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
 		"name": "exec",
 		"arguments": map[string]any{
 			"prompt": "e2e test payload",
-			"cli":    "echo-cli",
+			"cli":    "codex",
 			"async":  false,
 		},
 	}))
@@ -337,23 +292,12 @@ func TestE2E_ExecSync(t *testing.T) {
 }
 
 func TestE2E_SessionsList(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	// Initialize
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	stdin, reader := initTestCLIServer(t)
 
 	// Run an exec first to create a session
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
 		"name":      "exec",
-		"arguments": map[string]any{"prompt": "create session", "cli": "echo-cli"},
+		"arguments": map[string]any{"prompt": "create session", "cli": "codex"},
 	}))
 	if _, err := readResponse(reader, 10*time.Second); err != nil {
 		t.Fatalf("exec: %v", err)
@@ -389,18 +333,7 @@ func TestE2E_SessionsList(t *testing.T) {
 }
 
 func TestE2E_ThinkTool(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	// Initialize
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	stdin, reader := initTestCLIServer(t)
 
 	// Think tool — in-process, no CLI needed
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
@@ -443,18 +376,7 @@ func TestE2E_ThinkTool(t *testing.T) {
 }
 
 func TestE2E_InvalidTool(t *testing.T) {
-	bin := buildBinary(t)
-	_, stdin, reader := startServer(t, bin)
-
-	// Initialize
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
+	stdin, reader := initTestCLIServer(t)
 
 	// Call nonexistent tool
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{

@@ -33,6 +33,7 @@ type RunConfig struct {
 	ModelFlag           string                      // CLI flag for model (e.g. "-m")
 	CooldownTracker     types.ModelCooldownTracker  // optional: cooldown tracker for rate-limited models
 	CooldownSeconds     int                         // cooldown duration after quota error
+	Env                 map[string]string           // per-session environment (API keys from ProjectContext)
 }
 
 // RunResult holds the outcome of an agent run.
@@ -196,6 +197,17 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 		}
 		if err == nil {
 			args.CWD = cfg.CWD
+			if len(cfg.Env) > 0 {
+				merged := make(map[string]string, len(args.Env)+len(cfg.Env))
+				for k, v := range args.Env {
+					merged[k] = v
+				}
+				// cfg.Env takes priority over resolver-provided env.
+				for k, v := range cfg.Env {
+					merged[k] = v
+				}
+				args.Env = merged
+			}
 			if cfg.Timeout > 0 {
 				args.TimeoutSeconds = cfg.Timeout
 			}
@@ -224,6 +236,7 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 		Command:        cfg.CLI,
 		Args:           []string{"-p", prompt},
 		CWD:            cfg.CWD,
+		Env:            cfg.Env,
 		TimeoutSeconds: cfg.Timeout,
 		OnOutput:       onOutput,
 	}, nil

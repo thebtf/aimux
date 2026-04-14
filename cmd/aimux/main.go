@@ -93,9 +93,10 @@ func run() error {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 		eng, engErr := engine.New(engine.Config{
-			Name:       "aimux",
-			Handler:    srv.StdioHandler(),
-			Persistent: true,
+			Name:           "aimux",
+			SessionHandler: srv.SessionHandler(),
+			Handler:        srv.StdioHandler(), // kept for proxy mode compatibility
+			Persistent:     true,
 		})
 		if engErr != nil {
 			return fmt.Errorf("engine init: %w", engErr)

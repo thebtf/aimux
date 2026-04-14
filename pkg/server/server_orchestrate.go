@@ -30,7 +30,7 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		return mcp.NewToolResultError("consensus requires at least 2 CLIs"), nil
 	}
 
-	async := request.GetBool("async", false)
+	async := request.GetBool("async", true)
 
 	params := types.StrategyParams{
 		Prompt:   topic,
@@ -83,7 +83,7 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("debate requires at least 2 CLIs"), nil
 	}
 
-	async := request.GetBool("async", false)
+	async := request.GetBool("async", true)
 
 	params := types.StrategyParams{
 		Prompt:   topic,
@@ -233,7 +233,7 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 	}
 	cwd := request.GetString("cwd", "")
 	mode := request.GetString("mode", "standard")
-	async := request.GetBool("async", false)
+	async := request.GetBool("async", true)
 
 	params := types.StrategyParams{
 		Prompt: fmt.Sprintf("Audit codebase at %s", cwd),
@@ -286,7 +286,7 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError("steps is required"), nil
 	}
 	input := request.GetString("input", "")
-	async := request.GetBool("async", false)
+	async := request.GetBool("async", true)
 
 	// Parse steps from JSON array string
 	var steps []orch.WorkflowStep

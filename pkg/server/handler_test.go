@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/thebtf/mcp-mux/muxcore"
 
 	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/aimux/pkg/config"
@@ -1320,6 +1321,339 @@ func TestHandleAgents_FindMissingQuery(t *testing.T) {
 
 	if !result.IsError {
 		t.Error("expected error for find without query")
+	}
+}
+
+// --- Agent Scoping via ProjectContext ---
+
+func TestAgentScoping_OverlayVisible(t *testing.T) {
+	srv := testServer(t)
+	// Create a context with project agents overlay.
+	overlay := []*agents.Agent{
+		{Name: "project-agent-1", Description: "test project agent", Role: "coding"},
+	}
+	ctx := context.WithValue(context.Background(), projectAgentsKey{}, overlay)
+
+	req := makeRequest("agents", map[string]any{"action": "list"})
+	result, err := srv.handleAgents(ctx, req)
+	if err != nil {
+		t.Fatalf("handleAgents: %v", err)
+	}
+	data := parseResult(t, result)
+	agentList, _ := data["agents"].([]any)
+
+	found := false
+	for _, a := range agentList {
+		m, _ := a.(map[string]any)
+		if m["name"] == "project-agent-1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("project overlay agent not visible in agents/list")
+	}
+}
+
+func TestAgentScoping_OverlayShadowsShared(t *testing.T) {
+	srv := testServer(t)
+	// Register a shared agent, then overlay with same name.
+	srv.agentReg.Register(&agents.Agent{Name: "shadowed", Description: "shared version"})
+	overlay := []*agents.Agent{
+		{Name: "shadowed", Description: "project version"},
+	}
+	ctx := context.WithValue(context.Background(), projectAgentsKey{}, overlay)
+
+	req := makeRequest("agents", map[string]any{"action": "list"})
+	result, err := srv.handleAgents(ctx, req)
+	if err != nil {
+		t.Fatalf("handleAgents: %v", err)
+	}
+	data := parseResult(t, result)
+	agentList, _ := data["agents"].([]any)
+
+	for _, a := range agentList {
+		m, _ := a.(map[string]any)
+		if m["name"] == "shadowed" {
+			if m["description"] != "project version" {
+				t.Errorf("overlay should shadow shared: got description=%v", m["description"])
+			}
+			return
+		}
+	}
+	t.Error("shadowed agent not found in list")
+}
+
+func TestAgentScoping_NoContext_FallsBack(t *testing.T) {
+	srv := testServer(t)
+	// No ProjectContext in context — should return shared registry only.
+	req := makeRequest("agents", map[string]any{"action": "list"})
+	result, err := srv.handleAgents(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgents: %v", err)
+	}
+	data := parseResult(t, result)
+	count, _ := data["count"].(float64)
+	if count == 0 {
+		t.Error("expected at least builtin agents in shared registry")
+	}
+}
+
+func TestAgentScoping_RunFromOverlay(t *testing.T) {
+	srv := testServer(t)
+	overlay := []*agents.Agent{
+		{Name: "overlay-runner", Description: "overlay agent", Role: "coding", Content: "You are overlay-runner."},
+	}
+	ctx := context.WithValue(context.Background(), projectAgentsKey{}, overlay)
+
+	req := makeRequest("agent", map[string]any{
+		"agent":  "overlay-runner",
+		"prompt": "test",
+		"cwd":    t.TempDir(),
+	})
+	result, err := srv.handleAgentRun(ctx, req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+	// Should succeed (not "agent not found") — resolved from overlay.
+	if result.IsError {
+		data := parseResult(t, result)
+		t.Fatalf("expected success, got error: %v", data)
+	}
+}
+
+// --- SessionHandler HandleRequest dispatch ---
+
+// TestSessionHandler_HandleRequest_Initialize verifies that sending an MCP
+// initialize request through HandleRequest returns a valid JSON-RPC response
+// containing the server capabilities.
+func TestSessionHandler_HandleRequest_Initialize(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "test-project-init",
+		Cwd: t.TempDir(),
+		Env: map[string]string{"TEST_KEY": "test_value"},
+	}
+	lifecycle.OnProjectConnect(project)
+
+	initReq := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	resp, err := handler.HandleRequest(context.Background(), project, []byte(initReq))
+	if err != nil {
+		t.Fatalf("HandleRequest: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response for initialize request")
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		t.Fatalf("response is not valid JSON: %v — raw: %s", err, resp)
+	}
+
+	// JSON-RPC 2.0 initialize response must have result with capabilities.
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("response missing result field; got: %v", parsed)
+	}
+	if result["capabilities"] == nil {
+		t.Error("initialize result must contain capabilities")
+	}
+}
+
+// TestSessionHandler_HandleRequest_NilResponse verifies that a JSON-RPC
+// notification (request without an id field) returns (nil, nil).
+func TestSessionHandler_HandleRequest_NilResponse(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "test-project-notify",
+		Cwd: t.TempDir(),
+	}
+	lifecycle.OnProjectConnect(project)
+
+	// A notification has method and params but no id field.
+	notification := `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`
+	resp, err := handler.HandleRequest(context.Background(), project, []byte(notification))
+	if err != nil {
+		t.Fatalf("HandleRequest: %v", err)
+	}
+	if resp != nil {
+		t.Errorf("notification must return nil response, got: %s", resp)
+	}
+}
+
+// TestSessionHandler_HandleRequest_MalformedJSON verifies that sending garbage
+// bytes returns a JSON-RPC error response (not a Go error).
+func TestSessionHandler_HandleRequest_MalformedJSON(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "test-project-malformed",
+		Cwd: t.TempDir(),
+	}
+	lifecycle.OnProjectConnect(project)
+
+	resp, err := handler.HandleRequest(context.Background(), project, []byte("not valid json at all }{"))
+	if err != nil {
+		t.Fatalf("HandleRequest returned Go error for malformed JSON: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected JSON-RPC error response for malformed input, got nil")
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		t.Fatalf("malformed-input response is not valid JSON: %v — raw: %s", err, resp)
+	}
+	if parsed["error"] == nil {
+		t.Errorf("expected JSON-RPC error field in response for malformed input; got: %v", parsed)
+	}
+}
+
+// TestSessionHandler_TwoProjects_IndependentSessions verifies that two different
+// project IDs each get their own independent project state.
+func TestSessionHandler_TwoProjects_IndependentSessions(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	h := handler.(*aimuxHandler)
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	projectA := muxcore.ProjectContext{ID: "project-alpha", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "project-beta", Cwd: t.TempDir()}
+
+	lifecycle.OnProjectConnect(projectA)
+	lifecycle.OnProjectConnect(projectB)
+
+	valA, okA := h.projects.Load("project-alpha")
+	valB, okB := h.projects.Load("project-beta")
+
+	if !okA {
+		t.Fatal("project-alpha not registered")
+	}
+	if !okB {
+		t.Fatal("project-beta not registered")
+	}
+
+	stateA := valA.(*projectState)
+	stateB := valB.(*projectState)
+
+	if stateA == stateB {
+		t.Error("two different project IDs must not share the same projectState")
+	}
+	if stateA.session == stateB.session {
+		t.Error("two different project IDs must not share the same InProcessSession")
+	}
+	if stateA.refcount.Load() != 1 {
+		t.Errorf("project-alpha refcount = %d, want 1", stateA.refcount.Load())
+	}
+	if stateB.refcount.Load() != 1 {
+		t.Errorf("project-beta refcount = %d, want 1", stateB.refcount.Load())
+	}
+}
+
+// TestSessionHandler_SameProject_SharedSession verifies that connecting the same
+// project ID twice increments the refcount to 2, and disconnecting once leaves
+// the project state active (HandleRequest still works).
+func TestSessionHandler_SameProject_SharedSession(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	h := handler.(*aimuxHandler)
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "project-shared",
+		Cwd: t.TempDir(),
+	}
+
+	// Connect twice from the same project ID (simulating two CC windows).
+	lifecycle.OnProjectConnect(project)
+	lifecycle.OnProjectConnect(project)
+
+	val, ok := h.projects.Load("project-shared")
+	if !ok {
+		t.Fatal("project-shared not registered after double connect")
+	}
+	state := val.(*projectState)
+
+	if got := state.refcount.Load(); got != 2 {
+		t.Errorf("refcount after two connects = %d, want 2", got)
+	}
+
+	// Disconnect one — refcount drops to 1, project must remain active.
+	lifecycle.OnProjectDisconnect("project-shared")
+
+	if got := state.refcount.Load(); got != 1 {
+		t.Errorf("refcount after one disconnect = %d, want 1", got)
+	}
+
+	_, stillPresent := h.projects.Load("project-shared")
+	if !stillPresent {
+		t.Error("project-shared must still be registered after partial disconnect")
+	}
+
+	// HandleRequest must still succeed after partial disconnect.
+	initReq := `{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	resp, err := handler.HandleRequest(context.Background(), project, []byte(initReq))
+	if err != nil {
+		t.Fatalf("HandleRequest after partial disconnect: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("HandleRequest after partial disconnect must return a response")
+	}
+}
+
+// TestSessionHandler_Disconnect_UnregistersSession verifies that after a full
+// disconnect (refcount reaches 0), the project state is removed and subsequent
+// HandleRequest calls return an error response (not a Go error).
+func TestSessionHandler_Disconnect_UnregistersSession(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	h := handler.(*aimuxHandler)
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "project-cleanup",
+		Cwd: t.TempDir(),
+	}
+
+	lifecycle.OnProjectConnect(project)
+
+	_, ok := h.projects.Load("project-cleanup")
+	if !ok {
+		t.Fatal("project-cleanup not registered after connect")
+	}
+
+	// Full disconnect — refcount reaches 0.
+	lifecycle.OnProjectDisconnect("project-cleanup")
+
+	_, stillPresent := h.projects.Load("project-cleanup")
+	if stillPresent {
+		t.Error("project-cleanup must be removed from projects map after full disconnect")
+	}
+
+	// HandleRequest after full disconnect must return a JSON-RPC error, not a Go error.
+	initReq := `{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	resp, err := handler.HandleRequest(context.Background(), project, []byte(initReq))
+	if err != nil {
+		t.Fatalf("HandleRequest after full disconnect returned Go error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("HandleRequest after full disconnect must return a JSON-RPC error response, not nil")
+	}
+
+	var parsed map[string]any
+	if jsonErr := json.Unmarshal(resp, &parsed); jsonErr != nil {
+		t.Fatalf("response after disconnect is not valid JSON: %v — raw: %s", jsonErr, resp)
+	}
+	if parsed["error"] == nil {
+		t.Errorf("expected JSON-RPC error after disconnect; got: %v", parsed)
 	}
 }
 
@@ -3014,6 +3348,10 @@ func TestHandleAgentRun_Async_BuiltinAgent(t *testing.T) {
 	if statusData["job_id"] != jobID {
 		t.Fatalf("status job_id = %v, want %s", statusData["job_id"], jobID)
 	}
+
+	// Cancel async job to prevent TempDir cleanup race on Windows.
+	srv.jobs.CancelJob(jobID)
+	time.Sleep(50 * time.Millisecond) // let process exit
 }
 
 func TestHandleAgentRun_EnvOverrideBeatsAgentFrontmatter(t *testing.T) {
@@ -3035,6 +3373,7 @@ func TestHandleAgentRun_EnvOverrideBeatsAgentFrontmatter(t *testing.T) {
 		"agent":  agent.Name,
 		"prompt": "test prompt",
 		"cwd":    t.TempDir(),
+		"async":  false, // sync for testing resolved model/effort
 	})
 
 	result, err := srv.handleAgentRun(context.Background(), req)
@@ -3046,21 +3385,15 @@ func TestHandleAgentRun_EnvOverrideBeatsAgentFrontmatter(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	content, _ := data["content"].(string)
-	if content == "" {
-		t.Fatal("missing content")
+	// Verify resolved model/effort from response metadata (not process output,
+	// which varies by platform — cmd.exe on Windows doesn't echo model flags).
+	resolvedModel, _ := data["model"].(string)
+	resolvedEffort, _ := data["effort"].(string)
+	if resolvedModel != "gpt-5.3-codex-spark" {
+		t.Fatalf("model = %q, want env override gpt-5.3-codex-spark", resolvedModel)
 	}
-	if !strings.Contains(content, "gpt-5.3-codex-spark") {
-		t.Fatalf("content = %q, want env override model", content)
-	}
-	if !strings.Contains(content, "model_reasoning_effort=high") {
-		t.Fatalf("content = %q, want env override effort", content)
-	}
-	if strings.Contains(content, "gpt-5.4") {
-		t.Fatalf("content = %q, got frontmatter model", content)
-	}
-	if strings.Contains(content, "model_reasoning_effort=low") {
-		t.Fatalf("content = %q, got frontmatter effort", content)
+	if resolvedEffort != "high" {
+		t.Fatalf("effort = %q, want env override high", resolvedEffort)
 	}
 }
 
@@ -3081,6 +3414,7 @@ func TestHandleAgentRun_FrontmatterBeatsRoleDefaultsWithoutEnv(t *testing.T) {
 		"agent":  agent.Name,
 		"prompt": "test prompt",
 		"cwd":    t.TempDir(),
+		"async":  false, // sync for testing resolved model/effort
 	})
 
 	result, err := srv.handleAgentRun(context.Background(), req)
@@ -3092,21 +3426,14 @@ func TestHandleAgentRun_FrontmatterBeatsRoleDefaultsWithoutEnv(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	content, _ := data["content"].(string)
-	if content == "" {
-		t.Fatal("missing content")
+	// Verify resolved model/effort from response metadata.
+	resolvedModel, _ := data["model"].(string)
+	resolvedEffort, _ := data["effort"].(string)
+	if resolvedModel != "gpt-5.4" {
+		t.Fatalf("model = %q, want frontmatter model gpt-5.4", resolvedModel)
 	}
-	if !strings.Contains(content, "gpt-5.4") {
-		t.Fatalf("content = %q, want frontmatter model", content)
-	}
-	if !strings.Contains(content, "model_reasoning_effort=low") {
-		t.Fatalf("content = %q, want frontmatter effort", content)
-	}
-	if strings.Contains(content, "gpt-5.3-codex") {
-		t.Fatalf("content = %q, got role default model", content)
-	}
-	if strings.Contains(content, "model_reasoning_effort=medium") {
-		t.Fatalf("content = %q, got role default effort", content)
+	if resolvedEffort != "low" {
+		t.Fatalf("effort = %q, want frontmatter effort low", resolvedEffort)
 	}
 }
 

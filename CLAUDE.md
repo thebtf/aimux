@@ -11,6 +11,7 @@ Go rewrite of mcp-aimux (TypeScript v2). Single binary, zero external runtime de
 - **MCP SDK:** github.com/mark3labs/mcp-go v0.47.0
 - **Database:** modernc.org/sqlite v1.48.1 (pure Go SQLite, no CGO)
 - **Deep Research:** google.golang.org/genai v1.52.1 (Gemini API)
+- **Engine:** github.com/thebtf/mcp-mux/muxcore v0.18.1 (daemon lifecycle, SessionHandler)
 - **Build:** `go build ./cmd/aimux/`
 - **Test:** `go test ./... -timeout 300s`
 
@@ -27,9 +28,9 @@ go vet ./...                      # static analysis
 ## Architecture
 
 ```
-cmd/aimux/           — MCP server entry point (stdio/SSE/HTTP transport)
+cmd/aimux/           — MCP server entry point (stdio/SSE/HTTP + muxcore engine daemon)
 cmd/testcli/         — 11 CLI emulators for e2e testing
-pkg/server/          — 13 MCP tool handlers (split: server_exec, server_orchestrate, server_agents, server_investigate, server_transport) + stall detection + model fallback
+pkg/server/          — 13 MCP tool handlers (split: server_exec, server_orchestrate, server_agents, server_investigate, server_transport, server_session) + stall detection + model fallback + SessionHandler
 pkg/orchestrator/    — Multi-CLI strategies (consensus, debate, dialog, pair, audit, workflow)
 pkg/executor/        — Process executors (ConPTY, PTY, Pipe) + ProcessManager/IOManager + error classification + model cooldown
 pkg/driver/          — CLI profile loading, registry, binary probe
@@ -39,7 +40,7 @@ pkg/guidance/        — Policy-driven response guidance (envelope, registry, bu
 pkg/guidance/policies/ — Tool-specific guidance policies (think, investigate, consensus, debate, dialog, workflow)
 pkg/investigate/     — Investigation sessions with finding chains and severity triage
 pkg/think/           — 23 structured reasoning patterns (stateful + stateless)
-pkg/agents/          — Agent registry with project/user discovery
+pkg/agents/          — Agent registry with project/user discovery + per-project DiscoverForProject
 pkg/skills/          — Embedded skill engine with disk overlay
 pkg/prompt/          — Prompt engine with built-in + project overlay
 pkg/routing/         — Role → CLI routing with capability-aware fallback
@@ -58,6 +59,26 @@ config/p26/          — P26 tool classification artifact
 ## MCP Tools (13)
 
 exec, status, sessions, think, investigate, consensus, debate, dialog, agents, agent, audit, deepresearch, workflow
+
+## Engine Mode (muxcore)
+
+Default for stdio transport. First invocation spawns daemon, subsequent connect as shims via IPC.
+
+```
+CC session → .mcp.json → aimux.exe (shim) → IPC socket → aimux daemon
+                                                          ├── SessionHandler.HandleRequest()
+                                                          ├── MCPServer.HandleMessage() (direct JSON-RPC)
+                                                          ├── InProcessSession per ProjectContext.ID
+                                                          └── Per-project agent overlay
+```
+
+- `SessionHandler`: direct JSON-RPC dispatch (no stdio transport overhead)
+- `ProjectContext`: ID (hash of worktree root), Cwd, Env (per-session API keys)
+- `ProjectLifecycle`: OnProjectConnect (agent discovery), OnProjectDisconnect (cleanup)
+- Per-project agent scoping: `agents/list` returns only project-relevant agents
+- `ProjectContext.Env` injected into spawned CLI process environment
+- `AIMUX_NO_ENGINE=1` bypasses engine for debugging (direct stdio)
+- Handler kept alongside SessionHandler for proxy mode (behind mcp-mux)
 
 ## CLI Profiles (12)
 
