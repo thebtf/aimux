@@ -27,11 +27,11 @@ func ProjectContextFromContext(ctx context.Context) (muxcore.ProjectContext, boo
 type projectState struct {
 	id       string
 	session  *mcpserver.InProcessSession
-	agents   []*agents.Agent       // project-specific agent overlay
-	cwd      string                // first-seen CWD for this project
-	env      map[string]string     // per-session environment diff (API keys)
-	refcount atomic.Int32          // number of CC sessions sharing this project
-	ready    chan struct{}          // closed after session registered; HandleRequest waits on this
+	agents   []*agents.Agent   // project-specific agent overlay
+	cwd      string            // first-seen CWD for this project
+	env      map[string]string // per-session environment diff (API keys)
+	refcount atomic.Int32      // number of CC sessions sharing this project
+	ready    chan struct{}      // closed after session registered; HandleRequest waits on this
 }
 
 // aimuxHandler implements muxcore.SessionHandler and muxcore.ProjectLifecycle.
@@ -46,16 +46,10 @@ type aimuxHandler struct {
 var _ muxcore.SessionHandler = (*aimuxHandler)(nil)
 var _ muxcore.ProjectLifecycle = (*aimuxHandler)(nil)
 
-// HandleRequest implements muxcore.SessionHandler.
-// Full dispatch logic is implemented in T004.
+// HandleRequest processes one MCP JSON-RPC request with project context.
+// Called concurrently from multiple goroutines by the muxcore engine owner.
 func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.ProjectContext, request []byte) ([]byte, error) {
-	// TODO(T004): implement full request dispatch via InProcessSession
-	return nil, nil
-}
-
-// HandleRequest_future processes one MCP JSON-RPC request with project context.
-func (h *aimuxHandler) HandleRequest_future(ctx context.Context, project muxcore.ProjectContext, request []byte) ([]byte, error) {
-	// Get or wait for project state
+	// Get or wait for project state.
 	val, ok := h.projects.Load(project.ID)
 	if !ok {
 		// Project not yet connected — should not happen in normal flow,
@@ -117,15 +111,10 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 	// Register session with MCPServer (enables per-project tool/resource scoping).
 	if err := h.srv.mcp.RegisterSession(context.Background(), state.session); err != nil {
 		h.srv.log.Warn("session-handler: failed to register session for project %s: %v", project.ID, err)
-		// Still store state — HandleRequest will work, just without session-scoped features.
 	}
 
 	// Discover project-specific agents.
 	state.agents = h.srv.agentReg.DiscoverForProject(project.Cwd)
-
-	// Note: InProcessSession's NotificationChannel is chan<- (send-only from MCPServer's
-	// perspective). Notifications sent by MCPServer are buffered. In daemon mode, they
-	// would be forwarded via muxcore.Notifier (future feature).
 
 	// Store and signal ready.
 	h.projects.Store(project.ID, state)
