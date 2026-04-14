@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
@@ -89,7 +90,7 @@ func run() error {
 		}
 
 		log.Info("aimux v%s ready — serving MCP via muxcore engine", version)
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 		eng, engErr := engine.New(engine.Config{
 			Name:       "aimux",
