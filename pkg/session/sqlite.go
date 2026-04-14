@@ -18,6 +18,11 @@ type Store struct {
 	db *sql.DB
 }
 
+// DB returns the underlying *sql.DB for shared use (e.g., LoomEngine TaskStore).
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
 // NewStore opens or creates a SQLite database at the given path.
 func NewStore(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000")

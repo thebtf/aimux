@@ -20,6 +20,8 @@ import (
 	"github.com/thebtf/aimux/pkg/guidance/policies"
 	"github.com/thebtf/aimux/pkg/hooks"
 	"github.com/thebtf/aimux/pkg/logger"
+	"github.com/thebtf/aimux/pkg/loom"
+	loomworkers "github.com/thebtf/aimux/pkg/loom/workers"
 	"github.com/thebtf/aimux/pkg/metrics"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/prompt"
@@ -125,6 +127,7 @@ type Server struct {
 	guidanceReg      *guidance.Registry
 	cooldownTracker  *executor.ModelCooldownTracker
 	sessionHandler   muxcore.SessionHandler // stored for upgrade tool deferred restart
+	loom             *loom.LoomEngine       // central task mediator (LoomEngine v3)
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -183,6 +186,15 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 			s.jobs.SetStore(s.store)
 
 			// snapshot loop started below after gcCtx is created
+
+			// Initialize LoomEngine with shared SQLite DB.
+			taskStore, taskStoreErr := loom.NewTaskStore(store.DB())
+			if taskStoreErr != nil {
+				log.Warn("LoomEngine unavailable: %v", taskStoreErr)
+			} else {
+				s.loom = loom.New(taskStore)
+				log.Info("LoomEngine initialized (shared SQLite)")
+			}
 		}
 	}
 
@@ -234,6 +246,21 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		orch.NewAuditPipeline(s.executor, cliResolver),
 		orch.NewWorkflowStrategy(s.executor, cliResolver),
 	)
+
+	// Register LoomEngine workers (after executor + orchestrator are ready).
+	if s.loom != nil {
+		s.loom.RegisterWorker(loom.WorkerTypeCLI, loomworkers.NewCLIWorker(s.executor, cliResolver))
+		s.loom.RegisterWorker(loom.WorkerTypeThinker, loomworkers.NewThinkerWorker())
+		s.loom.RegisterWorker(loom.WorkerTypeInvestigator, loomworkers.NewInvestigatorWorker(s.executor, cliResolver))
+		s.loom.RegisterWorker(loom.WorkerTypeOrchestrator, loomworkers.NewOrchestratorWorker(s.orchestrator))
+
+		// Recover tasks that were dispatched/running when daemon last crashed.
+		if n, err := s.loom.RecoverCrashed(); err != nil {
+			log.Warn("loom crash recovery: %v", err)
+		} else if n > 0 {
+			log.Info("loom: recovered %d crashed tasks", n)
+		}
+	}
 
 	// Initialize prompt engine with built-in and project prompts.d/
 	builtInPrompts := filepath.Join(cfg.ConfigDir, "prompts.d")

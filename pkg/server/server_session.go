@@ -32,6 +32,19 @@ func ProjectAgentsFromContext(ctx context.Context) []*agents.Agent {
 	return v
 }
 
+// cwdFromRequestOrContext returns the working directory from either the MCP
+// request parameter or the ProjectContext fallback. Returns empty string if
+// neither provides a value (direct stdio mode without cwd param).
+func cwdFromRequestOrContext(request mcp.CallToolRequest, ctx context.Context) string {
+	if cwd := request.GetString("cwd", ""); cwd != "" {
+		return cwd
+	}
+	if pc, ok := ProjectContextFromContext(ctx); ok && pc.Cwd != "" {
+		return pc.Cwd
+	}
+	return ""
+}
+
 // projectState holds per-project state for a connected CC session group.
 // Multiple CC sessions from the same worktree share one projectState (same ID).
 // cwd and env are intentionally omitted: HandleRequest receives the current
