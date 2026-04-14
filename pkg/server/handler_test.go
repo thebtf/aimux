@@ -3348,6 +3348,10 @@ func TestHandleAgentRun_Async_BuiltinAgent(t *testing.T) {
 	if statusData["job_id"] != jobID {
 		t.Fatalf("status job_id = %v, want %s", statusData["job_id"], jobID)
 	}
+
+	// Cancel async job to prevent TempDir cleanup race on Windows.
+	srv.jobs.CancelJob(jobID)
+	time.Sleep(50 * time.Millisecond) // let process exit
 }
 
 func TestHandleAgentRun_EnvOverrideBeatsAgentFrontmatter(t *testing.T) {
@@ -3369,6 +3373,7 @@ func TestHandleAgentRun_EnvOverrideBeatsAgentFrontmatter(t *testing.T) {
 		"agent":  agent.Name,
 		"prompt": "test prompt",
 		"cwd":    t.TempDir(),
+		"async":  false, // sync for testing resolved model/effort
 	})
 
 	result, err := srv.handleAgentRun(context.Background(), req)
@@ -3409,6 +3414,7 @@ func TestHandleAgentRun_FrontmatterBeatsRoleDefaultsWithoutEnv(t *testing.T) {
 		"agent":  agent.Name,
 		"prompt": "test prompt",
 		"cwd":    t.TempDir(),
+		"async":  false, // sync for testing resolved model/effort
 	})
 
 	result, err := srv.handleAgentRun(context.Background(), req)

@@ -6,30 +6,30 @@
   },
   "tools": {
     "agent": {
-      "classification": "unknown"
+      "classification": "async_mandatory"
     },
     "agents": {
       "actions": {
         "find": "sync_ok",
         "info": "sync_ok",
         "list": "sync_ok",
-        "run": "unknown"
+        "run": "async_mandatory"
       }
     },
     "audit": {
-      "classification": "unknown"
+      "classification": "async_mandatory"
     },
     "consensus": {
-      "classification": "unknown"
+      "classification": "async_mandatory"
     },
     "debate": {
-      "classification": "unknown"
+      "classification": "async_mandatory"
     },
     "deepresearch": {
-      "classification": "unknown"
+      "classification": "async_mandatory"
     },
     "dialog": {
-      "classification": "unknown"
+      "classification": "async_mandatory"
     },
     "exec": {
       "classification": "async_mandatory"
@@ -63,7 +63,7 @@
       "classification": "sync_ok"
     },
     "workflow": {
-      "classification": "unknown"
+      "classification": "async_mandatory"
     }
   }
 }

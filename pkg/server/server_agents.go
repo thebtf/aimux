@@ -157,7 +157,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		}
 
 		cb := s.breakers.Get(cli)
-		async := request.GetBool("async", false)
+		async := request.GetBool("async", true) // P26: async_mandatory for agents run
 
 		if async {
 			if err := s.checkConcurrencyLimit(); err != nil {
@@ -260,7 +260,7 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError("cwd is required — specify the working directory for the agent"), nil
 	}
 	maxTurns := int(request.GetFloat("max_turns", 0))
-	async := request.GetBool("async", false)
+	async := request.GetBool("async", true) // P26: async_mandatory for agent tool
 
 	// Agent frontmatter overrides for model, effort, timeout
 	model := agent.Model

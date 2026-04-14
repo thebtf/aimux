@@ -338,6 +338,7 @@ func TestConsensusHandler_GuidanceEnvelope(t *testing.T) {
 	srv := testServer(t)
 	req := makeRequest("consensus", map[string]any{
 		"topic": "Which approach is better?",
+		"async": false,
 	})
 
 	result, err := srv.handleConsensus(context.Background(), req)
@@ -368,6 +369,7 @@ func TestDebateHandler_GuidanceEnvelope(t *testing.T) {
 	srv := testServer(t)
 	req := makeRequest("debate", map[string]any{
 		"topic": "Is Go better than Rust?",
+		"async": false,
 	})
 
 	result, err := srv.handleDebate(context.Background(), req)
@@ -428,6 +430,7 @@ func TestWorkflowHandler_GuidanceEnvelope(t *testing.T) {
 	req := makeRequest("workflow", map[string]any{
 		"name":  "test-workflow",
 		"steps": `[{"id":"s1","tool":"exec","params":{"prompt":"hello","cli":"codex"}}]`,
+		"async": false,
 	})
 
 	result, err := srv.handleWorkflow(context.Background(), req)
