@@ -43,6 +43,10 @@ func NewTaskStore(db *sql.DB) (*TaskStore, error) {
 	if _, err := db.Exec(createTasksTable); err != nil {
 		return nil, fmt.Errorf("loom store: create schema: %w", err)
 	}
+	// Inherit WAL mode from parent DB (session.Store already sets WAL).
+	// These PRAGMAs are idempotent — safe even if already set.
+	db.Exec("PRAGMA journal_mode=WAL")  //nolint:errcheck
+	db.Exec("PRAGMA synchronous=NORMAL") //nolint:errcheck
 	return &TaskStore{db: db}, nil
 }
 
@@ -179,21 +183,29 @@ func (s *TaskStore) UpdateStatus(id string, from, to TaskStatus) error {
 // SetResult stores the execution result and marks completed_at.
 func (s *TaskStore) SetResult(id string, result string, errMsg string) error {
 	now := time.Now().UTC()
-	_, err := s.db.Exec(
+	res, err := s.db.Exec(
 		`UPDATE tasks SET result = ?, error = ?, completed_at = ? WHERE id = ?`,
 		result, errMsg, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("loom store: set result: %w", err)
 	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("loom store: task %s not found", id)
+	}
 	return nil
 }
 
 // IncrementRetries bumps the retry count for a task.
 func (s *TaskStore) IncrementRetries(id string) error {
-	_, err := s.db.Exec(`UPDATE tasks SET retries = retries + 1 WHERE id = ?`, id)
+	res, err := s.db.Exec(`UPDATE tasks SET retries = retries + 1 WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("loom store: increment retries: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("loom store: task %s not found", id)
 	}
 	return nil
 }

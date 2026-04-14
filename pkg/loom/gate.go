@@ -37,9 +37,14 @@ func WithThreshold(t float64) QualityGateOption {
 	return func(g *QualityGate) { g.threshold = t }
 }
 
-// WithWindowSize sets the thrashing detection window.
+// WithWindowSize sets the thrashing detection window (minimum 2).
 func WithWindowSize(n int) QualityGateOption {
-	return func(g *QualityGate) { g.windowSize = n }
+	return func(g *QualityGate) {
+		if n < 2 {
+			n = 2
+		}
+		g.windowSize = n
+	}
 }
 
 // NewQualityGateWithOpts creates a quality gate with options.
@@ -55,25 +60,26 @@ func NewQualityGateWithOpts(opts ...QualityGateOption) *QualityGate {
 func (g *QualityGate) Check(task *Task, result *WorkerResult) GateDecision {
 	content := strings.TrimSpace(result.Content)
 
-	// 1. Empty output → reject, retry.
+	// 1. Empty output → reject, retry (don't record).
 	if content == "" {
 		return GateDecision{Accept: false, Reason: "empty_output", Retry: true}
 	}
 
-	// 2. Rate limit error detection.
+	// 2. Rate limit error detection (don't record).
 	lower := strings.ToLower(content)
 	if isRateLimitError(lower) {
 		return GateDecision{Accept: false, Reason: "rate_limit_error", Retry: true}
 	}
 
-	// 3. Thrashing detection — if last N results are too similar.
-	// Must happen BEFORE recordResult so history reflects only previously accepted results.
-	if g.isThrashing(task.ID, content) {
+	// 3. Record this result for thrashing analysis BEFORE checking thrashing,
+	// so the history includes the current result when evaluating the window.
+	g.recordResult(task.ID, content)
+
+	// 4. Thrashing detection — check if last windowSize entries are all similar.
+	if g.isThrashing(task.ID) {
 		return GateDecision{Accept: false, Reason: "thrashing", Retry: false}
 	}
 
-	// 4. Content passes all checks — record and accept.
-	g.recordResult(task.ID, content)
 	return GateDecision{Accept: true, Reason: "pass", Retry: false}
 }
 
@@ -95,34 +101,37 @@ func isRateLimitError(lower string) bool {
 	return false
 }
 
-// isThrashing detects whether the last windowSize results (including current)
-// are ALL similar to each other. Requires at least (windowSize-1) prior results
-// before activating, so the first windowSize-1 results are always accepted.
-// Returns true only if ALL prior results in the window exceed the Jaccard
-// similarity threshold compared to the current content.
-func (g *QualityGate) isThrashing(taskID, content string) bool {
+// isThrashing detects whether the last windowSize recorded results are all
+// similar to each other. Returns true only when the history contains at least
+// windowSize entries and all consecutive pairs in the window exceed the
+// Jaccard similarity threshold.
+func (g *QualityGate) isThrashing(taskID string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	history := g.history[taskID]
-	if len(history) < g.windowSize-1 {
+	if len(history) < g.windowSize {
 		// Not enough history to detect thrashing.
 		return false
 	}
 
-	// Examine the last (windowSize-1) accepted results.
-	recent := history
-	if len(recent) > g.windowSize-1 {
-		recent = recent[len(recent)-(g.windowSize-1):]
-	}
+	// Examine the last windowSize entries.
+	recent := history[len(history)-g.windowSize:]
 
-	// ALL recent entries must be similar to current content → thrashing.
-	for _, prev := range recent {
-		if jaccardWordSimilarity(prev, content) <= g.threshold {
+	// All pairs must be similar to the first entry in the window → thrashing.
+	for i := 1; i < len(recent); i++ {
+		if jaccardWordSimilarity(recent[0], recent[i]) <= g.threshold {
 			return false
 		}
 	}
 	return true
+}
+
+// Clear removes the history for a task, freeing memory after dispatch completes.
+func (g *QualityGate) Clear(taskID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.history, taskID)
 }
 
 // recordResult adds content to the history for a task.

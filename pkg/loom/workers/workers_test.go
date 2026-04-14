@@ -22,8 +22,17 @@ func (m *mockExecutor) Run(_ context.Context, _ types.SpawnArgs) (*types.Result,
 	return m.result, nil
 }
 
+type mockSession struct{}
+
+func (m *mockSession) ID() string                                                  { return "mock-session" }
+func (m *mockSession) Send(_ context.Context, _ string) (*types.Result, error)    { return nil, nil }
+func (m *mockSession) Stream(_ context.Context, _ string) (<-chan types.Event, error) { return nil, nil }
+func (m *mockSession) Close() error                                                { return nil }
+func (m *mockSession) Alive() bool                                                 { return false }
+func (m *mockSession) PID() int                                                    { return 0 }
+
 func (m *mockExecutor) Start(_ context.Context, _ types.SpawnArgs) (types.Session, error) {
-	return nil, nil
+	return &mockSession{}, nil
 }
 
 func (m *mockExecutor) Name() string    { return "mock" }

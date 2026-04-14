@@ -587,6 +587,16 @@ func TestLoomEngine_Cancel(t *testing.T) {
 	case cancelCh <- struct{}{}:
 	case <-time.After(time.Second):
 	}
+
+	// Wait for task to reach terminal state after cancellation.
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		task, _ := store.Get(taskID)
+		if task != nil && task.Status.IsTerminal() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func TestLoomEngine_Cancel_NotFound(t *testing.T) {

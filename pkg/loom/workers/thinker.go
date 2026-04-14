@@ -65,14 +65,15 @@ func (w *ThinkerWorker) Execute(_ context.Context, task *loom.Task) (*loom.Worke
 
 	duration := time.Since(start).Milliseconds()
 
-	// Serialize ThinkResult to JSON content.
-	content, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("thinker worker: marshal result: %w", err)
+	// Use Summary if present, otherwise marshal Data to JSON.
+	content := result.Summary
+	if content == "" {
+		b, _ := json.Marshal(result.Data)
+		content = string(b)
 	}
 
 	return &loom.WorkerResult{
-		Content:    string(content),
+		Content:    content,
 		Metadata:   map[string]any{"pattern": result.Pattern, "status": result.Status},
 		DurationMS: duration,
 	}, nil

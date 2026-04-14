@@ -23,6 +23,10 @@ func NewCLIWorker(exec types.Executor, resolver types.CLIResolver) *CLIWorker {
 func (w *CLIWorker) Type() loom.WorkerType { return loom.WorkerTypeCLI }
 
 func (w *CLIWorker) Execute(ctx context.Context, task *loom.Task) (*loom.WorkerResult, error) {
+	if w.executor == nil || w.resolver == nil {
+		return nil, fmt.Errorf("cli worker: executor or resolver not configured")
+	}
+
 	start := time.Now()
 
 	// Resolve CLI profile to spawn args.

@@ -1,6 +1,9 @@
 package loom
 
-import "log"
+import (
+	"log"
+	"sync"
+)
 
 // EventType identifies a task lifecycle event.
 type EventType string
@@ -25,6 +28,7 @@ type Event struct {
 // EventBus is a simple fan-out event broadcaster.
 // Initial implementation logs events and delivers to buffered subscriber channels.
 type EventBus struct {
+	mu   sync.RWMutex
 	subs []chan Event
 }
 
@@ -35,6 +39,8 @@ func NewEventBus() *EventBus {
 
 // Subscribe registers a new subscriber and returns a buffered channel for receiving events.
 func (b *EventBus) Subscribe() chan Event {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	ch := make(chan Event, 64)
 	b.subs = append(b.subs, ch)
 	return ch
@@ -44,6 +50,8 @@ func (b *EventBus) Subscribe() chan Event {
 // If a subscriber's channel is full, the event is dropped (non-blocking delivery).
 func (b *EventBus) Emit(e Event) {
 	log.Printf("[loom] %s task=%s", e.Type, e.TaskID)
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	for _, ch := range b.subs {
 		select {
 		case ch <- e:

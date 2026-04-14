@@ -2,7 +2,6 @@ package workers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -66,11 +65,21 @@ func (w *OrchestratorWorker) Execute(ctx context.Context, task *loom.Task) (*loo
 			}
 		}
 	}
-	if mt, ok := task.Metadata["max_turns"].(float64); ok {
-		params.MaxTurns = int(mt)
+	switch v := task.Metadata["max_turns"].(type) {
+	case int:
+		params.MaxTurns = v
+	case int64:
+		params.MaxTurns = int(v)
+	case float64:
+		params.MaxTurns = int(v)
 	}
-	if t, ok := task.Metadata["timeout"].(float64); ok {
-		params.Timeout = int(t)
+	switch v := task.Metadata["timeout"].(type) {
+	case int:
+		params.Timeout = v
+	case int64:
+		params.Timeout = int(v)
+	case float64:
+		params.Timeout = int(v)
 	}
 	if task.Timeout > 0 && params.Timeout == 0 {
 		params.Timeout = task.Timeout
@@ -86,13 +95,8 @@ func (w *OrchestratorWorker) Execute(ctx context.Context, task *loom.Task) (*loo
 
 	duration := time.Since(start).Milliseconds()
 
-	content, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("orchestrator worker: marshal result: %w", err)
-	}
-
 	return &loom.WorkerResult{
-		Content:    string(content),
+		Content:    result.Content,
 		Metadata:   map[string]any{"strategy": strategy, "turns": result.Turns, "status": result.Status},
 		DurationMS: duration,
 	}, nil

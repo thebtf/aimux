@@ -3,6 +3,7 @@ package loom
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -134,14 +135,23 @@ func (l *LoomEngine) dispatch(task *Task) {
 	}
 	l.events.Emit(Event{Type: EventTaskDispatched, TaskID: task.ID})
 
+	// Clear gate history for this task when dispatch finishes (memory cleanup).
+	defer l.gate.Clear(task.ID)
+
 	l.mu.RLock()
 	worker, ok := l.workers[task.WorkerType]
 	l.mu.RUnlock()
 
 	if !ok {
-		_ = l.store.SetResult(task.ID, "", fmt.Sprintf("no worker registered for type %q", task.WorkerType))
-		_ = l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning)
-		_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed)
+		if err := l.store.SetResult(task.ID, "", fmt.Sprintf("no worker registered for type %q", task.WorkerType)); err != nil {
+			log.Printf("[loom] store.SetResult failed: %v", err)
+		}
+		if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
+			log.Printf("[loom] store.UpdateStatus failed: %v", err)
+		}
+		if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed); err != nil {
+			log.Printf("[loom] store.UpdateStatus failed: %v", err)
+		}
 		l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
 		return
 	}
@@ -181,61 +191,76 @@ func (l *LoomEngine) dispatch(task *Task) {
 
 	result, execErr := worker.Execute(taskCtx, latest)
 	if execErr != nil {
-		_ = l.store.SetResult(task.ID, "", execErr.Error())
-		_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed)
+		if err := l.store.SetResult(task.ID, "", execErr.Error()); err != nil {
+			log.Printf("[loom] store.SetResult failed: %v", err)
+		}
+		if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed); err != nil {
+			log.Printf("[loom] store.UpdateStatus failed: %v", err)
+		}
 		l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID, Data: map[string]any{"error": execErr.Error()}})
 		return
 	}
 
 	// Quality gate: validate result before accepting.
-	decision := l.gate.Check(latest, result)
-	if !decision.Accept {
-		if decision.Retry && latest.Retries < l.maxRetries {
-			// Gate rejected → retry: running → retrying → dispatched.
-			l.events.Emit(Event{Type: EventTaskGateFail, TaskID: task.ID, Data: map[string]any{"reason": decision.Reason, "retry": true}})
-			_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusRetrying)
-			_ = l.store.IncrementRetries(task.ID)
-			_ = l.store.UpdateStatus(task.ID, TaskStatusRetrying, TaskStatusDispatched)
-			// Re-dispatch: dispatched → running → execute again.
-			_ = l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning)
-
-			retried, _ := l.store.Get(task.ID)
-			if retried != nil {
-				retryResult, retryErr := worker.Execute(taskCtx, retried)
-				if retryErr != nil {
-					_ = l.store.SetResult(task.ID, "", retryErr.Error())
-					_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed)
-					l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
-					return
-				}
-				// Re-check gate on retry result.
-				retryDecision := l.gate.Check(retried, retryResult)
-				if retryDecision.Accept {
-					_ = l.store.SetResult(task.ID, retryResult.Content, "")
-					_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusCompleted)
-					l.events.Emit(Event{Type: EventTaskGatePass, TaskID: task.ID})
-					l.events.Emit(Event{Type: EventTaskCompleted, TaskID: task.ID})
-					return
-				}
-				// Retry also rejected → fail.
-				_ = l.store.SetResult(task.ID, "", fmt.Sprintf("gate rejected after retry: %s", retryDecision.Reason))
-				_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed)
-				l.events.Emit(Event{Type: EventTaskGateFail, TaskID: task.ID, Data: map[string]any{"reason": retryDecision.Reason}})
-				l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
-				return
+	// Retry loop: continues until gate accepts, retries exhausted, or non-retryable rejection.
+	for {
+		decision := l.gate.Check(latest, result)
+		if decision.Accept {
+			l.events.Emit(Event{Type: EventTaskGatePass, TaskID: task.ID})
+			if err := l.store.SetResult(task.ID, result.Content, ""); err != nil {
+				log.Printf("[loom] store.SetResult failed: %v", err)
 			}
+			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusCompleted); err != nil {
+				log.Printf("[loom] store.UpdateStatus failed: %v", err)
+			}
+			l.events.Emit(Event{Type: EventTaskCompleted, TaskID: task.ID})
+			return
 		}
-		// Gate rejected, no retry (thrashing or max retries exceeded).
-		_ = l.store.SetResult(task.ID, "", fmt.Sprintf("gate rejected: %s", decision.Reason))
-		_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed)
-		l.events.Emit(Event{Type: EventTaskGateFail, TaskID: task.ID, Data: map[string]any{"reason": decision.Reason}})
-		l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
-		return
-	}
 
-	// Gate passed — store result.
-	l.events.Emit(Event{Type: EventTaskGatePass, TaskID: task.ID})
-	_ = l.store.SetResult(task.ID, result.Content, "")
-	_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusCompleted)
-	l.events.Emit(Event{Type: EventTaskCompleted, TaskID: task.ID})
+		// Gate rejected.
+		l.events.Emit(Event{Type: EventTaskGateFail, TaskID: task.ID, Data: map[string]any{"reason": decision.Reason}})
+
+		if !decision.Retry || latest.Retries >= l.maxRetries {
+			// No retry or retries exhausted.
+			if err := l.store.SetResult(task.ID, "", fmt.Sprintf("gate rejected: %s", decision.Reason)); err != nil {
+				log.Printf("[loom] store.SetResult failed: %v", err)
+			}
+			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed); err != nil {
+				log.Printf("[loom] store.UpdateStatus failed: %v", err)
+			}
+			l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
+			return
+		}
+
+		// Retry: running → retrying → dispatched → running.
+		if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusRetrying); err != nil {
+			log.Printf("[loom] store.UpdateStatus failed: %v", err)
+		}
+		if err := l.store.IncrementRetries(task.ID); err != nil {
+			log.Printf("[loom] store.IncrementRetries failed: %v", err)
+		}
+		if err := l.store.UpdateStatus(task.ID, TaskStatusRetrying, TaskStatusDispatched); err != nil {
+			log.Printf("[loom] store.UpdateStatus failed: %v", err)
+		}
+		if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
+			log.Printf("[loom] store.UpdateStatus failed: %v", err)
+		}
+
+		latest, err = l.store.Get(task.ID)
+		if err != nil {
+			return
+		}
+
+		result, execErr = worker.Execute(taskCtx, latest)
+		if execErr != nil {
+			if err := l.store.SetResult(task.ID, "", execErr.Error()); err != nil {
+				log.Printf("[loom] store.SetResult failed: %v", err)
+			}
+			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed); err != nil {
+				log.Printf("[loom] store.UpdateStatus failed: %v", err)
+			}
+			l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
+			return
+		}
+	}
 }
