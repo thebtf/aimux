@@ -456,6 +456,92 @@ func TestWorkflowHandler_GuidanceEnvelope(t *testing.T) {
 	}
 }
 
+// TestConsensusHandler_AsyncDefault verifies that omitting the "async" field
+// causes handleConsensus to run in the background and return job_id + status=running.
+func TestConsensusHandler_AsyncDefault(t *testing.T) {
+	srv := testServer(t)
+	// No "async" key — default is true per P26 contract.
+	req := makeRequest("consensus", map[string]any{
+		"topic": "Which approach is better?",
+	})
+
+	result, err := srv.handleConsensus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleConsensus: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	data := parseResult(t, result)
+
+	jobID, _ := data["job_id"].(string)
+	if jobID == "" {
+		t.Error("async-default consensus must return a non-empty job_id")
+	}
+	status, _ := data["status"].(string)
+	if status != "running" {
+		t.Errorf("async-default consensus must return status=running, got %q", status)
+	}
+}
+
+// TestDebateHandler_AsyncDefault verifies that omitting the "async" field
+// causes handleDebate to run in the background and return job_id + status=running.
+func TestDebateHandler_AsyncDefault(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("debate", map[string]any{
+		"topic": "Is Go better than Rust?",
+	})
+
+	result, err := srv.handleDebate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleDebate: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	data := parseResult(t, result)
+
+	jobID, _ := data["job_id"].(string)
+	if jobID == "" {
+		t.Error("async-default debate must return a non-empty job_id")
+	}
+	status, _ := data["status"].(string)
+	if status != "running" {
+		t.Errorf("async-default debate must return status=running, got %q", status)
+	}
+}
+
+// TestWorkflowHandler_AsyncDefault verifies that omitting the "async" field
+// causes handleWorkflow to run in the background and return job_id + status=running.
+func TestWorkflowHandler_AsyncDefault(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("workflow", map[string]any{
+		"name":  "test-workflow",
+		"steps": `[{"id":"s1","tool":"exec","params":{"prompt":"hello","cli":"codex"}}]`,
+	})
+
+	result, err := srv.handleWorkflow(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleWorkflow: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	data := parseResult(t, result)
+
+	jobID, _ := data["job_id"].(string)
+	if jobID == "" {
+		t.Error("async-default workflow must return a non-empty job_id")
+	}
+	status, _ := data["status"].(string)
+	if status != "running" {
+		t.Errorf("async-default workflow must return status=running, got %q", status)
+	}
+}
+
 // containsSubstring is a helper to avoid importing strings in this test file.
 func containsSubstring(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||

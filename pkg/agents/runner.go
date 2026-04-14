@@ -197,7 +197,17 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 		}
 		if err == nil {
 			args.CWD = cfg.CWD
-			args.Env = cfg.Env
+			if len(cfg.Env) > 0 {
+				merged := make(map[string]string, len(args.Env)+len(cfg.Env))
+				for k, v := range args.Env {
+					merged[k] = v
+				}
+				// cfg.Env takes priority over resolver-provided env.
+				for k, v := range cfg.Env {
+					merged[k] = v
+				}
+				args.Env = merged
+			}
 			if cfg.Timeout > 0 {
 				args.TimeoutSeconds = cfg.Timeout
 			}

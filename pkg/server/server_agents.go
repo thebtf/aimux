@@ -71,9 +71,15 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		if agentName == "" {
 			return mcp.NewToolResultError("agent name required for info"), nil
 		}
-		agent, agentErr := s.agentReg.Get(agentName)
-		if agentErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+		// Check per-project overlay first so project-only agents are visible in info.
+		overlay := ProjectAgentsFromContext(ctx)
+		agent := findAgentInOverlay(overlay, agentName)
+		if agent == nil {
+			var agentErr error
+			agent, agentErr = s.agentReg.Get(agentName)
+			if agentErr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+			}
 		}
 		return marshalToolResult(agent)
 
@@ -89,9 +95,11 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 
 		// In SessionHandler mode, project agents are discovered on connect and stored
 		// in the per-project overlay (via ProjectAgentsFromContext). The additive Discover
-		// call is only needed in direct stdio mode (no ProjectContext).
+		// call is only needed in direct stdio mode (no ProjectContext) — using the
+		// ProjectContext presence as the reliable indicator avoids false negatives when
+		// a project has no agents (empty overlay).
 		overlay := ProjectAgentsFromContext(ctx)
-		if len(overlay) == 0 && cwd != "" && cwd != s.projectDir {
+		if _, isSession := ProjectContextFromContext(ctx); !isSession && cwd != "" && cwd != s.projectDir {
 			s.agentReg.Discover(cwd, "")
 		}
 
@@ -223,6 +231,9 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		agent, agentErr = s.agentReg.Get(agentName)
 		if agentErr != nil {
 			available := s.agentReg.List()
+			// Include project-overlay agents in the available list so the error
+			// message shows both shared and project-specific agent names.
+			available = append(available, overlay...)
 			names := make([]string, len(available))
 			for i, a := range available {
 				names[i] = a.Name

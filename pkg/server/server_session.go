@@ -34,14 +34,14 @@ func ProjectAgentsFromContext(ctx context.Context) []*agents.Agent {
 
 // projectState holds per-project state for a connected CC session group.
 // Multiple CC sessions from the same worktree share one projectState (same ID).
+// cwd and env are intentionally omitted: HandleRequest receives the current
+// ProjectContext on every request, so caching them here would be redundant.
 type projectState struct {
 	id       string
 	session  *mcpserver.InProcessSession
-	agents   []*agents.Agent   // project-specific agent overlay
-	cwd      string            // first-seen CWD for this project
-	env      map[string]string // per-session environment diff (API keys)
-	refcount atomic.Int32      // number of CC sessions sharing this project
-	ready    chan struct{}      // closed after session registered; HandleRequest waits on this
+	agents   []*agents.Agent // project-specific agent overlay
+	refcount atomic.Int32    // number of CC sessions sharing this project
+	ready    chan struct{}    // closed after session registered; HandleRequest waits on this
 }
 
 // aimuxHandler implements muxcore.SessionHandler and muxcore.ProjectLifecycle.
@@ -100,8 +100,19 @@ func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.Projec
 // OnProjectConnect is called when a CC session connects to the daemon.
 // Creates or increments refcount for the project's state.
 func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
-	// Check if project already exists (another CC session from same worktree).
-	if val, loaded := h.projects.Load(project.ID); loaded {
+	// Create a candidate state for LoadOrStore. If another goroutine already
+	// stored a state for this project ID, we discard this candidate and only
+	// increment the existing refcount — avoiding a duplicate session registration.
+	newState := &projectState{
+		id:    project.ID,
+		ready: make(chan struct{}),
+	}
+	newState.refcount.Store(1)
+
+	// Atomically load existing state or store the new candidate.
+	val, loaded := h.projects.LoadOrStore(project.ID, newState)
+	if loaded {
+		// Another session already connected — increment refcount on the winner.
 		state := val.(*projectState)
 		state.refcount.Add(1)
 		h.srv.log.Info("session-handler: project %s reconnected (refcount=%d, cwd=%s)",
@@ -109,14 +120,8 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 		return
 	}
 
-	// New project — create state and register MCP session.
-	state := &projectState{
-		id:    project.ID,
-		cwd:   project.Cwd,
-		env:   project.Env,
-		ready: make(chan struct{}),
-	}
-	state.refcount.Store(1)
+	// We won the race — initialize the session for newState.
+	state := newState
 
 	// Create InProcessSession for this project.
 	state.session = mcpserver.NewInProcessSession(project.ID, nil)
@@ -129,8 +134,7 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 	// Discover project-specific agents.
 	state.agents = h.srv.agentReg.DiscoverForProject(project.Cwd)
 
-	// Store and signal ready.
-	h.projects.Store(project.ID, state)
+	// Signal ready — HandleRequest waiters unblock after this.
 	close(state.ready)
 
 	h.srv.log.Info("session-handler: project %s connected (cwd=%s, agents=%d)",

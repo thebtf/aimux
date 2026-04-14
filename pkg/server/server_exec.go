@@ -478,6 +478,7 @@ func (s *Server) rebuildArgsForCLI(orig types.SpawnArgs, profile *config.CLIProf
 		Command:        resolve.CommandBinary(profile.Command.Base),
 		Args:           resolve.BuildPromptArgs(profile, "", "", false, orig.Stdin),
 		CWD:            orig.CWD,
+		Env:            orig.Env,
 		TimeoutSeconds: orig.TimeoutSeconds,
 		Stdin:          orig.Stdin,
 	}
