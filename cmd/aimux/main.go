@@ -89,11 +89,20 @@ func run() error {
 			return srv.ServeStdio()
 		}
 
-		log.Info("aimux v%s ready — serving MCP via muxcore engine", version)
+		// Engine name controls IPC socket discovery — different names = isolated
+		// daemons. Override via AIMUX_ENGINE_NAME to run dev/prod binaries side by
+		// side without version skew (e.g., aimux-dev binary in .mcp.json sets
+		// AIMUX_ENGINE_NAME=aimux-dev to avoid colliding with stable aimux daemon).
+		engineName := os.Getenv("AIMUX_ENGINE_NAME")
+		if engineName == "" {
+			engineName = "aimux"
+		}
+
+		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", version, engineName)
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 		eng, engErr := engine.New(engine.Config{
-			Name:           "aimux",
+			Name:           engineName,
 			SessionHandler: srv.SessionHandler(),
 			Handler:        srv.StdioHandler(), // kept for proxy mode compatibility
 			Persistent:     true,
