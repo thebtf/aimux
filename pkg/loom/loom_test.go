@@ -82,6 +82,7 @@ func TestTaskTransitions_Valid(t *testing.T) {
 	}{
 		{TaskStatusPending, TaskStatusDispatched},
 		{TaskStatusDispatched, TaskStatusRunning},
+		{TaskStatusDispatched, TaskStatusFailed},
 		{TaskStatusDispatched, TaskStatusFailedCrash},
 		{TaskStatusRunning, TaskStatusCompleted},
 		{TaskStatusRunning, TaskStatusFailed},
@@ -111,6 +112,8 @@ func TestTaskTransitions_Invalid(t *testing.T) {
 		{TaskStatusFailedCrash, TaskStatusDispatched},
 		{TaskStatusDispatched, TaskStatusCompleted},
 		{TaskStatusDispatched, TaskStatusRetrying},
+		// Note: {TaskStatusDispatched, TaskStatusFailed} is VALID (added for pre-run rejection)
+		// so it is intentionally absent from this invalid list.
 	}
 
 	for _, tc := range cases {

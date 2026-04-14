@@ -21,14 +21,15 @@ const (
 // State machine from spec:
 //
 //	pending → dispatched → running → completed (terminal)
-//	                        │     → failed (terminal)
-//	                        │     → retrying → dispatched (loop, max 2)
+//	              │         │     → failed (terminal)
+//	              │         │     → retrying → dispatched (loop, max 2)
+//	              │ → failed (terminal, e.g. no worker registered)
 //	[crash restart]
 //	dispatched → failed_crash (terminal)
 //	running → failed_crash (terminal)
 var validTransitions = map[TaskStatus][]TaskStatus{
 	TaskStatusPending:    {TaskStatusDispatched},
-	TaskStatusDispatched: {TaskStatusRunning, TaskStatusFailedCrash},
+	TaskStatusDispatched: {TaskStatusRunning, TaskStatusFailed, TaskStatusFailedCrash},
 	TaskStatusRunning:    {TaskStatusCompleted, TaskStatusFailed, TaskStatusRetrying, TaskStatusFailedCrash},
 	TaskStatusRetrying:   {TaskStatusDispatched},
 }

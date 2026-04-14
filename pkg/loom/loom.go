@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -86,6 +87,15 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 
 	l.events.Emit(Event{Type: EventTaskCreated, TaskID: task.ID})
 
+	// Transition pending → dispatched synchronously before launching goroutine.
+	// This ensures crash recovery (MarkCrashed) can pick up the task even if the
+	// process dies before the goroutine runs.
+	if err := l.store.UpdateStatus(task.ID, TaskStatusPending, TaskStatusDispatched); err != nil {
+		return "", fmt.Errorf("loom: dispatch task: %w", err)
+	}
+	task.Status = TaskStatusDispatched
+	l.events.Emit(Event{Type: EventTaskDispatched, TaskID: task.ID})
+
 	// Dispatch in background — task lifecycle independent of caller context.
 	go l.dispatch(task)
 
@@ -126,14 +136,42 @@ func (l *LoomEngine) Events() *EventBus {
 	return l.events
 }
 
-// dispatch runs the worker for a task in a background goroutine.
-func (l *LoomEngine) dispatch(task *Task) {
-	// Transition: pending → dispatched
-	if err := l.store.UpdateStatus(task.ID, TaskStatusPending, TaskStatusDispatched); err != nil {
-		l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID, Data: map[string]any{"error": err.Error()}})
-		return
+// failTask is a best-effort helper that marks a task as failed in the store
+// and emits EventTaskFailed. Errors from store operations are logged but not
+// returned — the caller is typically already handling a failure path.
+func (l *LoomEngine) failTask(taskID string, fromStatus TaskStatus, errMsg string) {
+	if err := l.store.SetResult(taskID, "", errMsg); err != nil {
+		log.Printf("[loom] failTask: store.SetResult(%s) failed: %v", taskID, err)
 	}
-	l.events.Emit(Event{Type: EventTaskDispatched, TaskID: task.ID})
+	if err := l.store.UpdateStatus(taskID, fromStatus, TaskStatusFailed); err != nil {
+		log.Printf("[loom] failTask: store.UpdateStatus(%s, %s→failed) failed: %v", taskID, fromStatus, err)
+	}
+	l.events.Emit(Event{Type: EventTaskFailed, TaskID: taskID, Data: map[string]any{"error": errMsg}})
+}
+
+// dispatch runs the worker for a task in a background goroutine.
+// Task arrives already in TaskStatusDispatched (transitioned synchronously by Submit).
+func (l *LoomEngine) dispatch(task *Task) {
+	// Panic recovery: ensure any panic in worker or gate is caught, task is
+	// marked failed_crash, and the process is not terminated.
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			log.Printf("[loom] dispatch panic for task %s: %v\n%s", task.ID, r, stack)
+			panicMsg := fmt.Sprintf("panic: %v", r)
+			if err := l.store.SetResult(task.ID, "", panicMsg); err != nil {
+				log.Printf("[loom] failTask: store.SetResult(%s) failed: %v", task.ID, err)
+			}
+			// Best-effort: try both running→failed_crash and dispatched→failed_crash
+			// since we don't know exact current status at panic time.
+			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailedCrash); err != nil {
+				if err2 := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusFailedCrash); err2 != nil {
+					log.Printf("[loom] dispatch panic recovery: could not mark task %s failed_crash: %v / %v", task.ID, err, err2)
+				}
+			}
+			l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID, Data: map[string]any{"error": panicMsg}})
+		}
+	}()
 
 	// Clear gate history for this task when dispatch finishes (memory cleanup).
 	defer l.gate.Clear(task.ID)
@@ -143,21 +181,14 @@ func (l *LoomEngine) dispatch(task *Task) {
 	l.mu.RUnlock()
 
 	if !ok {
-		if err := l.store.SetResult(task.ID, "", fmt.Sprintf("no worker registered for type %q", task.WorkerType)); err != nil {
-			log.Printf("[loom] store.SetResult failed: %v", err)
-		}
-		if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
-			log.Printf("[loom] store.UpdateStatus failed: %v", err)
-		}
-		if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed); err != nil {
-			log.Printf("[loom] store.UpdateStatus failed: %v", err)
-		}
-		l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
+		l.failTask(task.ID, TaskStatusDispatched, fmt.Sprintf("no worker registered for type %q", task.WorkerType))
 		return
 	}
 
 	// Transition: dispatched → running
 	if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
+		log.Printf("[loom] dispatch: UpdateStatus(dispatched→running) failed for task %s: %v", task.ID, err)
+		l.failTask(task.ID, TaskStatusDispatched, fmt.Sprintf("dispatch: transition to running failed: %v", err))
 		return
 	}
 
@@ -186,18 +217,14 @@ func (l *LoomEngine) dispatch(task *Task) {
 	// Reload task from store to get latest state (in case of retry).
 	latest, err := l.store.Get(task.ID)
 	if err != nil {
+		log.Printf("[loom] dispatch: store.Get(%s) failed: %v", task.ID, err)
+		l.failTask(task.ID, TaskStatusRunning, fmt.Sprintf("dispatch: reload task failed: %v", err))
 		return
 	}
 
 	result, execErr := worker.Execute(taskCtx, latest)
 	if execErr != nil {
-		if err := l.store.SetResult(task.ID, "", execErr.Error()); err != nil {
-			log.Printf("[loom] store.SetResult failed: %v", err)
-		}
-		if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed); err != nil {
-			log.Printf("[loom] store.UpdateStatus failed: %v", err)
-		}
-		l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID, Data: map[string]any{"error": execErr.Error()}})
+		l.failTask(task.ID, TaskStatusRunning, execErr.Error())
 		return
 	}
 
@@ -208,10 +235,14 @@ func (l *LoomEngine) dispatch(task *Task) {
 		if decision.Accept {
 			l.events.Emit(Event{Type: EventTaskGatePass, TaskID: task.ID})
 			if err := l.store.SetResult(task.ID, result.Content, ""); err != nil {
-				log.Printf("[loom] store.SetResult failed: %v", err)
+				log.Printf("[loom] dispatch complete: store.SetResult(%s) failed: %v", task.ID, err)
+				// Abort: do not emit EventTaskCompleted — persisted state is not completed.
+				return
 			}
 			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusCompleted); err != nil {
-				log.Printf("[loom] store.UpdateStatus failed: %v", err)
+				log.Printf("[loom] dispatch complete: store.UpdateStatus(%s, running→completed) failed: %v", task.ID, err)
+				// Abort: do not emit EventTaskCompleted — status transition failed.
+				return
 			}
 			l.events.Emit(Event{Type: EventTaskCompleted, TaskID: task.ID})
 			return
@@ -222,13 +253,7 @@ func (l *LoomEngine) dispatch(task *Task) {
 
 		if !decision.Retry || latest.Retries >= l.maxRetries {
 			// No retry or retries exhausted.
-			if err := l.store.SetResult(task.ID, "", fmt.Sprintf("gate rejected: %s", decision.Reason)); err != nil {
-				log.Printf("[loom] store.SetResult failed: %v", err)
-			}
-			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed); err != nil {
-				log.Printf("[loom] store.UpdateStatus failed: %v", err)
-			}
-			l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
+			l.failTask(task.ID, TaskStatusRunning, fmt.Sprintf("gate rejected: %s", decision.Reason))
 			return
 		}
 
@@ -248,18 +273,14 @@ func (l *LoomEngine) dispatch(task *Task) {
 
 		latest, err = l.store.Get(task.ID)
 		if err != nil {
+			log.Printf("[loom] dispatch retry: store.Get(%s) failed: %v", task.ID, err)
+			l.failTask(task.ID, TaskStatusRunning, fmt.Sprintf("dispatch retry: reload task failed: %v", err))
 			return
 		}
 
 		result, execErr = worker.Execute(taskCtx, latest)
 		if execErr != nil {
-			if err := l.store.SetResult(task.ID, "", execErr.Error()); err != nil {
-				log.Printf("[loom] store.SetResult failed: %v", err)
-			}
-			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed); err != nil {
-				log.Printf("[loom] store.UpdateStatus failed: %v", err)
-			}
-			l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
+			l.failTask(task.ID, TaskStatusRunning, execErr.Error())
 			return
 		}
 	}

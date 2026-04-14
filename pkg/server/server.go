@@ -937,7 +937,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			projectID := projectIDFromContext(ctx)
 			if projectID != "" {
 				tasks, taskErr := s.loom.List(projectID)
-				if taskErr == nil && len(tasks) > 0 {
+				if taskErr != nil {
+					s.log.Warn("sessions list: loom list failed for project %s: %v", projectID, taskErr)
+					result["loom_error"] = taskErr.Error()
+				} else {
 					result["tasks"] = tasks
 					result["task_count"] = len(tasks)
 				}
@@ -972,7 +975,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if s.loom != nil {
 			projectID := projectIDFromContext(ctx)
 			if projectID != "" {
-				if tasks, err := s.loom.List(projectID); err == nil {
+				if tasks, err := s.loom.List(projectID); err != nil {
+					s.log.Warn("sessions health: loom list failed for project %s: %v", projectID, err)
+					health["loom_error"] = err.Error()
+				} else {
 					health["loom_tasks"] = len(tasks)
 				}
 			}
@@ -991,6 +997,8 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if s.loom != nil {
 			if err := s.loom.Cancel(jobID); err == nil {
 				return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
+			} else {
+				return mcp.NewToolResultError(err.Error()), nil
 			}
 		}
 		return mcp.NewToolResultError("job not found"), nil

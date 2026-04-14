@@ -272,7 +272,13 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 			Prompt:     params.Prompt,
 			CWD:        cwd,
 			Env:        sessionEnvFromContext(ctx),
-			Metadata:   map[string]any{"strategy": "audit", "mode": mode, "parallel_scanners": s.cfg.Server.Audit.ParallelScanners},
+			Metadata: map[string]any{
+				"strategy":          "audit",
+				"mode":              mode,
+				"parallel_scanners": s.cfg.Server.Audit.ParallelScanners,
+				"scanner_role":      s.cfg.Server.Audit.ScannerRole,
+				"validator_role":    s.cfg.Server.Audit.ValidatorRole,
+			},
 		})
 		if loomErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil

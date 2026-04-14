@@ -67,6 +67,10 @@ func (w *CLIWorker) Execute(ctx context.Context, task *loom.Task) (*loom.WorkerR
 	if err != nil {
 		return nil, fmt.Errorf("cli worker: run: %w", err)
 	}
+	// Executor may return err == nil with result.Error set (partial execution error).
+	if result.Error != nil {
+		return nil, fmt.Errorf("cli worker: run: %w", result.Error)
+	}
 
 	duration := time.Since(start).Milliseconds()
 
