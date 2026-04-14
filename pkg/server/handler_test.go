@@ -1324,6 +1324,104 @@ func TestHandleAgents_FindMissingQuery(t *testing.T) {
 	}
 }
 
+// --- Agent Scoping via ProjectContext ---
+
+func TestAgentScoping_OverlayVisible(t *testing.T) {
+	srv := testServer(t)
+	// Create a context with project agents overlay.
+	overlay := []*agents.Agent{
+		{Name: "project-agent-1", Description: "test project agent", Role: "coding"},
+	}
+	ctx := context.WithValue(context.Background(), projectAgentsKey{}, overlay)
+
+	req := makeRequest("agents", map[string]any{"action": "list"})
+	result, err := srv.handleAgents(ctx, req)
+	if err != nil {
+		t.Fatalf("handleAgents: %v", err)
+	}
+	data := parseResult(t, result)
+	agentList, _ := data["agents"].([]any)
+
+	found := false
+	for _, a := range agentList {
+		m, _ := a.(map[string]any)
+		if m["name"] == "project-agent-1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("project overlay agent not visible in agents/list")
+	}
+}
+
+func TestAgentScoping_OverlayShadowsShared(t *testing.T) {
+	srv := testServer(t)
+	// Register a shared agent, then overlay with same name.
+	srv.agentReg.Register(&agents.Agent{Name: "shadowed", Description: "shared version"})
+	overlay := []*agents.Agent{
+		{Name: "shadowed", Description: "project version"},
+	}
+	ctx := context.WithValue(context.Background(), projectAgentsKey{}, overlay)
+
+	req := makeRequest("agents", map[string]any{"action": "list"})
+	result, err := srv.handleAgents(ctx, req)
+	if err != nil {
+		t.Fatalf("handleAgents: %v", err)
+	}
+	data := parseResult(t, result)
+	agentList, _ := data["agents"].([]any)
+
+	for _, a := range agentList {
+		m, _ := a.(map[string]any)
+		if m["name"] == "shadowed" {
+			if m["description"] != "project version" {
+				t.Errorf("overlay should shadow shared: got description=%v", m["description"])
+			}
+			return
+		}
+	}
+	t.Error("shadowed agent not found in list")
+}
+
+func TestAgentScoping_NoContext_FallsBack(t *testing.T) {
+	srv := testServer(t)
+	// No ProjectContext in context — should return shared registry only.
+	req := makeRequest("agents", map[string]any{"action": "list"})
+	result, err := srv.handleAgents(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgents: %v", err)
+	}
+	data := parseResult(t, result)
+	count, _ := data["count"].(float64)
+	if count == 0 {
+		t.Error("expected at least builtin agents in shared registry")
+	}
+}
+
+func TestAgentScoping_RunFromOverlay(t *testing.T) {
+	srv := testServer(t)
+	overlay := []*agents.Agent{
+		{Name: "overlay-runner", Description: "overlay agent", Role: "coding", Content: "You are overlay-runner."},
+	}
+	ctx := context.WithValue(context.Background(), projectAgentsKey{}, overlay)
+
+	req := makeRequest("agent", map[string]any{
+		"agent":  "overlay-runner",
+		"prompt": "test",
+		"cwd":    t.TempDir(),
+	})
+	result, err := srv.handleAgentRun(ctx, req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+	// Should succeed (not "agent not found") — resolved from overlay.
+	if result.IsError {
+		data := parseResult(t, result)
+		t.Fatalf("expected success, got error: %v", data)
+	}
+}
+
 // --- SessionHandler HandleRequest dispatch ---
 
 // TestSessionHandler_HandleRequest_Initialize verifies that sending an MCP
