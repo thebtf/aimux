@@ -62,7 +62,10 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		if prompt == "" {
 			return mcp.NewToolResultError("prompt is required for run"), nil
 		}
-		cwd := request.GetString("cwd", "")
+		cwd, err := request.RequireString("cwd")
+		if err != nil {
+			return mcp.NewToolResultError("cwd is required — specify the working directory for the agent"), nil
+		}
 
 		// Auto-discover agents from the caller's project directory if it differs
 		// from the initial discovery path. Additive — does not remove existing agents.
@@ -213,7 +216,10 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		cli = "codex"
 	}
 
-	cwd := request.GetString("cwd", "")
+	cwd, cwdErr := request.RequireString("cwd")
+	if cwdErr != nil {
+		return mcp.NewToolResultError("cwd is required — specify the working directory for the agent"), nil
+	}
 	maxTurns := int(request.GetFloat("max_turns", 0))
 	async := request.GetBool("async", false)
 

@@ -31,8 +31,10 @@ command:
 prompt_flag: ""
 prompt_flag_type: "positional"
 
-# Default model (passed via -m when input.model not set)
-default_model: ""
+# Default model: codex CLI does NOT handle spark/base fallback internally.
+# Without -m, codex picks spark by default and fails on 429 with no retry.
+# Set explicit model so our suffix-strip fallback can detect and strip "-spark".
+default_model: "gpt-5.3-codex-spark"
 
 # Model flag
 model_flag: "-m"
