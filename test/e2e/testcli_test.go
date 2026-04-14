@@ -340,6 +340,7 @@ func TestE2E_Agent_AsyncProgressNotification(t *testing.T) {
 			"agent":  "implementer",
 			"prompt": "async implementer test",
 			"async":  true,
+			"cwd":    t.TempDir(),
 		},
 	}))
 
