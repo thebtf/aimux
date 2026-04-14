@@ -24,9 +24,6 @@ import (
 )
 
 func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !s.rateLimiter.Allow("exec") {
-		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
-	}
 	prompt, err := request.RequireString("prompt")
 	if err != nil {
 		return mcp.NewToolResultError("prompt is required"), nil
@@ -305,6 +302,12 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		sess.Status = types.SessionStatusRunning
 	})
 
+	// Extract projectID for per-project metrics (empty string if not in session mode).
+	projectID := ""
+	if pc, ok := ProjectContextFromContext(ctx); ok {
+		projectID = pc.ID
+	}
+
 	// Declare busy to mcp-mux so the idle reaper does not evict this upstream
 	// while the background goroutine runs. The deferred sendIdle covers every
 	// return path below (success, failure, fallback exhaustion). See P26.
@@ -349,7 +352,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 
 		if err != nil {
 			currentCB.RecordFailure(false)
-			s.metrics.RecordRequest(cand.CLI, 0, true)
+			s.metrics.RecordRequest(cand.CLI, projectID, 0, true)
 			lastErr = types.NewExecutorError(err.Error(), err, "")
 			s.log.Warn("exec failed: job=%s cli=%s attempt=%d error=%v", jobID, cand.CLI, attempt+1, err)
 			if attempt < len(candidates)-1 && isRetriableError(err.Error()) {
@@ -367,7 +370,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		currentCB.RecordSuccess()
 
 		if result.Error != nil {
-			s.metrics.RecordRequest(cand.CLI, 0, true)
+			s.metrics.RecordRequest(cand.CLI, projectID, 0, true)
 			lastErr = result.Error
 			s.log.Warn("exec partial: job=%s cli=%s attempt=%d error=%v", jobID, cand.CLI, attempt+1, result.Error)
 			if attempt < len(candidates)-1 && isRetriableError(result.Error.Error()) {
@@ -391,7 +394,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		// Validate turn content quality
 		validation := executor.ValidateTurnContent(parsed, "", result.ExitCode)
 		if !validation.Valid {
-			s.metrics.RecordRequest(cand.CLI, 0, true)
+			s.metrics.RecordRequest(cand.CLI, projectID, 0, true)
 			lastValidation = &validation
 			s.log.Warn("exec validation failed: job=%s cli=%s attempt=%d errors=%v", jobID, cand.CLI, attempt+1, validation.Errors)
 			if attempt < len(candidates)-1 && isRetriableValidationError(validation.Errors) {
@@ -410,7 +413,7 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 			s.log.Warn("exec warnings: job=%s cli=%s warnings=%v", jobID, cand.CLI, validation.Warnings)
 		}
 
-		s.metrics.RecordRequest(cand.CLI, result.DurationMS, false)
+		s.metrics.RecordRequest(cand.CLI, projectID, result.DurationMS, false)
 		s.jobs.CompleteJob(jobID, parsed, result.ExitCode)
 		s.sessions.Update(sessionID, func(sess *session.Session) {
 			sess.Status = types.SessionStatusCompleted

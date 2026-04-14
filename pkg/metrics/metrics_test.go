@@ -28,8 +28,8 @@ func TestNewCollectorHasZeroCounters(t *testing.T) {
 
 func TestRecordRequestIncrementsCounters(t *testing.T) {
 	c := New()
-	c.RecordRequest("codex", 100, false)
-	c.RecordRequest("codex", 200, false)
+	c.RecordRequest("codex", "", 100, false)
+	c.RecordRequest("codex", "", 200, false)
 
 	snap := c.Snapshot()
 
@@ -51,8 +51,8 @@ func TestRecordRequestIncrementsCounters(t *testing.T) {
 
 func TestRecordRequestErrorIncrements(t *testing.T) {
 	c := New()
-	c.RecordRequest("gemini", 50, false)
-	c.RecordRequest("gemini", 0, true)
+	c.RecordRequest("gemini", "", 50, false)
+	c.RecordRequest("gemini", "", 0, true)
 
 	snap := c.Snapshot()
 
@@ -71,9 +71,9 @@ func TestRecordRequestErrorIncrements(t *testing.T) {
 
 func TestSnapshotErrorRateAndAvgLatency(t *testing.T) {
 	c := New()
-	c.RecordRequest("claude", 100, false)
-	c.RecordRequest("claude", 300, false)
-	c.RecordRequest("claude", 0, true) // error — latency 0
+	c.RecordRequest("claude", "", 100, false)
+	c.RecordRequest("claude", "", 300, false)
+	c.RecordRequest("claude", "", 0, true) // error — latency 0
 
 	snap := c.Snapshot()
 
@@ -92,9 +92,9 @@ func TestSnapshotErrorRateAndAvgLatency(t *testing.T) {
 
 func TestPerCLIBreakdown(t *testing.T) {
 	c := New()
-	c.RecordRequest("codex", 100, false)
-	c.RecordRequest("gemini", 200, false)
-	c.RecordRequest("gemini", 0, true)
+	c.RecordRequest("codex", "", 100, false)
+	c.RecordRequest("gemini", "", 200, false)
+	c.RecordRequest("gemini", "", 0, true)
 
 	snap := c.Snapshot()
 
@@ -130,8 +130,8 @@ func TestPerCLIBreakdown(t *testing.T) {
 
 func TestResetZerosEverything(t *testing.T) {
 	c := New()
-	c.RecordRequest("codex", 500, false)
-	c.RecordRequest("gemini", 0, true)
+	c.RecordRequest("codex", "", 500, false)
+	c.RecordRequest("gemini", "", 0, true)
 
 	c.Reset()
 	snap := c.Snapshot()
@@ -162,7 +162,7 @@ func TestConcurrentRecordRequest(t *testing.T) {
 				cli = "cli-b"
 			}
 			for j := 0; j < requestsEach; j++ {
-				c.RecordRequest(cli, int64(j*10), j%5 == 0)
+				c.RecordRequest(cli, "", int64(j*10), j%5 == 0)
 			}
 		}(i)
 	}
@@ -180,5 +180,120 @@ func TestConcurrentRecordRequest(t *testing.T) {
 	}
 	if cliSum != total {
 		t.Errorf("per-CLI sum: want %d, got %d", total, cliSum)
+	}
+}
+
+// --- T028: per-project metrics tests ---
+
+// TestRecordRequest_PerProject verifies that two different projectIDs produce
+// independent per-project counters without cross-contamination.
+func TestRecordRequest_PerProject(t *testing.T) {
+	c := New()
+
+	c.RecordRequest("codex", "proj-alpha", 100, false)
+	c.RecordRequest("codex", "proj-alpha", 200, false)
+	c.RecordRequest("codex", "proj-beta", 50, true)
+
+	snap := c.Snapshot()
+
+	alpha, ok := snap.PerProject["proj-alpha/codex"]
+	if !ok {
+		t.Fatal("expected per-project entry for proj-alpha/codex")
+	}
+	if alpha.Requests != 2 {
+		t.Errorf("proj-alpha/codex Requests: want 2, got %d", alpha.Requests)
+	}
+	if alpha.Errors != 0 {
+		t.Errorf("proj-alpha/codex Errors: want 0, got %d", alpha.Errors)
+	}
+
+	beta, ok := snap.PerProject["proj-beta/codex"]
+	if !ok {
+		t.Fatal("expected per-project entry for proj-beta/codex")
+	}
+	if beta.Requests != 1 {
+		t.Errorf("proj-beta/codex Requests: want 1, got %d", beta.Requests)
+	}
+	if beta.Errors != 1 {
+		t.Errorf("proj-beta/codex Errors: want 1, got %d", beta.Errors)
+	}
+
+	// Global CLI counter must include all 3 requests regardless of project.
+	cli, ok := snap.PerCLI["codex"]
+	if !ok {
+		t.Fatal("expected per-CLI entry for codex")
+	}
+	if cli.Requests != 3 {
+		t.Errorf("codex global Requests: want 3, got %d", cli.Requests)
+	}
+}
+
+// TestRecordRequest_EmptyProject verifies that an empty projectID does not create
+// a per-project entry and falls back to CLI-only tracking.
+func TestRecordRequest_EmptyProject(t *testing.T) {
+	c := New()
+
+	c.RecordRequest("gemini", "", 150, false)
+
+	snap := c.Snapshot()
+
+	if len(snap.PerProject) != 0 {
+		t.Errorf("PerProject: want empty for empty projectID, got %d entries", len(snap.PerProject))
+	}
+
+	cli, ok := snap.PerCLI["gemini"]
+	if !ok {
+		t.Fatal("expected per-CLI entry for gemini")
+	}
+	if cli.Requests != 1 {
+		t.Errorf("gemini Requests: want 1, got %d", cli.Requests)
+	}
+}
+
+// TestSnapshot_IncludesProjectBreakdown verifies that Snapshot.PerProject is
+// populated when requests are recorded with a non-empty projectID.
+func TestSnapshot_IncludesProjectBreakdown(t *testing.T) {
+	c := New()
+
+	c.RecordRequest("claude", "project-1", 300, false)
+	c.RecordRequest("codex", "project-1", 100, true)
+	c.RecordRequest("codex", "project-2", 200, false)
+
+	snap := c.Snapshot()
+
+	if len(snap.PerProject) != 3 {
+		t.Errorf("PerProject: want 3 entries, got %d", len(snap.PerProject))
+	}
+
+	// project-1/claude
+	p1claude, ok := snap.PerProject["project-1/claude"]
+	if !ok {
+		t.Fatal("expected entry for project-1/claude")
+	}
+	if p1claude.Requests != 1 || p1claude.Errors != 0 {
+		t.Errorf("project-1/claude: want 1 req 0 err, got %d req %d err", p1claude.Requests, p1claude.Errors)
+	}
+
+	// project-1/codex
+	p1codex, ok := snap.PerProject["project-1/codex"]
+	if !ok {
+		t.Fatal("expected entry for project-1/codex")
+	}
+	if p1codex.Requests != 1 || p1codex.Errors != 1 {
+		t.Errorf("project-1/codex: want 1 req 1 err, got %d req %d err", p1codex.Requests, p1codex.Errors)
+	}
+
+	// project-2/codex
+	p2codex, ok := snap.PerProject["project-2/codex"]
+	if !ok {
+		t.Fatal("expected entry for project-2/codex")
+	}
+	if p2codex.Requests != 1 || p2codex.Errors != 0 {
+		t.Errorf("project-2/codex: want 1 req 0 err, got %d req %d err", p2codex.Requests, p2codex.Errors)
+	}
+
+	// PerProject must be present in the snapshot (not nil).
+	if snap.PerProject == nil {
+		t.Error("PerProject: want non-nil map in snapshot")
 	}
 }

@@ -211,9 +211,6 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 }
 
 func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !s.rateLimiter.Allow("agent") {
-		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
-	}
 	agentName, err := request.RequireString("agent")
 	if err != nil {
 		return mcp.NewToolResultError("agent is required"), nil

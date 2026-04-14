@@ -48,13 +48,23 @@ type projectState struct {
 // It dispatches MCP JSON-RPC requests to MCPServer.HandleMessage with per-project
 // session isolation via InProcessSession.
 type aimuxHandler struct {
-	srv      *Server
-	projects sync.Map // map[string]*projectState keyed by ProjectContext.ID
+	srv           *Server
+	projects      sync.Map // map[string]*projectState keyed by ProjectContext.ID
+	notifier      muxcore.Notifier
+	updatePending atomic.Bool   // set after successful binary update; daemon exits on last disconnect
+	cancelFunc    func()        // cancels the engine context to stop daemon
 }
 
 // Compile-time interface assertions.
 var _ muxcore.SessionHandler = (*aimuxHandler)(nil)
 var _ muxcore.ProjectLifecycle = (*aimuxHandler)(nil)
+var _ muxcore.NotifierAware = (*aimuxHandler)(nil)
+
+// SetNotifier satisfies muxcore.NotifierAware. Called once by the owner before
+// the first HandleRequest. Stored for use in OnProjectConnect broadcasts.
+func (h *aimuxHandler) SetNotifier(n muxcore.Notifier) {
+	h.notifier = n
+}
 
 // HandleRequest processes one MCP JSON-RPC request with project context.
 // Called concurrently from multiple goroutines by the muxcore engine owner.
@@ -134,6 +144,13 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 	// Discover project-specific agents.
 	state.agents = h.srv.agentReg.DiscoverForProject(project.Cwd)
 
+	// Broadcast tools/list_changed so that connected CC sessions re-request
+	// tools/list and discover any project-specific agents just found.
+	if h.notifier != nil && len(state.agents) > 0 {
+		notification := []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
+		h.notifier.Broadcast(notification)
+	}
+
 	// Signal ready — HandleRequest waiters unblock after this.
 	close(state.ready)
 
@@ -162,4 +179,32 @@ func (h *aimuxHandler) OnProjectDisconnect(projectID string) {
 	h.projects.Delete(projectID)
 
 	h.srv.log.Info("session-handler: project %s fully disconnected, session unregistered", projectID)
+
+	// Deferred restart: if an update is pending and all projects have disconnected,
+	// stop the daemon so the next shim invocation starts the updated binary.
+	if h.updatePending.Load() {
+		anyActive := false
+		h.projects.Range(func(_, _ any) bool {
+			anyActive = true
+			return false // stop iteration
+		})
+		if !anyActive && h.cancelFunc != nil {
+			h.srv.log.Info("session-handler: update pending, no active sessions — stopping daemon for restart")
+			h.cancelFunc()
+		}
+	}
+}
+
+// SetUpdatePending marks an update as pending. The daemon will exit when all
+// CC sessions disconnect (refcount=0 for all projects), allowing the next
+// shim invocation to start the updated binary.
+func (h *aimuxHandler) SetUpdatePending() {
+	h.updatePending.Store(true)
+	h.srv.log.Info("session-handler: update pending — daemon will exit when all sessions disconnect")
+}
+
+// SetCancelFunc stores the context cancel function used to stop the engine.
+// Called during server initialization with the engine's context cancel.
+func (h *aimuxHandler) SetCancelFunc(cancel func()) {
+	h.cancelFunc = cancel
 }
