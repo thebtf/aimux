@@ -16,6 +16,7 @@ import (
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
+	"github.com/thebtf/aimux/pkg/loom"
 	"github.com/thebtf/aimux/pkg/parser"
 	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
@@ -38,7 +39,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	role := request.GetString("role", "default")
 	model := request.GetString("model", "")
 	effort := request.GetString("reasoning_effort", "")
-	cwd := request.GetString("cwd", "")
+	cwd := cwdFromRequestOrContext(request, ctx)
 	if cwd != "" {
 		cwd = filepath.Clean(cwd)
 		if info, err := os.Stat(cwd); err != nil {
@@ -140,6 +141,33 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			},
 		}
 
+		if async && s.loom != nil {
+			// Route through LoomEngine — task survives disconnect.
+			taskID, err := s.loom.Submit(ctx, loom.TaskRequest{
+				WorkerType: loom.WorkerTypeOrchestrator,
+				ProjectID:  projectIDFromContext(ctx),
+				Prompt:     prompt,
+				CWD:        cwd,
+				Env:        sessionEnvFromContext(ctx),
+				CLI:        cli,
+				Model:      model,
+				Effort:     effort,
+				Timeout:    timeoutSec,
+				Metadata: map[string]any{
+					"strategy":    "pair_coding",
+					"clis":        []string{cli, reviewerCLI},
+					"max_rounds":  s.cfg.Server.Pair.MaxRounds,
+					"complex":     request.GetBool("complex", false),
+				},
+			})
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", err)), nil
+			}
+			result := map[string]any{"job_id": taskID, "status": "running"}
+			return marshalToolResult(result)
+		}
+
+		// Legacy path (when s.loom == nil or sync):
 		if async {
 			if err := s.checkConcurrencyLimit(); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
@@ -221,6 +249,28 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		s.log.Info("exec: stdin piping activated (prompt=%d chars, threshold=%d)", len(prompt), profile.StdinThreshold)
 	}
 
+	if async && s.loom != nil {
+		// Route through LoomEngine — task survives disconnect.
+		taskID, err := s.loom.Submit(ctx, loom.TaskRequest{
+			WorkerType: loom.WorkerTypeCLI,
+			ProjectID:  projectIDFromContext(ctx),
+			Prompt:     prompt,
+			CWD:        cwd,
+			Env:        sessionEnvFromContext(ctx),
+			CLI:        cli,
+			Role:       role,
+			Model:      model,
+			Effort:     effort,
+			Timeout:    timeoutSec,
+		})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", err)), nil
+		}
+		result := map[string]any{"job_id": taskID, "status": "running"}
+		return marshalToolResult(result)
+	}
+
+	// Legacy path (when s.loom == nil or sync):
 	if async {
 		if err := s.checkConcurrencyLimit(); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -612,4 +662,20 @@ func selectBestExecutor() types.Executor {
 		pipeExec.New(),   // Pipe: everywhere (fallback)
 	)
 	return sel.Select()
+}
+
+// projectIDFromContext extracts the ProjectContext.ID for Loom task scoping.
+func projectIDFromContext(ctx context.Context) string {
+	if pc, ok := ProjectContextFromContext(ctx); ok {
+		return pc.ID
+	}
+	return ""
+}
+
+// sessionEnvFromContext extracts the per-session environment (API keys).
+func sessionEnvFromContext(ctx context.Context) map[string]string {
+	if pc, ok := ProjectContextFromContext(ctx); ok {
+		return pc.Env
+	}
+	return nil
 }
