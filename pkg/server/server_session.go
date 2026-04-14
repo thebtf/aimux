@@ -15,11 +15,21 @@ import (
 // projectContextKey is the context key for storing ProjectContext.
 type projectContextKey struct{}
 
+// projectAgentsKey is the context key for storing per-project agent overlay.
+type projectAgentsKey struct{}
+
 // ProjectContextFromContext retrieves the muxcore.ProjectContext from the request context.
 // Returns the zero value and false if no ProjectContext is present (e.g., direct stdio mode).
 func ProjectContextFromContext(ctx context.Context) (muxcore.ProjectContext, bool) {
 	v, ok := ctx.Value(projectContextKey{}).(muxcore.ProjectContext)
 	return v, ok
+}
+
+// ProjectAgentsFromContext retrieves the per-project agent overlay from the request context.
+// Returns nil if no overlay is present (direct stdio mode or no project-specific agents).
+func ProjectAgentsFromContext(ctx context.Context) []*agents.Agent {
+	v, _ := ctx.Value(projectAgentsKey{}).([]*agents.Agent)
+	return v
 }
 
 // projectState holds per-project state for a connected CC session group.
@@ -66,8 +76,11 @@ func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.Projec
 		return nil, ctx.Err()
 	}
 
-	// Inject ProjectContext into request context for tool handlers.
+	// Inject ProjectContext and project agents into request context for tool handlers.
 	ctx = context.WithValue(ctx, projectContextKey{}, project)
+	if len(state.agents) > 0 {
+		ctx = context.WithValue(ctx, projectAgentsKey{}, state.agents)
+	}
 
 	// Inject the project's MCP session into context for HandleMessage.
 	ctx = h.srv.mcp.WithContext(ctx, state.session)

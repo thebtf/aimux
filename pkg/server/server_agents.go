@@ -24,6 +24,26 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 	switch action {
 	case "list":
 		agentList := s.agentReg.List()
+
+		// Merge per-project agent overlay (SessionHandler mode).
+		// Overlay agents shadow shared agents with the same name.
+		if overlay := ProjectAgentsFromContext(ctx); len(overlay) > 0 {
+			seen := make(map[string]struct{}, len(overlay))
+			merged := make([]*agents.Agent, 0, len(agentList)+len(overlay))
+			// Add overlay agents first (higher priority).
+			for _, a := range overlay {
+				seen[a.Name] = struct{}{}
+				merged = append(merged, a)
+			}
+			// Add shared agents not shadowed by overlay.
+			for _, a := range agentList {
+				if _, shadowed := seen[a.Name]; !shadowed {
+					merged = append(merged, a)
+				}
+			}
+			agentList = merged
+		}
+
 		// Return summaries without full content (content can be 500KB+ total)
 		summaries := make([]map[string]any, len(agentList))
 		for i, a := range agentList {
@@ -67,9 +87,11 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultError("cwd is required — specify the working directory for the agent"), nil
 		}
 
-		// Auto-discover agents from the caller's project directory if it differs
-		// from the initial discovery path. Additive — does not remove existing agents.
-		if cwd != "" && cwd != s.projectDir {
+		// In SessionHandler mode, project agents are discovered on connect and stored
+		// in the per-project overlay (via ProjectAgentsFromContext). The additive Discover
+		// call is only needed in direct stdio mode (no ProjectContext).
+		overlay := ProjectAgentsFromContext(ctx)
+		if len(overlay) == 0 && cwd != "" && cwd != s.projectDir {
 			s.agentReg.Discover(cwd, "")
 		}
 
@@ -86,10 +108,14 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 				"hint":    "Pick the agent whose 'when' description best matches your task. Use the 'agent' tool directly with agent=<name> for fastest execution.",
 			})
 		} else {
-			var agentErr error
-			agent, agentErr = s.agentReg.Get(agentName)
-			if agentErr != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+			// Check overlay first (project-specific agents), then shared registry.
+			agent = findAgentInOverlay(overlay, agentName)
+			if agent == nil {
+				var agentErr error
+				agent, agentErr = s.agentReg.Get(agentName)
+				if agentErr != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
+				}
 			}
 		}
 
@@ -182,14 +208,20 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError("prompt is required"), nil
 	}
 
-	agent, agentErr := s.agentReg.Get(agentName)
-	if agentErr != nil {
-		available := s.agentReg.List()
-		names := make([]string, len(available))
-		for i, a := range available {
-			names[i] = a.Name
+	// Check per-project overlay first, then shared registry.
+	overlay := ProjectAgentsFromContext(ctx)
+	agent := findAgentInOverlay(overlay, agentName)
+	if agent == nil {
+		var agentErr error
+		agent, agentErr = s.agentReg.Get(agentName)
+		if agentErr != nil {
+			available := s.agentReg.List()
+			names := make([]string, len(available))
+			for i, a := range available {
+				names[i] = a.Name
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("agent %q not found; available: %v", agentName, names)), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("agent %q not found; available: %v", agentName, names)), nil
 	}
 
 	// Resolve CLI: explicit param > agent meta > role routing > default
@@ -325,4 +357,15 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		"duration_ms": result.DurationMS,
 		"turn_log":    result.TurnLog,
 	})
+}
+
+// findAgentInOverlay searches the per-project agent overlay by name.
+// Returns nil if overlay is empty or agent not found.
+func findAgentInOverlay(overlay []*agents.Agent, name string) *agents.Agent {
+	for _, a := range overlay {
+		if a.Name == name {
+			return a
+		}
+	}
+	return nil
 }
