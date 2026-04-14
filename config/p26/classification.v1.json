@@ -62,6 +62,12 @@
     "think": {
       "classification": "sync_ok"
     },
+    "upgrade": {
+      "actions": {
+        "check": "sync_ok",
+        "apply": "sync_ok"
+      }
+    },
     "workflow": {
       "classification": "async_mandatory"
     }

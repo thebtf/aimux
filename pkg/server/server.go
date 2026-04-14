@@ -32,6 +32,8 @@ import (
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
+	"github.com/thebtf/aimux/pkg/updater"
+	"github.com/thebtf/mcp-mux/muxcore"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -122,6 +124,7 @@ type Server struct {
 	projectDir       string // directory used for initial agent discovery
 	guidanceReg      *guidance.Registry
 	cooldownTracker  *executor.ModelCooldownTracker
+	sessionHandler   muxcore.SessionHandler // stored for upgrade tool deferred restart
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -800,6 +803,21 @@ func (s *Server) registerTools() {
 		),
 		s.handleWorkflow,
 	)
+
+	// upgrade tool — binary self-update from GitHub releases
+	s.mcp.AddTool(
+		mcp.NewTool("upgrade",
+			mcp.WithDescription("Check for and apply aimux binary updates from GitHub releases. "+
+				"action=check: detect latest version. action=apply: download, verify checksum, replace binary. "+
+				"After apply, daemon will exit when all CC sessions disconnect (deferred restart)."),
+			mcp.WithString("action",
+				mcp.Required(),
+				mcp.Description("Action: check (detect latest version) or apply (download and replace binary)"),
+				mcp.Enum("check", "apply"),
+			),
+		),
+		s.handleUpgrade,
+	)
 }
 
 func (s *Server) registerResources() {
@@ -1024,4 +1042,58 @@ func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolReq
 		"content": content,
 		"cached":  cacheHit,
 	})
+}
+
+func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	action, err := request.RequireString("action")
+	if err != nil {
+		return mcp.NewToolResultError("action is required (check or apply)"), nil
+	}
+
+	switch action {
+	case "check":
+		release, checkErr := updater.CheckUpdate(ctx, serverVersion)
+		if checkErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("update check failed: %v", checkErr)), nil
+		}
+		if release == nil {
+			return marshalToolResult(map[string]any{
+				"status":          "up_to_date",
+				"current_version": serverVersion,
+			})
+		}
+		return marshalToolResult(map[string]any{
+			"status":          "update_available",
+			"current_version": serverVersion,
+			"latest_version":  release.Version,
+			"asset_name":      release.AssetName,
+			"release_notes":   release.ReleaseNotes,
+			"published_at":    release.PublishedAt,
+		})
+
+	case "apply":
+		release, applyErr := updater.ApplyUpdate(ctx, serverVersion)
+		if applyErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("update failed: %v", applyErr)), nil
+		}
+		if release == nil {
+			return marshalToolResult(map[string]any{
+				"status":          "up_to_date",
+				"current_version": serverVersion,
+			})
+		}
+		// Signal deferred restart via SessionHandler.
+		if sh, ok := s.sessionHandler.(*aimuxHandler); ok {
+			sh.SetUpdatePending()
+		}
+		return marshalToolResult(map[string]any{
+			"status":          "updated",
+			"previous_version": serverVersion,
+			"new_version":     release.Version,
+			"message":         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+		})
+
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("unknown upgrade action %q (use check or apply)", action)), nil
+	}
 }

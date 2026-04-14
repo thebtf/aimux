@@ -22,7 +22,9 @@ func (s *Server) ServeStdio() error {
 // via MCPServer.HandleMessage with per-project session isolation.
 // Used by muxcore engine daemon mode for direct JSON-RPC dispatch.
 func (s *Server) SessionHandler() muxcore.SessionHandler {
-	return &aimuxHandler{srv: s}
+	h := &aimuxHandler{srv: s}
+	s.sessionHandler = h
+	return h
 }
 
 // StdioHandler returns a handler function compatible with muxcore engine.Handler.
