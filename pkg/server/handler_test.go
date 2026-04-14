@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -3537,5 +3540,122 @@ func newFallbackServer(t *testing.T) *Server {
 		cooldownTracker: executor.NewModelCooldownTracker(),
 	}
 	return s
+}
+
+// --- Notifier broadcast ---
+
+// mockNotifier is a test double that records all Broadcast calls.
+type mockNotifier struct {
+	broadcasts [][]byte
+	mu         sync.Mutex
+}
+
+func (m *mockNotifier) Notify(projectID string, notification []byte) error { return nil }
+func (m *mockNotifier) Broadcast(notification []byte) {
+	m.mu.Lock()
+	m.broadcasts = append(m.broadcasts, notification)
+	m.mu.Unlock()
+}
+
+func (m *mockNotifier) broadcastCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.broadcasts)
+}
+
+// createAgentsDir creates a temporary project directory with a .claude/agents/
+// subdirectory containing one agent markdown file.
+// Returns the project directory path.
+func createAgentsDir(t *testing.T) string {
+	t.Helper()
+	projectDir := t.TempDir()
+	agentsDir := filepath.Join(projectDir, ".claude", "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	agentFile := filepath.Join(agentsDir, "test-agent.md")
+	if err := os.WriteFile(agentFile, []byte("# Test Agent\nA test project agent."), 0644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+	return projectDir
+}
+
+// TestNotifier_BroadcastOnConnect verifies that Broadcast is called when a
+// project with discovered agents connects.
+func TestNotifier_BroadcastOnConnect(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	notifier := &mockNotifier{}
+	aware := handler.(muxcore.NotifierAware)
+	aware.SetNotifier(notifier)
+
+	projectDir := createAgentsDir(t)
+	project := muxcore.ProjectContext{
+		ID:  "notifier-broadcast-test",
+		Cwd: projectDir,
+	}
+
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	lifecycle.OnProjectConnect(project)
+
+	if notifier.broadcastCount() == 0 {
+		t.Error("expected Broadcast to be called when project with agents connects")
+	}
+
+	// Verify the notification contains the expected method.
+	notifier.mu.Lock()
+	payload := notifier.broadcasts[0]
+	notifier.mu.Unlock()
+
+	var msg map[string]any
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("broadcast payload is not valid JSON: %v — raw: %s", err, payload)
+	}
+	if msg["method"] != "notifications/tools/list_changed" {
+		t.Errorf("broadcast method = %v, want notifications/tools/list_changed", msg["method"])
+	}
+}
+
+// TestNotifier_NoBroadcastWithoutAgents verifies that Broadcast is NOT called
+// when a project connects but has no agents directory.
+func TestNotifier_NoBroadcastWithoutAgents(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	notifier := &mockNotifier{}
+	aware := handler.(muxcore.NotifierAware)
+	aware.SetNotifier(notifier)
+
+	// Use a bare temp dir with no .claude/agents/ subdirectory.
+	project := muxcore.ProjectContext{
+		ID:  "notifier-no-agents-test",
+		Cwd: t.TempDir(),
+	}
+
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	lifecycle.OnProjectConnect(project)
+
+	if notifier.broadcastCount() != 0 {
+		t.Errorf("expected no Broadcast when project has no agents, got %d calls", notifier.broadcastCount())
+	}
+}
+
+// TestNotifier_NilNotifier verifies that connecting a project without calling
+// SetNotifier first does not panic.
+func TestNotifier_NilNotifier(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	// Intentionally do NOT call SetNotifier — notifier remains nil.
+
+	projectDir := createAgentsDir(t)
+	project := muxcore.ProjectContext{
+		ID:  "notifier-nil-test",
+		Cwd: projectDir,
+	}
+
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	// Must not panic.
+	lifecycle.OnProjectConnect(project)
 }
 

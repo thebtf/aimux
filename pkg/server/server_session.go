@@ -50,11 +50,19 @@ type projectState struct {
 type aimuxHandler struct {
 	srv      *Server
 	projects sync.Map // map[string]*projectState keyed by ProjectContext.ID
+	notifier muxcore.Notifier
 }
 
 // Compile-time interface assertions.
 var _ muxcore.SessionHandler = (*aimuxHandler)(nil)
 var _ muxcore.ProjectLifecycle = (*aimuxHandler)(nil)
+var _ muxcore.NotifierAware = (*aimuxHandler)(nil)
+
+// SetNotifier satisfies muxcore.NotifierAware. Called once by the owner before
+// the first HandleRequest. Stored for use in OnProjectConnect broadcasts.
+func (h *aimuxHandler) SetNotifier(n muxcore.Notifier) {
+	h.notifier = n
+}
 
 // HandleRequest processes one MCP JSON-RPC request with project context.
 // Called concurrently from multiple goroutines by the muxcore engine owner.
@@ -133,6 +141,13 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 
 	// Discover project-specific agents.
 	state.agents = h.srv.agentReg.DiscoverForProject(project.Cwd)
+
+	// Broadcast tools/list_changed so that connected CC sessions re-request
+	// tools/list and discover any project-specific agents just found.
+	if h.notifier != nil && len(state.agents) > 0 {
+		notification := []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
+		h.notifier.Broadcast(notification)
+	}
 
 	// Signal ready — HandleRequest waiters unblock after this.
 	close(state.ready)
