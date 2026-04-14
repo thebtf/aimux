@@ -144,7 +144,10 @@ func startServer(t *testing.T, binPath string) (*exec.Cmd, io.WriteCloser, *bufi
 
 	configDir := filepath.Join(testdataDir(), "config")
 	cmd := exec.Command(binPath)
-	cmd.Env = append(os.Environ(), "AIMUX_CONFIG_DIR="+configDir)
+	cmd.Env = append(os.Environ(),
+		"AIMUX_CONFIG_DIR="+configDir,
+		"AIMUX_NO_ENGINE=1", // e2e tests use direct stdio, not engine/daemon mode
+	)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

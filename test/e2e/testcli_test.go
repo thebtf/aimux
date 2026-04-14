@@ -50,6 +50,7 @@ func startServerWithTestCLI(t *testing.T, aimuxBin, testcliBin string) (*exec.Cm
 	pathEnv := testcliDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	cmd.Env = append(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,
+		"AIMUX_NO_ENGINE=1", // e2e tests use direct stdio, not engine/daemon mode
 		"PATH="+pathEnv,
 	)
 

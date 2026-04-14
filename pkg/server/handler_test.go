@@ -2965,6 +2965,7 @@ func TestHandleAgentRun_Async_BuiltinAgent(t *testing.T) {
 		"agent":  agentName,
 		"prompt": "test prompt",
 		"async":  true,
+		"cwd":    t.TempDir(),
 	})
 
 	result, err := srv.handleAgentRun(context.Background(), req)
@@ -3033,6 +3034,7 @@ func TestHandleAgentRun_EnvOverrideBeatsAgentFrontmatter(t *testing.T) {
 	req := makeRequest("agent", map[string]any{
 		"agent":  agent.Name,
 		"prompt": "test prompt",
+		"cwd":    t.TempDir(),
 	})
 
 	result, err := srv.handleAgentRun(context.Background(), req)
@@ -3078,6 +3080,7 @@ func TestHandleAgentRun_FrontmatterBeatsRoleDefaultsWithoutEnv(t *testing.T) {
 	req := makeRequest("agent", map[string]any{
 		"agent":  agent.Name,
 		"prompt": "test prompt",
+		"cwd":    t.TempDir(),
 	})
 
 	result, err := srv.handleAgentRun(context.Background(), req)
