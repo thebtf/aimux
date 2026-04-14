@@ -8,6 +8,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/thebtf/aimux/pkg/guidance/policies"
+	"github.com/thebtf/aimux/pkg/loom"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
@@ -36,6 +37,21 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		Extra:    map[string]any{"synthesize": synthesize},
 	}
 
+	if async && s.loom != nil {
+		taskID, loomErr := s.loom.Submit(ctx, loom.TaskRequest{
+			WorkerType: loom.WorkerTypeOrchestrator,
+			ProjectID:  projectIDFromContext(ctx),
+			Prompt:     topic,
+			Env:        sessionEnvFromContext(ctx),
+			Metadata:   map[string]any{"strategy": "consensus", "clis": enabled[:2], "max_turns": params.MaxTurns, "synthesize": synthesize},
+		})
+		if loomErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil
+		}
+		return marshalToolResult(map[string]any{"job_id": taskID, "status": "running"})
+	}
+
+	// Legacy path:
 	if async {
 		if err := s.checkConcurrencyLimit(); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -86,6 +102,21 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		Extra:    map[string]any{"synthesize": synthesize},
 	}
 
+	if async && s.loom != nil {
+		taskID, loomErr := s.loom.Submit(ctx, loom.TaskRequest{
+			WorkerType: loom.WorkerTypeOrchestrator,
+			ProjectID:  projectIDFromContext(ctx),
+			Prompt:     topic,
+			Env:        sessionEnvFromContext(ctx),
+			Metadata:   map[string]any{"strategy": "debate", "clis": enabled[:2], "max_turns": params.MaxTurns, "synthesize": synthesize},
+		})
+		if loomErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil
+		}
+		return marshalToolResult(map[string]any{"job_id": taskID, "status": "running"})
+	}
+
+	// Legacy path:
 	if async {
 		if err := s.checkConcurrencyLimit(); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -234,6 +265,28 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 		},
 	}
 
+	if async && s.loom != nil {
+		taskID, loomErr := s.loom.Submit(ctx, loom.TaskRequest{
+			WorkerType: loom.WorkerTypeOrchestrator,
+			ProjectID:  projectIDFromContext(ctx),
+			Prompt:     params.Prompt,
+			CWD:        cwd,
+			Env:        sessionEnvFromContext(ctx),
+			Metadata: map[string]any{
+				"strategy":          "audit",
+				"mode":              mode,
+				"parallel_scanners": s.cfg.Server.Audit.ParallelScanners,
+				"scanner_role":      s.cfg.Server.Audit.ScannerRole,
+				"validator_role":    s.cfg.Server.Audit.ValidatorRole,
+			},
+		})
+		if loomErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil
+		}
+		return marshalToolResult(map[string]any{"job_id": taskID, "status": "running"})
+	}
+
+	// Legacy path:
 	if async {
 		if err := s.checkConcurrencyLimit(); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -295,6 +348,20 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 		},
 	}
 
+	if async && s.loom != nil {
+		taskID, loomErr := s.loom.Submit(ctx, loom.TaskRequest{
+			WorkerType: loom.WorkerTypeOrchestrator,
+			ProjectID:  projectIDFromContext(ctx),
+			Env:        sessionEnvFromContext(ctx),
+			Metadata:   map[string]any{"strategy": "workflow", "workflow": string(defJSON)},
+		})
+		if loomErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil
+		}
+		return marshalToolResult(map[string]any{"job_id": taskID, "status": "running"})
+	}
+
+	// Legacy path:
 	if async {
 		if err := s.checkConcurrencyLimit(); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil

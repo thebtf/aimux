@@ -29,6 +29,9 @@ type Job struct {
 	CompletedAt       *time.Time           `json:"completed_at,omitempty"`
 }
 
+// Deprecated: JobManager is superseded by pkg/loom.LoomEngine for task management.
+// Kept for backward compatibility during migration. New code should use LoomEngine.
+//
 // JobManager manages async jobs with state machine transitions.
 type JobManager struct {
 	jobs    map[string]*Job

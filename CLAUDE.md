@@ -35,7 +35,9 @@ pkg/orchestrator/    — Multi-CLI strategies (consensus, debate, dialog, pair, 
 pkg/executor/        — Process executors (ConPTY, PTY, Pipe) + ProcessManager/IOManager + error classification + model cooldown
 pkg/driver/          — CLI profile loading, registry, binary probe
 pkg/config/          — YAML configuration + transport config
-pkg/session/         — SQLite session/job persistence with WAL crash recovery
+pkg/session/         — SQLite session/job persistence with WAL crash recovery (JobManager deprecated → use LoomEngine)
+pkg/loom/            — LoomEngine v3: central task mediator (Submit/Get/List/Cancel/RecoverCrashed)
+pkg/loom/workers/    — Worker adapters: CLI (executor), Thinker (think patterns), Investigator, Orchestrator
 pkg/guidance/        — Policy-driven response guidance (envelope, registry, builder)
 pkg/guidance/policies/ — Tool-specific guidance policies (think, investigate, consensus, debate, dialog, workflow)
 pkg/investigate/     — Investigation sessions with finding chains and severity triage
