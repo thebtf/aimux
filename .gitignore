@@ -4,6 +4,9 @@
 /dist/
 *.exe
 
+# MCP config (machine-specific paths)
+.mcp.json
+
 # IDE
 .idea/
 .vscode/
