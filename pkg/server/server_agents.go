@@ -140,12 +140,19 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			return mcp.NewToolResultError(fmt.Sprintf("CLI %q not configured for agent role %q", cli, role)), nil
 		}
 
+		// Inject per-session environment from ProjectContext.
+		var sessionEnv map[string]string
+		if pc, ok := ProjectContextFromContext(ctx); ok {
+			sessionEnv = pc.Env
+		}
+
 		readOnly := routing.IsAdvisory(role)
 		args := types.SpawnArgs{
 			CLI:            cli,
 			Command:        resolve.CommandBinary(profile.Command.Base),
 			Args:           resolve.BuildPromptArgs(profile, pref.Model, pref.ReasoningEffort, readOnly, fullPrompt),
 			CWD:            cwd,
+			Env:            sessionEnv,
 			TimeoutSeconds: profile.TimeoutSeconds,
 		}
 
@@ -275,6 +282,12 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 
 	cliResolver := resolve.NewProfileResolver(s.cfg.CLIProfiles)
 
+	// Inject per-session environment from ProjectContext.
+	var agentEnv map[string]string
+	if pc, ok := ProjectContextFromContext(ctx); ok {
+		agentEnv = pc.Env
+	}
+
 	runCfg := agents.RunConfig{
 		Agent:    agent,
 		CLI:      cli,
@@ -286,6 +299,7 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		Effort:   effort,
 		Executor: s.executor,
 		Resolver: cliResolver,
+		Env:      agentEnv,
 	}
 
 	// T011: wire model-fallback chain from the resolved CLI profile.

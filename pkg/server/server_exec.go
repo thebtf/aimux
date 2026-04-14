@@ -201,12 +201,19 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	// Bootstrap prompt injection: prepend role-specific prompt from prompts.d/
 	prompt = s.injectBootstrap(role, prompt)
 
+	// Inject per-session environment (API keys etc.) from ProjectContext.
+	var sessionEnv map[string]string
+	if pc, ok := ProjectContextFromContext(ctx); ok {
+		sessionEnv = pc.Env
+	}
+
 	// Non-coding roles: direct execution
 	args := types.SpawnArgs{
 		CLI:            cli,
 		Command:        resolve.CommandBinary(profile.Command.Base),
 		Args:           resolve.BuildPromptArgs(profile, model, effort, readOnly, prompt),
 		CWD:            cwd,
+		Env:            sessionEnv,
 		TimeoutSeconds: timeoutSec,
 	}
 
