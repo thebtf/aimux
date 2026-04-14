@@ -365,6 +365,8 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 	return marshalToolResult(map[string]any{
 		"agent":       agentName,
 		"cli":         cli,
+		"model":       model,
+		"effort":      effort,
 		"status":      result.Status,
 		"turns":       result.Turns,
 		"content":     result.Content,

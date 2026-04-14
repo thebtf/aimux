@@ -3046,21 +3046,15 @@ func TestHandleAgentRun_EnvOverrideBeatsAgentFrontmatter(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	content, _ := data["content"].(string)
-	if content == "" {
-		t.Fatal("missing content")
+	// Verify resolved model/effort from response metadata (not process output,
+	// which varies by platform — cmd.exe on Windows doesn't echo model flags).
+	resolvedModel, _ := data["model"].(string)
+	resolvedEffort, _ := data["effort"].(string)
+	if resolvedModel != "gpt-5.3-codex-spark" {
+		t.Fatalf("model = %q, want env override gpt-5.3-codex-spark", resolvedModel)
 	}
-	if !strings.Contains(content, "gpt-5.3-codex-spark") {
-		t.Fatalf("content = %q, want env override model", content)
-	}
-	if !strings.Contains(content, "model_reasoning_effort=high") {
-		t.Fatalf("content = %q, want env override effort", content)
-	}
-	if strings.Contains(content, "gpt-5.4") {
-		t.Fatalf("content = %q, got frontmatter model", content)
-	}
-	if strings.Contains(content, "model_reasoning_effort=low") {
-		t.Fatalf("content = %q, got frontmatter effort", content)
+	if resolvedEffort != "high" {
+		t.Fatalf("effort = %q, want env override high", resolvedEffort)
 	}
 }
 
@@ -3092,21 +3086,14 @@ func TestHandleAgentRun_FrontmatterBeatsRoleDefaultsWithoutEnv(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	content, _ := data["content"].(string)
-	if content == "" {
-		t.Fatal("missing content")
+	// Verify resolved model/effort from response metadata.
+	resolvedModel, _ := data["model"].(string)
+	resolvedEffort, _ := data["effort"].(string)
+	if resolvedModel != "gpt-5.4" {
+		t.Fatalf("model = %q, want frontmatter model gpt-5.4", resolvedModel)
 	}
-	if !strings.Contains(content, "gpt-5.4") {
-		t.Fatalf("content = %q, want frontmatter model", content)
-	}
-	if !strings.Contains(content, "model_reasoning_effort=low") {
-		t.Fatalf("content = %q, want frontmatter effort", content)
-	}
-	if strings.Contains(content, "gpt-5.3-codex") {
-		t.Fatalf("content = %q, got role default model", content)
-	}
-	if strings.Contains(content, "model_reasoning_effort=medium") {
-		t.Fatalf("content = %q, got role default effort", content)
+	if resolvedEffort != "low" {
+		t.Fatalf("effort = %q, want frontmatter effort low", resolvedEffort)
 	}
 }
 
