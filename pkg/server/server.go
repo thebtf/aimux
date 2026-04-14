@@ -880,6 +880,24 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 
 	j := s.jobs.GetSnapshot(jobID)
 	if j == nil {
+		// Fallback: check LoomEngine TaskStore (async tasks routed through Loom
+		// don't create legacy Job entries).
+		if s.loom != nil {
+			task, taskErr := s.loom.Get(jobID)
+			if taskErr == nil && task != nil {
+				result := map[string]any{
+					"job_id": task.ID,
+					"status": string(task.Status),
+				}
+				if task.Status.IsTerminal() {
+					result["content"] = task.Result
+					if task.Error != "" {
+						result["error"] = task.Error
+					}
+				}
+				return marshalToolResult(result)
+			}
+		}
 		return mcp.NewToolResultError(fmt.Sprintf("job %q not found", jobID)), nil
 	}
 
