@@ -9,6 +9,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/thebtf/aimux/pkg/agents"
+	"github.com/thebtf/aimux/pkg/loom"
 	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/session"
@@ -321,6 +322,36 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		}
 	}
 
+	if async && s.loom != nil {
+		// Route through LoomEngine — task survives disconnect.
+		taskID, loomErr := s.loom.Submit(ctx, loom.TaskRequest{
+			WorkerType: loom.WorkerTypeCLI,
+			ProjectID:  projectIDFromContext(ctx),
+			Prompt:     prompt,
+			CWD:        cwd,
+			Env:        agentEnv,
+			CLI:        cli,
+			Role:       role,
+			Model:      model,
+			Effort:     effort,
+			Timeout:    timeoutSeconds,
+			Metadata: map[string]any{
+				"agent":     agentName,
+				"max_turns": maxTurns,
+			},
+		})
+		if loomErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil
+		}
+		return marshalToolResult(map[string]any{
+			"agent":  agentName,
+			"cli":    cli,
+			"job_id": taskID,
+			"status": "running",
+		})
+	}
+
+	// Legacy path (when s.loom == nil or sync):
 	if async {
 		if err := s.checkConcurrencyLimit(); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
