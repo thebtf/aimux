@@ -986,9 +986,6 @@ func (s *Server) handleMetricsResource(ctx context.Context, request mcp.ReadReso
 // --- DeepResearch Handler ---
 
 func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !s.rateLimiter.Allow("deepresearch") {
-		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
-	}
 	topic, err := request.RequireString("topic")
 	if err != nil {
 		return mcp.NewToolResultError("topic is required"), nil

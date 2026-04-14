@@ -14,9 +14,6 @@ import (
 )
 
 func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !s.rateLimiter.Allow("consensus") {
-		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
-	}
 	topic, err := request.RequireString("topic")
 	if err != nil {
 		return mcp.NewToolResultError("topic is required"), nil
@@ -68,9 +65,6 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 }
 
 func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !s.rateLimiter.Allow("debate") {
-		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
-	}
 	topic, err := request.RequireString("topic")
 	if err != nil {
 		return mcp.NewToolResultError("topic is required"), nil
@@ -122,9 +116,6 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 }
 
 func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !s.rateLimiter.Allow("dialog") {
-		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
-	}
 	prompt, err := request.RequireString("prompt")
 	if err != nil {
 		return mcp.NewToolResultError("prompt is required"), nil
@@ -228,9 +219,6 @@ func (s *Server) findDialogTurnHistory(sessionID string) []byte {
 }
 
 func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !s.rateLimiter.Allow("audit") {
-		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
-	}
 	cwd := request.GetString("cwd", "")
 	mode := request.GetString("mode", "standard")
 	async := request.GetBool("async", true)
@@ -277,9 +265,6 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 
 // handleWorkflow executes a declarative multi-step pipeline as a single MCP call.
 func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !s.rateLimiter.Allow("workflow") {
-		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
-	}
 	name := request.GetString("name", "workflow")
 	stepsJSON, err := request.RequireString("steps")
 	if err != nil {

@@ -24,9 +24,6 @@ import (
 )
 
 func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !s.rateLimiter.Allow("exec") {
-		return mcp.NewToolResultError("rate limit exceeded — try again shortly"), nil
-	}
 	prompt, err := request.RequireString("prompt")
 	if err != nil {
 		return mcp.NewToolResultError("prompt is required"), nil
