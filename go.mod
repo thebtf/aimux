@@ -26,7 +26,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/cast v1.7.1 // indirect
-	github.com/thebtf/mcp-mux/muxcore v0.15.0 // indirect
+	github.com/thebtf/mcp-mux/muxcore v0.17.0 // indirect
 	github.com/thejerf/suture/v4 v4.0.6 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.opencensus.io v0.24.0 // indirect
