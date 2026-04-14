@@ -1,0 +1,677 @@
+package loom
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+// ---- test helpers ----
+
+func newTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	// Use a per-test named in-memory database so connections within the same test
+	// share the schema, but tests remain fully isolated from each other.
+	// Plain ":memory:" gives each connection its own DB (breaks goroutines).
+	dbName := "file:" + t.Name() + "?cache=shared&mode=memory"
+	db, err := sql.Open("sqlite", dbName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Single connection forces all pool connections to use the same in-memory DB.
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+func newTestStore(t *testing.T) *TaskStore {
+	t.Helper()
+	db := newTestDB(t)
+	store, err := NewTaskStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func makeTask(id, projectID string, status TaskStatus) *Task {
+	return &Task{
+		ID:         id,
+		Status:     status,
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  projectID,
+		Prompt:     "test prompt",
+		CreatedAt:  time.Now().UTC(),
+	}
+}
+
+// ---- testWorker ----
+
+type testWorker struct {
+	wtype   WorkerType
+	result  string
+	err     error
+	called  atomic.Int32
+	delay   time.Duration
+}
+
+func (w *testWorker) Execute(_ context.Context, _ *Task) (*WorkerResult, error) {
+	w.called.Add(1)
+	if w.delay > 0 {
+		time.Sleep(w.delay)
+	}
+	if w.err != nil {
+		return nil, w.err
+	}
+	return &WorkerResult{Content: w.result}, nil
+}
+
+func (w *testWorker) Type() WorkerType { return w.wtype }
+
+// ---- state machine tests ----
+
+func TestTaskTransitions_Valid(t *testing.T) {
+	cases := []struct {
+		from TaskStatus
+		to   TaskStatus
+	}{
+		{TaskStatusPending, TaskStatusDispatched},
+		{TaskStatusDispatched, TaskStatusRunning},
+		{TaskStatusDispatched, TaskStatusFailedCrash},
+		{TaskStatusRunning, TaskStatusCompleted},
+		{TaskStatusRunning, TaskStatusFailed},
+		{TaskStatusRunning, TaskStatusRetrying},
+		{TaskStatusRunning, TaskStatusFailedCrash},
+		{TaskStatusRetrying, TaskStatusDispatched},
+	}
+
+	for _, tc := range cases {
+		if !tc.from.CanTransitionTo(tc.to) {
+			t.Errorf("expected %s → %s to be valid", tc.from, tc.to)
+		}
+	}
+}
+
+func TestTaskTransitions_Invalid(t *testing.T) {
+	cases := []struct {
+		from TaskStatus
+		to   TaskStatus
+	}{
+		{TaskStatusPending, TaskStatusCompleted},
+		{TaskStatusPending, TaskStatusRunning},
+		{TaskStatusPending, TaskStatusFailed},
+		{TaskStatusCompleted, TaskStatusPending},
+		{TaskStatusCompleted, TaskStatusRunning},
+		{TaskStatusFailed, TaskStatusRunning},
+		{TaskStatusFailedCrash, TaskStatusDispatched},
+		{TaskStatusDispatched, TaskStatusCompleted},
+		{TaskStatusDispatched, TaskStatusRetrying},
+	}
+
+	for _, tc := range cases {
+		if tc.from.CanTransitionTo(tc.to) {
+			t.Errorf("expected %s → %s to be INVALID", tc.from, tc.to)
+		}
+	}
+}
+
+func TestTaskStatus_IsTerminal(t *testing.T) {
+	terminal := []TaskStatus{TaskStatusCompleted, TaskStatusFailed, TaskStatusFailedCrash}
+	for _, s := range terminal {
+		if !s.IsTerminal() {
+			t.Errorf("expected %s to be terminal", s)
+		}
+	}
+
+	nonTerminal := []TaskStatus{TaskStatusPending, TaskStatusDispatched, TaskStatusRunning, TaskStatusRetrying}
+	for _, s := range nonTerminal {
+		if s.IsTerminal() {
+			t.Errorf("expected %s to be non-terminal", s)
+		}
+	}
+}
+
+// ---- store tests ----
+
+func TestTaskStore_Create_Get(t *testing.T) {
+	store := newTestStore(t)
+
+	env := map[string]string{"KEY": "val"}
+	meta := map[string]any{"foo": "bar"}
+
+	task := &Task{
+		ID:         "task-1",
+		Status:     TaskStatusPending,
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-1",
+		Prompt:     "hello",
+		CWD:        "/tmp",
+		Env:        env,
+		CLI:        "claude",
+		Role:       "coder",
+		Model:      "opus",
+		Effort:     "high",
+		Timeout:    30,
+		Metadata:   meta,
+		Retries:    0,
+		CreatedAt:  time.Now().UTC().Truncate(time.Second),
+	}
+
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := store.Get("task-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.ID != task.ID {
+		t.Errorf("ID: got %q want %q", got.ID, task.ID)
+	}
+	if got.Status != task.Status {
+		t.Errorf("Status: got %q want %q", got.Status, task.Status)
+	}
+	if got.WorkerType != task.WorkerType {
+		t.Errorf("WorkerType: got %q want %q", got.WorkerType, task.WorkerType)
+	}
+	if got.ProjectID != task.ProjectID {
+		t.Errorf("ProjectID: got %q want %q", got.ProjectID, task.ProjectID)
+	}
+	if got.Prompt != task.Prompt {
+		t.Errorf("Prompt: got %q want %q", got.Prompt, task.Prompt)
+	}
+	if got.CWD != task.CWD {
+		t.Errorf("CWD: got %q want %q", got.CWD, task.CWD)
+	}
+	if got.CLI != task.CLI {
+		t.Errorf("CLI: got %q want %q", got.CLI, task.CLI)
+	}
+	if got.Role != task.Role {
+		t.Errorf("Role: got %q want %q", got.Role, task.Role)
+	}
+	if got.Model != task.Model {
+		t.Errorf("Model: got %q want %q", got.Model, task.Model)
+	}
+	if got.Effort != task.Effort {
+		t.Errorf("Effort: got %q want %q", got.Effort, task.Effort)
+	}
+	if got.Timeout != task.Timeout {
+		t.Errorf("Timeout: got %d want %d", got.Timeout, task.Timeout)
+	}
+	if got.Retries != task.Retries {
+		t.Errorf("Retries: got %d want %d", got.Retries, task.Retries)
+	}
+	if got.Env["KEY"] != env["KEY"] {
+		t.Errorf("Env[KEY]: got %q want %q", got.Env["KEY"], env["KEY"])
+	}
+	if got.Metadata["foo"] != meta["foo"] {
+		t.Errorf("Metadata[foo]: got %v want %v", got.Metadata["foo"], meta["foo"])
+	}
+}
+
+func TestTaskStore_List_ByProject(t *testing.T) {
+	store := newTestStore(t)
+
+	_ = store.Create(makeTask("t1", "proj-A", TaskStatusPending))
+	_ = store.Create(makeTask("t2", "proj-A", TaskStatusPending))
+	_ = store.Create(makeTask("t3", "proj-B", TaskStatusPending))
+
+	listA, err := store.List("proj-A")
+	if err != nil {
+		t.Fatalf("List proj-A: %v", err)
+	}
+	if len(listA) != 2 {
+		t.Errorf("proj-A: got %d tasks, want 2", len(listA))
+	}
+
+	listB, err := store.List("proj-B")
+	if err != nil {
+		t.Fatalf("List proj-B: %v", err)
+	}
+	if len(listB) != 1 {
+		t.Errorf("proj-B: got %d tasks, want 1", len(listB))
+	}
+
+	listC, err := store.List("proj-C")
+	if err != nil {
+		t.Fatalf("List proj-C: %v", err)
+	}
+	if len(listC) != 0 {
+		t.Errorf("proj-C: got %d tasks, want 0", len(listC))
+	}
+}
+
+func TestTaskStore_List_ByStatus(t *testing.T) {
+	store := newTestStore(t)
+
+	t1 := makeTask("t1", "proj", TaskStatusPending)
+	t2 := makeTask("t2", "proj", TaskStatusPending)
+	t3 := makeTask("t3", "proj", TaskStatusPending)
+	_ = store.Create(t1)
+	_ = store.Create(t2)
+	_ = store.Create(t3)
+
+	// Manually set statuses for t2 and t3 via DB.
+	_, _ = store.db.Exec("UPDATE tasks SET status='running' WHERE id='t2'")
+	_, _ = store.db.Exec("UPDATE tasks SET status='completed' WHERE id='t3'")
+
+	pending, err := store.List("proj", TaskStatusPending)
+	if err != nil {
+		t.Fatalf("List pending: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != "t1" {
+		t.Errorf("pending: got %d tasks", len(pending))
+	}
+
+	running, err := store.List("proj", TaskStatusRunning)
+	if err != nil {
+		t.Fatalf("List running: %v", err)
+	}
+	if len(running) != 1 || running[0].ID != "t2" {
+		t.Errorf("running: got %d tasks", len(running))
+	}
+
+	multi, err := store.List("proj", TaskStatusPending, TaskStatusRunning)
+	if err != nil {
+		t.Fatalf("List multi: %v", err)
+	}
+	if len(multi) != 2 {
+		t.Errorf("multi: got %d tasks, want 2", len(multi))
+	}
+}
+
+func TestTaskStore_UpdateStatus(t *testing.T) {
+	store := newTestStore(t)
+
+	_ = store.Create(makeTask("t1", "proj", TaskStatusPending))
+
+	// Valid transition.
+	if err := store.UpdateStatus("t1", TaskStatusPending, TaskStatusDispatched); err != nil {
+		t.Fatalf("UpdateStatus pending→dispatched: %v", err)
+	}
+
+	task, _ := store.Get("t1")
+	if task.Status != TaskStatusDispatched {
+		t.Errorf("expected dispatched, got %q", task.Status)
+	}
+	if task.DispatchedAt == nil {
+		t.Error("dispatched_at should be set after transition to dispatched")
+	}
+
+	// Invalid transition rejected.
+	err := store.UpdateStatus("t1", TaskStatusPending, TaskStatusCompleted)
+	if err == nil {
+		t.Error("expected error for invalid transition, got nil")
+	}
+
+	// Wrong current status — row not updated.
+	err = store.UpdateStatus("t1", TaskStatusPending, TaskStatusDispatched)
+	if err == nil {
+		t.Error("expected error when current status doesn't match 'from'")
+	}
+}
+
+func TestTaskStore_SetResult(t *testing.T) {
+	store := newTestStore(t)
+	_ = store.Create(makeTask("t1", "proj", TaskStatusPending))
+
+	if err := store.SetResult("t1", "output content", ""); err != nil {
+		t.Fatalf("SetResult: %v", err)
+	}
+
+	task, err := store.Get("t1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if task.Result != "output content" {
+		t.Errorf("Result: got %q want %q", task.Result, "output content")
+	}
+	if task.CompletedAt == nil {
+		t.Error("CompletedAt should be set after SetResult")
+	}
+}
+
+func TestTaskStore_SetResult_WithError(t *testing.T) {
+	store := newTestStore(t)
+	_ = store.Create(makeTask("t1", "proj", TaskStatusPending))
+
+	if err := store.SetResult("t1", "", "something went wrong"); err != nil {
+		t.Fatalf("SetResult: %v", err)
+	}
+
+	task, _ := store.Get("t1")
+	if task.Error != "something went wrong" {
+		t.Errorf("Error: got %q", task.Error)
+	}
+}
+
+func TestTaskStore_MarkCrashed(t *testing.T) {
+	store := newTestStore(t)
+
+	dispatched := makeTask("t1", "proj", TaskStatusPending)
+	running := makeTask("t2", "proj", TaskStatusPending)
+	completed := makeTask("t3", "proj", TaskStatusPending)
+	_ = store.Create(dispatched)
+	_ = store.Create(running)
+	_ = store.Create(completed)
+
+	_, _ = store.db.Exec("UPDATE tasks SET status='dispatched' WHERE id='t1'")
+	_, _ = store.db.Exec("UPDATE tasks SET status='running' WHERE id='t2'")
+	_, _ = store.db.Exec("UPDATE tasks SET status='completed' WHERE id='t3'")
+
+	n, err := store.MarkCrashed()
+	if err != nil {
+		t.Fatalf("MarkCrashed: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("MarkCrashed: marked %d tasks, want 2", n)
+	}
+
+	t1, _ := store.Get("t1")
+	t2, _ := store.Get("t2")
+	t3, _ := store.Get("t3")
+
+	if t1.Status != TaskStatusFailedCrash {
+		t.Errorf("t1 status: got %q want failed_crash", t1.Status)
+	}
+	if t2.Status != TaskStatusFailedCrash {
+		t.Errorf("t2 status: got %q want failed_crash", t2.Status)
+	}
+	if t3.Status != TaskStatusCompleted {
+		t.Errorf("t3 status: got %q want completed (untouched)", t3.Status)
+	}
+}
+
+// ---- LoomEngine tests ----
+
+func TestLoomEngine_Submit(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	worker := &testWorker{wtype: WorkerTypeCLI, result: "hello"}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	taskID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-1",
+		Prompt:     "do something",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if taskID == "" {
+		t.Fatal("Submit returned empty taskID")
+	}
+
+	// Task should be persisted immediately.
+	task, err := store.Get(taskID)
+	if err != nil {
+		t.Fatalf("Get after Submit: %v", err)
+	}
+	if task.ID != taskID {
+		t.Errorf("task ID mismatch: got %q want %q", task.ID, taskID)
+	}
+
+	// Wait for background dispatch to complete.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		task, _ = store.Get(taskID)
+		if task.Status == TaskStatusCompleted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if task.Status != TaskStatusCompleted {
+		t.Errorf("task status: got %q want completed", task.Status)
+	}
+	if task.Result != "hello" {
+		t.Errorf("task result: got %q want %q", task.Result, "hello")
+	}
+	if worker.called.Load() != 1 {
+		t.Errorf("worker Execute called %d times, want 1", worker.called.Load())
+	}
+}
+
+func TestLoomEngine_Submit_NoWorker(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+	// No worker registered for WorkerTypeCLI.
+
+	taskID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-1",
+		Prompt:     "will fail",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Wait for the task to reach a terminal state.
+	deadline := time.Now().Add(3 * time.Second)
+	var task *Task
+	for time.Now().Before(deadline) {
+		var getErr error
+		task, getErr = store.Get(taskID)
+		if getErr != nil {
+			t.Fatalf("Get: %v", getErr)
+		}
+		if task.Status.IsTerminal() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if task == nil {
+		t.Fatal("task not found")
+	}
+	if task.Status != TaskStatusFailed {
+		t.Errorf("task status: got %q want failed", task.Status)
+	}
+}
+
+func TestLoomEngine_Submit_WorkerError(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	worker := &testWorker{wtype: WorkerTypeCLI, err: errors.New("worker exploded")}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	taskID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-1",
+		Prompt:     "will fail",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var task *Task
+	for time.Now().Before(deadline) {
+		task, _ = store.Get(taskID)
+		if task.Status.IsTerminal() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if task.Status != TaskStatusFailed {
+		t.Errorf("task status: got %q want failed", task.Status)
+	}
+	if task.Error != "worker exploded" {
+		t.Errorf("task error: got %q want %q", task.Error, "worker exploded")
+	}
+}
+
+func TestLoomEngine_RecoverCrashed(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	// Insert tasks directly into the store bypassing state machine for test setup.
+	t1 := makeTask("t1", "proj", TaskStatusPending)
+	t2 := makeTask("t2", "proj", TaskStatusPending)
+	t3 := makeTask("t3", "proj", TaskStatusPending)
+	_ = store.Create(t1)
+	_ = store.Create(t2)
+	_ = store.Create(t3)
+
+	_, _ = store.db.Exec("UPDATE tasks SET status='dispatched' WHERE id='t1'")
+	_, _ = store.db.Exec("UPDATE tasks SET status='running' WHERE id='t2'")
+	// t3 stays pending — should NOT be marked crashed.
+
+	n, err := engine.RecoverCrashed()
+	if err != nil {
+		t.Fatalf("RecoverCrashed: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("RecoverCrashed: got %d, want 2", n)
+	}
+
+	task1, _ := store.Get("t1")
+	task2, _ := store.Get("t2")
+	task3, _ := store.Get("t3")
+
+	if task1.Status != TaskStatusFailedCrash {
+		t.Errorf("t1: got %q want failed_crash", task1.Status)
+	}
+	if task2.Status != TaskStatusFailedCrash {
+		t.Errorf("t2: got %q want failed_crash", task2.Status)
+	}
+	if task3.Status != TaskStatusPending {
+		t.Errorf("t3: got %q want pending (untouched)", task3.Status)
+	}
+}
+
+func TestLoomEngine_Cancel(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	// Worker that blocks until context is cancelled.
+	cancelCh := make(chan struct{})
+	worker := &blockingWorker{done: cancelCh}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	taskID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj",
+		Prompt:     "block",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Wait until the worker is actually running.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		task, _ := store.Get(taskID)
+		if task.Status == TaskStatusRunning {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Cancel should succeed while task is running.
+	if err := engine.Cancel(taskID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// Signal the blocking worker to unblock so the goroutine can clean up.
+	select {
+	case cancelCh <- struct{}{}:
+	case <-time.After(time.Second):
+	}
+}
+
+func TestLoomEngine_Cancel_NotFound(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	err := engine.Cancel("nonexistent-task-id")
+	if err == nil {
+		t.Error("expected error cancelling non-existent task")
+	}
+}
+
+func TestLoomEngine_Get(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	worker := &testWorker{wtype: WorkerTypeCLI, result: "output"}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	taskID, _ := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj",
+		Prompt:     "query",
+	})
+
+	task, err := engine.Get(taskID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if task.ID != taskID {
+		t.Errorf("ID mismatch: got %q want %q", task.ID, taskID)
+	}
+}
+
+func TestLoomEngine_List(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	// Use a slow worker so tasks stay in running state long enough to observe.
+	worker := &testWorker{wtype: WorkerTypeCLI, result: "done", delay: 500 * time.Millisecond}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	_, _ = engine.Submit(context.Background(), TaskRequest{WorkerType: WorkerTypeCLI, ProjectID: "proj", Prompt: "1"})
+	_, _ = engine.Submit(context.Background(), TaskRequest{WorkerType: WorkerTypeCLI, ProjectID: "proj", Prompt: "2"})
+	_, _ = engine.Submit(context.Background(), TaskRequest{WorkerType: WorkerTypeCLI, ProjectID: "other", Prompt: "3"})
+
+	// Wait for tasks to reach dispatched/running.
+	time.Sleep(50 * time.Millisecond)
+
+	tasks, err := engine.List("proj")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Errorf("List proj: got %d, want 2", len(tasks))
+	}
+
+	other, err := engine.List("other")
+	if err != nil {
+		t.Fatalf("List other: %v", err)
+	}
+	if len(other) != 1 {
+		t.Errorf("List other: got %d, want 1", len(other))
+	}
+}
+
+// blockingWorker blocks until either ctx is cancelled or done channel receives.
+type blockingWorker struct {
+	started chan struct{}
+	done    chan struct{}
+}
+
+func (w *blockingWorker) Execute(ctx context.Context, _ *Task) (*WorkerResult, error) {
+	if w.started != nil {
+		select {
+		case w.started <- struct{}{}:
+		default:
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-w.done:
+		return &WorkerResult{Content: "cancelled"}, nil
+	}
+}
+
+func (w *blockingWorker) Type() WorkerType { return WorkerTypeCLI }
