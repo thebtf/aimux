@@ -1,4 +1,11 @@
 // Package ratelimit implements a per-tool token bucket rate limiter using Go stdlib only.
+//
+// ARCHIVED: Not currently called by any tool handler. CLI process spawning is
+// self-limiting (seconds latency, 50-200MB RAM per process). The real concurrency
+// guard is checkConcurrencyLimit in server_exec.go (max parallel async jobs).
+//
+// Reserved for future API-direct mode where requests are millisecond-latency
+// and token bucket rate limiting would be the appropriate protection mechanism.
 package ratelimit
 
 import (
