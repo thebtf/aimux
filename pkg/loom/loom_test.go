@@ -675,3 +675,79 @@ func (w *blockingWorker) Execute(ctx context.Context, _ *Task) (*WorkerResult, e
 }
 
 func (w *blockingWorker) Type() WorkerType { return WorkerTypeCLI }
+
+func TestLoomEngine_ExecSurvivesDisconnect(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	// Worker that takes 200ms to complete.
+	worker := &testWorker{wtype: WorkerTypeCLI, result: "survived", delay: 200 * time.Millisecond}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	// Submit with a context we'll cancel (simulating session disconnect).
+	ctx, cancel := context.WithCancel(context.Background())
+	taskID, err := engine.Submit(ctx, TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-disconnect",
+		Prompt:     "do work",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Cancel context immediately (simulate CC session disconnect).
+	cancel()
+
+	// Wait for task to complete despite context cancellation.
+	// The key property: LoomEngine creates a task-scoped context (FR-4),
+	// NOT derived from the caller's context.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		task, _ := store.Get(taskID)
+		if task != nil && task.Status == TaskStatusCompleted {
+			if task.Result != "survived" {
+				t.Errorf("result: got %q want survived", task.Result)
+			}
+			return // SUCCESS
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("task did not complete after context cancellation (disconnect)")
+}
+
+func TestLoomEngine_AgentSurvivesDisconnect(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	// Simulate agent worker (same interface, just different type).
+	worker := &testWorker{wtype: WorkerTypeCLI, result: "agent output", delay: 200 * time.Millisecond}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	taskID, err := engine.Submit(ctx, TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-agent-disconnect",
+		Prompt:     "agent task",
+		Metadata:   map[string]any{"agent": "test-agent"},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Disconnect immediately.
+	cancel()
+
+	// Task must still complete.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		task, _ := store.Get(taskID)
+		if task != nil && task.Status == TaskStatusCompleted {
+			if task.Result != "agent output" {
+				t.Errorf("result: got %q want agent output", task.Result)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("agent task did not complete after disconnect")
+}
