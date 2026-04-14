@@ -9,12 +9,20 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/thebtf/mcp-mux/muxcore"
 )
 
 // ServeStdio starts the MCP server on stdio transport using os.Stdin/os.Stdout.
 func (s *Server) ServeStdio() error {
 	s.log.Info("MCP server starting on stdio (aimux v%s)", serverVersion)
 	return server.ServeStdio(s.mcp)
+}
+
+// SessionHandler returns a muxcore.SessionHandler that dispatches MCP requests
+// via MCPServer.HandleMessage with per-project session isolation.
+// Used by muxcore engine daemon mode for direct JSON-RPC dispatch.
+func (s *Server) SessionHandler() muxcore.SessionHandler {
+	return &aimuxHandler{srv: s}
 }
 
 // StdioHandler returns a handler function compatible with muxcore engine.Handler.

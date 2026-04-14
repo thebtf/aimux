@@ -73,6 +73,25 @@ func (r *Registry) Discover(projectDir string, userDir string) {
 	}
 }
 
+// DiscoverForProject scans a project directory for agent definitions and returns
+// them as a slice without modifying the shared registry. Used by SessionHandler
+// for per-project agent overlay.
+func (r *Registry) DiscoverForProject(projectDir string) []*Agent {
+	sources := []string{
+		filepath.Join(projectDir, ".aimux", "agents"),
+		filepath.Join(projectDir, ".claude", "agents"),
+		filepath.Join(projectDir, ".codex", "agents"),
+		filepath.Join(projectDir, ".claw", "agents"),
+	}
+
+	// Use a temporary registry to collect without mutating the shared one.
+	tmp := NewRegistry()
+	for _, dir := range sources {
+		tmp.scanDir(dir, "project")
+	}
+	return tmp.List()
+}
+
 // pluginManifest represents the structure of installed_plugins.json.
 type pluginManifest struct {
 	Version int                        `json:"version"`
