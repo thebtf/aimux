@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/thebtf/mcp-mux/muxcore"
 
 	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/aimux/pkg/config"
@@ -1320,6 +1321,241 @@ func TestHandleAgents_FindMissingQuery(t *testing.T) {
 
 	if !result.IsError {
 		t.Error("expected error for find without query")
+	}
+}
+
+// --- SessionHandler HandleRequest dispatch ---
+
+// TestSessionHandler_HandleRequest_Initialize verifies that sending an MCP
+// initialize request through HandleRequest returns a valid JSON-RPC response
+// containing the server capabilities.
+func TestSessionHandler_HandleRequest_Initialize(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "test-project-init",
+		Cwd: t.TempDir(),
+		Env: map[string]string{"TEST_KEY": "test_value"},
+	}
+	lifecycle.OnProjectConnect(project)
+
+	initReq := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	resp, err := handler.HandleRequest(context.Background(), project, []byte(initReq))
+	if err != nil {
+		t.Fatalf("HandleRequest: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response for initialize request")
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		t.Fatalf("response is not valid JSON: %v — raw: %s", err, resp)
+	}
+
+	// JSON-RPC 2.0 initialize response must have result with capabilities.
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("response missing result field; got: %v", parsed)
+	}
+	if result["capabilities"] == nil {
+		t.Error("initialize result must contain capabilities")
+	}
+}
+
+// TestSessionHandler_HandleRequest_NilResponse verifies that a JSON-RPC
+// notification (request without an id field) returns (nil, nil).
+func TestSessionHandler_HandleRequest_NilResponse(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "test-project-notify",
+		Cwd: t.TempDir(),
+	}
+	lifecycle.OnProjectConnect(project)
+
+	// A notification has method and params but no id field.
+	notification := `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`
+	resp, err := handler.HandleRequest(context.Background(), project, []byte(notification))
+	if err != nil {
+		t.Fatalf("HandleRequest: %v", err)
+	}
+	if resp != nil {
+		t.Errorf("notification must return nil response, got: %s", resp)
+	}
+}
+
+// TestSessionHandler_HandleRequest_MalformedJSON verifies that sending garbage
+// bytes returns a JSON-RPC error response (not a Go error).
+func TestSessionHandler_HandleRequest_MalformedJSON(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "test-project-malformed",
+		Cwd: t.TempDir(),
+	}
+	lifecycle.OnProjectConnect(project)
+
+	resp, err := handler.HandleRequest(context.Background(), project, []byte("not valid json at all }{"))
+	if err != nil {
+		t.Fatalf("HandleRequest returned Go error for malformed JSON: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected JSON-RPC error response for malformed input, got nil")
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		t.Fatalf("malformed-input response is not valid JSON: %v — raw: %s", err, resp)
+	}
+	if parsed["error"] == nil {
+		t.Errorf("expected JSON-RPC error field in response for malformed input; got: %v", parsed)
+	}
+}
+
+// TestSessionHandler_TwoProjects_IndependentSessions verifies that two different
+// project IDs each get their own independent project state.
+func TestSessionHandler_TwoProjects_IndependentSessions(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	h := handler.(*aimuxHandler)
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	projectA := muxcore.ProjectContext{ID: "project-alpha", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "project-beta", Cwd: t.TempDir()}
+
+	lifecycle.OnProjectConnect(projectA)
+	lifecycle.OnProjectConnect(projectB)
+
+	valA, okA := h.projects.Load("project-alpha")
+	valB, okB := h.projects.Load("project-beta")
+
+	if !okA {
+		t.Fatal("project-alpha not registered")
+	}
+	if !okB {
+		t.Fatal("project-beta not registered")
+	}
+
+	stateA := valA.(*projectState)
+	stateB := valB.(*projectState)
+
+	if stateA == stateB {
+		t.Error("two different project IDs must not share the same projectState")
+	}
+	if stateA.session == stateB.session {
+		t.Error("two different project IDs must not share the same InProcessSession")
+	}
+	if stateA.refcount.Load() != 1 {
+		t.Errorf("project-alpha refcount = %d, want 1", stateA.refcount.Load())
+	}
+	if stateB.refcount.Load() != 1 {
+		t.Errorf("project-beta refcount = %d, want 1", stateB.refcount.Load())
+	}
+}
+
+// TestSessionHandler_SameProject_SharedSession verifies that connecting the same
+// project ID twice increments the refcount to 2, and disconnecting once leaves
+// the project state active (HandleRequest still works).
+func TestSessionHandler_SameProject_SharedSession(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	h := handler.(*aimuxHandler)
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "project-shared",
+		Cwd: t.TempDir(),
+	}
+
+	// Connect twice from the same project ID (simulating two CC windows).
+	lifecycle.OnProjectConnect(project)
+	lifecycle.OnProjectConnect(project)
+
+	val, ok := h.projects.Load("project-shared")
+	if !ok {
+		t.Fatal("project-shared not registered after double connect")
+	}
+	state := val.(*projectState)
+
+	if got := state.refcount.Load(); got != 2 {
+		t.Errorf("refcount after two connects = %d, want 2", got)
+	}
+
+	// Disconnect one — refcount drops to 1, project must remain active.
+	lifecycle.OnProjectDisconnect("project-shared")
+
+	if got := state.refcount.Load(); got != 1 {
+		t.Errorf("refcount after one disconnect = %d, want 1", got)
+	}
+
+	_, stillPresent := h.projects.Load("project-shared")
+	if !stillPresent {
+		t.Error("project-shared must still be registered after partial disconnect")
+	}
+
+	// HandleRequest must still succeed after partial disconnect.
+	initReq := `{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	resp, err := handler.HandleRequest(context.Background(), project, []byte(initReq))
+	if err != nil {
+		t.Fatalf("HandleRequest after partial disconnect: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("HandleRequest after partial disconnect must return a response")
+	}
+}
+
+// TestSessionHandler_Disconnect_UnregistersSession verifies that after a full
+// disconnect (refcount reaches 0), the project state is removed and subsequent
+// HandleRequest calls return an error response (not a Go error).
+func TestSessionHandler_Disconnect_UnregistersSession(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	h := handler.(*aimuxHandler)
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	project := muxcore.ProjectContext{
+		ID:  "project-cleanup",
+		Cwd: t.TempDir(),
+	}
+
+	lifecycle.OnProjectConnect(project)
+
+	_, ok := h.projects.Load("project-cleanup")
+	if !ok {
+		t.Fatal("project-cleanup not registered after connect")
+	}
+
+	// Full disconnect — refcount reaches 0.
+	lifecycle.OnProjectDisconnect("project-cleanup")
+
+	_, stillPresent := h.projects.Load("project-cleanup")
+	if stillPresent {
+		t.Error("project-cleanup must be removed from projects map after full disconnect")
+	}
+
+	// HandleRequest after full disconnect must return a JSON-RPC error, not a Go error.
+	initReq := `{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	resp, err := handler.HandleRequest(context.Background(), project, []byte(initReq))
+	if err != nil {
+		t.Fatalf("HandleRequest after full disconnect returned Go error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("HandleRequest after full disconnect must return a JSON-RPC error response, not nil")
+	}
+
+	var parsed map[string]any
+	if jsonErr := json.Unmarshal(resp, &parsed); jsonErr != nil {
+		t.Fatalf("response after disconnect is not valid JSON: %v — raw: %s", jsonErr, resp)
+	}
+	if parsed["error"] == nil {
+		t.Errorf("expected JSON-RPC error after disconnect; got: %v", parsed)
 	}
 }
 
