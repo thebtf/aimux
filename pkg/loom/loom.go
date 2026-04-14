@@ -22,6 +22,7 @@ func WithMaxRetries(n int) Option {
 // dispatch, execution, persistence, and delivery.
 type LoomEngine struct {
 	store      *TaskStore
+	gate       *QualityGate
 	events     *EventBus
 	workers    map[WorkerType]Worker
 	cancels    map[string]context.CancelFunc
@@ -33,6 +34,7 @@ type LoomEngine struct {
 func New(store *TaskStore, opts ...Option) *LoomEngine {
 	l := &LoomEngine{
 		store:      store,
+		gate:       NewQualityGate(),
 		events:     NewEventBus(),
 		workers:    make(map[WorkerType]Worker),
 		cancels:    make(map[string]context.CancelFunc),
@@ -185,7 +187,54 @@ func (l *LoomEngine) dispatch(task *Task) {
 		return
 	}
 
-	// Store result.
+	// Quality gate: validate result before accepting.
+	decision := l.gate.Check(latest, result)
+	if !decision.Accept {
+		if decision.Retry && latest.Retries < l.maxRetries {
+			// Gate rejected → retry: running → retrying → dispatched.
+			l.events.Emit(Event{Type: EventTaskGateFail, TaskID: task.ID, Data: map[string]any{"reason": decision.Reason, "retry": true}})
+			_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusRetrying)
+			_ = l.store.IncrementRetries(task.ID)
+			_ = l.store.UpdateStatus(task.ID, TaskStatusRetrying, TaskStatusDispatched)
+			// Re-dispatch: dispatched → running → execute again.
+			_ = l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning)
+
+			retried, _ := l.store.Get(task.ID)
+			if retried != nil {
+				retryResult, retryErr := worker.Execute(taskCtx, retried)
+				if retryErr != nil {
+					_ = l.store.SetResult(task.ID, "", retryErr.Error())
+					_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed)
+					l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
+					return
+				}
+				// Re-check gate on retry result.
+				retryDecision := l.gate.Check(retried, retryResult)
+				if retryDecision.Accept {
+					_ = l.store.SetResult(task.ID, retryResult.Content, "")
+					_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusCompleted)
+					l.events.Emit(Event{Type: EventTaskGatePass, TaskID: task.ID})
+					l.events.Emit(Event{Type: EventTaskCompleted, TaskID: task.ID})
+					return
+				}
+				// Retry also rejected → fail.
+				_ = l.store.SetResult(task.ID, "", fmt.Sprintf("gate rejected after retry: %s", retryDecision.Reason))
+				_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed)
+				l.events.Emit(Event{Type: EventTaskGateFail, TaskID: task.ID, Data: map[string]any{"reason": retryDecision.Reason}})
+				l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
+				return
+			}
+		}
+		// Gate rejected, no retry (thrashing or max retries exceeded).
+		_ = l.store.SetResult(task.ID, "", fmt.Sprintf("gate rejected: %s", decision.Reason))
+		_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailed)
+		l.events.Emit(Event{Type: EventTaskGateFail, TaskID: task.ID, Data: map[string]any{"reason": decision.Reason}})
+		l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID})
+		return
+	}
+
+	// Gate passed — store result.
+	l.events.Emit(Event{Type: EventTaskGatePass, TaskID: task.ID})
 	_ = l.store.SetResult(task.ID, result.Content, "")
 	_ = l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusCompleted)
 	l.events.Emit(Event{Type: EventTaskCompleted, TaskID: task.ID})

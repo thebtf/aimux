@@ -189,6 +189,15 @@ func (s *TaskStore) SetResult(id string, result string, errMsg string) error {
 	return nil
 }
 
+// IncrementRetries bumps the retry count for a task.
+func (s *TaskStore) IncrementRetries(id string) error {
+	_, err := s.db.Exec(`UPDATE tasks SET retries = retries + 1 WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("loom store: increment retries: %w", err)
+	}
+	return nil
+}
+
 // MarkCrashed sets status='failed_crash' for all dispatched or running tasks.
 // Returns the number of tasks marked.
 func (s *TaskStore) MarkCrashed() (int, error) {
