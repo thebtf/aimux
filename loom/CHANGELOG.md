@@ -15,10 +15,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   transition fails, instead of swallowing the error with `log.Printf` and
   continuing on stale state (which left tasks permanently non-terminal in
   `retrying`).
-- **BUG-004** `SubprocessBase.Run` no longer applies its own `WithTimeout`
-  when the parent context already has a deadline — the engine's dispatch
-  timeout propagates correctly to the subprocess on retry without resetting
-  the budget.
+- **BUG-004** `SubprocessBase.Run` now correctly enforces `task.Timeout` in
+  all scenarios. The initial PRC claim of a "double timeout bug" was a false
+  positive — `context.WithTimeout(parent, d)` already returns a context whose
+  deadline is `min(parent.Deadline, now+d)`, so applying it unconditionally
+  is safe even when the parent already has a shorter deadline. The previous
+  `hasDeadline` guard (removed by CodeRabbit review on PR #83) was actively
+  harmful: it prevented per-task timeouts from capping an engine-wide
+  dispatch budget. Test `TestSubprocessBase_RespectsParentDeadline` verifies
+  that a 150ms parent deadline beats a 10s `task.Timeout`, confirming
+  correct behavior. No code change is needed for the double-timeout concern;
+  the fix is retained as a regression guard against future "let the inner
+  timeout win" mistakes.
 - **CR-MED-1** `task completed` log now includes the `duration_ms` canonical
   field alongside the histogram recording (previously the 8-field spec was
   violated on the completion path, emitting only 6 fields).

@@ -91,6 +91,10 @@ func TestTaskTransitions_Valid(t *testing.T) {
 		{TaskStatusRunning, TaskStatusRetrying},
 		{TaskStatusRunning, TaskStatusFailedCrash},
 		{TaskStatusRetrying, TaskStatusDispatched},
+		// NEW-001 (v0.1.1 PRC #2): retrying → failed is valid — enables failTask
+		// to correctly terminate tasks that hit IncrementRetries or
+		// retrying→dispatched errors during the BUG-002 retry-path fix.
+		{TaskStatusRetrying, TaskStatusFailed},
 	}
 
 	for _, tc := range cases {

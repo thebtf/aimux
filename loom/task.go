@@ -23,15 +23,23 @@ const (
 //	pending → dispatched → running → completed (terminal)
 //	              │         │     → failed (terminal)
 //	              │         │     → retrying → dispatched (loop, max 2)
+//	              │         │                → failed (NEW-001 v0.1.1 PRC #2)
 //	              │ → failed (terminal, e.g. no worker registered)
 //	[crash restart]
 //	dispatched → failed_crash (terminal)
 //	running → failed_crash (terminal)
+//
+// NEW-001 fix (v0.1.1 PRC #2): retrying → failed is a valid transition.
+// The BUG-002 retry-path fix introduced paths where failTask is called with
+// fromStatus = TaskStatusRetrying (when IncrementRetries or retrying→dispatched
+// fails). failTask's internal UpdateStatus(retrying→failed) would be rejected
+// by CanTransitionTo, leaving tasks permanently stuck in retrying. The PRC #2
+// bug-hunter audit caught this regression before merge.
 var validTransitions = map[TaskStatus][]TaskStatus{
 	TaskStatusPending:    {TaskStatusDispatched},
 	TaskStatusDispatched: {TaskStatusRunning, TaskStatusFailed, TaskStatusFailedCrash},
 	TaskStatusRunning:    {TaskStatusCompleted, TaskStatusFailed, TaskStatusRetrying, TaskStatusFailedCrash},
-	TaskStatusRetrying:   {TaskStatusDispatched},
+	TaskStatusRetrying:   {TaskStatusDispatched, TaskStatusFailed},
 }
 
 // CanTransitionTo checks if transitioning from current status to target is valid.

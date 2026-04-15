@@ -12,11 +12,14 @@ import (
 )
 
 // platformEcho returns a cross-platform echo command and args for the given text.
+// Uses positional argument substitution ($1) on Unix so the text is never
+// interpolated into the shell command string — SEC-HIGH S2-001 (PRC #2). On
+// Windows, exec.Command already quotes positional args safely via cmd /c.
 func platformEcho(text string) (string, []string) {
 	if runtime.GOOS == "windows" {
 		return "cmd", []string{"/c", "echo", text}
 	}
-	return "sh", []string{"-c", "echo " + text}
+	return "sh", []string{"-c", "echo \"$1\"", "--", text}
 }
 
 // platformSleep returns a cross-platform long-running command.

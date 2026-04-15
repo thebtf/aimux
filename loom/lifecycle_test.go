@@ -259,3 +259,64 @@ func (w *racyRetryWorker) Execute(_ context.Context, _ *Task) (*WorkerResult, er
 }
 
 func (w *racyRetryWorker) Type() WorkerType { return WorkerTypeCLI }
+
+// TestFailTask_FromRetrying_ReachesFailed verifies the NEW-001 fix (PRC #2):
+// failTask called with fromStatus=TaskStatusRetrying must successfully
+// transition the task to TaskStatusFailed via UpdateStatus(retrying→failed).
+// Prior to the v0.1.1 PRC #2 fix, validTransitions[retrying] contained only
+// {dispatched}, so UpdateStatus(retrying→failed) was rejected and the task
+// stayed permanently stuck in retrying — invisible to RecoverCrashed,
+// uncancellable, non-terminal.
+//
+// This test is fully deterministic: it manually drives a task through the
+// state machine to `retrying`, then calls failTask directly, then asserts
+// the final state is `failed`. No race windows, no test flakiness.
+func TestFailTask_FromRetrying_ReachesFailed(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+	defer func() { _ = engine.Close(context.Background()) }()
+
+	task := &Task{
+		ID:         "test-new-001",
+		Status:     TaskStatusPending,
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "new-001",
+		Prompt:     "test",
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Drive the task manually through pending → dispatched → running → retrying.
+	transitions := []struct {
+		from, to TaskStatus
+	}{
+		{TaskStatusPending, TaskStatusDispatched},
+		{TaskStatusDispatched, TaskStatusRunning},
+		{TaskStatusRunning, TaskStatusRetrying},
+	}
+	for _, tr := range transitions {
+		if err := store.UpdateStatus(task.ID, tr.from, tr.to); err != nil {
+			t.Fatalf("setup UpdateStatus(%s→%s): %v", tr.from, tr.to, err)
+		}
+	}
+	task.Status = TaskStatusRetrying
+
+	// Exercise the exact call pattern the BUG-002 retry-path fix uses:
+	// failTask(task, TaskStatusRetrying, errMsg). Prior to NEW-001 this
+	// would fail internally and leave the task stuck in retrying.
+	engine.failTask(task, TaskStatusRetrying, "simulated retry-path failure")
+
+	final, err := store.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if final.Status != TaskStatusFailed {
+		t.Errorf("NEW-001 regression: expected final status %s, got %s (task stuck)",
+			TaskStatusFailed, final.Status)
+	}
+	if final.Error == "" {
+		t.Errorf("expected non-empty error message, got empty")
+	}
+}
