@@ -60,17 +60,15 @@ func (b *SubprocessBase) Run(ctx context.Context, task *loom.Task) (*loom.Worker
 		return nil, fmt.Errorf("subprocess: resolve: %w", err)
 	}
 
-	// Derive timeout context if task.Timeout > 0 and the parent context has no
-	// deadline. If the parent already carries a deadline (e.g. the engine's
-	// per-dispatch timeout), we honour that rather than applying a second,
-	// potentially longer, budget that would silently reset the parent's intent.
+	// Derive timeout context if task.Timeout > 0. context.WithTimeout always
+	// picks the more restrictive of the new deadline and the parent's existing
+	// deadline, so applying it is safe even when the parent already has a
+	// deadline — the task-specific timeout is honoured if it is shorter.
 	runCtx := ctx
 	if task.Timeout > 0 {
-		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-			var cancel context.CancelFunc
-			runCtx, cancel = context.WithTimeout(ctx, time.Duration(task.Timeout)*time.Second)
-			defer cancel()
-		}
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, time.Duration(task.Timeout)*time.Second)
+		defer cancel()
 	}
 
 	runner := b.Runner

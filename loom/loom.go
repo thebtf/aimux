@@ -124,9 +124,27 @@ func (l *LoomEngine) RegisterWorker(wt WorkerType, w Worker) {
 // RequestID is extracted from ctx via RequestIDFrom for distributed tracing.
 // After Close has been called Submit returns ErrEngineClosed without side effects.
 func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error) {
+	// Protect the closed-check + wg.Add(1) as an atomic section to prevent a
+	// race with Close. Without this lock, Close could call wg.Wait() between
+	// the Load and the Add, which violates sync.WaitGroup's rule that Add must
+	// happen-before Wait when the counter is zero.
+	l.mu.Lock()
 	if l.closed.Load() {
+		l.mu.Unlock()
 		return "", ErrEngineClosed
 	}
+	l.wg.Add(1)
+	l.mu.Unlock()
+	// goroutineLaunched tracks whether we successfully reach go l.dispatch(task).
+	// If Submit returns early (error), we must call wg.Done() ourselves because
+	// the dispatch goroutine (which owns the corresponding defer wg.Done()) was
+	// never started.
+	goroutineLaunched := false
+	defer func() {
+		if !goroutineLaunched {
+			l.wg.Done()
+		}
+	}()
 	submitStart := l.clock.Now()
 
 	reqID := RequestIDFrom(ctx)
@@ -203,8 +221,11 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	)
 
 	// Dispatch in background — task lifecycle independent of caller context.
-	// WaitGroup is incremented BEFORE spawning so Close can safely wait for drain.
-	l.wg.Add(1)
+	// wg.Add(1) was already called at the top of Submit (under mu) to eliminate
+	// the race window between closed.Load() and the Add. Mark goroutineLaunched
+	// before the go statement so the deferred fallback wg.Done() is suppressed —
+	// dispatch's own defer wg.Done() takes ownership from here.
+	goroutineLaunched = true
 	go l.dispatch(task)
 
 	return task.ID, nil
@@ -216,12 +237,21 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 // subsequent invocations return nil immediately.
 //
 // After Close returns, Submit will reject new tasks with ErrEngineClosed.
-// In-flight tasks that are already running continue to completion until either
-// they finish naturally or ctx expires — whichever comes first.
+// In-flight dispatch goroutines already running continue until they finish
+// naturally. ctx is used only as a deadline on how long Close will wait for
+// them — it does NOT cancel the tasks themselves. Use Cancel or
+// CancelAllForProject before Close if you need to abort in-flight work.
 func (l *LoomEngine) Close(ctx context.Context) error {
+	// Hold mu while flipping closed so no Submit goroutine can slip a wg.Add(1)
+	// in between our CAS and the subsequent wg.Wait(). Without this, a Submit
+	// that passed the closed.Load() check could call wg.Add(1) after wg.Wait()
+	// starts, violating the WaitGroup contract.
+	l.mu.Lock()
 	if !l.closed.CompareAndSwap(false, true) {
+		l.mu.Unlock()
 		return nil // already closed
 	}
+	l.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		l.wg.Wait()
@@ -381,7 +411,7 @@ func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) 
 // Task arrives already in TaskStatusDispatched (transitioned synchronously by Submit).
 func (l *LoomEngine) dispatch(task *Task) {
 	// Decrement the WaitGroup exactly once when this goroutine exits.
-	// Paired with the l.wg.Add(1) performed by Submit before `go l.dispatch(task)`.
+	// Paired with the l.wg.Add(1) performed at the start of Submit (under mu).
 	defer l.wg.Done()
 	// Panic recovery: ensure any panic in worker or gate is caught, task is
 	// marked failed_crash, and the process is not terminated.
