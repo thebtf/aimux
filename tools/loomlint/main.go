@@ -33,6 +33,7 @@ import (
 // otel metric interface, and the loom sub-packages themselves.
 var defaultAllowPrefixes = []string{
 	"github.com/google/uuid",
+	"go.opentelemetry.io/otel/attribute",
 	"go.opentelemetry.io/otel/metric",
 	"github.com/thebtf/aimux/pkg/loom",
 	"github.com/thebtf/aimux/loom",

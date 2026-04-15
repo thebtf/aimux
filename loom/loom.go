@@ -9,6 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
+
 	"github.com/thebtf/aimux/loom/deps"
 )
 
@@ -35,6 +38,15 @@ type LoomEngine struct {
 	clock      deps.Clock
 	idGen      deps.IDGenerator
 	meter      deps.Meter
+	// T030 instruments — initialised in New() after options are applied.
+	taskSubmittedCounter otelmetric.Int64Counter
+	taskCompletedCounter otelmetric.Int64Counter
+	taskFailedCounter    otelmetric.Int64Counter
+	taskCancelledCounter otelmetric.Int64Counter
+	gatePassCounter      otelmetric.Int64Counter
+	gateFailCounter      otelmetric.Int64Counter
+	submitDurationHist   otelmetric.Int64Histogram
+	taskDurationHist     otelmetric.Int64Histogram
 }
 
 // New creates a LoomEngine with the given store and options.
@@ -59,6 +71,17 @@ func New(store *TaskStore, opts ...Option) *LoomEngine {
 	}
 	// Create EventBus AFTER options so it gets the final logger.
 	l.events = NewEventBus(l.logger)
+	// Initialise T030 metric instruments. Errors are discarded because the noop
+	// meter never errors and a real meter only errors on configuration mistakes
+	// (bad name, duplicate registration) which cannot be recovered from at runtime.
+	l.taskSubmittedCounter, _ = l.meter.Int64Counter("loom.tasks.submitted")
+	l.taskCompletedCounter, _ = l.meter.Int64Counter("loom.tasks.completed")
+	l.taskFailedCounter, _ = l.meter.Int64Counter("loom.tasks.failed")
+	l.taskCancelledCounter, _ = l.meter.Int64Counter("loom.tasks.cancelled")
+	l.gatePassCounter, _ = l.meter.Int64Counter("loom.gate.pass")
+	l.gateFailCounter, _ = l.meter.Int64Counter("loom.gate.fail")
+	l.submitDurationHist, _ = l.meter.Int64Histogram("loom.submit.duration_ms")
+	l.taskDurationHist, _ = l.meter.Int64Histogram("loom.task.duration_ms")
 	return l
 }
 
@@ -88,6 +111,8 @@ func (l *LoomEngine) RegisterWorker(wt WorkerType, w Worker) {
 // Returns immediately with taskID. Execution happens in a background goroutine.
 // RequestID is extracted from ctx via RequestIDFrom for distributed tracing.
 func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error) {
+	submitStart := l.clock.Now()
+
 	reqID := RequestIDFrom(ctx)
 	// Allow explicit override in request (e.g. from non-loom callers).
 	if reqID == "" {
@@ -143,6 +168,24 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		Timestamp: l.clock.Now().UTC(),
 	})
 
+	// T030: emit submit metrics after successful dispatch transition.
+	attrs := otelmetric.WithAttributes(
+		attribute.String("worker_type", string(task.WorkerType)),
+		attribute.String("project_id", task.ProjectID),
+	)
+	submitDurationMS := l.clock.Now().Sub(submitStart).Milliseconds()
+	l.submitDurationHist.Record(ctx, submitDurationMS, attrs)
+	l.taskSubmittedCounter.Add(ctx, 1, attrs)
+
+	l.logger.InfoContext(ctx, "task submitted",
+		"module", "loom",
+		"task_id", task.ID,
+		"project_id", task.ProjectID,
+		"worker_type", string(task.WorkerType),
+		"task_status", string(task.Status),
+		"request_id", task.RequestID,
+	)
+
 	// Dispatch in background — task lifecycle independent of caller context.
 	go l.dispatch(task)
 
@@ -195,7 +238,8 @@ func (l *LoomEngine) CancelAllForProject(projectID string) (int, error) {
 	}
 	l.mu.Unlock()
 
-	// Emit TaskCancelled events for each cancelled task (outside the lock).
+	// Emit TaskCancelled events and metrics for each cancelled task (outside the lock).
+	cancelCtx := context.Background()
 	for _, task := range cancelled {
 		l.events.Emit(TaskEvent{
 			Type:      EventTaskCancelled,
@@ -205,6 +249,19 @@ func (l *LoomEngine) CancelAllForProject(projectID string) (int, error) {
 			Status:    TaskStatusRunning, // will transition as context propagates
 			Timestamp: l.clock.Now().UTC(),
 		})
+		// T030: cancelled task counter.
+		l.taskCancelledCounter.Add(cancelCtx, 1, otelmetric.WithAttributes(
+			attribute.String("worker_type", string(task.WorkerType)),
+			attribute.String("project_id", task.ProjectID),
+		))
+		l.logger.InfoContext(cancelCtx, "task cancelled",
+			"module", "loom",
+			"task_id", task.ID,
+			"project_id", task.ProjectID,
+			"worker_type", string(task.WorkerType),
+			"task_status", string(TaskStatusRunning),
+			"request_id", task.RequestID,
+		)
 	}
 
 	return len(cancelled), nil
@@ -227,6 +284,7 @@ func (l *LoomEngine) Events() *EventBus {
 // task is passed directly so the helper avoids an additional DB round-trip and
 // emits a fully-populated TaskEvent regardless of store availability.
 func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) {
+	ctx := context.Background()
 	if err := l.store.SetResult(task.ID, "", errMsg); err != nil {
 		log.Printf("[loom] failTask: store.SetResult(%s) failed: %v", task.ID, err)
 	}
@@ -241,6 +299,21 @@ func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) 
 		Status:    TaskStatusFailed,
 		Timestamp: l.clock.Now().UTC(),
 	})
+	// T030: failed task counter.
+	l.taskFailedCounter.Add(ctx, 1, otelmetric.WithAttributes(
+		attribute.String("worker_type", string(task.WorkerType)),
+		attribute.String("project_id", task.ProjectID),
+	))
+	l.logger.ErrorContext(ctx, "task failed",
+		"module", "loom",
+		"task_id", task.ID,
+		"project_id", task.ProjectID,
+		"worker_type", string(task.WorkerType),
+		"task_status", string(TaskStatusFailed),
+		"request_id", task.RequestID,
+		"error_code", "task_failed",
+		"error", errMsg,
+	)
 }
 
 // dispatch runs the worker for a task in a background goroutine.
@@ -271,6 +344,22 @@ func (l *LoomEngine) dispatch(task *Task) {
 				Status:    TaskStatusFailedCrash,
 				Timestamp: l.clock.Now().UTC(),
 			})
+			// T030: panic counts as a failed task (failed_crash subtype).
+			panicCtx := context.Background()
+			l.taskFailedCounter.Add(panicCtx, 1, otelmetric.WithAttributes(
+				attribute.String("worker_type", string(task.WorkerType)),
+				attribute.String("project_id", task.ProjectID),
+			))
+			l.logger.ErrorContext(panicCtx, "task failed crash",
+				"module", "loom",
+				"task_id", task.ID,
+				"project_id", task.ProjectID,
+				"worker_type", string(task.WorkerType),
+				"task_status", string(TaskStatusFailedCrash),
+				"request_id", task.RequestID,
+				"error_code", "dispatch_panic",
+				"error", panicMsg,
+			)
 		}
 	}()
 
@@ -343,10 +432,20 @@ func (l *LoomEngine) dispatch(task *Task) {
 	// Retry loop: continues until gate accepts, retries exhausted, or non-retryable rejection.
 	for {
 		decision := l.gate.Check(latest, result)
+		gateCtx := context.Background()
+		attrs := otelmetric.WithAttributes(
+			attribute.String("worker_type", string(task.WorkerType)),
+			attribute.String("project_id", task.ProjectID),
+		)
 		if decision.Accept {
-			l.logger.InfoContext(context.Background(), "quality gate pass",
+			// T030: gate pass counter.
+			l.gatePassCounter.Add(gateCtx, 1, attrs)
+			l.logger.InfoContext(gateCtx, "quality gate pass",
+				"module", "loom",
 				"task_id", task.ID,
 				"project_id", task.ProjectID,
+				"worker_type", string(task.WorkerType),
+				"task_status", string(TaskStatusRunning),
 				"request_id", task.RequestID,
 			)
 			if err := l.store.SetResult(task.ID, result.Content, ""); err != nil {
@@ -367,15 +466,33 @@ func (l *LoomEngine) dispatch(task *Task) {
 				Status:    TaskStatusCompleted,
 				Timestamp: l.clock.Now().UTC(),
 			})
+			// T030: completed task counter + end-to-end duration.
+			l.taskCompletedCounter.Add(gateCtx, 1, attrs)
+			if latest.DispatchedAt != nil {
+				taskDurationMS := l.clock.Now().Sub(*latest.DispatchedAt).Milliseconds()
+				l.taskDurationHist.Record(gateCtx, taskDurationMS, attrs)
+			}
+			l.logger.InfoContext(gateCtx, "task completed",
+				"module", "loom",
+				"task_id", task.ID,
+				"project_id", task.ProjectID,
+				"worker_type", string(task.WorkerType),
+				"task_status", string(TaskStatusCompleted),
+				"request_id", task.RequestID,
+			)
 			return
 		}
 
 		// Gate rejected.
-		l.logger.InfoContext(context.Background(), "quality gate fail",
+		// T030: gate fail counter.
+		l.gateFailCounter.Add(gateCtx, 1, attrs)
+		l.logger.InfoContext(gateCtx, "quality gate fail",
+			"module", "loom",
 			"task_id", task.ID,
 			"project_id", task.ProjectID,
+			"worker_type", string(task.WorkerType),
+			"task_status", string(TaskStatusRunning),
 			"request_id", task.RequestID,
-			"reason", decision.Reason,
 		)
 
 		if !decision.Retry || latest.Retries >= l.maxRetries {
