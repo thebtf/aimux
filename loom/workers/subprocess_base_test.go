@@ -135,3 +135,45 @@ func TestSubprocessBase_ResolverError(t *testing.T) {
 		t.Errorf("expected sentinel error in chain, got: %v", err)
 	}
 }
+
+// TestSubprocessBase_RespectsParentDeadline verifies BUG-004: when the parent
+// context already has a deadline, SubprocessBase must NOT apply a second inner
+// timeout. The parent deadline should govern when the subprocess is cancelled,
+// even if task.Timeout is longer than the parent deadline.
+//
+// Setup:
+//   - parent ctx deadline: 150 ms from now
+//   - task.Timeout: 10 s (much longer than parent deadline)
+//   - subprocess: long-running sleep command
+//
+// Expectation: the subprocess is killed by the parent deadline (~150 ms),
+// NOT after 10 s. The error must wrap context.DeadlineExceeded.
+func TestSubprocessBase_RespectsParentDeadline(t *testing.T) {
+	cmd, args := platformSleep()
+	base := &SubprocessBase{
+		Resolver: &staticResolver{spawn: SubprocessSpawn{Command: cmd, Args: args}},
+	}
+	// task.Timeout = 10 seconds — intentionally longer than parent deadline.
+	task := &loom.Task{ID: "t5", Timeout: 10}
+
+	// Parent deadline of 150 ms.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := base.Run(ctx, task)
+	elapsed := time.Since(start)
+
+	// Must fail — parent deadline should have cancelled the subprocess.
+	if err == nil {
+		t.Fatal("expected error from parent deadline, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got: %v", err)
+	}
+	// Must have been cancelled well before the 10 s task.Timeout.
+	// Allow generous headroom (up to 2 s) for slow CI environments.
+	if elapsed > 2*time.Second {
+		t.Errorf("run took %v — parent deadline not honoured (task.Timeout applied instead)", elapsed)
+	}
+}
