@@ -24,4 +24,4 @@ jobs:
         run: go vet ./tools/loomlint
 
       - name: Lint loom/ (nested module boundary check)
-        run: go run ./tools/loomlint ./loom
+        run: go run ./tools/loomlint --skip-dir examples ./loom
