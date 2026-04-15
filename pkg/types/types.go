@@ -59,6 +59,10 @@ type SpawnArgs struct {
 	Args              []string          `json:"args"`
 	CWD               string            `json:"cwd"`
 	Env               map[string]string `json:"env,omitempty"`
+	// EnvList is a pre-built complete environment for the spawned process.
+	// When non-empty, executors use it directly WITHOUT merging os.Environ().
+	// Constructed by resolve.BuildEnv. When empty, falls back to legacy Env map behavior.
+	EnvList           []string          `json:"env_list,omitempty"`
 	Stdin             string            `json:"stdin,omitempty"`
 	TimeoutSeconds    int               `json:"timeout_seconds,omitempty"`
 	InactivitySeconds int               `json:"inactivity_seconds,omitempty"`
