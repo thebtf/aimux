@@ -154,10 +154,12 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 				Effort:     effort,
 				Timeout:    timeoutSec,
 				Metadata: map[string]any{
-					"strategy":    "pair_coding",
-					"clis":        []string{cli, reviewerCLI},
-					"max_rounds":  s.cfg.Server.Pair.MaxRounds,
-					"complex":     request.GetBool("complex", false),
+					"strategy": "pair_coding",
+					"clis":     []string{cli, reviewerCLI},
+					"extra": map[string]any{
+						"max_rounds": s.cfg.Server.Pair.MaxRounds,
+						"complex":    request.GetBool("complex", false),
+					},
 				},
 			})
 			if err != nil {

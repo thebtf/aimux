@@ -43,7 +43,12 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 			ProjectID:  projectIDFromContext(ctx),
 			Prompt:     topic,
 			Env:        sessionEnvFromContext(ctx),
-			Metadata:   map[string]any{"strategy": "consensus", "clis": enabled[:2], "max_turns": params.MaxTurns, "synthesize": synthesize},
+			Metadata: map[string]any{
+				"strategy":  "consensus",
+				"clis":      enabled[:2],
+				"max_turns": params.MaxTurns,
+				"extra":     map[string]any{"synthesize": synthesize},
+			},
 		})
 		if loomErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil
@@ -108,7 +113,12 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 			ProjectID:  projectIDFromContext(ctx),
 			Prompt:     topic,
 			Env:        sessionEnvFromContext(ctx),
-			Metadata:   map[string]any{"strategy": "debate", "clis": enabled[:2], "max_turns": params.MaxTurns, "synthesize": synthesize},
+			Metadata: map[string]any{
+				"strategy":  "debate",
+				"clis":      enabled[:2],
+				"max_turns": params.MaxTurns,
+				"extra":     map[string]any{"synthesize": synthesize},
+			},
 		})
 		if loomErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil
@@ -273,11 +283,13 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 			CWD:        cwd,
 			Env:        sessionEnvFromContext(ctx),
 			Metadata: map[string]any{
-				"strategy":          "audit",
-				"mode":              mode,
-				"parallel_scanners": s.cfg.Server.Audit.ParallelScanners,
-				"scanner_role":      s.cfg.Server.Audit.ScannerRole,
-				"validator_role":    s.cfg.Server.Audit.ValidatorRole,
+				"strategy": "audit",
+				"extra": map[string]any{
+					"mode":              mode,
+					"parallel_scanners": s.cfg.Server.Audit.ParallelScanners,
+					"scanner_role":      s.cfg.Server.Audit.ScannerRole,
+					"validator_role":    s.cfg.Server.Audit.ValidatorRole,
+				},
 			},
 		})
 		if loomErr != nil {
@@ -353,7 +365,10 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 			WorkerType: loom.WorkerTypeOrchestrator,
 			ProjectID:  projectIDFromContext(ctx),
 			Env:        sessionEnvFromContext(ctx),
-			Metadata:   map[string]any{"strategy": "workflow", "workflow": string(defJSON)},
+			Metadata: map[string]any{
+				"strategy": "workflow",
+				"extra":    map[string]any{"workflow": string(defJSON)},
+			},
 		})
 		if loomErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil
