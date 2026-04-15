@@ -71,23 +71,6 @@ func (s *Server) marshalGuidedToolResultWithPlan(plan guidance.NextActionPlan, t
 	return marshalToolResult(payload)
 }
 
-// validateCWD validates that cwd is an existing directory when non-empty.
-// Returns nil when cwd is empty (no validation needed).
-func validateCWD(cwd string) error {
-	if cwd == "" {
-		return nil
-	}
-	cwd = filepath.Clean(cwd)
-	info, err := os.Stat(cwd)
-	if err != nil {
-		return fmt.Errorf("cwd %q not found: %w", cwd, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("cwd %q is not a directory", cwd)
-	}
-	return nil
-}
-
 func (s *Server) handleThink(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	patternName, err := request.RequireString("pattern")
 	if err != nil {
