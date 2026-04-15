@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/thebtf/aimux/pkg/loom/deps"
+	"github.com/thebtf/aimux/loom/deps"
 )
 
 // TestNoopMeter_DoesNotPanic verifies that every instrument factory on the

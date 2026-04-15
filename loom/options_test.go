@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thebtf/aimux/pkg/loom/deps"
+	"github.com/thebtf/aimux/loom/deps"
 )
 
 // options_test.go uses the internal package to inspect unexported struct fields

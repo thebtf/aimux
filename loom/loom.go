@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thebtf/aimux/pkg/loom/deps"
+	"github.com/thebtf/aimux/loom/deps"
 )
 
 // Option configures LoomEngine.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thebtf/aimux/pkg/loom/deps"
+	"github.com/thebtf/aimux/loom/deps"
 	_ "modernc.org/sqlite"
 )
 

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/thebtf/aimux/pkg/loom/deps"
+	"github.com/thebtf/aimux/loom/deps"
 )
 
 // TestUUIDGenerator_NonEmptyUnique verifies that successive calls produce

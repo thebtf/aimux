@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thebtf/aimux/pkg/loom/deps"
+	"github.com/thebtf/aimux/loom/deps"
 )
 
 // TestSystemClock_Monotonic verifies that two successive calls to SystemClock.Now

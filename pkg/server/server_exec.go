@@ -16,7 +16,7 @@ import (
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
-	"github.com/thebtf/aimux/pkg/loom"
+	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/parser"
 	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
