@@ -45,6 +45,7 @@ CLI-profile-driven environment allowlist, and hardens the multi-user SSE/HTTP tr
 - **14× `log.Printf` error sites in `loom.go`** replaced with `l.logger.ErrorContext` using canonical 8-field format. (#83, CR-HIGH-2)
 - **Task completed log** now includes `duration_ms`. (#83, CR-MED-1)
 - **`serverVersion` constant** updated from stale `"3.0.0-dev"` to `"4.0.0"` — reflects actual release version in MCP server handshake.
+- **`github.com/thebtf/mcp-mux/muxcore`** bumped from `v0.19.0` to `v0.19.4`. Picks up four upstream fixes: v0.19.1 hardcode cleanup, v0.19.2 `daemon.Spawn` stuck-placeholder fix, v0.19.3 concurrency correctness (7 post-audit findings — owner death result, notifier lock release, shared-mode multi-session), and v0.19.4 `runProxy` fallthrough fix that unblocks aimux being wrapped by an external `mcp-mux` shim (production regression where `mcp-mux D:/Dev/aimux/aimux.exe` from Claude Code produced an immediate "failed" badge). No aimux code changes required — `cmd/aimux/main.go` already follows the "both Handler and SessionHandler set" contract per v0.19.4 release notes.
 
 ### Fixed
 
