@@ -30,3 +30,7 @@ timeout_seconds: 600
 stdin_threshold: 6000
 
 read_only_flags: []
+
+env_passthrough:
+  - ANTHROPIC_API_KEY
+  - OPENAI_API_KEY

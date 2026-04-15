@@ -38,3 +38,7 @@ read_only_flags: ["--plan"]
 
 # --act for auto-approve (headless)
 headless_flags: ["--act", "--json"]
+
+env_passthrough:
+  - ANTHROPIC_API_KEY
+  - OPENAI_API_KEY

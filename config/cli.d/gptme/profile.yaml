@@ -34,3 +34,8 @@ read_only_flags: []
 
 # --non-interactive + --no-confirm for headless operation
 headless_flags: ["--non-interactive", "--no-confirm"]
+
+env_passthrough:
+  - OPENAI_API_KEY
+  - ANTHROPIC_API_KEY
+  - GEMINI_API_KEY

@@ -36,3 +36,8 @@ read_only_flags: ["--readonly"]
 
 # -p enables print/headless mode, --format json for structured output
 headless_flags: ["-p", "--format", "json"]
+
+env_passthrough:
+  - OPENAI_API_KEY
+  - ANTHROPIC_API_KEY
+  - GEMINI_API_KEY
