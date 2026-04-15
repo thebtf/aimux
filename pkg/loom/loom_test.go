@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/loom/deps"
 	_ "modernc.org/sqlite"
 )
 
@@ -726,6 +727,59 @@ func TestLoomEngine_ExecSurvivesDisconnect(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("task did not complete after context cancellation (disconnect)")
+}
+
+func TestNewEngine_ConstructsFromSqlDB(t *testing.T) {
+	// Verify NewEngine creates a usable *LoomEngine from a raw *sql.DB.
+	db := newTestDB(t)
+	engine, err := NewEngine(db)
+	if err != nil {
+		t.Fatalf("NewEngine(db): %v", err)
+	}
+	if engine == nil {
+		t.Fatal("NewEngine returned nil engine")
+	}
+
+	// Verify injected deps are observable: FakeClock + SequentialIDGenerator.
+	frozen := time.Date(2026, 4, 15, 9, 0, 0, 0, time.UTC)
+	fake := deps.NewFakeClock(frozen)
+	seq := deps.NewSequentialIDGenerator()
+
+	engine2, err := NewEngine(db, WithClock(fake), WithIDGenerator(seq))
+	if err != nil {
+		t.Fatalf("NewEngine(db, WithClock, WithIDGenerator): %v", err)
+	}
+	if engine2.clock != fake {
+		t.Error("NewEngine: WithClock not applied")
+	}
+	if engine2.idGen != seq {
+		t.Error("NewEngine: WithIDGenerator not applied")
+	}
+
+	// Behavioral: verify that Submit uses the injected idGen and clock.
+	taskID, err := engine2.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-di",
+		Prompt:     "check injected deps",
+	})
+	if err != nil {
+		t.Fatalf("Submit with injected deps: %v", err)
+	}
+	if taskID != "id-0" {
+		t.Fatalf("Submit ID = %q; want %q (from SequentialIDGenerator)", taskID, "id-0")
+	}
+	task, err := engine2.Get(taskID)
+	if err != nil {
+		t.Fatalf("Get after Submit: %v", err)
+	}
+	if !task.CreatedAt.Equal(frozen) {
+		t.Fatalf("CreatedAt = %v; want %v (from FakeClock)", task.CreatedAt, frozen)
+	}
+
+	// NewEngine(nil) must return an error (NewTaskStore fails on nil db).
+	if _, err := NewEngine(nil); err == nil {
+		t.Error("NewEngine(nil) should return error; got nil")
+	}
 }
 
 func TestLoomEngine_AgentSurvivesDisconnect(t *testing.T) {
