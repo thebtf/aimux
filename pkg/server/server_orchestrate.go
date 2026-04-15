@@ -45,9 +45,9 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 			Env:        sessionEnvFromContext(ctx),
 			Metadata: map[string]any{
 				"strategy":  "consensus",
-				"clis":      enabled[:2],
+				"clis":      params.CLIs,
 				"max_turns": params.MaxTurns,
-				"extra":     map[string]any{"synthesize": synthesize},
+				"extra":     params.Extra,
 			},
 		})
 		if loomErr != nil {
@@ -115,9 +115,9 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 			Env:        sessionEnvFromContext(ctx),
 			Metadata: map[string]any{
 				"strategy":  "debate",
-				"clis":      enabled[:2],
+				"clis":      params.CLIs,
 				"max_turns": params.MaxTurns,
-				"extra":     map[string]any{"synthesize": synthesize},
+				"extra":     params.Extra,
 			},
 		})
 		if loomErr != nil {
@@ -284,12 +284,7 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 			Env:        sessionEnvFromContext(ctx),
 			Metadata: map[string]any{
 				"strategy": "audit",
-				"extra": map[string]any{
-					"mode":              mode,
-					"parallel_scanners": s.cfg.Server.Audit.ParallelScanners,
-					"scanner_role":      s.cfg.Server.Audit.ScannerRole,
-					"validator_role":    s.cfg.Server.Audit.ValidatorRole,
-				},
+				"extra":    params.Extra,
 			},
 		})
 		if loomErr != nil {
@@ -367,7 +362,7 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 			Env:        sessionEnvFromContext(ctx),
 			Metadata: map[string]any{
 				"strategy": "workflow",
-				"extra":    map[string]any{"workflow": string(defJSON)},
+				"extra":    params.Extra,
 			},
 		})
 		if loomErr != nil {
