@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -334,6 +336,7 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 	}
 
 	sess := &pipeSession{
+		id:                uuid.NewString(),
 		cmd:               cmd,
 		stdin:             stdin,
 		stdout:            handle.Stdout,
