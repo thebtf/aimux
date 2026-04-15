@@ -60,7 +60,7 @@ type LintOptions struct {
 // Violation records a single forbidden import found during the walk.
 type Violation struct {
 	Path string // import path
-	File string // absolute file path
+	File string // file path as visited by walker (absolute or relative, matching the target argument)
 	Line int    // line number in the file
 }
 
@@ -138,17 +138,18 @@ func lintFile(filePath string, fset *token.FileSet, allowPrefixes []string) ([]V
 // Files under any directory matching opts.SkipDirs are excluded. Test files are
 // excluded unless opts.IncludeTests is true.
 func Lint(target string, opts LintOptions) error {
+	target = filepath.Clean(target) // normalise before comparison in walker
 	fset := token.NewFileSet()
 	var violations []Violation
 
-	err := filepath.Walk(target, func(path string, info os.FileInfo, walkErr error) error {
+	err := filepath.WalkDir(target, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if info.IsDir() {
+		if d.IsDir() {
 			// Skip on directory name match. Do not compare the root target itself
 			// against the skip list — the user explicitly pointed at it.
-			if path != target && skipDirName(info.Name(), opts.SkipDirs) {
+			if path != target && skipDirName(d.Name(), opts.SkipDirs) {
 				return filepath.SkipDir
 			}
 			return nil

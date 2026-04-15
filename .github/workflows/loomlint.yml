@@ -17,6 +17,12 @@ jobs:
         with:
           go-version: "1.25"
 
+      - name: Test loomlint
+        run: go test ./tools/loomlint -count=1
+
+      - name: Vet loomlint
+        run: go vet ./tools/loomlint
+
       - name: Lint pkg/loom (Phase 0-3 boundary check)
         run: go run ./tools/loomlint ./pkg/loom
 
