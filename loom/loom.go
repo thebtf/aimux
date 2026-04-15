@@ -493,6 +493,7 @@ func (l *LoomEngine) dispatch(task *Task) {
 			"worker_type", string(task.WorkerType),
 			"task_status", string(TaskStatusRunning),
 			"request_id", task.RequestID,
+			"reason", decision.Reason,
 		)
 
 		if !decision.Retry || latest.Retries >= l.maxRetries {

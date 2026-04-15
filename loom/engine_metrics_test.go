@@ -358,7 +358,7 @@ func TestEngine_GatePass_LogsCanonicalFields(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	for _, field := range []string{"module", "task_id", "project_id", "worker_type"} {
+	for _, field := range []string{"module", "task_id", "project_id", "worker_type", "task_status", "request_id"} {
 		if !rl.hasField("quality gate pass", field) {
 			t.Errorf("\"quality gate pass\" log missing canonical field %q", field)
 		}
