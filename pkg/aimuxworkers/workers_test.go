@@ -1,10 +1,10 @@
-package workers
+package aimuxworkers
 
 import (
 	"context"
 	"testing"
 
-	"github.com/thebtf/aimux/pkg/loom"
+	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/types"
 )
 

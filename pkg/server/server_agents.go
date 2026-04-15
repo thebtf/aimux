@@ -9,7 +9,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/thebtf/aimux/pkg/agents"
-	"github.com/thebtf/aimux/pkg/loom"
+	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/session"

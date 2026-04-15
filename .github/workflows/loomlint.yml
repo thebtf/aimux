@@ -3,8 +3,8 @@ name: loomlint
 on:
   pull_request:
     paths:
-      - 'pkg/loom/**'
       - 'loom/**'
+      - 'pkg/aimuxworkers/**'
       - 'tools/loomlint/**'
 
 jobs:
@@ -23,11 +23,5 @@ jobs:
       - name: Vet loomlint
         run: go vet ./tools/loomlint
 
-      - name: Lint pkg/loom (Phase 0-3 boundary check)
-        run: go run ./tools/loomlint ./pkg/loom
-
-      - name: Lint loom/ (Phase 4+ boundary check)
-        run: |
-          if test -d loom; then
-            go run ./tools/loomlint ./loom
-          fi
+      - name: Lint loom/ (nested module boundary check)
+        run: go run ./tools/loomlint ./loom

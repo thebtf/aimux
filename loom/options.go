@@ -1,6 +1,6 @@
 package loom
 
-import "github.com/thebtf/aimux/pkg/loom/deps"
+import "github.com/thebtf/aimux/loom/deps"
 
 // WithLogger injects a custom Logger into the LoomEngine.
 // If not supplied, NoopLogger is used and all log output is discarded.

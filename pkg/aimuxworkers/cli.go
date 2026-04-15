@@ -1,11 +1,11 @@
-package workers
+package aimuxworkers
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	"github.com/thebtf/aimux/pkg/loom"
+	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/types"
 )
 

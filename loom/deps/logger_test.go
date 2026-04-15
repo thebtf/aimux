@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/thebtf/aimux/pkg/loom/deps"
+	"github.com/thebtf/aimux/loom/deps"
 )
 
 // TestNoopLogger_DoesNotPanic verifies that every method on the noop logger

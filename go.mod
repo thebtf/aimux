@@ -4,6 +4,7 @@ go 1.25.4
 
 require (
 	github.com/creack/pty v1.1.24
+	github.com/thebtf/aimux/loom v0.0.0-00010101000000-000000000000
 	github.com/creativeprojects/go-selfupdate v1.5.2
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.47.0
@@ -59,3 +60,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/thebtf/aimux/loom => ./loom

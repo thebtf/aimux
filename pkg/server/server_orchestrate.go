@@ -8,7 +8,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/thebtf/aimux/pkg/guidance/policies"
-	"github.com/thebtf/aimux/pkg/loom"
+	"github.com/thebtf/aimux/loom"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
