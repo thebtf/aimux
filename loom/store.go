@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL DEFAULT 'pending',
     worker_type TEXT NOT NULL,
     project_id TEXT NOT NULL,
+    request_id TEXT NOT NULL DEFAULT '',
     prompt TEXT NOT NULL,
     cwd TEXT DEFAULT '',
     env TEXT DEFAULT '{}',
@@ -33,6 +34,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 `
 
+// migrateRequestIDColumn adds the request_id column to an existing tasks table
+// that was created before Phase 4a. The ALTER is silently ignored if the column
+// already exists (SQLite returns "duplicate column name" error).
+const migrateRequestIDColumn = `ALTER TABLE tasks ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`
+
 // TaskStore persists tasks in SQLite.
 type TaskStore struct {
 	db *sql.DB
@@ -43,6 +49,9 @@ func NewTaskStore(db *sql.DB) (*TaskStore, error) {
 	if _, err := db.Exec(createTasksTable); err != nil {
 		return nil, fmt.Errorf("loom store: create schema: %w", err)
 	}
+	// Migrate: add request_id column if not present (pre-Phase 4a databases).
+	// Ignore "duplicate column name" errors — ALTER is idempotent by design.
+	db.Exec(migrateRequestIDColumn) //nolint:errcheck
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
 	// These PRAGMAs are idempotent — safe even if already set.
 	db.Exec("PRAGMA journal_mode=WAL")  //nolint:errcheck
@@ -63,13 +72,14 @@ func (s *TaskStore) Create(task *Task) error {
 
 	_, err = s.db.Exec(`
 		INSERT INTO tasks
-			(id, status, worker_type, project_id, prompt, cwd, env, cli, role, model,
+			(id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)`,
 		task.ID,
 		string(task.Status),
 		string(task.WorkerType),
 		task.ProjectID,
+		task.RequestID,
 		task.Prompt,
 		task.CWD,
 		envJSON,
@@ -93,7 +103,7 @@ func (s *TaskStore) Create(task *Task) error {
 // Get retrieves a task by ID.
 func (s *TaskStore) Get(id string) (*Task, error) {
 	row := s.db.QueryRow(`
-		SELECT id, status, worker_type, project_id, prompt, cwd, env, cli, role, model,
+		SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at
 		FROM tasks WHERE id = ?`, id)
 
@@ -109,7 +119,7 @@ func (s *TaskStore) List(projectID string, statuses ...TaskStatus) ([]*Task, err
 
 	if len(statuses) == 0 {
 		rows, err = s.db.Query(`
-			SELECT id, status, worker_type, project_id, prompt, cwd, env, cli, role, model,
+			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at
 			FROM tasks WHERE project_id = ? ORDER BY created_at ASC`, projectID)
 	} else {
@@ -117,7 +127,7 @@ func (s *TaskStore) List(projectID string, statuses ...TaskStatus) ([]*Task, err
 		placeholders := make([]interface{}, 0, len(statuses)+1)
 		placeholders = append(placeholders, projectID)
 		query := `
-			SELECT id, status, worker_type, project_id, prompt, cwd, env, cli, role, model,
+			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at
 			FROM tasks WHERE project_id = ? AND status IN (`
 		for i, st := range statuses {
@@ -245,6 +255,7 @@ func scanTask(s scanner) (*Task, error) {
 		&task.Status,
 		&task.WorkerType,
 		&task.ProjectID,
+		&task.RequestID,
 		&task.Prompt,
 		&task.CWD,
 		&envJSON,
