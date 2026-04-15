@@ -381,3 +381,43 @@ func TestWorkflow_EmptySteps_ReturnsError(t *testing.T) {
 		t.Errorf("error = %q, want it to contain 'no steps defined'", err.Error())
 	}
 }
+
+// TestInterpolate_EscapesStepContent verifies that step result content containing
+// {{ template syntax cannot inject into downstream template substitution.
+func TestInterpolate_EscapesStepContent(t *testing.T) {
+	// Simulate a step result with injection payload.
+	maliciousContent := "found {{input}} via shell"
+	results := map[string]*orchestrator.StepResult{
+		"step1": {Content: maliciousContent, Status: "completed"},
+	}
+	ws := orchestrator.NewWorkflowStrategyForTest()
+	// Template that would expand step1.content into downstream step.
+	template := "Result: {{step1.content}}"
+	got := ws.InterpolateForTest(template, "REAL_INPUT", results)
+
+	// The malicious {{input}} inside step1.content must NOT have been substituted
+	// with REAL_INPUT — it should appear escaped instead.
+	if strings.Contains(got, "REAL_INPUT") {
+		t.Errorf("template injection succeeded: got %q", got)
+	}
+	// The content should still appear (just escaped), not dropped entirely.
+	if !strings.Contains(got, "found") {
+		t.Errorf("step1 content was dropped entirely: got %q", got)
+	}
+}
+
+// TestInterpolate_ContentCannotReferencePriorStep verifies that step content
+// containing a reference to another step's template variable is not expanded.
+func TestInterpolate_ContentCannotReferencePriorStep(t *testing.T) {
+	results := map[string]*orchestrator.StepResult{
+		"step_a": {Content: "{{step_b.content}}", Status: "completed"},
+		"step_b": {Content: "SECRET_VALUE", Status: "completed"},
+	}
+	ws := orchestrator.NewWorkflowStrategyForTest()
+	template := "output: {{step_a.content}}"
+	got := ws.InterpolateForTest(template, "", results)
+
+	if strings.Contains(got, "SECRET_VALUE") {
+		t.Errorf("cross-step injection succeeded via step_a.content referencing step_b: got %q", got)
+	}
+}
