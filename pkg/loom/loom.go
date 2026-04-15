@@ -2,6 +2,7 @@ package loom
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"runtime/debug"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/thebtf/aimux/pkg/loom/deps"
 )
 
 // Option configures LoomEngine.
@@ -30,9 +32,15 @@ type LoomEngine struct {
 	cancels    map[string]context.CancelFunc
 	mu         sync.RWMutex
 	maxRetries int
+	logger     deps.Logger
+	clock      deps.Clock
+	idGen      deps.IDGenerator
+	meter      deps.Meter
 }
 
 // New creates a LoomEngine with the given store and options.
+// Dep fields (logger, clock, idGen, meter) are initialised to their noop/system
+// defaults before Options are applied so callers that omit an option get a safe default.
 func New(store *TaskStore, opts ...Option) *LoomEngine {
 	l := &LoomEngine{
 		store:      store,
@@ -41,11 +49,30 @@ func New(store *TaskStore, opts ...Option) *LoomEngine {
 		workers:    make(map[WorkerType]Worker),
 		cancels:    make(map[string]context.CancelFunc),
 		maxRetries: 2,
+		logger:     deps.NoopLogger(),
+		clock:      deps.SystemClock(),
+		idGen:      deps.UUIDGenerator(),
+		meter:      deps.NoopMeter(),
 	}
 	for _, opt := range opts {
 		opt(l)
 	}
 	return l
+}
+
+// NewEngine constructs a LoomEngine from a raw *sql.DB. It creates a TaskStore
+// internally and returns the engine. This is the v0.1.0-aligned constructor
+// from spec FR-6 — New(store, opts) remains for backwards compatibility with
+// aimux call sites and will be removed during Phase 3 atomic migration.
+func NewEngine(db *sql.DB, opts ...Option) (*LoomEngine, error) {
+	if db == nil {
+		return nil, fmt.Errorf("loom: db must not be nil")
+	}
+	store, err := NewTaskStore(db)
+	if err != nil {
+		return nil, fmt.Errorf("loom: new task store: %w", err)
+	}
+	return New(store, opts...), nil
 }
 
 // RegisterWorker registers a worker for a given worker type.
