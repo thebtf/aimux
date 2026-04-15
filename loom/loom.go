@@ -3,10 +3,11 @@ package loom
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"log"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -14,6 +15,11 @@ import (
 
 	"github.com/thebtf/aimux/loom/deps"
 )
+
+// ErrEngineClosed is returned by Submit when the engine has been shut down
+// via Close. It is a sentinel error — callers can compare against it with
+// errors.Is to distinguish graceful shutdown from other failures.
+var ErrEngineClosed = errors.New("loom: engine closed")
 
 // Option configures LoomEngine.
 type Option func(*LoomEngine)
@@ -38,6 +44,12 @@ type LoomEngine struct {
 	clock      deps.Clock
 	idGen      deps.IDGenerator
 	meter      deps.Meter
+	// Lifecycle: wg tracks in-flight dispatch goroutines; closed signals that
+	// the engine has been shut down via Close and no further Submit calls are
+	// accepted. Both fields are zero-valued by default and require no explicit
+	// initialisation.
+	wg     sync.WaitGroup
+	closed atomic.Bool
 	// T030 instruments — initialised in New() after options are applied.
 	taskSubmittedCounter otelmetric.Int64Counter
 	taskCompletedCounter otelmetric.Int64Counter
@@ -110,7 +122,29 @@ func (l *LoomEngine) RegisterWorker(wt WorkerType, w Worker) {
 // Submit creates a persistent task and dispatches to the appropriate worker.
 // Returns immediately with taskID. Execution happens in a background goroutine.
 // RequestID is extracted from ctx via RequestIDFrom for distributed tracing.
+// After Close has been called Submit returns ErrEngineClosed without side effects.
 func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error) {
+	// Protect the closed-check + wg.Add(1) as an atomic section to prevent a
+	// race with Close. Without this lock, Close could call wg.Wait() between
+	// the Load and the Add, which violates sync.WaitGroup's rule that Add must
+	// happen-before Wait when the counter is zero.
+	l.mu.Lock()
+	if l.closed.Load() {
+		l.mu.Unlock()
+		return "", ErrEngineClosed
+	}
+	l.wg.Add(1)
+	l.mu.Unlock()
+	// goroutineLaunched tracks whether we successfully reach go l.dispatch(task).
+	// If Submit returns early (error), we must call wg.Done() ourselves because
+	// the dispatch goroutine (which owns the corresponding defer wg.Done()) was
+	// never started.
+	goroutineLaunched := false
+	defer func() {
+		if !goroutineLaunched {
+			l.wg.Done()
+		}
+	}()
 	submitStart := l.clock.Now()
 
 	reqID := RequestIDFrom(ctx)
@@ -187,9 +221,48 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	)
 
 	// Dispatch in background — task lifecycle independent of caller context.
+	// wg.Add(1) was already called at the top of Submit (under mu) to eliminate
+	// the race window between closed.Load() and the Add. Mark goroutineLaunched
+	// before the go statement so the deferred fallback wg.Done() is suppressed —
+	// dispatch's own defer wg.Done() takes ownership from here.
+	goroutineLaunched = true
 	go l.dispatch(task)
 
 	return task.ID, nil
+}
+
+// Close signals engine shutdown and waits for all in-flight dispatch goroutines
+// to complete (or ctx to expire). Callers MUST invoke Close before closing the
+// underlying *sql.DB to prevent write-after-close races. Close is idempotent:
+// subsequent invocations return nil immediately.
+//
+// After Close returns, Submit will reject new tasks with ErrEngineClosed.
+// In-flight dispatch goroutines already running continue until they finish
+// naturally. ctx is used only as a deadline on how long Close will wait for
+// them — it does NOT cancel the tasks themselves. Use Cancel or
+// CancelAllForProject before Close if you need to abort in-flight work.
+func (l *LoomEngine) Close(ctx context.Context) error {
+	// Hold mu while flipping closed so no Submit goroutine can slip a wg.Add(1)
+	// in between our CAS and the subsequent wg.Wait(). Without this, a Submit
+	// that passed the closed.Load() check could call wg.Add(1) after wg.Wait()
+	// starts, violating the WaitGroup contract.
+	l.mu.Lock()
+	if !l.closed.CompareAndSwap(false, true) {
+		l.mu.Unlock()
+		return nil // already closed
+	}
+	l.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		l.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Get returns current task state.
@@ -286,10 +359,28 @@ func (l *LoomEngine) Events() *EventBus {
 func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) {
 	ctx := context.Background()
 	if err := l.store.SetResult(task.ID, "", errMsg); err != nil {
-		log.Printf("[loom] failTask: store.SetResult(%s) failed: %v", task.ID, err)
+		l.logger.ErrorContext(ctx, "failTask: store.SetResult failed",
+			"module", "loom",
+			"task_id", task.ID,
+			"project_id", task.ProjectID,
+			"worker_type", string(task.WorkerType),
+			"task_status", string(fromStatus),
+			"request_id", task.RequestID,
+			"error_code", "store_set_result",
+			"error", err,
+		)
 	}
 	if err := l.store.UpdateStatus(task.ID, fromStatus, TaskStatusFailed); err != nil {
-		log.Printf("[loom] failTask: store.UpdateStatus(%s, %s→failed) failed: %v", task.ID, fromStatus, err)
+		l.logger.ErrorContext(ctx, "failTask: store.UpdateStatus failed",
+			"module", "loom",
+			"task_id", task.ID,
+			"project_id", task.ProjectID,
+			"worker_type", string(task.WorkerType),
+			"task_status", string(fromStatus),
+			"request_id", task.RequestID,
+			"error_code", "store_update_status",
+			"error", err,
+		)
 	}
 	l.events.Emit(TaskEvent{
 		Type:      EventTaskFailed,
@@ -319,21 +410,53 @@ func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) 
 // dispatch runs the worker for a task in a background goroutine.
 // Task arrives already in TaskStatusDispatched (transitioned synchronously by Submit).
 func (l *LoomEngine) dispatch(task *Task) {
+	// Decrement the WaitGroup exactly once when this goroutine exits.
+	// Paired with the l.wg.Add(1) performed at the start of Submit (under mu).
+	defer l.wg.Done()
 	// Panic recovery: ensure any panic in worker or gate is caught, task is
 	// marked failed_crash, and the process is not terminated.
 	defer func() {
 		if r := recover(); r != nil {
+			panicCtx := context.Background()
 			stack := debug.Stack()
-			log.Printf("[loom] dispatch panic for task %s: %v\n%s", task.ID, r, stack)
 			panicMsg := fmt.Sprintf("panic: %v", r)
+			l.logger.ErrorContext(panicCtx, "dispatch panic",
+				"module", "loom",
+				"task_id", task.ID,
+				"project_id", task.ProjectID,
+				"worker_type", string(task.WorkerType),
+				"task_status", "unknown",
+				"request_id", task.RequestID,
+				"error_code", "dispatch_panic",
+				"error", panicMsg,
+				"stack", string(stack),
+			)
 			if err := l.store.SetResult(task.ID, "", panicMsg); err != nil {
-				log.Printf("[loom] failTask: store.SetResult(%s) failed: %v", task.ID, err)
+				l.logger.ErrorContext(panicCtx, "dispatch panic: store.SetResult failed",
+					"module", "loom",
+					"task_id", task.ID,
+					"project_id", task.ProjectID,
+					"worker_type", string(task.WorkerType),
+					"task_status", string(TaskStatusFailedCrash),
+					"request_id", task.RequestID,
+					"error_code", "store_set_result",
+					"error", err,
+				)
 			}
 			// Best-effort: try both running→failed_crash and dispatched→failed_crash
 			// since we don't know exact current status at panic time.
 			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailedCrash); err != nil {
 				if err2 := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusFailedCrash); err2 != nil {
-					log.Printf("[loom] dispatch panic recovery: could not mark task %s failed_crash: %v / %v", task.ID, err, err2)
+					l.logger.ErrorContext(panicCtx, "dispatch panic: could not mark failed_crash",
+						"module", "loom",
+						"task_id", task.ID,
+						"project_id", task.ProjectID,
+						"worker_type", string(task.WorkerType),
+						"task_status", string(TaskStatusFailedCrash),
+						"request_id", task.RequestID,
+						"error_code", "failed_crash_transition",
+						"error", fmt.Sprintf("running→failed_crash: %v; dispatched→failed_crash: %v", err, err2),
+					)
 				}
 			}
 			l.events.Emit(TaskEvent{
@@ -345,7 +468,6 @@ func (l *LoomEngine) dispatch(task *Task) {
 				Timestamp: l.clock.Now().UTC(),
 			})
 			// T030: panic counts as a failed task (failed_crash subtype).
-			panicCtx := context.Background()
 			l.taskFailedCounter.Add(panicCtx, 1, otelmetric.WithAttributes(
 				attribute.String("worker_type", string(task.WorkerType)),
 				attribute.String("project_id", task.ProjectID),
@@ -377,7 +499,16 @@ func (l *LoomEngine) dispatch(task *Task) {
 
 	// Transition: dispatched → running
 	if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
-		log.Printf("[loom] dispatch: UpdateStatus(dispatched→running) failed for task %s: %v", task.ID, err)
+		l.logger.ErrorContext(context.Background(), "dispatch: UpdateStatus(dispatched→running) failed",
+			"module", "loom",
+			"task_id", task.ID,
+			"project_id", task.ProjectID,
+			"worker_type", string(task.WorkerType),
+			"task_status", string(TaskStatusDispatched),
+			"request_id", task.RequestID,
+			"error_code", "store_update_status",
+			"error", err,
+		)
 		l.failTask(task, TaskStatusDispatched, fmt.Sprintf("dispatch: transition to running failed: %v", err))
 		return
 	}
@@ -417,7 +548,16 @@ func (l *LoomEngine) dispatch(task *Task) {
 	// Reload task from store to get latest state (in case of retry).
 	latest, err := l.store.Get(task.ID)
 	if err != nil {
-		log.Printf("[loom] dispatch: store.Get(%s) failed: %v", task.ID, err)
+		l.logger.ErrorContext(taskCtx, "dispatch: store.Get failed",
+			"module", "loom",
+			"task_id", task.ID,
+			"project_id", task.ProjectID,
+			"worker_type", string(task.WorkerType),
+			"task_status", string(TaskStatusRunning),
+			"request_id", task.RequestID,
+			"error_code", "store_get",
+			"error", err,
+		)
 		l.failTask(task, TaskStatusRunning, fmt.Sprintf("dispatch: reload task failed: %v", err))
 		return
 	}
@@ -449,12 +589,30 @@ func (l *LoomEngine) dispatch(task *Task) {
 				"request_id", task.RequestID,
 			)
 			if err := l.store.SetResult(task.ID, result.Content, ""); err != nil {
-				log.Printf("[loom] dispatch complete: store.SetResult(%s) failed: %v", task.ID, err)
+				l.logger.ErrorContext(gateCtx, "dispatch complete: store.SetResult failed",
+					"module", "loom",
+					"task_id", task.ID,
+					"project_id", task.ProjectID,
+					"worker_type", string(task.WorkerType),
+					"task_status", string(TaskStatusRunning),
+					"request_id", task.RequestID,
+					"error_code", "store_set_result",
+					"error", err,
+				)
 				// Abort: do not emit EventTaskCompleted — persisted state is not completed.
 				return
 			}
 			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusCompleted); err != nil {
-				log.Printf("[loom] dispatch complete: store.UpdateStatus(%s, running→completed) failed: %v", task.ID, err)
+				l.logger.ErrorContext(gateCtx, "dispatch complete: store.UpdateStatus failed",
+					"module", "loom",
+					"task_id", task.ID,
+					"project_id", task.ProjectID,
+					"worker_type", string(task.WorkerType),
+					"task_status", string(TaskStatusRunning),
+					"request_id", task.RequestID,
+					"error_code", "store_update_status",
+					"error", err,
+				)
 				// Abort: do not emit EventTaskCompleted — status transition failed.
 				return
 			}
@@ -468,16 +626,19 @@ func (l *LoomEngine) dispatch(task *Task) {
 			})
 			// T030: completed task counter + end-to-end duration.
 			l.taskCompletedCounter.Add(gateCtx, 1, attrs)
+			var taskDurationMS int64
 			if latest.DispatchedAt != nil {
-				taskDurationMS := l.clock.Now().Sub(*latest.DispatchedAt).Milliseconds()
+				taskDurationMS = l.clock.Now().Sub(*latest.DispatchedAt).Milliseconds()
 				l.taskDurationHist.Record(gateCtx, taskDurationMS, attrs)
 			}
+			// CR-MED-1 fix: include duration_ms in the canonical 8-field log.
 			l.logger.InfoContext(gateCtx, "task completed",
 				"module", "loom",
 				"task_id", task.ID,
 				"project_id", task.ProjectID,
 				"worker_type", string(task.WorkerType),
 				"task_status", string(TaskStatusCompleted),
+				"duration_ms", taskDurationMS,
 				"request_id", task.RequestID,
 			)
 			return
@@ -503,11 +664,36 @@ func (l *LoomEngine) dispatch(task *Task) {
 		}
 
 		// Retry: running → retrying → dispatched → running.
+		// BUG-002 fix: each transition failure is now a hard stop. Previously the
+		// errors were swallowed with log.Printf and execution continued on stale
+		// state, leaving tasks permanently in `retrying`.
 		if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusRetrying); err != nil {
-			log.Printf("[loom] store.UpdateStatus failed: %v", err)
+			l.logger.ErrorContext(gateCtx, "retry: UpdateStatus(running→retrying) failed",
+				"module", "loom",
+				"task_id", task.ID,
+				"project_id", task.ProjectID,
+				"worker_type", string(task.WorkerType),
+				"task_status", string(TaskStatusRunning),
+				"request_id", task.RequestID,
+				"error_code", "store_update_status",
+				"error", err,
+			)
+			l.failTask(task, TaskStatusRunning, fmt.Sprintf("retry: UpdateStatus(running→retrying) failed: %v", err))
+			return
 		}
 		if err := l.store.IncrementRetries(task.ID); err != nil {
-			log.Printf("[loom] store.IncrementRetries failed: %v", err)
+			l.logger.ErrorContext(gateCtx, "retry: IncrementRetries failed",
+				"module", "loom",
+				"task_id", task.ID,
+				"project_id", task.ProjectID,
+				"worker_type", string(task.WorkerType),
+				"task_status", string(TaskStatusRetrying),
+				"request_id", task.RequestID,
+				"error_code", "store_increment_retries",
+				"error", err,
+			)
+			l.failTask(task, TaskStatusRetrying, fmt.Sprintf("retry: IncrementRetries failed: %v", err))
+			return
 		}
 
 		// Emit retrying event after successful transition.
@@ -521,15 +707,46 @@ func (l *LoomEngine) dispatch(task *Task) {
 		})
 
 		if err := l.store.UpdateStatus(task.ID, TaskStatusRetrying, TaskStatusDispatched); err != nil {
-			log.Printf("[loom] store.UpdateStatus failed: %v", err)
+			l.logger.ErrorContext(gateCtx, "retry: UpdateStatus(retrying→dispatched) failed",
+				"module", "loom",
+				"task_id", task.ID,
+				"project_id", task.ProjectID,
+				"worker_type", string(task.WorkerType),
+				"task_status", string(TaskStatusRetrying),
+				"request_id", task.RequestID,
+				"error_code", "store_update_status",
+				"error", err,
+			)
+			l.failTask(task, TaskStatusRetrying, fmt.Sprintf("retry: UpdateStatus(retrying→dispatched) failed: %v", err))
+			return
 		}
 		if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
-			log.Printf("[loom] store.UpdateStatus failed: %v", err)
+			l.logger.ErrorContext(gateCtx, "retry: UpdateStatus(dispatched→running) failed",
+				"module", "loom",
+				"task_id", task.ID,
+				"project_id", task.ProjectID,
+				"worker_type", string(task.WorkerType),
+				"task_status", string(TaskStatusDispatched),
+				"request_id", task.RequestID,
+				"error_code", "store_update_status",
+				"error", err,
+			)
+			l.failTask(task, TaskStatusDispatched, fmt.Sprintf("retry: UpdateStatus(dispatched→running) failed: %v", err))
+			return
 		}
 
 		latest, err = l.store.Get(task.ID)
 		if err != nil {
-			log.Printf("[loom] dispatch retry: store.Get(%s) failed: %v", task.ID, err)
+			l.logger.ErrorContext(taskCtx, "dispatch retry: store.Get failed",
+				"module", "loom",
+				"task_id", task.ID,
+				"project_id", task.ProjectID,
+				"worker_type", string(task.WorkerType),
+				"task_status", string(TaskStatusRunning),
+				"request_id", task.RequestID,
+				"error_code", "store_get",
+				"error", err,
+			)
 			l.failTask(task, TaskStatusRunning, fmt.Sprintf("dispatch retry: reload task failed: %v", err))
 			return
 		}

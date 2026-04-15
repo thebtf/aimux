@@ -3,7 +3,69 @@
 All notable changes to this module will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [v0.1.0] — TBD (unreleased)
+## [v0.1.1] — 2026-04-15
+
+### Fixed
+
+- **BUG-001** `LoomEngine.Close(ctx)` now waits for in-flight dispatch goroutines
+  to drain before returning. Previously goroutines were untracked and could
+  race with `db.Close()` causing "sql: database is closed" errors and silent
+  write loss on shutdown.
+- **BUG-002** Retry path now halts with `failTask` when any `UpdateStatus`
+  transition fails, instead of swallowing the error with `log.Printf` and
+  continuing on stale state (which left tasks permanently non-terminal in
+  `retrying`).
+- **BUG-004** `SubprocessBase.Run` now correctly enforces `task.Timeout` in
+  all scenarios. The initial PRC claim of a "double timeout bug" was a false
+  positive — `context.WithTimeout(parent, d)` already returns a context whose
+  deadline is `min(parent.Deadline, now+d)`, so applying it unconditionally
+  is safe even when the parent already has a shorter deadline. The previous
+  `hasDeadline` guard (removed by CodeRabbit review on PR #83) was actively
+  harmful: it prevented per-task timeouts from capping an engine-wide
+  dispatch budget. Test `TestSubprocessBase_RespectsParentDeadline` verifies
+  that a 150ms parent deadline beats a 10s `task.Timeout`, confirming
+  correct behavior. No code change is needed for the double-timeout concern;
+  the fix is retained as a regression guard against future "let the inner
+  timeout win" mistakes.
+- **CR-MED-1** `task completed` log now includes the `duration_ms` canonical
+  field alongside the histogram recording (previously the 8-field spec was
+  violated on the completion path, emitting only 6 fields).
+
+### Changed
+
+- **CR-HIGH-2** All 14 `log.Printf` error sites in `loom.go` replaced with
+  `l.logger.ErrorContext` calls using the canonical 8-field format
+  (module, task_id, project_id, worker_type, task_status, request_id,
+  error_code, error). Production deployments with injected `deps.Logger`
+  (slog, OTel bridge, zerolog) now capture the full error context.
+- **CR-MED-3** `workers.StreamingBase.Logger` field type changed from
+  `func(string)` to `deps.Logger` for DI consistency with the rest of the
+  loom package.
+
+### Added
+
+- `loom.ErrEngineClosed` sentinel error returned by Submit when the engine
+  has been shut down via Close. Callers can distinguish graceful shutdown
+  from other failures with `errors.Is`.
+- `(*LoomEngine).Close(ctx context.Context) error` — graceful shutdown that
+  waits for dispatch goroutines to drain.
+- `loom/doc.go` package-level documentation for pkg.go.dev rendering.
+
+### Breaking (within pre-release window — v0.1.0 shipped today)
+
+- **CR-HIGH-3** `RequestIDKey` is now an exported TYPE (`type RequestIDKey struct{}`)
+  instead of an exported `var` holding an unexported struct. Callers that
+  used `context.Value(loom.RequestIDKey)` must now use `context.Value(loom.RequestIDKey{})`.
+  `WithRequestID` and `RequestIDFrom` helpers are unchanged and recommended.
+
+### Internal
+
+- **CR-MED-2** `store.MarkCrashed` now has a compile-time assertion that the
+  state machine permits `dispatched→failed_crash` and `running→failed_crash`
+  transitions, preventing silent drift between the raw SQL update and
+  `CanTransitionTo` validation.
+
+## [v0.1.0] — 2026-04-15
 
 Initial release. The full public API is listed below.
 
@@ -141,7 +203,7 @@ Initial release. The full public API is listed below.
 - `RequestIDFrom(ctx context.Context) string`
   Extract the request tracing ID from a context.
 
-- `var RequestIDKey` — exported context key constant.
+- `type RequestIDKey struct{}` — exported context key type (was `var` in v0.1.0; see v0.1.1 breaking change).
 
 - `TaskStatus.CanTransitionTo(target TaskStatus) bool`
 - `TaskStatus.IsTerminal() bool`

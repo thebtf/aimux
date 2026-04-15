@@ -60,7 +60,10 @@ func (b *SubprocessBase) Run(ctx context.Context, task *loom.Task) (*loom.Worker
 		return nil, fmt.Errorf("subprocess: resolve: %w", err)
 	}
 
-	// Derive timeout context if task.Timeout > 0.
+	// Derive timeout context if task.Timeout > 0. context.WithTimeout always
+	// picks the more restrictive of the new deadline and the parent's existing
+	// deadline, so applying it is safe even when the parent already has a
+	// deadline — the task-specific timeout is honoured if it is shorter.
 	runCtx := ctx
 	if task.Timeout > 0 {
 		var cancel context.CancelFunc
