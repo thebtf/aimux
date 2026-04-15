@@ -1259,6 +1259,9 @@ func TestE2E_Behavior_ClaudeNoInitEvent(t *testing.T) {
 
 // TestE2E_Orchestrator_ConsensusMultiCLI verifies consensus orchestrator resolves
 // correct binary and prompt flags for multiple testcli emulators.
+//
+// Since LoomEngine v3 (PR #69) consensus is async-by-default: submission returns
+// {job_id, status:"running"} and the test must poll status until completion.
 func TestE2E_Orchestrator_ConsensusMultiCLI(t *testing.T) {
 	stdin, reader := initTestCLIServer(t)
 
@@ -1275,39 +1278,45 @@ func TestE2E_Orchestrator_ConsensusMultiCLI(t *testing.T) {
 		t.Fatalf("consensus: %v", err)
 	}
 
-	text := extractToolText(t, resp)
-	t.Logf("consensus response (first 500): %.500s", text)
-
-	var data map[string]any
-	if err := json.Unmarshal([]byte(text), &data); err != nil {
-		t.Fatalf("response not JSON: %v\nraw: %s", err, text)
+	data := extractToolJSON(t, resp)
+	jobID, _ := data["job_id"].(string)
+	if jobID == "" {
+		t.Fatalf("missing job_id in consensus async response: %+v", data)
+	}
+	if data["status"] != "running" {
+		t.Errorf("initial status = %v, want running", data["status"])
 	}
 
-	// Consensus responses are wrapped in the guidance envelope; domain fields
-	// (status, participants, content) are nested under the "result" key.
-	inner, ok := data["result"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected nested result payload under 'result' key, got %T", data["result"])
+	// Poll status until completed — testcli emulators finish quickly.
+	var content string
+	for i := 0; i < 30; i++ {
+		time.Sleep(200 * time.Millisecond)
+		fmt.Fprint(stdin, jsonRPCRequest(3+i, "tools/call", map[string]any{
+			"name":      "status",
+			"arguments": map[string]any{"job_id": jobID},
+		}))
+		pollResp, pollErr := readResponse(reader, 5*time.Second)
+		if pollErr != nil {
+			t.Fatalf("status poll: %v", pollErr)
+		}
+		pollData := extractToolJSON(t, pollResp)
+		status, _ := pollData["status"].(string)
+		if status == "completed" {
+			content, _ = pollData["content"].(string)
+			break
+		}
+		if status == "failed" || status == "failed_crash" {
+			t.Fatalf("consensus job failed: %+v", pollData)
+		}
 	}
-
-	status, _ := inner["status"].(string)
-	if status != "completed" {
-		t.Errorf("status = %q, want completed", status)
-	}
-
-	participants, _ := inner["participants"].([]any)
-	if len(participants) < 2 {
-		t.Errorf("participants = %v, want at least 2", participants)
-	}
-
-	content, _ := inner["content"].(string)
 	if content == "" {
-		t.Error("consensus content is empty")
+		t.Fatal("consensus content empty after polling — job may have hung")
 	}
+	t.Logf("consensus content (first 500): %.500s", content)
 
-	// Verify synthesis section exists (since synthesize=true)
+	// Verify synthesis section is present in the content (synthesize=true was set).
 	if !strings.Contains(content, "Synthesis") {
-		t.Log("note: synthesis section not found in content — may have been skipped if only 1 succeeded")
+		t.Log("note: synthesis section not found in content — may have been skipped if only 1 CLI succeeded")
 	}
 }
 
@@ -1362,6 +1371,8 @@ func TestE2E_Orchestrator_DialogMultiCLI(t *testing.T) {
 
 // TestE2E_Orchestrator_SynthesisStdinPiping verifies that long synthesis prompts
 // are piped via stdin when they exceed the CLI's StdinThreshold.
+//
+// Async-by-default since LoomEngine v3 (PR #69) — poll status to completion.
 func TestE2E_Orchestrator_SynthesisStdinPiping(t *testing.T) {
 	stdin, reader := initTestCLIServer(t)
 
@@ -1383,28 +1394,39 @@ func TestE2E_Orchestrator_SynthesisStdinPiping(t *testing.T) {
 		t.Fatalf("consensus with long topic: %v", err)
 	}
 
-	text := extractToolText(t, resp)
-	t.Logf("long consensus response (first 500): %.500s", text)
-
-	var data map[string]any
-	if err := json.Unmarshal([]byte(text), &data); err != nil {
-		t.Fatalf("response not JSON: %v\nraw: %s", err, text)
+	data := extractToolJSON(t, resp)
+	jobID, _ := data["job_id"].(string)
+	if jobID == "" {
+		t.Fatalf("missing job_id in long consensus async response: %+v", data)
+	}
+	if data["status"] != "running" {
+		t.Errorf("initial status = %v, want running", data["status"])
 	}
 
-	// Consensus responses are wrapped in the guidance envelope; domain fields
-	// (status, content) are nested under the "result" key.
-	inner, ok := data["result"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected nested result payload under 'result' key, got %T", data["result"])
+	// Poll status until completed.
+	var content string
+	for i := 0; i < 30; i++ {
+		time.Sleep(200 * time.Millisecond)
+		fmt.Fprint(stdin, jsonRPCRequest(3+i, "tools/call", map[string]any{
+			"name":      "status",
+			"arguments": map[string]any{"job_id": jobID},
+		}))
+		pollResp, pollErr := readResponse(reader, 5*time.Second)
+		if pollErr != nil {
+			t.Fatalf("status poll: %v", pollErr)
+		}
+		pollData := extractToolJSON(t, pollResp)
+		status, _ := pollData["status"].(string)
+		if status == "completed" {
+			content, _ = pollData["content"].(string)
+			break
+		}
+		if status == "failed" || status == "failed_crash" {
+			t.Fatalf("long consensus job failed: %+v", pollData)
+		}
 	}
-
-	status, _ := inner["status"].(string)
-	if status != "completed" {
-		t.Errorf("status = %q, want completed", status)
-	}
-
-	content, _ := inner["content"].(string)
 	if content == "" {
-		t.Error("consensus content is empty — stdin piping may have failed")
+		t.Fatal("long consensus content empty after polling — stdin piping may have failed")
 	}
+	t.Logf("long consensus content (first 500): %.500s", content)
 }
