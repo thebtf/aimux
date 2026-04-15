@@ -7,7 +7,7 @@ require (
 	github.com/creativeprojects/go-selfupdate v1.5.2
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.47.0
-	github.com/thebtf/aimux/loom v0.1.0
+	github.com/thebtf/aimux/loom v0.1.1
 	github.com/thebtf/mcp-mux/muxcore v0.19.0
 	google.golang.org/genai v1.52.1
 	gopkg.in/yaml.v3 v3.0.1
