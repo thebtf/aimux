@@ -40,11 +40,11 @@ type LoomEngine struct {
 // New creates a LoomEngine with the given store and options.
 // Dep fields (logger, clock, idGen, meter) are initialised to their noop/system
 // defaults before Options are applied so callers that omit an option get a safe default.
+// EventBus is created AFTER options so it receives the final (possibly injected) logger.
 func New(store *TaskStore, opts ...Option) *LoomEngine {
 	l := &LoomEngine{
 		store:      store,
 		gate:       NewQualityGate(),
-		events:     NewEventBus(),
 		workers:    make(map[WorkerType]Worker),
 		cancels:    make(map[string]context.CancelFunc),
 		maxRetries: 2,
@@ -53,9 +53,12 @@ func New(store *TaskStore, opts ...Option) *LoomEngine {
 		idGen:      deps.UUIDGenerator(),
 		meter:      deps.NoopMeter(),
 	}
+	// Apply options FIRST so logger can be overridden before EventBus is created.
 	for _, opt := range opts {
 		opt(l)
 	}
+	// Create EventBus AFTER options so it gets the final logger.
+	l.events = NewEventBus(l.logger)
 	return l
 }
 
@@ -83,7 +86,14 @@ func (l *LoomEngine) RegisterWorker(wt WorkerType, w Worker) {
 
 // Submit creates a persistent task and dispatches to the appropriate worker.
 // Returns immediately with taskID. Execution happens in a background goroutine.
+// RequestID is extracted from ctx via RequestIDFrom for distributed tracing.
 func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error) {
+	reqID := RequestIDFrom(ctx)
+	// Allow explicit override in request (e.g. from non-loom callers).
+	if reqID == "" {
+		reqID = req.RequestID
+	}
+
 	taskID := l.idGen.NewID()
 	now := l.clock.Now().UTC()
 	task := &Task{
@@ -91,6 +101,7 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		Status:     TaskStatusPending,
 		WorkerType: req.WorkerType,
 		ProjectID:  req.ProjectID,
+		RequestID:  reqID,
 		Prompt:     req.Prompt,
 		CWD:        req.CWD,
 		Env:        req.Env,
@@ -107,7 +118,14 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		return "", fmt.Errorf("loom: persist task: %w", err)
 	}
 
-	l.events.Emit(Event{Type: EventTaskCreated, TaskID: task.ID})
+	l.events.Emit(TaskEvent{
+		Type:      EventTaskCreated,
+		TaskID:    task.ID,
+		ProjectID: task.ProjectID,
+		RequestID: task.RequestID,
+		Status:    task.Status,
+		Timestamp: l.clock.Now().UTC(),
+	})
 
 	// Transition pending → dispatched synchronously before launching goroutine.
 	// This ensures crash recovery (MarkCrashed) can pick up the task even if the
@@ -116,7 +134,14 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		return "", fmt.Errorf("loom: dispatch task: %w", err)
 	}
 	task.Status = TaskStatusDispatched
-	l.events.Emit(Event{Type: EventTaskDispatched, TaskID: task.ID})
+	l.events.Emit(TaskEvent{
+		Type:      EventTaskDispatched,
+		TaskID:    task.ID,
+		ProjectID: task.ProjectID,
+		RequestID: task.RequestID,
+		Status:    task.Status,
+		Timestamp: l.clock.Now().UTC(),
+	})
 
 	// Dispatch in background — task lifecycle independent of caller context.
 	go l.dispatch(task)
@@ -147,6 +172,44 @@ func (l *LoomEngine) Cancel(taskID string) error {
 	return nil
 }
 
+// CancelAllForProject cancels all running tasks for the given project.
+// Returns the number of tasks signaled for cancellation. Tasks that are not
+// currently running (pending, completed, failed, already cancelled) are not affected.
+// Per US9: used by engram to cancel all work for a disconnecting project.
+func (l *LoomEngine) CancelAllForProject(projectID string) (int, error) {
+	// Snapshot running tasks first (avoid holding lock during store queries).
+	running, err := l.store.List(projectID, TaskStatusRunning)
+	if err != nil {
+		return 0, fmt.Errorf("loom: list running tasks: %w", err)
+	}
+
+	// Collect which tasks we actually cancelled (have a live cancel func).
+	cancelled := make([]*Task, 0, len(running))
+
+	l.mu.Lock()
+	for _, task := range running {
+		if cancel, ok := l.cancels[task.ID]; ok {
+			cancel()
+			cancelled = append(cancelled, task)
+		}
+	}
+	l.mu.Unlock()
+
+	// Emit TaskCancelled events for each cancelled task (outside the lock).
+	for _, task := range cancelled {
+		l.events.Emit(TaskEvent{
+			Type:      EventTaskCancelled,
+			TaskID:    task.ID,
+			ProjectID: projectID,
+			RequestID: task.RequestID,
+			Status:    TaskStatusRunning, // will transition as context propagates
+			Timestamp: l.clock.Now().UTC(),
+		})
+	}
+
+	return len(cancelled), nil
+}
+
 // RecoverCrashed marks all dispatched/running tasks as failed_crash.
 // Called once on daemon startup.
 func (l *LoomEngine) RecoverCrashed() (int, error) {
@@ -168,7 +231,26 @@ func (l *LoomEngine) failTask(taskID string, fromStatus TaskStatus, errMsg strin
 	if err := l.store.UpdateStatus(taskID, fromStatus, TaskStatusFailed); err != nil {
 		log.Printf("[loom] failTask: store.UpdateStatus(%s, %s→failed) failed: %v", taskID, fromStatus, err)
 	}
-	l.events.Emit(Event{Type: EventTaskFailed, TaskID: taskID, Data: map[string]any{"error": errMsg}})
+	// Load task to get ProjectID and RequestID for the event.
+	projectID, requestID := l.taskContext(taskID)
+	l.events.Emit(TaskEvent{
+		Type:      EventTaskFailed,
+		TaskID:    taskID,
+		ProjectID: projectID,
+		RequestID: requestID,
+		Status:    TaskStatusFailed,
+		Timestamp: l.clock.Now().UTC(),
+	})
+}
+
+// taskContext retrieves projectID and requestID for a task from the store.
+// Returns empty strings on error (best-effort for event emission).
+func (l *LoomEngine) taskContext(taskID string) (projectID, requestID string) {
+	t, err := l.store.Get(taskID)
+	if err != nil {
+		return "", ""
+	}
+	return t.ProjectID, t.RequestID
 }
 
 // dispatch runs the worker for a task in a background goroutine.
@@ -191,7 +273,14 @@ func (l *LoomEngine) dispatch(task *Task) {
 					log.Printf("[loom] dispatch panic recovery: could not mark task %s failed_crash: %v / %v", task.ID, err, err2)
 				}
 			}
-			l.events.Emit(Event{Type: EventTaskFailed, TaskID: task.ID, Data: map[string]any{"error": panicMsg}})
+			l.events.Emit(TaskEvent{
+				Type:      EventTaskFailedCrash,
+				TaskID:    task.ID,
+				ProjectID: task.ProjectID,
+				RequestID: task.RequestID,
+				Status:    TaskStatusFailedCrash,
+				Timestamp: l.clock.Now().UTC(),
+			})
 		}
 	}()
 
@@ -213,6 +302,16 @@ func (l *LoomEngine) dispatch(task *Task) {
 		l.failTask(task.ID, TaskStatusDispatched, fmt.Sprintf("dispatch: transition to running failed: %v", err))
 		return
 	}
+
+	// Emit running event after successful dispatched→running transition.
+	l.events.Emit(TaskEvent{
+		Type:      EventTaskRunning,
+		TaskID:    task.ID,
+		ProjectID: task.ProjectID,
+		RequestID: task.RequestID,
+		Status:    TaskStatusRunning,
+		Timestamp: l.clock.Now().UTC(),
+	})
 
 	// Create task-scoped context — NOT derived from caller's context.
 	// FR-4: session disconnect does not cancel running tasks.
@@ -255,7 +354,10 @@ func (l *LoomEngine) dispatch(task *Task) {
 	for {
 		decision := l.gate.Check(latest, result)
 		if decision.Accept {
-			l.events.Emit(Event{Type: EventTaskGatePass, TaskID: task.ID})
+			l.logger.InfoContext(context.Background(), "quality gate pass",
+				"task_id", task.ID,
+				"project_id", task.ProjectID,
+			)
 			if err := l.store.SetResult(task.ID, result.Content, ""); err != nil {
 				log.Printf("[loom] dispatch complete: store.SetResult(%s) failed: %v", task.ID, err)
 				// Abort: do not emit EventTaskCompleted — persisted state is not completed.
@@ -266,12 +368,23 @@ func (l *LoomEngine) dispatch(task *Task) {
 				// Abort: do not emit EventTaskCompleted — status transition failed.
 				return
 			}
-			l.events.Emit(Event{Type: EventTaskCompleted, TaskID: task.ID})
+			l.events.Emit(TaskEvent{
+				Type:      EventTaskCompleted,
+				TaskID:    task.ID,
+				ProjectID: task.ProjectID,
+				RequestID: task.RequestID,
+				Status:    TaskStatusCompleted,
+				Timestamp: l.clock.Now().UTC(),
+			})
 			return
 		}
 
 		// Gate rejected.
-		l.events.Emit(Event{Type: EventTaskGateFail, TaskID: task.ID, Data: map[string]any{"reason": decision.Reason}})
+		l.logger.InfoContext(context.Background(), "quality gate fail",
+			"task_id", task.ID,
+			"project_id", task.ProjectID,
+			"reason", decision.Reason,
+		)
 
 		if !decision.Retry || latest.Retries >= l.maxRetries {
 			// No retry or retries exhausted.
@@ -286,6 +399,17 @@ func (l *LoomEngine) dispatch(task *Task) {
 		if err := l.store.IncrementRetries(task.ID); err != nil {
 			log.Printf("[loom] store.IncrementRetries failed: %v", err)
 		}
+
+		// Emit retrying event after successful transition.
+		l.events.Emit(TaskEvent{
+			Type:      EventTaskRetrying,
+			TaskID:    task.ID,
+			ProjectID: task.ProjectID,
+			RequestID: task.RequestID,
+			Status:    TaskStatusRetrying,
+			Timestamp: l.clock.Now().UTC(),
+		})
+
 		if err := l.store.UpdateStatus(task.ID, TaskStatusRetrying, TaskStatusDispatched); err != nil {
 			log.Printf("[loom] store.UpdateStatus failed: %v", err)
 		}

@@ -73,6 +73,7 @@ type Task struct {
 	Status       TaskStatus        `json:"status"`
 	WorkerType   WorkerType        `json:"worker_type"`
 	ProjectID    string            `json:"project_id"`
+	RequestID    string            `json:"request_id,omitempty"`
 	Prompt       string            `json:"prompt"`
 	CWD          string            `json:"cwd,omitempty"`
 	Env          map[string]string `json:"env,omitempty"`
@@ -94,6 +95,7 @@ type Task struct {
 type TaskRequest struct {
 	WorkerType WorkerType
 	ProjectID  string
+	RequestID  string
 	Prompt     string
 	CWD        string
 	Env        map[string]string

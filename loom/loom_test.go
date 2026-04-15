@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -817,4 +818,194 @@ func TestLoomEngine_AgentSurvivesDisconnect(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("agent task did not complete after disconnect")
+}
+
+// ---- CancelAllForProject tests ----
+
+// TestLoomEngine_CancelAllForProject cancels running tasks in project A but not B.
+// Uses a single engine with a single store; both project A and project B tasks are
+// submitted to the same engine. CancelAllForProject("proj-A") should only signal
+// the 3 proj-A cancel funcs, leaving the 2 proj-B goroutines running.
+func TestLoomEngine_CancelAllForProject(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	// A shared blocking worker. The blockingWorker blocks on ctx.Done or done channel.
+	// We'll send on doneAll to unblock all goroutines at cleanup.
+	doneAll := make(chan struct{})
+	worker := &blockingWorker{done: doneAll}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	// Submit 3 tasks to project A.
+	var taskIDsA []string
+	for i := 0; i < 3; i++ {
+		id, err := engine.Submit(context.Background(), TaskRequest{
+			WorkerType: WorkerTypeCLI,
+			ProjectID:  "proj-A-cancel",
+			Prompt:     "block",
+		})
+		if err != nil {
+			t.Fatalf("Submit A[%d]: %v", i, err)
+		}
+		taskIDsA = append(taskIDsA, id)
+	}
+
+	// Submit 2 tasks to project B in the SAME engine/store.
+	var taskIDsB []string
+	for i := 0; i < 2; i++ {
+		id, err := engine.Submit(context.Background(), TaskRequest{
+			WorkerType: WorkerTypeCLI,
+			ProjectID:  "proj-B-cancel",
+			Prompt:     "block",
+		})
+		if err != nil {
+			t.Fatalf("Submit B[%d]: %v", i, err)
+		}
+		taskIDsB = append(taskIDsB, id)
+	}
+
+	// Wait until all 5 tasks are running.
+	allIDs := append(taskIDsA, taskIDsB...)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		running := 0
+		for _, id := range allIDs {
+			task, _ := store.Get(id)
+			if task != nil && task.Status == TaskStatusRunning {
+				running++
+			}
+		}
+		if running == 5 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Verify all 5 are running before cancelling.
+	for _, id := range allIDs {
+		task, err := store.Get(id)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", id, err)
+		}
+		if task.Status != TaskStatusRunning {
+			t.Fatalf("expected task %s to be running before cancel, got %s", id, task.Status)
+		}
+	}
+
+	// CancelAllForProject("proj-A-cancel") must return 3.
+	count, err := engine.CancelAllForProject("proj-A-cancel")
+	if err != nil {
+		t.Fatalf("CancelAllForProject: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("CancelAllForProject returned %d, want 3", count)
+	}
+
+	// Unblock all remaining goroutines so the test can clean up.
+	// proj-A goroutines may already be unblocked via ctx cancellation;
+	// these sends handle any that haven't exited yet and unblock proj-B goroutines.
+	for i := 0; i < 5; i++ {
+		select {
+		case doneAll <- struct{}{}:
+		case <-time.After(200 * time.Millisecond):
+			// Goroutine already exited via context cancellation — that's fine.
+		}
+	}
+}
+
+// TestLoomEngine_CancelAllForProject_Empty returns 0 when no tasks are running.
+func TestLoomEngine_CancelAllForProject_Empty(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	count, err := engine.CancelAllForProject("proj-nonexistent")
+	if err != nil {
+		t.Fatalf("CancelAllForProject: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("CancelAllForProject on empty project: got %d, want 0", count)
+	}
+}
+
+// TestLoomEngine_Submit_WithRequestID verifies RequestID round-trips through Submit→Get.
+func TestLoomEngine_Submit_WithRequestID(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	worker := &testWorker{wtype: WorkerTypeCLI, result: "ok"}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	ctx := WithRequestID(context.Background(), "trace-req-42")
+	taskID, err := engine.Submit(ctx, TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-trace",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	task, err := store.Get(taskID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if task.RequestID != "trace-req-42" {
+		t.Errorf("task.RequestID = %q, want \"trace-req-42\"", task.RequestID)
+	}
+}
+
+// TestLoomEngine_Events_Subscribe verifies that the EventBus returned by Events()
+// delivers lifecycle events to a registered subscriber.
+func TestLoomEngine_Events_Subscribe(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	worker := &testWorker{wtype: WorkerTypeCLI, result: "output"}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	var received []EventType
+	var mu sync.Mutex
+
+	engine.Events().Subscribe(func(e TaskEvent) {
+		mu.Lock()
+		received = append(received, e.Type)
+		mu.Unlock()
+	})
+
+	taskID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-events",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Wait for completion.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		task, _ := store.Get(taskID)
+		if task != nil && task.Status == TaskStatusCompleted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Allow a short window for the final event to propagate.
+	time.Sleep(20 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Minimum expected sequence: Created, Dispatched, Running, Completed.
+	wantContains := []EventType{EventTaskCreated, EventTaskDispatched, EventTaskRunning, EventTaskCompleted}
+	receivedSet := make(map[EventType]bool, len(received))
+	for _, et := range received {
+		receivedSet[et] = true
+	}
+	for _, want := range wantContains {
+		if !receivedSet[want] {
+			t.Errorf("expected event %q not received; got %v", want, received)
+		}
+	}
 }
