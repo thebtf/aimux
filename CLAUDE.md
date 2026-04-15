@@ -11,7 +11,7 @@ Go rewrite of mcp-aimux (TypeScript v2). Single binary, zero external runtime de
 - **MCP SDK:** github.com/mark3labs/mcp-go v0.47.0
 - **Database:** modernc.org/sqlite v1.48.1 (pure Go SQLite, no CGO)
 - **Deep Research:** google.golang.org/genai v1.52.1 (Gemini API)
-- **Engine:** github.com/thebtf/mcp-mux/muxcore v0.18.1 (daemon lifecycle, SessionHandler)
+- **Engine:** github.com/thebtf/mcp-mux/muxcore v0.19.4 (daemon lifecycle, SessionHandler)
 - **Build:** `go build ./cmd/aimux/`
 - **Test:** `go test ./... -timeout 300s`
 

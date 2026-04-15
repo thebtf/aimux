@@ -39,7 +39,7 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-const serverVersion = "3.0.0-dev"
+const serverVersion = "4.0.0"
 
 // aimuxInstructions is delivered to every MCP client on connect via server.WithInstructions().
 // This replaces the need for an external SKILL.md file — the server documents itself.
