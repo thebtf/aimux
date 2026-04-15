@@ -92,13 +92,12 @@ func (b *EventBus) unsubscribe(id uint64) {
 	delete(b.subs, id)
 
 	// Remove from order slice (preserving relative order of remaining entries).
-	newOrder := make([]uint64, 0, len(b.order))
-	for _, oid := range b.order {
-		if oid != id {
-			newOrder = append(newOrder, oid)
+	for i, oid := range b.order {
+		if oid == id {
+			b.order = append(b.order[:i], b.order[i+1:]...)
+			break
 		}
 	}
-	b.order = newOrder
 }
 
 // Emit delivers the event to all subscribers synchronously in registration order.
@@ -115,12 +114,15 @@ func (b *EventBus) Emit(e TaskEvent) {
 	}
 	b.mu.RUnlock()
 
-	bg := context.Background()
+	ctx := context.Background()
+	if e.RequestID != "" {
+		ctx = WithRequestID(ctx, e.RequestID)
+	}
 	for _, sub := range handlers {
 		func(s *subscription) {
 			defer func() {
 				if r := recover(); r != nil {
-					b.logger.ErrorContext(bg, "event bus subscriber panic",
+					b.logger.ErrorContext(ctx, "event bus subscriber panic",
 						"task_id", e.TaskID,
 						"event_type", string(e.Type),
 						"panic", fmt.Sprintf("%v", r),

@@ -224,33 +224,23 @@ func (l *LoomEngine) Events() *EventBus {
 // failTask is a best-effort helper that marks a task as failed in the store
 // and emits EventTaskFailed. Errors from store operations are logged but not
 // returned — the caller is typically already handling a failure path.
-func (l *LoomEngine) failTask(taskID string, fromStatus TaskStatus, errMsg string) {
-	if err := l.store.SetResult(taskID, "", errMsg); err != nil {
-		log.Printf("[loom] failTask: store.SetResult(%s) failed: %v", taskID, err)
+// task is passed directly so the helper avoids an additional DB round-trip and
+// emits a fully-populated TaskEvent regardless of store availability.
+func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) {
+	if err := l.store.SetResult(task.ID, "", errMsg); err != nil {
+		log.Printf("[loom] failTask: store.SetResult(%s) failed: %v", task.ID, err)
 	}
-	if err := l.store.UpdateStatus(taskID, fromStatus, TaskStatusFailed); err != nil {
-		log.Printf("[loom] failTask: store.UpdateStatus(%s, %s→failed) failed: %v", taskID, fromStatus, err)
+	if err := l.store.UpdateStatus(task.ID, fromStatus, TaskStatusFailed); err != nil {
+		log.Printf("[loom] failTask: store.UpdateStatus(%s, %s→failed) failed: %v", task.ID, fromStatus, err)
 	}
-	// Load task to get ProjectID and RequestID for the event.
-	projectID, requestID := l.taskContext(taskID)
 	l.events.Emit(TaskEvent{
 		Type:      EventTaskFailed,
-		TaskID:    taskID,
-		ProjectID: projectID,
-		RequestID: requestID,
+		TaskID:    task.ID,
+		ProjectID: task.ProjectID,
+		RequestID: task.RequestID,
 		Status:    TaskStatusFailed,
 		Timestamp: l.clock.Now().UTC(),
 	})
-}
-
-// taskContext retrieves projectID and requestID for a task from the store.
-// Returns empty strings on error (best-effort for event emission).
-func (l *LoomEngine) taskContext(taskID string) (projectID, requestID string) {
-	t, err := l.store.Get(taskID)
-	if err != nil {
-		return "", ""
-	}
-	return t.ProjectID, t.RequestID
 }
 
 // dispatch runs the worker for a task in a background goroutine.
@@ -292,14 +282,14 @@ func (l *LoomEngine) dispatch(task *Task) {
 	l.mu.RUnlock()
 
 	if !ok {
-		l.failTask(task.ID, TaskStatusDispatched, fmt.Sprintf("no worker registered for type %q", task.WorkerType))
+		l.failTask(task, TaskStatusDispatched, fmt.Sprintf("no worker registered for type %q", task.WorkerType))
 		return
 	}
 
 	// Transition: dispatched → running
 	if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
 		log.Printf("[loom] dispatch: UpdateStatus(dispatched→running) failed for task %s: %v", task.ID, err)
-		l.failTask(task.ID, TaskStatusDispatched, fmt.Sprintf("dispatch: transition to running failed: %v", err))
+		l.failTask(task, TaskStatusDispatched, fmt.Sprintf("dispatch: transition to running failed: %v", err))
 		return
 	}
 
@@ -339,13 +329,13 @@ func (l *LoomEngine) dispatch(task *Task) {
 	latest, err := l.store.Get(task.ID)
 	if err != nil {
 		log.Printf("[loom] dispatch: store.Get(%s) failed: %v", task.ID, err)
-		l.failTask(task.ID, TaskStatusRunning, fmt.Sprintf("dispatch: reload task failed: %v", err))
+		l.failTask(task, TaskStatusRunning, fmt.Sprintf("dispatch: reload task failed: %v", err))
 		return
 	}
 
 	result, execErr := worker.Execute(taskCtx, latest)
 	if execErr != nil {
-		l.failTask(task.ID, TaskStatusRunning, execErr.Error())
+		l.failTask(task, TaskStatusRunning, execErr.Error())
 		return
 	}
 
@@ -357,6 +347,7 @@ func (l *LoomEngine) dispatch(task *Task) {
 			l.logger.InfoContext(context.Background(), "quality gate pass",
 				"task_id", task.ID,
 				"project_id", task.ProjectID,
+				"request_id", task.RequestID,
 			)
 			if err := l.store.SetResult(task.ID, result.Content, ""); err != nil {
 				log.Printf("[loom] dispatch complete: store.SetResult(%s) failed: %v", task.ID, err)
@@ -383,12 +374,13 @@ func (l *LoomEngine) dispatch(task *Task) {
 		l.logger.InfoContext(context.Background(), "quality gate fail",
 			"task_id", task.ID,
 			"project_id", task.ProjectID,
+			"request_id", task.RequestID,
 			"reason", decision.Reason,
 		)
 
 		if !decision.Retry || latest.Retries >= l.maxRetries {
 			// No retry or retries exhausted.
-			l.failTask(task.ID, TaskStatusRunning, fmt.Sprintf("gate rejected: %s", decision.Reason))
+			l.failTask(task, TaskStatusRunning, fmt.Sprintf("gate rejected: %s", decision.Reason))
 			return
 		}
 
@@ -420,13 +412,13 @@ func (l *LoomEngine) dispatch(task *Task) {
 		latest, err = l.store.Get(task.ID)
 		if err != nil {
 			log.Printf("[loom] dispatch retry: store.Get(%s) failed: %v", task.ID, err)
-			l.failTask(task.ID, TaskStatusRunning, fmt.Sprintf("dispatch retry: reload task failed: %v", err))
+			l.failTask(task, TaskStatusRunning, fmt.Sprintf("dispatch retry: reload task failed: %v", err))
 			return
 		}
 
 		result, execErr = worker.Execute(taskCtx, latest)
 		if execErr != nil {
-			l.failTask(task.ID, TaskStatusRunning, execErr.Error())
+			l.failTask(task, TaskStatusRunning, execErr.Error())
 			return
 		}
 	}
