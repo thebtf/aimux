@@ -30,7 +30,9 @@ type ServerConfig struct {
 
 	RateLimitRPS   float64 `yaml:"rate_limit_rps"`
 	RateLimitBurst int     `yaml:"rate_limit_burst"`
-	// AuthToken is read from AIMUX_AUTH_TOKEN env var. Do not hardcode in config files.
+	// AuthToken is the bearer token for HTTP/SSE transport authentication.
+	// Prefer setting AIMUX_AUTH_TOKEN environment variable — env var takes precedence
+	// over this field. If this field is non-empty at startup, a warning is logged.
 	AuthToken string `yaml:"auth_token"`
 
 	Transport TransportConfig `yaml:"transport"`
@@ -158,6 +160,13 @@ type CLIProfile struct {
 	// being retried. Only quota errors trigger cooldown (not transient/fatal).
 	// Default: 300 (5 minutes).
 	CooldownSeconds int `yaml:"cooldown_seconds,omitempty"`
+
+	// EnvPassthrough is the explicit allowlist of environment variable names that this CLI
+	// is permitted to inherit from the parent process environment. Any parent env var
+	// NOT in this list (and not in the OS-essential baseline) is dropped by resolve.BuildEnv.
+	// Set in profile.yaml under env_passthrough:. Do not include secrets — those are
+	// injected via ProjectContext.Env at spawn time.
+	EnvPassthrough []string `yaml:"env_passthrough,omitempty"`
 
 	// ResolvedPath is set at runtime by discovery — full path to the binary.
 	// Not serialized to YAML. Used by executor when binary is not in PATH.
