@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/thebtf/aimux/pkg/loom/deps"
 )
 
@@ -85,14 +84,10 @@ func (l *LoomEngine) RegisterWorker(wt WorkerType, w Worker) {
 // Submit creates a persistent task and dispatches to the appropriate worker.
 // Returns immediately with taskID. Execution happens in a background goroutine.
 func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		id = uuid.New()
-	}
-
-	now := time.Now().UTC()
+	taskID := l.idGen.NewID()
+	now := l.clock.Now().UTC()
 	task := &Task{
-		ID:         id.String(),
+		ID:         taskID,
 		Status:     TaskStatusPending,
 		WorkerType: req.WorkerType,
 		ProjectID:  req.ProjectID,

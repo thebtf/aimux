@@ -5,10 +5,12 @@ import (
 	"time"
 )
 
-// Clock abstracts the current wall-clock time so callers can inject a fake
-// implementation in tests to produce deterministic timestamps.
+// Clock abstracts wall-clock time so callers can inject a fake
+// implementation in tests to produce deterministic timestamps and
+// controllable sleeps.
 type Clock interface {
 	Now() time.Time
+	Sleep(d time.Duration)
 }
 
 // systemClock is the production Clock backed by time.Now.
@@ -17,7 +19,8 @@ type systemClock struct{}
 // SystemClock returns a Clock that delegates to time.Now.
 func SystemClock() Clock { return systemClock{} }
 
-func (systemClock) Now() time.Time { return time.Now() }
+func (systemClock) Now() time.Time             { return time.Now() }
+func (systemClock) Sleep(d time.Duration) { time.Sleep(d) }
 
 // FakeClock is a deterministic Clock for use in tests.
 // Its frozen time is advanced explicitly via Advance.
@@ -42,3 +45,7 @@ func (f *FakeClock) Advance(d time.Duration) {
 	defer f.mu.Unlock()
 	f.now = f.now.Add(d)
 }
+
+// Sleep advances the frozen time by d, satisfying the Clock interface.
+// Unlike real sleep it returns immediately — callers get deterministic time control.
+func (f *FakeClock) Sleep(d time.Duration) { f.Advance(d) }

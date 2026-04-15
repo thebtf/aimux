@@ -756,6 +756,26 @@ func TestNewEngine_ConstructsFromSqlDB(t *testing.T) {
 		t.Error("NewEngine: WithIDGenerator not applied")
 	}
 
+	// Behavioral: verify that Submit uses the injected idGen and clock.
+	taskID, err := engine2.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-di",
+		Prompt:     "check injected deps",
+	})
+	if err != nil {
+		t.Fatalf("Submit with injected deps: %v", err)
+	}
+	if taskID != "id-0" {
+		t.Fatalf("Submit ID = %q; want %q (from SequentialIDGenerator)", taskID, "id-0")
+	}
+	task, err := engine2.Get(taskID)
+	if err != nil {
+		t.Fatalf("Get after Submit: %v", err)
+	}
+	if !task.CreatedAt.Equal(frozen) {
+		t.Fatalf("CreatedAt = %v; want %v (from FakeClock)", task.CreatedAt, frozen)
+	}
+
 	// NewEngine(nil) must return an error (NewTaskStore fails on nil db).
 	if _, err := NewEngine(nil); err == nil {
 		t.Error("NewEngine(nil) should return error; got nil")
