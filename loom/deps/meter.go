@@ -13,6 +13,7 @@ import (
 type Meter interface {
 	Float64Histogram(name string, opts ...otelmetric.Float64HistogramOption) (otelmetric.Float64Histogram, error)
 	Int64Counter(name string, opts ...otelmetric.Int64CounterOption) (otelmetric.Int64Counter, error)
+	Int64Histogram(name string, opts ...otelmetric.Int64HistogramOption) (otelmetric.Int64Histogram, error)
 	Int64UpDownCounter(name string, opts ...otelmetric.Int64UpDownCounterOption) (otelmetric.Int64UpDownCounter, error)
 }
 
@@ -34,6 +35,10 @@ func (n *noopMeter) Float64Histogram(name string, opts ...otelmetric.Float64Hist
 
 func (n *noopMeter) Int64Counter(name string, opts ...otelmetric.Int64CounterOption) (otelmetric.Int64Counter, error) {
 	return n.m.Int64Counter(name, opts...)
+}
+
+func (n *noopMeter) Int64Histogram(name string, opts ...otelmetric.Int64HistogramOption) (otelmetric.Int64Histogram, error) {
+	return n.m.Int64Histogram(name, opts...)
 }
 
 func (n *noopMeter) Int64UpDownCounter(name string, opts ...otelmetric.Int64UpDownCounterOption) (otelmetric.Int64UpDownCounter, error) {

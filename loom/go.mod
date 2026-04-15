@@ -4,6 +4,7 @@ go 1.25.4
 
 require (
 	github.com/google/uuid v1.6.0
+	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/metric v1.43.0
 	modernc.org/sqlite v1.48.1
 )
@@ -14,7 +15,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	go.opentelemetry.io/otel v1.43.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
