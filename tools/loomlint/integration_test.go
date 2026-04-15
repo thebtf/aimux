@@ -23,7 +23,7 @@ import "github.com/thebtf/aimux/pkg/types"
 var _ = "violation"
 `)
 
-	err := Lint(dir, defaultAllowPrefixes)
+	err := Lint(dir, defaultOpts())
 	if err == nil {
 		t.Fatal("Lint returned nil for a file with a forbidden import — boundary enforcement is broken")
 	}
@@ -50,7 +50,7 @@ var _ = sync.Mutex{}
 var _ = uuid.New
 `)
 
-	if err := Lint(dir, defaultAllowPrefixes); err != nil {
+	if err := Lint(dir, defaultOpts()); err != nil {
 		t.Fatalf("Lint returned error for clean directory: %v", err)
 	}
 }
@@ -73,7 +73,7 @@ var _ = workers.NewCLIWorker
 var _ = deps.NoopLogger
 `)
 
-	if err := Lint(dir, defaultAllowPrefixes); err != nil {
+	if err := Lint(dir, defaultOpts()); err != nil {
 		t.Fatalf("Lint rejected allowed loom sub-package: %v", err)
 	}
 }
@@ -97,7 +97,7 @@ import "github.com/thebtf/aimux/pkg/executor"
 var _ = "b"
 `)
 
-	err := Lint(dir, defaultAllowPrefixes)
+	err := Lint(dir, defaultOpts())
 	if err == nil {
 		t.Fatal("expected non-nil error for multiple violations, got nil")
 	}

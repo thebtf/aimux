@@ -6,9 +6,14 @@
 //     stdlib convention (e.g. "fmt", "os", "sync").
 //   - An import is allowed if it starts with any of the configured allow-prefixes.
 //
+// Scope filtering honors spec NFR-1 "core (non-test non-workers code)":
+//   - Test files (*_test.go) are skipped by default (toggle via --include-tests)
+//   - Directories matching --skip-dir patterns are skipped (repeatable; defaults
+//     include "workers" so the subpackage of aimux-specific adapters is excluded)
+//
 // Usage:
 //
-//	go run ./tools/loomlint [--allow <prefix>]... <dir>
+//	go run ./tools/loomlint [--allow <prefix>]... [--skip-dir <name>]... [--include-tests] <dir>
 package main
 
 import (
@@ -30,6 +35,26 @@ var defaultAllowPrefixes = []string{
 	"github.com/google/uuid",
 	"go.opentelemetry.io/otel/metric",
 	"github.com/thebtf/aimux/pkg/loom",
+	"github.com/thebtf/aimux/loom",
+}
+
+// defaultSkipDirs is the Phase 0 set of sub-directories excluded from boundary
+// enforcement. `workers` holds the aimux-specific concrete Worker adapters which
+// by design import aimux/pkg/* and are out of scope for the core closure.
+var defaultSkipDirs = []string{"workers"}
+
+// LintOptions controls how Lint walks the target and classifies imports.
+type LintOptions struct {
+	// AllowPrefixes is the set of non-stdlib import prefixes that are permitted.
+	AllowPrefixes []string
+
+	// IncludeTests, when true, includes *_test.go files in the walk. Default (false)
+	// means test files are skipped — boundary enforcement applies to production code only.
+	IncludeTests bool
+
+	// SkipDirs lists directory names (not paths) that terminate the walk. The walker
+	// compares only the base name of each directory it enters. Matches are case-sensitive.
+	SkipDirs []string
 }
 
 // Violation records a single forbidden import found during the walk.
@@ -60,6 +85,16 @@ func isAllowed(importPath string, allowPrefixes []string) bool {
 	}
 	for _, prefix := range allowPrefixes {
 		if importPath == prefix || strings.HasPrefix(importPath, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// skipDirName reports whether base matches any entry in skipDirs.
+func skipDirName(base string, skipDirs []string) bool {
+	for _, s := range skipDirs {
+		if base == s {
 			return true
 		}
 	}
@@ -98,10 +133,11 @@ func lintFile(filePath string, fset *token.FileSet, allowPrefixes []string) ([]V
 	return violations, nil
 }
 
-// Lint walks target recursively, parsing every .go file, and returns an error
-// listing all forbidden imports. Returns nil when the directory is clean.
-// allowPrefixes is the set of non-stdlib import prefixes that are permitted.
-func Lint(target string, allowPrefixes []string) error {
+// Lint walks target recursively, parsing every production .go file, and returns
+// an error listing all forbidden imports. Returns nil when the directory is clean.
+// Files under any directory matching opts.SkipDirs are excluded. Test files are
+// excluded unless opts.IncludeTests is true.
+func Lint(target string, opts LintOptions) error {
 	fset := token.NewFileSet()
 	var violations []Violation
 
@@ -110,13 +146,21 @@ func Lint(target string, allowPrefixes []string) error {
 			return walkErr
 		}
 		if info.IsDir() {
+			// Skip on directory name match. Do not compare the root target itself
+			// against the skip list — the user explicitly pointed at it.
+			if path != target && skipDirName(info.Name(), opts.SkipDirs) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
+		if !opts.IncludeTests && strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
 
-		fileViolations, err := lintFile(path, fset, allowPrefixes)
+		fileViolations, err := lintFile(path, fset, opts.AllowPrefixes)
 		if err != nil {
 			return err
 		}
@@ -159,17 +203,30 @@ func main() {
 		allowFlags = append(allowFlags, d)
 	}
 
-	// Re-define the flag after seeding defaults so printed usage shows defaults.
+	var skipDirFlags repeatable
+	for _, d := range defaultSkipDirs {
+		skipDirFlags = append(skipDirFlags, d)
+	}
+
+	var includeTests bool
+
 	flag.Var(&allowFlags, "allow", "allow import prefix (repeatable; defaults to Phase 0 set)")
+	flag.Var(&skipDirFlags, "skip-dir", "skip directory name during walk (repeatable; default: workers)")
+	flag.BoolVar(&includeTests, "include-tests", false, "include *_test.go files in the walk (default false — boundary enforcement is production-only)")
 	flag.Parse()
 
 	if flag.NArg() != 1 {
-		fmt.Fprintf(os.Stderr, "usage: loomlint [--allow <prefix>]... <dir>\n")
+		fmt.Fprintf(os.Stderr, "usage: loomlint [--allow <prefix>]... [--skip-dir <name>]... [--include-tests] <dir>\n")
 		os.Exit(2)
 	}
 
 	target := flag.Arg(0)
-	if err := Lint(target, allowFlags); err != nil {
+	opts := LintOptions{
+		AllowPrefixes: allowFlags,
+		IncludeTests:  includeTests,
+		SkipDirs:      skipDirFlags,
+	}
+	if err := Lint(target, opts); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

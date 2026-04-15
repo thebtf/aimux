@@ -15,6 +15,14 @@ func writeGoFile(t *testing.T, dir, name, body string) {
 	}
 }
 
+// defaultOpts returns a LintOptions with Phase 0 defaults for test reuse.
+func defaultOpts() LintOptions {
+	return LintOptions{
+		AllowPrefixes: defaultAllowPrefixes,
+		SkipDirs:      defaultSkipDirs,
+	}
+}
+
 // TestLintCleanDirectory verifies that a directory with only stdlib and
 // allowed-prefix imports passes with nil error.
 func TestLintCleanDirectory(t *testing.T) {
@@ -32,7 +40,7 @@ var _ = fmt.Sprintf
 var _ = uuid.New
 `)
 
-	if err := Lint(dir, defaultAllowPrefixes); err != nil {
+	if err := Lint(dir, defaultOpts()); err != nil {
 		t.Fatalf("expected nil, got: %v", err)
 	}
 }
@@ -48,7 +56,7 @@ import "github.com/thebtf/aimux/pkg/types"
 var _ = "unused"
 `)
 
-	err := Lint(dir, defaultAllowPrefixes)
+	err := Lint(dir, defaultOpts())
 	if err == nil {
 		t.Fatal("expected non-nil error for forbidden import, got nil")
 	}
@@ -70,7 +78,6 @@ func TestLintNestedSubdirViolation(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	// Clean file at root level.
 	writeGoFile(t, root, "ok.go", `package ok
 
 import "fmt"
@@ -78,7 +85,6 @@ import "fmt"
 var _ = fmt.Sprintf
 `)
 
-	// Forbidden import in nested subdir.
 	writeGoFile(t, sub, "nested.go", `package pkg
 
 import "github.com/thebtf/aimux/pkg/executor"
@@ -86,7 +92,7 @@ import "github.com/thebtf/aimux/pkg/executor"
 var _ = "nested violation"
 `)
 
-	err := Lint(root, defaultAllowPrefixes)
+	err := Lint(root, defaultOpts())
 	if err == nil {
 		t.Fatal("expected non-nil error for nested forbidden import, got nil")
 	}
@@ -134,16 +140,12 @@ func TestIsAllowed(t *testing.T) {
 	}{
 		{"fmt", true},
 		{"github.com/google/uuid", true},
-		// Sub-package of an allowed prefix must pass.
 		{"github.com/thebtf/aimux/pkg/loom/workers", true},
 		{"github.com/thebtf/aimux/pkg/loom/deps", true},
-		// Different package under same parent must fail.
 		{"github.com/thebtf/aimux/pkg/types", false},
 		{"github.com/thebtf/aimux/pkg/executor", false},
-		// Otel metric is allowed; its sub-packages too.
 		{"go.opentelemetry.io/otel/metric", true},
 		{"go.opentelemetry.io/otel/metric/noop", true},
-		// Otel SDK (exporter) is not allowed.
 		{"go.opentelemetry.io/otel/sdk/metric", false},
 	}
 	for _, c := range cases {
@@ -165,14 +167,131 @@ import "github.com/thebtf/aimux/pkg/types"
 var _ = "extra allowed"
 `)
 
-	// With default prefixes this must fail.
-	if err := Lint(dir, defaultAllowPrefixes); err == nil {
+	if err := Lint(dir, defaultOpts()); err == nil {
 		t.Fatal("expected failure with default allow-list")
 	}
 
-	// Adding pkg/types as an allowed prefix makes it pass.
-	extended := append(defaultAllowPrefixes, "github.com/thebtf/aimux/pkg/types")
+	extended := defaultOpts()
+	extended.AllowPrefixes = append([]string{}, defaultAllowPrefixes...)
+	extended.AllowPrefixes = append(extended.AllowPrefixes, "github.com/thebtf/aimux/pkg/types")
 	if err := Lint(dir, extended); err != nil {
 		t.Fatalf("expected nil with extended allow-list, got: %v", err)
+	}
+}
+
+// TestLintSkipsTestFilesByDefault verifies that *_test.go files are NOT scanned
+// unless opts.IncludeTests is true. Spec NFR-1 scopes boundary enforcement to
+// production code only — test files legitimately import test drivers and
+// fixtures that are out of scope for the core closure.
+func TestLintSkipsTestFilesByDefault(t *testing.T) {
+	dir := t.TempDir()
+
+	writeGoFile(t, dir, "prod.go", `package only
+
+import "fmt"
+
+var _ = fmt.Sprintf
+`)
+
+	// This test file imports a forbidden driver. It must be ignored by default
+	// because opts.IncludeTests defaults to false.
+	writeGoFile(t, dir, "harness_test.go", `package only
+
+import (
+	"testing"
+	_ "modernc.org/sqlite"
+)
+
+func TestHarness(t *testing.T) { _ = t }
+`)
+
+	opts := defaultOpts()
+	if err := Lint(dir, opts); err != nil {
+		t.Fatalf("expected nil with IncludeTests=false, got: %v", err)
+	}
+
+	// With IncludeTests=true, the same forbidden import is reported.
+	opts.IncludeTests = true
+	err := Lint(dir, opts)
+	if err == nil {
+		t.Fatal("expected violation with IncludeTests=true, got nil")
+	}
+	if !strings.Contains(err.Error(), "modernc.org/sqlite") {
+		t.Errorf("expected violation to mention modernc.org/sqlite, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "harness_test.go") {
+		t.Errorf("expected violation to mention harness_test.go, got: %v", err)
+	}
+}
+
+// TestLintSkipsDirs verifies that directories matching opts.SkipDirs are
+// excluded from the walk. This covers the workers/ subpackage case where
+// aimux-specific adapter code legitimately imports aimux/pkg/*.
+func TestLintSkipsDirs(t *testing.T) {
+	root := t.TempDir()
+	workers := filepath.Join(root, "workers")
+	if err := os.MkdirAll(workers, 0o755); err != nil {
+		t.Fatalf("MkdirAll workers: %v", err)
+	}
+
+	writeGoFile(t, root, "engine.go", `package loom
+
+import "fmt"
+
+var _ = fmt.Sprintf
+`)
+
+	writeGoFile(t, workers, "cli.go", `package workers
+
+import "github.com/thebtf/aimux/pkg/types"
+
+var _ = "adapter"
+`)
+
+	// With default SkipDirs = ["workers"], the workers/cli.go violation is skipped.
+	if err := Lint(root, defaultOpts()); err != nil {
+		t.Fatalf("expected nil with skip-dir workers, got: %v", err)
+	}
+
+	// With empty SkipDirs, the same violation is reported.
+	opts := defaultOpts()
+	opts.SkipDirs = nil
+	err := Lint(root, opts)
+	if err == nil {
+		t.Fatal("expected violation with empty SkipDirs, got nil")
+	}
+	if !strings.Contains(err.Error(), "github.com/thebtf/aimux/pkg/types") {
+		t.Errorf("expected violation to mention pkg/types, got: %v", err)
+	}
+}
+
+// TestLintHonorsTargetAsSkipDirBase verifies that the walker does NOT treat
+// the root target itself as a skippable directory even if its base name matches
+// an entry in SkipDirs. Only sub-directories encountered during the walk should
+// be excluded by name match.
+func TestLintHonorsTargetAsSkipDirBase(t *testing.T) {
+	root := t.TempDir()
+	workers := filepath.Join(root, "workers")
+	if err := os.MkdirAll(workers, 0o755); err != nil {
+		t.Fatalf("MkdirAll workers: %v", err)
+	}
+
+	writeGoFile(t, workers, "cli.go", `package workers
+
+import "github.com/thebtf/aimux/pkg/types"
+
+var _ = "adapter"
+`)
+
+	// Point lint directly at the workers/ directory. Even though its base name
+	// matches SkipDirs, the root target itself must be walked — otherwise the
+	// user's explicit target would silently produce zero results.
+	opts := defaultOpts()
+	err := Lint(workers, opts)
+	if err == nil {
+		t.Fatal("expected violation when lint target base matches skip-dir list, got nil")
+	}
+	if !strings.Contains(err.Error(), "github.com/thebtf/aimux/pkg/types") {
+		t.Errorf("expected violation on explicit target, got: %v", err)
 	}
 }
