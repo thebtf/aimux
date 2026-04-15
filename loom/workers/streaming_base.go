@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/loom/deps"
 )
 
 // ProgressHandler is called synchronously for each line of output captured
@@ -24,8 +25,9 @@ type ProgressHandler func(line string)
 type StreamingBase struct {
 	Inner  loom.Worker
 	OnLine ProgressHandler
-	// Logger is called on ProgressHandler panics if non-nil.
-	Logger func(msg string)
+	// Logger receives error messages on ProgressHandler panics.
+	// If nil, a noop logger is used (panics are silently discarded).
+	Logger deps.Logger
 }
 
 // Execute runs the inner worker and fires ProgressHandler for each line of output.
@@ -57,9 +59,14 @@ func (s *StreamingBase) Type() loom.WorkerType {
 func (s *StreamingBase) deliver(line string) {
 	defer func() {
 		if r := recover(); r != nil {
-			if s.Logger != nil {
-				s.Logger(fmt.Sprintf("streaming base: progress handler panic: %v", r))
+			l := s.Logger
+			if l == nil {
+				l = deps.NoopLogger()
 			}
+			l.ErrorContext(context.Background(), "streaming base: progress handler panic",
+				"module", "loom",
+				"error", fmt.Sprintf("%v", r),
+			)
 		}
 	}()
 	s.OnLine(line)

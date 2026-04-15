@@ -2,10 +2,37 @@ package workers
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/loom/deps"
 )
+
+// captureLogger is a deps.Logger that captures the most recent error message
+// for test assertions.
+type captureLogger struct {
+	mu  sync.Mutex
+	msg string
+}
+
+func (l *captureLogger) DebugContext(_ context.Context, _ string, _ ...any) {}
+func (l *captureLogger) InfoContext(_ context.Context, _ string, _ ...any)  {}
+func (l *captureLogger) WarnContext(_ context.Context, _ string, _ ...any)  {}
+func (l *captureLogger) ErrorContext(_ context.Context, msg string, _ ...any) {
+	l.mu.Lock()
+	l.msg = msg
+	l.mu.Unlock()
+}
+
+func (l *captureLogger) lastMsg() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.msg
+}
+
+// ensure captureLogger satisfies deps.Logger at compile time.
+var _ deps.Logger = (*captureLogger)(nil)
 
 // stubWorker is a minimal loom.Worker that returns a fixed result.
 type stubWorker struct {
@@ -51,7 +78,7 @@ func TestStreamingBase_LinesDeliveredInOrder(t *testing.T) {
 func TestStreamingBase_PanicIsolation(t *testing.T) {
 	inner := &stubWorker{result: &loom.WorkerResult{Content: "line1\nline2\nline3"}}
 	var got []string
-	var loggedPanic string
+	cl := &captureLogger{}
 	s := &StreamingBase{
 		Inner: inner,
 		OnLine: func(line string) {
@@ -60,7 +87,7 @@ func TestStreamingBase_PanicIsolation(t *testing.T) {
 			}
 			got = append(got, line)
 		},
-		Logger: func(msg string) { loggedPanic = msg },
+		Logger: cl,
 	}
 	task := &loom.Task{ID: "s2"}
 	result, err := s.Execute(context.Background(), task)
@@ -82,8 +109,8 @@ func TestStreamingBase_PanicIsolation(t *testing.T) {
 		}
 	}
 	// Panic should have been logged.
-	if loggedPanic == "" {
-		t.Error("expected panic to be logged")
+	if cl.lastMsg() == "" {
+		t.Error("expected panic to be logged via deps.Logger")
 	}
 }
 
