@@ -61,7 +61,7 @@ func (echoResolver) Resolve(_ context.Context, task *loom.Task) (workers.Subproc
     }
     return workers.SubprocessSpawn{
         Command: "sh",
-        Args:    []string{"-c", "echo " + task.Prompt},
+        Args:    []string{"-c", "echo \"$1\"", "--", task.Prompt},
     }, nil
 }
 
@@ -362,9 +362,8 @@ func wireChain(engine *loom.LoomEngine) {
 
 **Critical:** Submit inside an event handler MUST be in a goroutine. The event
 handler is called synchronously on the dispatch goroutine. Calling Submit inside
-the handler directly creates a synchronous call chain on the same goroutine —
-the second Submit will block waiting for the first dispatch goroutine to
-finish, causing a deadlock.
+the handler directly can cause a deadlock on the event bus's internal locks if
+other goroutines are concurrently subscribing.
 
 ---
 

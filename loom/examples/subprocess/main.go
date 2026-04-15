@@ -29,7 +29,7 @@ func (promptEchoResolver) Resolve(_ context.Context, task *loom.Task) (workers.S
 	}
 	return workers.SubprocessSpawn{
 		Command: "sh",
-		Args:    []string{"-c", "echo " + task.Prompt},
+		Args:    []string{"-c", "echo \"$1\"", "--", task.Prompt},
 	}, nil
 }
 

@@ -25,8 +25,8 @@ type Worker interface {
   or the task's `Timeout` expires.
 - The worker MUST NOT retain `task` beyond the call — the engine may reuse or
   deallocate the struct after `Execute` returns.
-- `WorkerResult.Content` MUST be non-empty for the quality gate to accept. An
-  empty string triggers an automatic retry.
+- `WorkerResult.Content` MUST be non-empty (after trimming whitespace) for the
+  quality gate to accept. Empty or whitespace-only strings trigger an automatic retry.
 - `WorkerResult.Metadata` is optional. It is persisted and returned by `Get`.
 - Returning a non-nil error marks the task `failed` immediately (no retry).
 
