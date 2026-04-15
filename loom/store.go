@@ -7,6 +7,25 @@ import (
 	"time"
 )
 
+func init() {
+	// Safety: MarkCrashed bulk-updates rows to failed_crash via raw SQL (bypassing
+	// UpdateStatus) for performance during startup crash recovery. This init assertion
+	// ensures the state machine still permits these transitions so the raw SQL cannot
+	// silently diverge from CanTransitionTo validation if validTransitions is updated.
+	for _, from := range []TaskStatus{TaskStatusDispatched, TaskStatusRunning} {
+		allowed := false
+		for _, to := range validTransitions[from] {
+			if to == TaskStatusFailedCrash {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			panic(fmt.Sprintf("loom store: MarkCrashed assumes %s→failed_crash is valid but state machine disagrees", from))
+		}
+	}
+}
+
 const createTasksTable = `
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -222,6 +241,12 @@ func (s *TaskStore) IncrementRetries(id string) error {
 
 // MarkCrashed sets status='failed_crash' for all dispatched or running tasks.
 // Returns the number of tasks marked.
+//
+// Raw SQL is used intentionally: on daemon startup this bulk-updates every
+// in-flight row in a single statement, which is both simpler and faster than
+// iterating with UpdateStatus. The init() assertion above ensures the state
+// machine continues to permit these transitions so the raw SQL can never
+// silently diverge from CanTransitionTo validation.
 func (s *TaskStore) MarkCrashed() (int, error) {
 	res, err := s.db.Exec(
 		`UPDATE tasks SET status = 'failed_crash' WHERE status IN ('dispatched', 'running')`,
