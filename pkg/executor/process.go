@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,7 +20,8 @@ type ProcessHandle struct {
 	ExitCode  int
 	StartedAt time.Time
 
-	done    chan error // internal writable channel
+	done    chan error    // internal writable channel
+	exited  atomic.Bool  // set to true before Done is signalled; safe for concurrent reads
 	mu      sync.Mutex
 	cleaned bool
 }
@@ -82,6 +84,9 @@ func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
 			h.ExitCode = -1
 		}
 		h.mu.Unlock()
+		// Mark exited BEFORE signalling Done so that IsAlive() observes the
+		// post-exit state as soon as <-h.Done unblocks (happens-before guarantee).
+		h.exited.Store(true)
 		done <- waitErr
 		close(done)
 	}()
@@ -112,16 +117,13 @@ func (pm *ProcessManager) Kill(h *ProcessHandle) {
 }
 
 // IsAlive returns true if the process has not yet exited.
+// It reads h.exited, which is set atomically before Done is signalled,
+// guaranteeing that IsAlive returns false as soon as <-h.Done unblocks.
 func (pm *ProcessManager) IsAlive(h *ProcessHandle) bool {
 	if h == nil {
 		return false
 	}
-	select {
-	case <-h.Done:
-		return false
-	default:
-		return true
-	}
+	return !h.exited.Load()
 }
 
 // Cleanup removes a handle from tracking and marks it as cleaned up.
