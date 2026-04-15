@@ -48,7 +48,10 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 
 	cmd := exec.Command(args.Command, args.Args...)
 	cmd.Dir = args.CWD
-	if len(args.Env) > 0 {
+	switch {
+	case len(args.EnvList) > 0:
+		cmd.Env = args.EnvList
+	case len(args.Env) > 0:
 		cmd.Env = mergeEnv(args.Env)
 	}
 	if args.Stdin != "" {
@@ -313,7 +316,10 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 	cmd := exec.Command(args.Command, args.Args...)
 	cmd.Dir = args.CWD
 
-	if len(args.Env) > 0 {
+	switch {
+	case len(args.EnvList) > 0:
+		cmd.Env = args.EnvList
+	case len(args.Env) > 0:
 		cmd.Env = mergeEnv(args.Env)
 	}
 

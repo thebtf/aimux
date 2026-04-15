@@ -336,8 +336,11 @@ func (w *WorkflowStrategy) interpolate(s, input string, results map[string]*Step
 	s = strings.ReplaceAll(s, "{{input}}", input)
 
 	for id, sr := range results {
-		s = strings.ReplaceAll(s, "{{"+id+".content}}", sr.Content)
-		s = strings.ReplaceAll(s, "{{"+id+".status}}", sr.Status)
+		// Escape {{ in step results to prevent downstream template injection.
+		escContent := strings.ReplaceAll(sr.Content, "{{", "\\{\\{")
+		escStatus := strings.ReplaceAll(sr.Status, "{{", "\\{\\{")
+		s = strings.ReplaceAll(s, "{{"+id+".content}}", escContent)
+		s = strings.ReplaceAll(s, "{{"+id+".status}}", escStatus)
 	}
 	return s
 }

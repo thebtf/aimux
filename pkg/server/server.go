@@ -152,10 +152,15 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	// Initialize rate limiter — per-tool token bucket.
 	s.rateLimiter = ratelimit.New(cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
 
-	// Initialize auth token — config takes precedence over env var.
-	s.authToken = cfg.Server.AuthToken
+	// Initialize auth token — env var takes precedence over YAML config.
+	// Reading secrets from env var is preferred; YAML auth_token is supported
+	// for convenience but emits a warning to discourage committing secrets.
+	s.authToken = os.Getenv("AIMUX_AUTH_TOKEN")
 	if s.authToken == "" {
-		s.authToken = os.Getenv("AIMUX_AUTH_TOKEN")
+		s.authToken = cfg.Server.AuthToken
+	}
+	if cfg.Server.AuthToken != "" {
+		log.Warn("server: auth_token loaded from YAML — prefer AIMUX_AUTH_TOKEN env var for secrets")
 	}
 
 	// Initialize SQLite persistence and WAL recovery

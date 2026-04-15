@@ -1816,6 +1816,7 @@ func TestIsLocalhostAddr(t *testing.T) {
 func TestHandleAudit_Async(t *testing.T) {
 	srv := testServer(t)
 	req := makeRequest("audit", map[string]any{
+		"cwd":   t.TempDir(),
 		"mode":  "standard",
 		"async": true,
 	})
@@ -1831,6 +1832,22 @@ func TestHandleAudit_Async(t *testing.T) {
 	}
 	if data["status"] != "running" {
 		t.Errorf("status = %v, want running", data["status"])
+	}
+}
+
+func TestHandleAudit_RejectsEmptyCWD(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("audit", map[string]any{
+		"mode":  "standard",
+		"async": true,
+	})
+
+	result, err := srv.handleAudit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAudit empty cwd: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for audit with empty cwd (SEC-HIGH-3)")
 	}
 }
 

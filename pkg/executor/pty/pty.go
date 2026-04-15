@@ -50,7 +50,10 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 
 	cmd := exec.Command(args.Command, args.Args...)
 	cmd.Dir = args.CWD
-	if len(args.Env) > 0 {
+	switch {
+	case len(args.EnvList) > 0:
+		cmd.Env = args.EnvList
+	case len(args.Env) > 0:
 		cmd.Env = os.Environ()
 		for k, v := range args.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)

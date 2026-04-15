@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -13,6 +16,29 @@ import (
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+// validateCWD checks that cwd is a non-empty absolute path that exists on disk
+// and contains no control characters that could enable path injection.
+func validateCWD(cwd string) error {
+	if cwd == "" {
+		return fmt.Errorf("cwd must not be empty")
+	}
+	if !filepath.IsAbs(cwd) {
+		return fmt.Errorf("cwd must be an absolute path, got %q", cwd)
+	}
+	// Reject control characters that could be used in injection attacks.
+	if strings.ContainsAny(cwd, "\x00\n\r") {
+		return fmt.Errorf("cwd contains invalid characters")
+	}
+	info, err := os.Stat(cwd)
+	if err != nil {
+		return fmt.Errorf("cwd %q: %w", cwd, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("cwd %q is not a directory", cwd)
+	}
+	return nil
+}
 
 func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	topic, err := request.RequireString("topic")
@@ -42,7 +68,7 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 			WorkerType: loom.WorkerTypeOrchestrator,
 			ProjectID:  projectIDFromContext(ctx),
 			Prompt:     topic,
-			Env:        sessionEnvFromContext(ctx),
+			Env:        FilterSensitive(sessionEnvFromContext(ctx)),
 			Metadata: map[string]any{
 				"strategy":  "consensus",
 				"clis":      params.CLIs,
@@ -112,7 +138,7 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 			WorkerType: loom.WorkerTypeOrchestrator,
 			ProjectID:  projectIDFromContext(ctx),
 			Prompt:     topic,
-			Env:        sessionEnvFromContext(ctx),
+			Env:        FilterSensitive(sessionEnvFromContext(ctx)),
 			Metadata: map[string]any{
 				"strategy":  "debate",
 				"clis":      params.CLIs,
@@ -261,11 +287,14 @@ func (s *Server) findDialogTurnHistory(sessionID string) []byte {
 
 func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	cwd := request.GetString("cwd", "")
+	if err := validateCWD(cwd); err != nil {
+		return mcp.NewToolResultError("invalid cwd: " + err.Error()), nil
+	}
 	mode := request.GetString("mode", "standard")
 	async := request.GetBool("async", true)
 
 	params := types.StrategyParams{
-		Prompt: fmt.Sprintf("Audit codebase at %s", cwd),
+		Prompt: fmt.Sprintf("Audit codebase at %q", cwd),
 		CWD:    cwd,
 		Extra: map[string]any{
 			"mode":              mode,
@@ -281,7 +310,7 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 			ProjectID:  projectIDFromContext(ctx),
 			Prompt:     params.Prompt,
 			CWD:        cwd,
-			Env:        sessionEnvFromContext(ctx),
+			Env:        FilterSensitive(sessionEnvFromContext(ctx)),
 			Metadata: map[string]any{
 				"strategy": "audit",
 				"extra":    params.Extra,
@@ -359,7 +388,7 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 		taskID, loomErr := s.loom.Submit(ctx, loom.TaskRequest{
 			WorkerType: loom.WorkerTypeOrchestrator,
 			ProjectID:  projectIDFromContext(ctx),
-			Env:        sessionEnvFromContext(ctx),
+			Env:        FilterSensitive(sessionEnvFromContext(ctx)),
 			Metadata: map[string]any{
 				"strategy": "workflow",
 				"extra":    params.Extra,

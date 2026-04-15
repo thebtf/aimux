@@ -35,3 +35,7 @@ stdin_threshold: 6000
 read_only_flags: ["--approval-mode", "plan"]
 
 headless_flags: ["-y"]
+
+env_passthrough:
+  - GEMINI_API_KEY
+  - GOOGLE_API_KEY

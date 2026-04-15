@@ -148,7 +148,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 				ProjectID:  projectIDFromContext(ctx),
 				Prompt:     prompt,
 				CWD:        cwd,
-				Env:        sessionEnvFromContext(ctx),
+				Env:        FilterSensitive(sessionEnvFromContext(ctx)),
 				CLI:        cli,
 				Model:      model,
 				Effort:     effort,
@@ -237,7 +237,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		Command:        resolve.CommandBinary(profile.Command.Base),
 		Args:           resolve.BuildPromptArgs(profile, model, effort, readOnly, prompt),
 		CWD:            cwd,
-		Env:            sessionEnv,
+		EnvList:        resolve.BuildEnv(profile, sessionEnv),
 		TimeoutSeconds: timeoutSec,
 	}
 
@@ -255,7 +255,7 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			ProjectID:  projectIDFromContext(ctx),
 			Prompt:     prompt,
 			CWD:        cwd,
-			Env:        sessionEnvFromContext(ctx),
+			Env:        FilterSensitive(sessionEnvFromContext(ctx)),
 			CLI:        cli,
 			Role:       role,
 			Model:      model,

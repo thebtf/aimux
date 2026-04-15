@@ -36,6 +36,7 @@ type Limiter struct {
 
 // New creates a rate limiter with the given rate and burst.
 // If rps <= 0, DefaultRPS is used. If burst <= 0, DefaultBurst is used.
+// See TECHNICAL_DEBT.md "Rate Limiter Not Wired Into Tool Handlers" for wiring status.
 func New(rps float64, burst int) *Limiter {
 	if rps <= 0 {
 		rps = DefaultRPS
