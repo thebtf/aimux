@@ -25,11 +25,20 @@ type HTTPResolver interface {
 }
 
 // HTTPBase is a composable base for workers that make HTTP calls with retry.
+//
+// Zero value: no retries, default http.Client (30s timeout).
+// Use NewHTTPBase to get sensible defaults (2 retries, 500ms backoff).
 type HTTPBase struct {
 	Resolver   HTTPResolver
 	Client     *http.Client // optional, defaults to &http.Client{Timeout: 30s}
-	MaxRetries int          // 0 = no retry, default 2
-	BackoffMS  int          // base backoff in ms, default 500
+	MaxRetries int          // number of retries after the first attempt; 0 = no retry
+	BackoffMS  int          // base backoff in ms between retries; 0 = no backoff delay
+}
+
+// NewHTTPBase returns an HTTPBase with resolver r and sensible defaults:
+// MaxRetries=2, BackoffMS=500.
+func NewHTTPBase(r HTTPResolver) *HTTPBase {
+	return &HTTPBase{Resolver: r, MaxRetries: 2, BackoffMS: 500}
 }
 
 // Run executes the HTTP request with exponential backoff retry for transient errors.
@@ -46,20 +55,16 @@ func (b *HTTPBase) Run(ctx context.Context, task *loom.Task) (*loom.WorkerResult
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	maxRetries := b.MaxRetries
-	if maxRetries == 0 {
-		maxRetries = 2
-	}
 	backoffMS := b.BackoffMS
-	if backoffMS == 0 {
-		backoffMS = 500
-	}
 
 	start := time.Now()
 	var lastErr error
 	var lastResp *http.Response
 	var lastBody []byte
+	var actualAttempts int
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		actualAttempts++
 		if attempt > 0 {
 			delay := time.Duration(backoffMS*(1<<(attempt-1))) * time.Millisecond
 			select {
@@ -109,7 +114,7 @@ func (b *HTTPBase) Run(ctx context.Context, task *loom.Task) (*loom.WorkerResult
 		Content: string(lastBody),
 		Metadata: map[string]any{
 			"status_code": lastResp.StatusCode,
-			"attempts":    maxRetries + 1,
+			"attempts":    actualAttempts,
 		},
 		DurationMS: duration,
 	}

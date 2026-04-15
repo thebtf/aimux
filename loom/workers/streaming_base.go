@@ -1,7 +1,6 @@
 package workers
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"strings"
@@ -37,9 +36,13 @@ func (s *StreamingBase) Execute(ctx context.Context, task *loom.Task) (*loom.Wor
 		return result, err
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(result.Content))
-	for scanner.Scan() {
-		s.deliver(scanner.Text())
+	lines := strings.Split(result.Content, "\n")
+	for i, line := range lines {
+		// Skip a trailing empty string produced by a final newline.
+		if i == len(lines)-1 && line == "" {
+			break
+		}
+		s.deliver(line)
 	}
 	return result, err
 }

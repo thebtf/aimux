@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
@@ -109,11 +110,10 @@ func (execRunner) Run(ctx context.Context, spawn SubprocessSpawn) (string, int, 
 		cmd.Dir = spawn.CWD
 	}
 	if len(spawn.Env) > 0 {
-		env := make([]string, 0, len(spawn.Env))
+		cmd.Env = os.Environ()
 		for k, v := range spawn.Env {
-			env = append(env, k+"="+v)
+			cmd.Env = append(cmd.Env, k+"="+v)
 		}
-		cmd.Env = env
 	}
 	if spawn.Stdin != "" {
 		cmd.Stdin = bytes.NewBufferString(spawn.Stdin)

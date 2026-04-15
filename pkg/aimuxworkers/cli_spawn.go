@@ -86,6 +86,10 @@ func (r *cliRunner) Run(ctx context.Context, spawn workers.SubprocessSpawn) (str
 		}
 	}
 	// Fallback: reconstruct from SubprocessSpawn if Meta is absent (e.g. in tests).
+	// WARNING: This loses TimeoutSeconds, InactivitySeconds, CompletionPattern, and
+	// OnOutput from the original types.SpawnArgs. Only suitable for unit tests with
+	// minimal SubprocessSpawn; in production the Meta key is always populated by
+	// cliSpawnResolver.
 	if args.Command == "" {
 		args = types.SpawnArgs{
 			Command: spawn.Command,
