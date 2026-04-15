@@ -25,8 +25,8 @@ func TestRequestIDFrom_MissingKey_ReturnsEmpty(t *testing.T) {
 }
 
 func TestRequestIDFrom_WrongType_ReturnsEmpty(t *testing.T) {
-	// Inject an integer under RequestIDKey — should not panic, just return "".
-	ctx := context.WithValue(context.Background(), RequestIDKey, 42)
+	// Inject an integer under RequestIDKey{} — should not panic, just return "".
+	ctx := context.WithValue(context.Background(), RequestIDKey{}, 42)
 	got := RequestIDFrom(ctx)
 	if got != "" {
 		t.Errorf("RequestIDFrom with wrong type: got %q, want \"\"", got)
