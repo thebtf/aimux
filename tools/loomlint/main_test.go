@@ -16,10 +16,11 @@ func writeGoFile(t *testing.T, dir, name, body string) {
 }
 
 // defaultOpts returns a LintOptions with Phase 0 defaults for test reuse.
+// Copies are returned so that any append in a test does not mutate the package-level globals.
 func defaultOpts() LintOptions {
 	return LintOptions{
-		AllowPrefixes: defaultAllowPrefixes,
-		SkipDirs:      defaultSkipDirs,
+		AllowPrefixes: append([]string(nil), defaultAllowPrefixes...),
+		SkipDirs:      append([]string(nil), defaultSkipDirs...),
 	}
 }
 
