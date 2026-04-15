@@ -53,19 +53,34 @@ func BuildEnv(profile *config.CLIProfile, extra map[string]string) []string {
 		}
 	}
 
-	// Apply extra overrides (last-write wins per key, case-insensitive dedup).
-	for k, v := range extra {
-		upper := strings.ToUpper(k)
-		// Remove any existing entry for this key.
-		filtered := result[:0:len(result)]
+	// Apply extra overrides (case-insensitive dedup, O(N+M)).
+	// Normalise the extra map into uppercase key → "key=value" string.
+	// If two keys in extra differ only by case, the last one encountered during
+	// Go map iteration wins (non-deterministic but benign — callers should not
+	// pass case-colliding keys).
+	if len(extra) > 0 {
+		overrides := make(map[string]string, len(extra))
+		for k, v := range extra {
+			overrides[strings.ToUpper(k)] = k + "=" + v
+		}
+
+		// Single pass: drop any result entries whose key is overridden.
+		filtered := make([]string, 0, len(result))
 		for _, kv := range result {
 			idx := strings.IndexByte(kv, '=')
-			if idx >= 0 && strings.ToUpper(kv[:idx]) == upper {
-				continue
+			if idx >= 0 {
+				if _, exists := overrides[strings.ToUpper(kv[:idx])]; exists {
+					continue
+				}
 			}
 			filtered = append(filtered, kv)
 		}
-		result = append(filtered, k+"="+v)
+
+		// Append override values.
+		for _, kv := range overrides {
+			filtered = append(filtered, kv)
+		}
+		return filtered
 	}
 
 	return result
