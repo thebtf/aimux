@@ -15,7 +15,7 @@ import (
 
 // ServeStdio starts the MCP server on stdio transport using os.Stdin/os.Stdout.
 func (s *Server) ServeStdio() error {
-	s.log.Info("MCP server starting on stdio (aimux v%s)", serverVersion)
+	s.log.Info("MCP server starting on stdio (aimux v%s)", Version)
 	return server.ServeStdio(s.mcp)
 }
 
@@ -33,7 +33,7 @@ func (s *Server) SessionHandler() muxcore.SessionHandler {
 // from the engine's IPC layer instead of hardcoded os.Stdin/os.Stdout.
 func (s *Server) StdioHandler() func(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	return func(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
-		s.log.Info("MCP server starting on engine stdio (aimux v%s)", serverVersion)
+		s.log.Info("MCP server starting on engine stdio (aimux v%s)", Version)
 		stdioSrv := server.NewStdioServer(s.mcp)
 		return stdioSrv.Listen(ctx, stdin, stdout)
 	}
@@ -43,7 +43,7 @@ func (s *Server) StdioHandler() func(ctx context.Context, stdin io.Reader, stdou
 // If authToken is configured, all requests must carry a valid Bearer token.
 func (s *Server) ServeSSE(addr string) error {
 	addr = ensureLocalhostBinding(addr)
-	s.log.Info("MCP server starting on SSE at %s (aimux v%s)", addr, serverVersion)
+	s.log.Info("MCP server starting on SSE at %s (aimux v%s)", addr, Version)
 	if !isLocalhostAddr(addr) {
 		s.log.Warn("SSE transport bound to non-localhost address %s", addr)
 	}
@@ -69,7 +69,7 @@ func (s *Server) ServeSSE(addr string) error {
 // If authToken is configured, all requests must carry a valid Bearer token.
 func (s *Server) ServeHTTP(addr string, opts ...server.StreamableHTTPOption) error {
 	addr = ensureLocalhostBinding(addr)
-	s.log.Info("MCP server starting on HTTP at %s (aimux v%s)", addr, serverVersion)
+	s.log.Info("MCP server starting on HTTP at %s (aimux v%s)", addr, Version)
 	if !isLocalhostAddr(addr) {
 		s.log.Warn("HTTP transport bound to non-localhost address %s", addr)
 	}

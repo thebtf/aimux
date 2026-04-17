@@ -17,8 +17,6 @@ import (
 	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
-const version = "3.0.0-dev"
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "aimux: %v\n", err)
@@ -41,7 +39,7 @@ func run() error {
 	}
 	defer log.Close()
 
-	log.Info("aimux v%s starting", version)
+	log.Info("aimux v%s starting", aimuxServer.Version)
 
 	// Discover CLIs
 	registry := driver.NewRegistry(cfg.CLIProfiles)
@@ -74,10 +72,10 @@ func run() error {
 
 	switch transport {
 	case "sse":
-		log.Info("aimux v%s ready — serving MCP on SSE at %s", version, port)
+		log.Info("aimux v%s ready — serving MCP on SSE at %s", aimuxServer.Version, port)
 		return srv.ServeSSE(port)
 	case "http", "streamablehttp":
-		log.Info("aimux v%s ready — serving MCP on HTTP at %s", version, port)
+		log.Info("aimux v%s ready — serving MCP on HTTP at %s", aimuxServer.Version, port)
 		return srv.ServeHTTP(port)
 	default:
 		// Engine mode is DEFAULT for stdio transport.
@@ -85,7 +83,7 @@ func run() error {
 		// otherwise → client/shim mode (spawn daemon, bridge stdio↔IPC transparently).
 		// AIMUX_NO_ENGINE=1 bypasses for debugging.
 		if os.Getenv("AIMUX_NO_ENGINE") == "1" {
-			log.Info("aimux v%s ready — serving MCP on stdio (engine bypassed)", version)
+			log.Info("aimux v%s ready — serving MCP on stdio (engine bypassed)", aimuxServer.Version)
 			return srv.ServeStdio()
 		}
 
@@ -98,7 +96,7 @@ func run() error {
 			engineName = "aimux"
 		}
 
-		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", version, engineName)
+		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 		eng, engErr := engine.New(engine.Config{
