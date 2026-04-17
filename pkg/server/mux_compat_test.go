@@ -3,6 +3,8 @@ package server_test
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/thebtf/aimux/pkg/server"
 )
 
 // TestMuxCompatibility_InitializeResponse verifies the MCP initialize response
@@ -23,7 +25,7 @@ func TestMuxCompatibility_InitializeResponse(t *testing.T) {
 		},
 		"serverInfo": map[string]any{
 			"name":    "aimux",
-			"version": "3.0.0-dev",
+			"version": server.Version,
 		},
 	}
 

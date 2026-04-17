@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] - 2026-04-17
+
+Patch release fixing a version-constant split missed in v4.0.0. Introduces a single
+source of truth for the aimux version string.
+
+### Fixed
+
+- **Version mismatch between log lines and MCP handshake** — `cmd/aimux/main.go` had
+  a separate `const version = "3.0.0-dev"` that was not bumped when
+  `pkg/server.serverVersion` was updated to `"4.0.0"` during the v4.0.0 release.
+  Result: binaries compiled from the v4.0.0 commit responded with
+  `serverInfo.version: "4.0.0"` in the MCP handshake (from `server.serverVersion`)
+  but logged `aimux v3.0.0-dev starting` on startup (from `main.version`).
+  Observable via `~/.config/aimux/aimux.log` tail. Diagnosed during a production
+  delegation hang investigation where the bogus log version gave the false
+  impression that an old binary was running.
+
+### Changed
+
+- **Single source of truth for version** — `pkg/server.serverVersion` renamed to
+  exported `pkg/server.Version` (`pkg/server/server.go:42`). `cmd/aimux/main.go`
+  removes its own `const version` and references `aimuxServer.Version` directly.
+  `pkg/server/mux_compat_test.go` fixture now reads `server.Version` instead of
+  a hardcoded string. All 11 prior `serverVersion` call sites (server.go: 6,
+  server_transport.go: 4, mux_compat_test.go: 1) and all 6 `version` log sites
+  in main.go now resolve to the same constant. Future releases touch exactly
+  one line (`pkg/server/server.go:42`) and both handshake + logs + test fixture
+  update atomically.
+- **`Version` bumped to `"4.0.1"`** for this patch release.
+
+### Verification
+
+- `go build ./...` PASS, `go vet ./...` PASS.
+- `go test ./... -timeout 300s` PASS (27 packages + 137s e2e suite).
+- Smoke test: freshly built binary responds with `"version":"4.0.1"` in MCP
+  initialize handshake AND logs `aimux v4.0.1 ready` / `MCP server starting on
+  stdio (aimux v4.0.1)` in `~/.config/aimux/aimux.log` — confirming SSOT bound
+  all three surfaces.
+
+[4.0.1]: https://github.com/thebtf/aimux/compare/v4.0.0...v4.0.1
+
 ## [4.0.0] - 2026-04-16
 
 Major release. Establishes `loom` as a standalone Go module and closes the 2026-04-15

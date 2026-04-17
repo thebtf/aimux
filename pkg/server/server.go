@@ -39,7 +39,11 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-const serverVersion = "4.0.0"
+// Version is the canonical aimux version string. Used in MCP serverInfo handshake,
+// transport log lines, status tool, and updater checks. Single source of truth —
+// cmd/aimux/main.go references this value directly to keep log lines and MCP
+// handshake consistent across binary and transport layers.
+const Version = "4.0.1"
 
 // aimuxInstructions is delivered to every MCP client on connect via server.WithInstructions().
 // This replaces the need for an external SKILL.md file — the server documents itself.
@@ -332,7 +336,7 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	// Create MCP server with capabilities
 	s.mcp = server.NewMCPServer(
 		"aimux",
-		serverVersion,
+		Version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
@@ -1063,7 +1067,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	running := s.jobs.ListRunning()
 	health := map[string]any{
-		"version":        serverVersion,
+		"version":        Version,
 		"total_sessions": s.sessions.Count(),
 		"running_jobs":   len(running),
 		"metrics":        s.metrics.Snapshot(),
@@ -1138,19 +1142,19 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 
 	switch action {
 	case "check":
-		release, checkErr := updater.CheckUpdate(ctx, serverVersion)
+		release, checkErr := updater.CheckUpdate(ctx, Version)
 		if checkErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("update check failed: %v", checkErr)), nil
 		}
 		if release == nil {
 			return marshalToolResult(map[string]any{
 				"status":          "up_to_date",
-				"current_version": serverVersion,
+				"current_version": Version,
 			})
 		}
 		return marshalToolResult(map[string]any{
 			"status":          "update_available",
-			"current_version": serverVersion,
+			"current_version": Version,
 			"latest_version":  release.Version,
 			"asset_name":      release.AssetName,
 			"release_notes":   release.ReleaseNotes,
@@ -1158,14 +1162,14 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		})
 
 	case "apply":
-		release, applyErr := updater.ApplyUpdate(ctx, serverVersion)
+		release, applyErr := updater.ApplyUpdate(ctx, Version)
 		if applyErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("update failed: %v", applyErr)), nil
 		}
 		if release == nil {
 			return marshalToolResult(map[string]any{
 				"status":          "up_to_date",
-				"current_version": serverVersion,
+				"current_version": Version,
 			})
 		}
 		// Signal deferred restart via SessionHandler.
@@ -1174,7 +1178,7 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		}
 		return marshalToolResult(map[string]any{
 			"status":          "updated",
-			"previous_version": serverVersion,
+			"previous_version": Version,
 			"new_version":     release.Version,
 			"message":         "Binary updated. Daemon will restart when all CC sessions disconnect.",
 		})
