@@ -45,8 +45,9 @@ Patch release: muxcore dep bump to v0.20.0 and aimux internal skill prompt fixes
 - Produced internal audit report `.agent/reports/aimux-prompts-audit-2026-04-18.md`
   with 18 findings across 6 categories of internal prompts, CLI profiles, role
   prompts, MCP skill prompts, agent registry, and runtime guidance strings. Three
-  findings (A1, A2, A3b) are fixed in this release; the remaining 15 are tracked
-  as follow-ups.
+  findings are fixed in this release (A1: critic pattern enum, A2: workflow
+  poll-wrapper, A3b: consensus `issue=` field + registry consistency — all via
+  #89); the remaining 15 are tracked as follow-ups.
 
 ## [4.0.1] - 2026-04-17
 
