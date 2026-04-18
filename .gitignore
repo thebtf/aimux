@@ -25,6 +25,7 @@ Thumbs.db
 .agent/
 .serena/
 .engram-project
+.claude/
 aimux.exe~
 
 # Test artifacts
