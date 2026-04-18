@@ -80,7 +80,7 @@ skills:
     tools: [workflow, exec, think]
     phases: [analyze-goal, generate-pipeline, execute]
     related: [delegate, guide]
-    fragments: [delegation-tree]
+    fragments: [delegation-tree, poll-wrapper-subagent]
     escalates_to: [audit]
     receives_from: [delegate]
 

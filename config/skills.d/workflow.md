@@ -115,10 +115,7 @@ Use the output to construct the pipeline. Example — **Debug pipeline**:
 workflow(steps="<pipeline JSON from Phase 2>", input="{{"{{.Args.goal}}"}}")
 ```
 
-Monitor async steps with:
-```
-status(job_id="{{"{{step_id.job_id}}"}}")
-```
+{{template "poll-wrapper-subagent" .}}
 
 {{template "delegation-tree" .}}
 
