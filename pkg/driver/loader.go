@@ -4,6 +4,7 @@ package driver
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/thebtf/aimux/pkg/config"
@@ -93,6 +94,7 @@ func (r *Registry) AllCLIs() []string {
 	for name := range r.profiles {
 		result = append(result, name)
 	}
+	sort.Strings(result)
 	return result
 }
 

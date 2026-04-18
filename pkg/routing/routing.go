@@ -43,7 +43,8 @@ var AdvisoryRoles = map[string]bool{
 type Router struct {
 	defaults              map[string]types.RolePreference
 	enabledCLIs           map[string]bool
-	// alphabetical order; used only for test determinism, NOT in production Resolve.
+	// alphabetical order; used for deterministic ordering in ResolveWithFallback
+	// (within each capability group) and in tests. NOT used by Resolve.
 	enabledCLIsSorted     []string
 	// operator-configured priority order used in production capability-match fallback.
 	enabledCLIsPrioritized []string
@@ -199,7 +200,8 @@ func (r *Router) isEnabled(cli string) bool {
 // ResolveWithFallback returns an ordered list of CLIs to try for a role.
 // The primary CLI (from Resolve) comes first. Fallbacks are sorted so that
 // CLIs whose Capabilities list contains the role name come before others.
-// CLIs that are not enabled are excluded entirely.
+// Within each group the operator-configured cli_priority order is preserved
+// (stable sort on enabledCLIsPrioritized input). CLIs not enabled are excluded.
 func (r *Router) ResolveWithFallback(role string) []types.RolePreference {
 	// Primary
 	primary, err := r.Resolve(role)
@@ -209,12 +211,12 @@ func (r *Router) ResolveWithFallback(role string) []types.RolePreference {
 	}
 
 	type candidate struct {
-		pref         types.RolePreference
+		pref          types.RolePreference
 		hasCapability bool
 	}
 
 	var fallbacks []candidate
-	for _, cli := range r.enabledCLIsSorted {
+	for _, cli := range r.enabledCLIsPrioritized {
 		if cli == primary.CLI {
 			continue // will be prepended as primary
 		}
@@ -226,12 +228,9 @@ func (r *Router) ResolveWithFallback(role string) []types.RolePreference {
 	}
 
 	// Stable sort: capability-matching CLIs first, then the rest. Within each
-	// group, sort by name for deterministic ordering in tests.
+	// group the priority order from enabledCLIsPrioritized is preserved.
 	sort.SliceStable(fallbacks, func(i, j int) bool {
-		if fallbacks[i].hasCapability != fallbacks[j].hasCapability {
-			return fallbacks[i].hasCapability // capability-match goes first
-		}
-		return fallbacks[i].pref.CLI < fallbacks[j].pref.CLI
+		return fallbacks[i].hasCapability && !fallbacks[j].hasCapability
 	})
 
 	result := make([]types.RolePreference, 0, 1+len(fallbacks))

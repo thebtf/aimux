@@ -84,6 +84,7 @@ func makeWarmupRegistry(t *testing.T, names ...string) *Registry {
 func defaultCfg() *config.Config {
 	return &config.Config{
 		Server: config.ServerConfig{
+			WarmupEnabled:        true,
 			WarmupTimeoutSeconds: 5,
 		},
 	}
@@ -171,10 +172,11 @@ func TestRunWarmup_OneTimesOut(t *testing.T) {
 			"codex": func(_ types.SpawnArgs) (*types.Result, error) {
 				return &types.Result{Content: `{"ok":true}`, ExitCode: 0}, nil
 			},
-			// gemini blocks longer than its 1-second timeout.
+			// gemini blocks indefinitely — relies on context cancellation from the
+			// per-profile timeout (1s). This avoids a fixed sleep that causes CI
+			// false-failures under heavy load; the stub executor selects on ctx.Done().
 			"gemini": func(_ types.SpawnArgs) (*types.Result, error) {
-				time.Sleep(3 * time.Second)
-				return &types.Result{Content: `{"ok":true}`, ExitCode: 0}, nil
+				select {} //nolint:staticcheck // intentionally blocks; stub respects ctx
 			},
 		},
 	}
@@ -213,6 +215,35 @@ func TestRunWarmup_OptOut(t *testing.T) {
 	}
 
 	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec); err != nil {
+		t.Fatalf("RunWarmup: %v", err)
+	}
+
+	// Both CLIs should remain available — warmup was skipped entirely.
+	enabled := reg.EnabledCLIs()
+	if len(enabled) != 2 {
+		t.Errorf("expected 2 enabled CLIs (warmup no-op), got %d: %v", len(enabled), enabled)
+	}
+}
+
+// --- T034: TestRunWarmup_ConfigDisabled ---
+
+// TestRunWarmup_ConfigDisabled verifies that warmup_enabled: false in config
+// causes RunWarmup to be a no-op — CLIs remain in their current state.
+func TestRunWarmup_ConfigDisabled(t *testing.T) {
+	reg := makeWarmupRegistry(t, "codex", "gemini")
+
+	// Executor that always fails — if called, it would exclude both CLIs.
+	exec := &warmupStubExecutor{
+		handlers: map[string]func(types.SpawnArgs) (*types.Result, error){
+			"codex":  func(_ types.SpawnArgs) (*types.Result, error) { return &types.Result{Content: "error", ExitCode: 1}, nil },
+			"gemini": func(_ types.SpawnArgs) (*types.Result, error) { return &types.Result{Content: "error", ExitCode: 1}, nil },
+		},
+	}
+
+	cfg := defaultCfg()
+	cfg.Server.WarmupEnabled = false // explicit config-level disable
+
+	if err := runWarmupWithExec(context.Background(), reg, cfg, exec); err != nil {
 		t.Fatalf("RunWarmup: %v", err)
 	}
 

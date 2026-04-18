@@ -38,18 +38,6 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	cli := request.GetString("cli", "")
 	role := request.GetString("role", "default")
 
-	// Validate role name early — before any CLI resolution or spawning.
-	// Unknown role names return an error immediately with the list of valid roles.
-	// Skip validation when cli= is explicitly provided (role is advisory only).
-	if cli == "" {
-		knownRoles := s.router.KnownRoles()
-		if !contains(knownRoles, role) {
-			return mcp.NewToolResultError(fmt.Sprintf(
-				"unknown role %q; valid roles: %s",
-				role, strings.Join(knownRoles, ", "))), nil
-		}
-	}
-
 	model := request.GetString("model", "")
 	effort := request.GetString("reasoning_effort", "")
 	cwd := cwdFromRequestOrContext(request, ctx)
@@ -86,11 +74,17 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		s.log.Info("exec: resuming session=%s cli=%s turns=%d", sessionID, cli, existing.Turns)
 	}
 
-	// Resolve CLI from role
+	// Resolve CLI from role — validates the role name and applies capability-aware
+	// routing. Unknown role names (neither in defaults nor in any CLI's capabilities)
+	// return an error immediately. Skip when cli= is explicitly provided (role is
+	// advisory only) or when session resume already set cli.
 	if cli == "" {
 		pref, resolveErr := s.router.Resolve(role)
 		if resolveErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("role resolution failed: %v", resolveErr)), nil
+			// Log full error (includes capable CLI names) server-side for debugging.
+			// Return a sanitized message to avoid leaking internal routing topology.
+			s.log.Warn("exec: role resolution failed role=%q: %v", role, resolveErr)
+			return mcp.NewToolResultError(fmt.Sprintf("unknown role %q: no CLI available", role)), nil
 		}
 		cli = pref.CLI
 		if model == "" {

@@ -492,13 +492,14 @@ func (s *Server) registerTools() {
 	// sessions tool
 	s.mcp.AddTool(
 		mcp.NewTool("sessions",
-			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc. "+
+			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc, refresh-warmup. "+
 				"action=list returns all sessions and tasks with no server-side pagination — "+
-				"use the limit parameter to cap results on busy servers."),
+				"use the limit parameter to cap results on busy servers. "+
+				"action=refresh-warmup re-runs CLI warmup probes and updates the routing pool."),
 			mcp.WithString("action",
 				mcp.Required(),
-				mcp.Description("Action: list, info, kill, gc, health, cancel"),
-				mcp.Enum("list", "info", "kill", "gc", "health", "cancel"),
+				mcp.Description("Action: list, info, kill, gc, health, cancel, refresh-warmup"),
+				mcp.Enum("list", "info", "kill", "gc", "health", "cancel", "refresh-warmup"),
 			),
 			mcp.WithString("session_id",
 				mcp.Description("Session ID (required for info/kill)"),
@@ -1082,11 +1083,17 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 
 	case "refresh-warmup":
 		// Re-run CLI warmup probes and update registry availability.
-		// Returns refreshed=false (with reason) when warmup is disabled via env.
+		// Returns refreshed=false (with reason) when warmup is disabled via env or config.
 		if os.Getenv("AIMUX_WARMUP") == "false" {
 			return marshalToolResult(map[string]any{
 				"refreshed": false,
 				"reason":    "warmup disabled via AIMUX_WARMUP=false",
+			})
+		}
+		if s.cfg != nil && !s.cfg.Server.WarmupEnabled {
+			return marshalToolResult(map[string]any{
+				"refreshed": false,
+				"reason":    "warmup disabled via warmup_enabled: false in config",
 			})
 		}
 		if err := driver.RunWarmup(ctx, s.registry, s.cfg); err != nil {

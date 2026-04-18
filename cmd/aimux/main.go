@@ -52,8 +52,21 @@ func run() error {
 		return fmt.Errorf("no CLI tools found — install at least one of: codex, gemini, claude, qwen, aider, droid, opencode")
 	}
 
+	// Run warmup probes to health-gate CLIs before serving requests.
+	// CLIs that do not respond to a minimal JSON prompt are removed from the
+	// routing pool for this daemon lifetime. Set AIMUX_WARMUP=false to skip.
+	log.Info("running CLI warmup probes (AIMUX_WARMUP=false to skip)")
+	if warmupErr := driver.RunWarmup(context.Background(), registry, cfg); warmupErr != nil {
+		log.Warn("warmup error (non-fatal): %v", warmupErr)
+	}
+	afterWarmup := registry.EnabledCLIs()
+	log.Info("CLI warmup complete: %d available: %v", len(afterWarmup), afterWarmup)
+	if len(afterWarmup) == 0 {
+		return fmt.Errorf("all CLI tools failed warmup — set AIMUX_WARMUP=false to skip probes and use binary-only detection")
+	}
+
 	// Initialize role router with capability profiles and operator-configured priority.
-	router := routing.NewRouterWithPriority(cfg.Roles, enabled, cfg.CLIProfiles, cfg.Server.CLIPriority)
+	router := routing.NewRouterWithPriority(cfg.Roles, afterWarmup, cfg.CLIProfiles, cfg.Server.CLIPriority)
 
 	// Create MCP server
 	srv := aimuxServer.New(cfg, log, registry, router)

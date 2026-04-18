@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/config"
@@ -28,6 +29,7 @@ func buildRefreshWarmupServer(t *testing.T) (*Server, *driver.Registry) {
 			LogLevel:             "error",
 			LogFile:              t.TempDir() + "/test.log",
 			DefaultTimeoutSeconds: 10,
+			WarmupEnabled:        true,
 			WarmupTimeoutSeconds: 5,
 			Pair: config.PairConfig{MaxRounds: 2},
 			Audit: config.AuditConfig{
@@ -108,25 +110,8 @@ func TestServerSession_RefreshWarmup_Disabled(t *testing.T) {
 	if reason == "" {
 		t.Error("expected non-empty reason when warmup is disabled")
 	}
-	if !contains([]string{reason}, "warmup disabled") {
-		// Check substring match manually.
-		foundSubstr := false
-		for _, substr := range []string{"warmup disabled", "AIMUX_WARMUP"} {
-			if len(reason) >= len(substr) {
-				for i := 0; i <= len(reason)-len(substr); i++ {
-					if reason[i:i+len(substr)] == substr {
-						foundSubstr = true
-						break
-					}
-				}
-			}
-			if foundSubstr {
-				break
-			}
-		}
-		if !foundSubstr {
-			t.Errorf("reason %q should mention warmup disabled or AIMUX_WARMUP", reason)
-		}
+	if !strings.Contains(reason, "warmup disabled") && !strings.Contains(reason, "AIMUX_WARMUP") {
+		t.Errorf("reason %q should mention warmup disabled or AIMUX_WARMUP", reason)
 	}
 }
 

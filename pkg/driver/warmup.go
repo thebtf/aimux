@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,7 +47,13 @@ func RunWarmup(ctx context.Context, reg *Registry, cfg *config.Config) error {
 // runWarmupWithExec is the testable core of RunWarmup. It accepts an injected
 // executor so tests can supply a mock without spawning real processes.
 func runWarmupWithExec(ctx context.Context, reg *Registry, cfg *config.Config, exec types.Executor) error {
+	// Env var takes precedence: AIMUX_WARMUP=false skips probes regardless of config.
 	if os.Getenv("AIMUX_WARMUP") == "false" {
+		return nil
+	}
+	// Config-level gate: warmup_enabled: false in default.yaml disables probes.
+	// WarmupEnabled defaults to true (set in config.Load); only explicit false disables.
+	if cfg != nil && !cfg.Server.WarmupEnabled {
 		return nil
 	}
 
@@ -86,13 +93,19 @@ func runWarmupWithExec(ctx context.Context, reg *Registry, cfg *config.Config, e
 			continue
 		}
 		if !r.passed {
-			reg.mu.Lock()
-			reg.available[r.cli] = false
-			reg.mu.Unlock()
+			reg.setUnavailable(r.cli)
 		}
 	}
 
 	return nil
+}
+
+// setUnavailable marks a CLI as unavailable in the registry.
+// Uses defer for panic-safe mutex release.
+func (r *Registry) setUnavailable(cli string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.available[cli] = false
 }
 
 // probeOne executes a single warmup probe for one CLI and returns the result.
@@ -129,49 +142,18 @@ func probeOne(ctx context.Context, exec types.Executor, name string, profile *co
 }
 
 // parseWarmupResponse returns true when content contains valid JSON with ok=true.
+// Scans for the first '{' to skip CLI preamble text, then decodes with
+// json.NewDecoder which correctly handles braces inside string literals.
 func parseWarmupResponse(content string) bool {
-	if content == "" {
-		return false
-	}
-
-	// Search for a JSON object anywhere in the output (CLI may emit preamble).
-	start := -1
-	for i, ch := range content {
-		if ch == '{' {
-			start = i
-			break
-		}
-	}
+	start := strings.Index(content, "{")
 	if start < 0 {
-		return false
-	}
-
-	// Find the matching closing brace (simple scan; probes return tiny JSON).
-	depth := 0
-	end := -1
-	for i := start; i < len(content); i++ {
-		switch content[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				end = i + 1
-				break
-			}
-		}
-		if end > 0 {
-			break
-		}
-	}
-	if end < 0 {
 		return false
 	}
 
 	var resp struct {
 		OK bool `json:"ok"`
 	}
-	if err := json.Unmarshal([]byte(content[start:end]), &resp); err != nil {
+	if err := json.NewDecoder(strings.NewReader(content[start:])).Decode(&resp); err != nil {
 		return false
 	}
 	return resp.OK

@@ -28,6 +28,18 @@ prompt_flag_type: "short"
 default_model: ""
 model_flag: "--model"
 
+# stdin_sentinel: qwen does not read from stdin; no sentinel needed.
+stdin_sentinel: ""
+
+# model_fallback: qwen manages its own model selection internally; no explicit fallback list.
+model_fallback: []
+
+# cooldown_seconds: back-off duration for rate-limited models.
+cooldown_seconds: 60
+
+# completion_pattern: qwen JSON output contains a completion marker.
+completion_pattern: "completed|done|finished"
+
 # warmup_timeout_seconds: covers CLI cold-start + prompt→response; adjust if false-negatives accumulate
 warmup_timeout_seconds: 10
 

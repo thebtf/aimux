@@ -215,6 +215,12 @@ func Load(configDir string) (*Config, error) {
 	cfg := &Config{
 		CLIProfiles: make(map[string]*CLIProfile),
 		ConfigDir:   configDir,
+		Server: ServerConfig{
+			// WarmupEnabled defaults to true — YAML field absent means warmup runs.
+			// Set warmup_enabled: false in default.yaml (or AIMUX_WARMUP=false env var)
+			// to skip all probes at startup.
+			WarmupEnabled: true,
+		},
 	}
 
 	// Load main config
@@ -309,7 +315,10 @@ func applyDefaults(cfg *Config) {
 		s.StreamingAutoCancelSeconds = 900
 	}
 
-	// Warmup defaults: enabled=true, 15s global timeout (per profile can override).
+	// Warmup defaults: WarmupEnabled is pre-initialized to true in Load() so that
+	// configs that omit warmup_enabled still run probes. Only an explicit
+	// warmup_enabled: false in YAML (or AIMUX_WARMUP=false env var) disables warmup.
+	// No override needed here — preserve the YAML value as-is.
 	if s.WarmupTimeoutSeconds == 0 {
 		s.WarmupTimeoutSeconds = 15
 	}

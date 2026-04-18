@@ -25,6 +25,18 @@ prompt_flag_type: "positional"
 default_model: ""
 model_flag: "--model"
 
+# stdin_sentinel: crush does not read from stdin; no sentinel needed.
+stdin_sentinel: ""
+
+# model_fallback: crush manages its own model selection internally; no explicit fallback list.
+model_fallback: []
+
+# cooldown_seconds: back-off duration for rate-limited models.
+cooldown_seconds: 60
+
+# completion_pattern: crush emits a completion marker when done.
+completion_pattern: "completed|done"
+
 # warmup_timeout_seconds: covers CLI cold-start + prompt→response; adjust if false-negatives accumulate
 warmup_timeout_seconds: 15
 
