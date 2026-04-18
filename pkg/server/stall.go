@@ -61,17 +61,22 @@ func evaluateInactivityTier(lastOutputAt time.Time, cfg *config.ServerConfig) In
 }
 
 // applyStallGuidance adds stall-related keys to a status result map for a
-// running job. It is a no-op when the tier is TierNone.
-func applyStallGuidance(result map[string]any, tier InactivityTier) {
+// running job. jobID is the job being polled — it is pre-filled into
+// cancel_command so the caller can copy-paste the command without substitution.
+// It is a no-op when the tier is TierNone.
+func applyStallGuidance(result map[string]any, tier InactivityTier, jobID string) {
 	switch tier {
 	case TierSoftWarning:
-		result["stall_warning"] = "No output for 120s. Job may be stalled."
+		result["stall_warning"] = "No output for 120s. CLI may be waiting for input or stalled. " +
+			"If still stalled at 600s, cancel with: sessions(action=cancel, job_id=" + jobID + ")"
 	case TierHardStall:
 		result["stall_alert"] = "No output for 600s. Consider cancelling."
 		result["recommended_action"] = "cancel"
+		result["cancel_command"] = `sessions(action="cancel", job_id="` + jobID + `")`
 	case TierAutoCancel:
 		result["stall_alert"] = "No output for 900s. Auto-cancel recommended."
 		result["recommended_action"] = "cancel"
 		result["auto_cancel_recommended"] = true
+		result["cancel_command"] = `sessions(action="cancel", job_id="` + jobID + `")`
 	}
 }

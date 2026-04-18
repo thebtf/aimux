@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,7 +84,7 @@ func TestEvaluateInactivityTier_ConfigOverride(t *testing.T) {
 
 func TestApplyStallGuidance_NoGuidanceForNone(t *testing.T) {
 	result := map[string]any{"status": "running"}
-	applyStallGuidance(result, TierNone)
+	applyStallGuidance(result, TierNone, "job-test-1")
 	if _, ok := result["stall_warning"]; ok {
 		t.Error("TierNone should not add stall_warning")
 	}
@@ -91,27 +92,64 @@ func TestApplyStallGuidance_NoGuidanceForNone(t *testing.T) {
 
 func TestApplyStallGuidance_AddsWarningForSoft(t *testing.T) {
 	result := map[string]any{"status": "running"}
-	applyStallGuidance(result, TierSoftWarning)
+	applyStallGuidance(result, TierSoftWarning, "job-test-2")
 	if _, ok := result["stall_warning"]; !ok {
 		t.Error("TierSoftWarning should add stall_warning")
 	}
 }
 
+func TestApplyStallGuidance_SoftWarningContainsCancelInstruction(t *testing.T) {
+	result := map[string]any{"status": "running"}
+	applyStallGuidance(result, TierSoftWarning, "job-abc-123")
+	msg, ok := result["stall_warning"].(string)
+	if !ok {
+		t.Fatal("stall_warning should be a string")
+	}
+	if !strings.Contains(msg, "job-abc-123") {
+		t.Errorf("stall_warning should contain the job ID, got: %s", msg)
+	}
+}
+
 func TestApplyStallGuidance_RecommendsCancelForHard(t *testing.T) {
 	result := map[string]any{"status": "running"}
-	applyStallGuidance(result, TierHardStall)
+	applyStallGuidance(result, TierHardStall, "job-test-3")
 	if action, ok := result["recommended_action"]; !ok || action != "cancel" {
 		t.Errorf("TierHardStall should recommend cancel, got %v", result)
 	}
 }
 
+func TestApplyStallGuidance_HardStallCancelCommandPreFilled(t *testing.T) {
+	result := map[string]any{"status": "running"}
+	applyStallGuidance(result, TierHardStall, "job-hard-456")
+	cmd, ok := result["cancel_command"].(string)
+	if !ok {
+		t.Fatal("TierHardStall should add cancel_command key")
+	}
+	if !strings.Contains(cmd, "job-hard-456") {
+		t.Errorf("cancel_command should contain job ID, got: %s", cmd)
+	}
+}
+
 func TestApplyStallGuidance_AutoCancelForMax(t *testing.T) {
 	result := map[string]any{"status": "running"}
-	applyStallGuidance(result, TierAutoCancel)
+	applyStallGuidance(result, TierAutoCancel, "job-test-4")
 	if v, ok := result["auto_cancel_recommended"]; !ok || v != true {
 		t.Errorf("TierAutoCancel should set auto_cancel_recommended=true, got %v", result)
 	}
 }
+
+func TestApplyStallGuidance_AutoCancelCancelCommandPreFilled(t *testing.T) {
+	result := map[string]any{"status": "running"}
+	applyStallGuidance(result, TierAutoCancel, "job-auto-789")
+	cmd, ok := result["cancel_command"].(string)
+	if !ok {
+		t.Fatal("TierAutoCancel should add cancel_command key")
+	}
+	if !strings.Contains(cmd, "job-auto-789") {
+		t.Errorf("cancel_command should contain job ID, got: %s", cmd)
+	}
+}
+
 
 // --- handleStatus stall guidance integration tests ---
 

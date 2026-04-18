@@ -431,8 +431,9 @@ func (s *Server) registerTools() {
 			mcp.WithDescription("Execute a raw prompt on a specific CLI. "+
 				"Use agent tool instead for task-based work — it auto-selects the best agent. "+
 				"Use exec only when you need a specific CLI or low-level control. "+
-				"Use role= for CLI routing (coding→codex, codereview→gemini, debug→codex, secaudit→codex, analyze→gemini, refactor→codex, testgen→codex, docgen→codex, planner→codex, thinkdeep→codex). "+
-				"Use async=true for long tasks (>30s) — returns job_id immediately, poll with status tool."),
+				"Use role= for task routing — CLI selection is driven by config (default.yaml roles section), not hardcoded mappings. "+
+				"When async=true: returns job_id immediately; the CLI runs in the background. "+
+				"To collect results: spawn a Sonnet subagent wrapper — see aimux guide skill (poll-wrapper-subagent pattern)."),
 			mcp.WithString("prompt",
 				mcp.Required(),
 				mcp.Description("The prompt to send to the CLI"),
@@ -471,7 +472,12 @@ func (s *Server) registerTools() {
 	// status tool
 	s.mcp.AddTool(
 		mcp.NewTool("status",
-			mcp.WithDescription("Check async job status"),
+			mcp.WithDescription("Check async job status. "+
+				"Returns a result map with status field set to one of: queued, running, completing, completed, failed. "+
+				"The content field is only present when status=completed and contains the full CLI output. "+
+				"While status=running, the response may include stall_warning (key present after 120s of silence) "+
+				"or stall_alert (key present after 600s of silence); both keys include cancel instructions. "+
+				"A stall_warning appears at TierSoftWarning (≥120s silent); stall_alert appears at TierHardStall (≥600s) and TierAutoCancel (≥900s)."),
 			mcp.WithString("job_id",
 				mcp.Required(),
 				mcp.Description("Job ID from async exec response"),
@@ -483,7 +489,9 @@ func (s *Server) registerTools() {
 	// sessions tool
 	s.mcp.AddTool(
 		mcp.NewTool("sessions",
-			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc"),
+			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc. "+
+				"action=list returns ALL rows from the jobs table with no server-side pagination — "+
+				"use the limit parameter to bound result size on busy servers."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: list, info, kill, gc, health, cancel"),
@@ -748,7 +756,9 @@ func (s *Server) registerTools() {
 			mcp.WithDescription("PRIMARY tool for task execution. "+
 				"Actions: run (execute task with agent=<name>), list (show agents), find (search agents). "+
 				"For run: specify agent=<name> to select the agent. If omitted, returns a candidate list for you to choose from. "+
-				"Use find(prompt=<query>) to search agents by keyword, or list to see all available agents with descriptions."),
+				"Use find(prompt=<query>) to search agents by keyword, or list to see all available agents with descriptions. "+
+				"Prefer agents(action=run) over exec when you want an agent with a pre-built system prompt and role — "+
+				"exec is for raw prompt dispatch when no matching agent exists or you need low-level CLI control."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: list, run, info, find"),
@@ -772,7 +782,10 @@ func (s *Server) registerTools() {
 		mcp.NewTool("agent",
 			mcp.WithDescription("Run a project agent through any CLI. Loads agent definition, "+
 				"injects system prompt, delegates to CLI in autonomous mode. "+
-				"The CLI IS the agent — it reads files, runs commands, edits code."),
+				"The CLI IS the agent — it reads files, runs commands, edits code. "+
+				"When async=true: returns job_id immediately; use the status tool to poll for completion. "+
+				"For long-running agents, spawn a Sonnet subagent wrapper rather than polling in the main context — "+
+				"see aimux guide skill (poll-wrapper-subagent pattern)."),
 			mcp.WithString("agent",
 				mcp.Required(),
 				mcp.Description("Agent name from registry"),
@@ -801,7 +814,10 @@ func (s *Server) registerTools() {
 	// deepresearch tool
 	s.mcp.AddTool(
 		mcp.NewTool("deepresearch",
-			mcp.WithDescription("Deep research via Google Gemini API with file attachments and caching"),
+			mcp.WithDescription("Deep research via Google Gemini API with file attachments and caching. "+
+				"This tool is synchronous — it blocks until research is complete and returns content directly (no job_id). "+
+				"Results are cached by topic; use force=true to bypass the cache and trigger a fresh Gemini call. "+
+				"Cache-miss calls can be slow (30s–120s depending on topic complexity) — plan accordingly."),
 			mcp.WithString("topic",
 				mcp.Required(),
 				mcp.Description("Research topic"),
@@ -828,7 +844,7 @@ func (s *Server) registerTools() {
 			),
 			mcp.WithString("steps",
 				mcp.Required(),
-				mcp.Description("JSON array of step definitions: [{id, tool, params, condition?, on_error?}]"),
+				mcp.Description("JSON array of step definitions: [{id, tool, params, condition?, on_error?}]. Steps with async=true in their params produce job_id fields in the step result rather than blocking."),
 			),
 			mcp.WithString("input",
 				mcp.Description("Initial input text (available as {{input}} in templates)"),
@@ -935,11 +951,11 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 			baseline = j.CreatedAt
 		}
 		tier := evaluateInactivityTier(baseline, &s.cfg.Server)
-		applyStallGuidance(result, tier)
+		applyStallGuidance(result, tier, j.ID)
 	}
 
 	if pollCount >= 3 {
-		result["warning"] = "Polling detected. Prefer background tasks over polling."
+		result["warning"] = fmt.Sprintf("Polling detected (%d calls). Use a Sonnet subagent wrapper — see aimux guide skill (poll-wrapper-subagent pattern).", pollCount)
 	}
 
 	return marshalToolResult(result)
