@@ -77,7 +77,7 @@ dialog(prompt="{{"{{.Args.question}}"}}", max_turns=4)
 After any consensus or debate result, run:
 
 ```
-think(pattern="critical_thinking", artifact="{{"{{consensus.result}}"}}")
+think(pattern="critical_thinking", issue="{{"{{consensus.result}}"}}")
 ```
 
 This catches:
