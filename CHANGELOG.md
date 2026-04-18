@@ -59,6 +59,8 @@ Patch release: model-level fallback for inaccessible models.
   behaves identically.
 - `ErrQuotaExhausted` / `ErrModelUnavailable` are newly exported but additive.
 
+[4.0.3]: https://github.com/thebtf/aimux/compare/v4.0.2...v4.0.3
+
 ## [4.0.2] - 2026-04-18
 
 Patch release: muxcore dep bump to v0.20.0 and aimux internal skill prompt fixes.
