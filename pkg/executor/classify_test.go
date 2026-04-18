@@ -166,6 +166,13 @@ func TestClassifyError_ModelUnavailable_YouDoNotHaveAccessToThisModel(t *testing
 	}
 }
 
+func TestClassifyError_ModelUnavailable_YouDontHaveAccessToModel(t *testing.T) {
+	got := executor.ClassifyError("", "you don't have access to model gpt-5.3-codex-spark", 1)
+	if got != executor.ErrorClassModelUnavailable {
+		t.Fatalf("expected ErrorClassModelUnavailable, got %v", got)
+	}
+}
+
 // TestClassifyError_Fatal_BareAccessDenied is a regression test: bare "access denied"
 // without the "to model" qualifier must remain Fatal (auth/permission problem, not model-level).
 func TestClassifyError_Fatal_BareAccessDenied(t *testing.T) {

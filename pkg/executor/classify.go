@@ -60,6 +60,7 @@ var modelUnavailablePatterns = []string{
 	"this model is not available",
 	"you do not have access to model",
 	"you do not have access to this model",
+	"you don't have access to model",
 	"you don't have access to this model",
 }
 
