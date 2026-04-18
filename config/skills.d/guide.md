@@ -68,7 +68,7 @@ Use `think(pattern="...", ...)` for structured reasoning without running a full 
 
 Quick picks:
 - Exploring a problem → `think(pattern="think")`
-- Challenging an assumption → `think(pattern="critic")`
+- Challenging an assumption → `think(pattern="critical_thinking")`
 - Reviewing code → `think(pattern="peer_review")`
 - Synthesizing findings → `think(pattern="research_synthesis")`
 - Literature review → `think(pattern="literature_review")`
@@ -115,7 +115,7 @@ workflow(steps=[
 | Picking CLI by name without reason | Use `role=` — let routing handle it |
 | Running consensus on a factual lookup | Use `exec(role="analyze")` — faster, cheaper |
 | Starting investigation without `recall` | Always check past reports first |
-| Trusting consensus output without critic pass | Run `think(pattern="critic")` after every consensus |
+| Trusting consensus output without critic pass | Run `think(pattern="critical_thinking")` after every consensus |
 | Looping exec calls on the same failing prompt | After 2 failures → delegate to different role or use `debate` |
 | Using `async=true` then ignoring the job_id | Always call `status(job_id=...)` to collect output |
 

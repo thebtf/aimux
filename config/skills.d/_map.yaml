@@ -77,10 +77,10 @@ skills:
 
   workflow:
     description: "Declarative multi-step pipeline builder"
-    tools: [workflow, exec, think]
+    tools: [workflow, exec, think, agent]
     phases: [analyze-goal, generate-pipeline, execute]
     related: [delegate, guide]
-    fragments: [delegation-tree]
+    fragments: [delegation-tree, poll-wrapper-subagent]
     escalates_to: [audit]
     receives_from: [delegate]
 
@@ -130,6 +130,9 @@ fragments:
   delegation-tree:
     description: "Task complexity → delegation routing decision tree + QUICK format"
     used_by: [guide, workflow, agent-exec, delegate]
+  poll-wrapper-subagent:
+    description: "Mandatory subagent polling wrapper for long-running async jobs"
+    used_by: [workflow]
   priority-scoring:
     description: "3-factor severity × impact × likelihood → P0-P4 scoring"
     used_by: [audit, review]
@@ -144,7 +147,7 @@ tool_usage:
   consensus: [consensus, review]
   debate: [consensus]
   audit: [audit]
-  agent: [agent-exec, delegate]
+  agent: [agent-exec, delegate, workflow]
   workflow: [workflow]
   status: [guide, background]
   sessions: [guide]

@@ -28,7 +28,7 @@ Analyze the question type before selecting a strategy:
 | Factual / lookup | "what is", "does X support", "which version" | `consensus` — models check facts |
 | Binary choice | "should we", "A or B", "yes/no" | `debate(max_turns=3)` |
 | Architecture decision | "design", "pattern", "tradeoff", "approach" | `debate(max_turns=5)` |
-| Risk assessment | "safe to", "risks of", "could this break" | `consensus` + `think(pattern="critic")` |
+| Risk assessment | "safe to", "risks of", "could this break" | `consensus` + `think(pattern="critical_thinking")` |
 | Open-ended exploration | "how might", "what could", "brainstorm" | `dialog(max_turns=4)` |
 
 ### Keyword Analysis for: {{if .Args.question}}`{{.Args.question}}`{{else}}`(no question provided)`{{end}}
@@ -77,7 +77,7 @@ dialog(prompt="{{"{{.Args.question}}"}}", max_turns=4)
 After any consensus or debate result, run:
 
 ```
-think(pattern="critic", artifact="{{"{{consensus.result}}"}}")
+think(pattern="critical_thinking", issue="{{"{{consensus.result}}"}}")
 ```
 
 This catches:
