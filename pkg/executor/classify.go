@@ -5,13 +5,12 @@ import "strings"
 // ErrorClass indicates the category of a CLI error and drives retry strategy.
 type ErrorClass int
 
-// Values are ordered by retry priority — but ClassifyError uses explicit switch,
-// not integer comparison. Do not rely on iota order for priority.
+// Values are ordered by retry priority, matching the ClassifyError check order.
 const (
 	ErrorClassNone             ErrorClass = iota // 0 — success (exit 0)
 	ErrorClassQuota                              // 1 — rate-limited, highest retry priority
-	ErrorClassTransient                          // 2 — network blip, retry same model
-	ErrorClassModelUnavailable                   // 3 — model inaccessible, fall to next model
+	ErrorClassModelUnavailable                   // 2 — model inaccessible, fall to next model
+	ErrorClassTransient                          // 3 — network blip, retry same model
 	ErrorClassFatal                              // 4 — auth/config broken, skip CLI entirely
 	ErrorClassUnknown                            // 5 — non-zero exit, no pattern match
 )
