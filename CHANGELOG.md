@@ -5,6 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0] - 2026-04-18
+
+Minor release: aimux internal prompts/descriptions audit + routing health gate + CLI warmup probe.
+
+Ships all 38 tasks + 8 gates of the `aimux-internal-descriptions-audit` spec across 3 PRs:
+PR #94 (Phase 1 runtime strings), PR #95 (Phases 2-5 agent struct + skill map + role prompts + CLI profiles),
+PR #96 (Phase 7 routing + warmup).
+
+### Added
+
+- **`sessions(action="refresh-warmup")` tool action** (#96) — runtime refresh of CLI warmup state.
+  Returns `{refreshed, available, excluded}` or `{refreshed:false, reason}` when opt-out is active.
+- **`Agent.When` field** (#95) — struct field with JSON/YAML `omitempty` tag. Populated for all
+  5 builtin agents (researcher, reviewer, debugger, implementer, generic). Surfaced in
+  `agents(action="find")` response so orchestrators can pick agents based on when-to-use guidance.
+- **`Config.Server.CLIPriority []string`** (#96) — operator-ordered CLI priority list in
+  `config/default.yaml` (`cli_priority: [codex, claude, gemini, qwen, ...]`). Replaces implicit
+  alphabetical ordering. CLIs absent from the list are appended after in stable load order.
+- **`Config.Server.WarmupEnabled bool` + `WarmupTimeoutSeconds int`** (#96) — global warmup
+  config. Per-profile `warmup_timeout_seconds` + `warmup_probe_prompt` overrides on `Profile`.
+- **`pkg/driver/warmup.go`** (#96) — `driver.RunWarmup(ctx, reg, cfg)`. Structured JSON probe
+  (`reply with JSON: {"ok": true}`). Per-CLI defaults: codex/claude=8s, gemini/qwen=10s,
+  aider/continue=20s, droid/cline/crush=15s. `AIMUX_WARMUP=false` env opt-out.
+- **`Router.KnownRoles() []string`** (#96) — returns configured role names for validation.
+
+### Changed
+
+- **Routing fail-fast on unknown role** (#96) — `handleExec` rejects unknown roles with a
+  validation error before any CLI is spawned. Previously silently fell back to alphabetical-first
+  enabled CLI (caused `exec(role="reviewer")` typos to hit `aider`).
+- **CLI priority is explicit, not alphabetical** (#96) — `Router.Resolve` uses `cli_priority`
+  config for tiebreaks. `enabledCLIsSorted` kept only for test determinism with explicit comment;
+  NOT used in production routing paths.
+- **`generic` builtin agent routes via `analyze`** (#95) — previously routed via `coding` which
+  triggered expensive codex CLI for "follow instructions literally" tasks.
+- **`testgen` role is IMPLEMENTER, not ADVISOR** (#95) — resolves contradictory identity.
+- **ADVISOR roles have handoff paragraph** (#95) — refactor/planner/review/codereview/analyze/debug
+  now include `exec(role="coding")` handoff guidance in Output Format.
+- **Tool description expansions** (#94) — `status`, `exec`, `agent`, `agents`, `sessions`,
+  `deepresearch`, `workflow` descriptions expanded with state machines, async contracts,
+  poll-wrapper-subagent references, pagination notes.
+- **Stall guidance includes pre-filled `cancel_command`** (#94) — `sessions/status` response
+  contains literal `sessions(action="cancel", job_id="<jobID>")` string for LLMs to use directly.
+
+### Fixed
+
+- **F7.1 silent misrouting** (#96) — unknown role names no longer silently fall back to alphabetical-first CLI.
+- **F7.4 implicit alphabetical CLI priority** (#96) — replaced with explicit `cli_priority` config.
+- **F7.5 binary-exists ≠ operational** (#96) — warmup probe validates CLIs before routing accepts them.
+- **CLI profile documentation** (#95) — codex `account_gating` + version note, gemini
+  intentionality comment on omitted `model_fallback`, continue hub-slug format warning elevated.
+- **`config/p26/classification.v1.json`** (#96) — added `sessions/refresh-warmup` action entry.
+
+### Internal
+
+- **New `pkg/driver/warmup.go`** + `pkg/driver/warmup_test.go` with 17+ tests covering AllSucceed,
+  OneFails, OneTimesOut, OptOut, ConfigDisabled, JSONParse (table-driven), DaemonWarmupExcludes.
+- **`pkg/routing/routing_test.go`** new tests: `TestResolve_UnknownRole_ReturnsError`,
+  `TestResolve_KnownRole_UsesPriorityOrder`.
+- **`pkg/server/server_session_test.go`** new test: `TestServerSession_RefreshWarmup`.
+- **`pkg/server/handler_test.go`** new test: `TestExec_UnknownRoleReturnsValidationError`.
+- **Structured JSON probe parsing** — `json.NewDecoder` replaces manual brace-counting;
+  correctly handles brace characters inside JSON string literals.
+- **`Registry.AllCLIs()`** — deterministically sorted slice.
+- **`Registry.setUnavailable()`** — extracted helper with `defer mu.Unlock()` for panic safety.
+
+### Compatibility
+
+- **Breaking-ish behavior change**: `exec(role="<unknown>")` returns a validation error instead
+  of silently routing. Callers that relied on the silent fallback must use a valid role name
+  (see `routing.AdvisoryRoles` + `config/default.yaml` `roles:`).
+- **No API breakage**: all exported APIs remain source-compatible. `Config` struct gains new
+  fields that default to sensible values via `config.Load()`.
+- **Warmup probe is opt-out**: set `AIMUX_WARMUP=false` env to skip warmup (binary-only detection).
+  Also `warmup_enabled: false` in `config/default.yaml`.
+
+[4.1.0]: https://github.com/thebtf/aimux/compare/v4.0.3...v4.1.0
+
 ## [4.0.3] - 2026-04-18
 
 Patch release: model-level fallback for inaccessible models.
