@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.1] - 2026-04-18
+
+Patch release: muxcore dependency bump to v0.20.2. Drop-in upgrade — no API changes,
+no consumer code modifications.
+
+### Fixed
+
+- **muxcore v0.20.0 → v0.20.2** — ships two upstream patch releases back-to-back:
+  - **v0.20.1** (PR thebtf/mcp-mux#66, #67) — 10 concurrency/race fixes observed in
+    aimux usage: shared-owner dedup race in `findSharedOwner`, upstream Wait-vs-ReadLine
+    race, counter bugs in owner lifecycle.
+  - **v0.20.2** — **critical** supervisor restart-loop storm fix. `owner.Serve()` used
+    to return `nil` on a closed `o.done` channel, which suture interpreted as a clean
+    exit AND scheduled a restart in the same tick — resulting in flapping or
+    permanently-dead MCP servers in live Claude Code sessions after
+    `mcp-mux upgrade --restart`. v0.20.2 returns `suture.ErrDoNotRestart` on
+    intentional shutdown, closing the flap.
+
+### Internal
+
+- `go.mod`: `github.com/thebtf/mcp-mux/muxcore v0.20.0 → v0.20.2`
+- `go.sum` refreshed via `go mod tidy`. Full test suite (857 tests, incl. 31 e2e) green.
+
 ## [4.1.0] - 2026-04-18
 
 Minor release: aimux internal prompts/descriptions audit + routing health gate + CLI warmup probe.
@@ -91,6 +114,7 @@ PR #96 (Phase 7 routing + warmup).
 - **Warmup probe is opt-out**: set `AIMUX_WARMUP=false` env to skip warmup (binary-only detection).
   Also `warmup_enabled: false` in `config/default.yaml`.
 
+[4.1.1]: https://github.com/thebtf/aimux/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/thebtf/aimux/compare/v4.0.3...v4.1.0
 
 ## [4.0.3] - 2026-04-18
