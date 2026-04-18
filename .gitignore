@@ -24,6 +24,7 @@ Thumbs.db
 # Agent state and local tooling
 .agent/
 .serena/
+.engram-project
 aimux.exe~
 
 # Test artifacts

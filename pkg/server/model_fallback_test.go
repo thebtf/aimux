@@ -363,6 +363,92 @@ func TestModelFallback_ExecHandler_RateLimitTriggersFallback(t *testing.T) {
 	}
 }
 
+// --- FR-9: ErrorClassModelUnavailable integration tests ---
+
+// TestModelFallback_ModelUnavailableThenSuccess verifies that when model-a returns a
+// model-unavailable error the fallback chain advances to model-b and the job completes
+// successfully. model-a must be placed on cooldown after the attempt.
+func TestModelFallback_ModelUnavailableThenSuccess(t *testing.T) {
+	srv := testServerWithFallback(t)
+
+	calls := make(map[string]int)
+	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+		model := modelFromArgs(args.Args)
+		calls[model]++
+		switch model {
+		case "model-a":
+			// Model-unavailable error: non-zero exit + model-unavailable pattern in content.
+			return &types.Result{Content: "Error: model not found: model-a", ExitCode: 1}, nil
+		default:
+			return &types.Result{Content: "success from " + model, ExitCode: 0}, nil
+		}
+	}}
+
+	profile := srv.cfg.CLIProfiles["codex"]
+	baseArgs := types.SpawnArgs{
+		CLI:     "codex",
+		Command: "echo",
+		Args:    []string{"-p", "hello"},
+	}
+
+	result, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs)
+	if err != nil {
+		t.Fatalf("runWithModelFallback: unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Content != "success from model-b" {
+		t.Errorf("content = %q, want %q", result.Content, "success from model-b")
+	}
+	if calls["model-a"] != 1 {
+		t.Errorf("model-a call count = %d, want 1", calls["model-a"])
+	}
+	if calls["model-b"] != 1 {
+		t.Errorf("model-b call count = %d, want 1", calls["model-b"])
+	}
+	// model-a must be on cooldown after a model-unavailable error.
+	if srv.cooldownTracker.IsAvailable("codex", "model-a") {
+		t.Error("model-a should be on cooldown after model-unavailable error")
+	}
+}
+
+// TestModelFallback_AllModelsUnavailable_ReturnsRateLimitError verifies that when
+// every model in the fallback chain returns a model-unavailable error, the returned
+// error contains "rate limit" so the outer CLI-fallback router advances to the next CLI.
+func TestModelFallback_AllModelsUnavailable_ReturnsRateLimitError(t *testing.T) {
+	srv := testServerWithFallback(t)
+
+	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+		return &types.Result{Content: "Error: model not found", ExitCode: 1}, nil
+	}}
+
+	profile := srv.cfg.CLIProfiles["codex"]
+	baseArgs := types.SpawnArgs{
+		CLI:     "codex",
+		Command: "echo",
+		Args:    []string{"-p", "hello"},
+	}
+
+	_, err := srv.runWithModelFallback(context.Background(), srv.executor, profile, baseArgs)
+	if err == nil {
+		t.Fatal("expected error when all models are unavailable")
+	}
+
+	// Both models should now be on cooldown.
+	if srv.cooldownTracker.IsAvailable("codex", "model-a") {
+		t.Error("model-a should be on cooldown after model-unavailable error")
+	}
+	if srv.cooldownTracker.IsAvailable("codex", "model-b") {
+		t.Error("model-b should be on cooldown after model-unavailable error")
+	}
+
+	// The error must contain "rate limit" so callers can trigger CLI-level fallback.
+	if !strings.Contains(err.Error(), "rate limit") {
+		t.Errorf("error = %q, want it to contain %q for CLI-fallback routing", err.Error(), "rate limit")
+	}
+}
+
 // --- helpers ---
 
 // modelFromArgs extracts the value following "-m" in an args slice.

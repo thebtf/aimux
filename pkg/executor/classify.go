@@ -5,12 +5,14 @@ import "strings"
 // ErrorClass indicates the category of a CLI error and drives retry strategy.
 type ErrorClass int
 
+// Values are ordered by retry priority, matching the ClassifyError check order.
 const (
-	ErrorClassNone      ErrorClass = iota // success (exit 0)
-	ErrorClassQuota                       // rate limit — model fallback + cooldown
-	ErrorClassTransient                   // network — retry same model
-	ErrorClassFatal                       // auth/config — skip CLI entirely
-	ErrorClassUnknown                     // non-zero exit with unrecognised message
+	ErrorClassNone             ErrorClass = iota // 0 — success (exit 0)
+	ErrorClassQuota                              // 1 — rate-limited, highest retry priority
+	ErrorClassModelUnavailable                   // 2 — model inaccessible, fall to next model
+	ErrorClassTransient                          // 3 — network blip, retry same model
+	ErrorClassFatal                              // 4 — auth/config broken, skip CLI entirely
+	ErrorClassUnknown                            // 5 — non-zero exit, no pattern match
 )
 
 // quotaPatterns are substrings that indicate a quota or rate-limit error.
@@ -33,17 +35,45 @@ var transientPatterns = []string{
 }
 
 // fatalPatterns are substrings that indicate a permanent configuration error.
+// Note: "access denied to model" is in modelUnavailablePatterns and takes priority
+// (checked first), so bare "access denied" here only fires for non-model denials.
 var fatalPatterns = []string{
 	"authentication",
 	"invalid api key",
-	"model not found",
 	"unauthorized",
+	"access denied",
+}
+
+// modelUnavailablePatterns are substrings that indicate the requested model is not
+// accessible to this caller. Unlike Fatal, these should trigger model fallback rather
+// than skipping the CLI entirely — another model on the same CLI may still work.
+// Note: bare "access denied" or "unauthorized" without a model qualifier stay Fatal.
+var modelUnavailablePatterns = []string{
+	"model not found",
+	"not available for your account",
+	"not authorized for model",
+	"not authorized for this model",
+	"model not enabled",
+	"access denied to model",
+	"access denied to this model",
+	"model not available",
+	"this model is not available",
+	"you do not have access to model",
+	"you do not have access to this model",
+	"you don't have access to model",
+	"you don't have access to this model",
 }
 
 // ClassifyError determines the retry strategy for a CLI error.
 // It checks both stdout content and stderr for known error patterns.
 // Exit code 0 always returns ErrorClassNone regardless of message content.
-// When both quota and transient patterns match, quota takes priority.
+//
+// Priority order (highest to lowest):
+//  1. Quota — rate-limited; retrying would waste a request
+//  2. ModelUnavailable — this model is inaccessible, try next model on same CLI
+//  3. Transient — network blip; retry same model once
+//  4. Fatal — auth/config error; skip CLI entirely
+//  5. Unknown — non-zero exit with unrecognised message
 func ClassifyError(content, stderr string, exitCode int) ErrorClass {
 	if exitCode == 0 {
 		return ErrorClassNone
@@ -53,16 +83,21 @@ func ClassifyError(content, stderr string, exitCode int) ErrorClass {
 	lowerStderr := strings.ToLower(stderr)
 
 	hasQuota := matchesAny(lowerContent, quotaPatterns) || matchesAny(lowerStderr, quotaPatterns)
-	hasTransient := matchesAny(lowerContent, transientPatterns) || matchesAny(lowerStderr, transientPatterns)
-	hasFatal := matchesAny(lowerContent, fatalPatterns) || matchesAny(lowerStderr, fatalPatterns)
-
-	// Quota takes priority over transient.
 	if hasQuota {
 		return ErrorClassQuota
 	}
+
+	hasModelUnavailable := matchesAny(lowerContent, modelUnavailablePatterns) || matchesAny(lowerStderr, modelUnavailablePatterns)
+	if hasModelUnavailable {
+		return ErrorClassModelUnavailable
+	}
+
+	hasTransient := matchesAny(lowerContent, transientPatterns) || matchesAny(lowerStderr, transientPatterns)
 	if hasTransient {
 		return ErrorClassTransient
 	}
+
+	hasFatal := matchesAny(lowerContent, fatalPatterns) || matchesAny(lowerStderr, fatalPatterns)
 	if hasFatal {
 		return ErrorClassFatal
 	}
