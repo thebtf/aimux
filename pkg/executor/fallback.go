@@ -2,12 +2,21 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+// ErrQuotaExhausted is wrapped by RunWithModelFallback when a model is rate-limited.
+// The outer CLI-fallback router detects this via errors.Is to advance to the next CLI.
+var ErrQuotaExhausted = errors.New("quota exhausted")
+
+// ErrModelUnavailable is wrapped when a model is inaccessible (wrong account, not enabled, etc).
+// Like ErrQuotaExhausted, flagged via errors.Is so the outer router advances CLI.
+var ErrModelUnavailable = errors.New("model unavailable")
 
 // RunWithModelFallback is the canonical model-fallback state machine used by both
 // the server and the agents runner. It iterates the model chain, applying cooldown
@@ -71,7 +80,7 @@ func RunWithModelFallback(
 				logFn("model fallback: cli=%s model=%s → next (reason: quota, cooldown: %ds)",
 					cli, model, int(cooldownDuration.Seconds()))
 			}
-			lastErr = fmt.Errorf("quota exceeded for %s:%s", cli, model)
+			lastErr = fmt.Errorf("%w for %s:%s", ErrQuotaExhausted, cli, model)
 			continue
 
 		case ErrorClassModelUnavailable:
@@ -80,7 +89,7 @@ func RunWithModelFallback(
 				logFn("model fallback: cli=%s model=%s → next (reason: model unavailable, cooldown: %ds)",
 					cli, model, int(cooldownDuration.Seconds()))
 			}
-			lastErr = fmt.Errorf("model unavailable for %s:%s", cli, model)
+			lastErr = fmt.Errorf("%w for %s:%s", ErrModelUnavailable, cli, model)
 			continue
 
 		case ErrorClassTransient:
@@ -104,11 +113,11 @@ func RunWithModelFallback(
 				return result2, err2
 			case ErrorClassQuota:
 				cooldown.MarkCooledDown(cli, model, cooldownDuration)
-				lastErr = fmt.Errorf("quota exceeded for %s:%s (on transient retry)", cli, model)
+				lastErr = fmt.Errorf("%w for %s:%s (on transient retry)", ErrQuotaExhausted, cli, model)
 				continue
 			case ErrorClassModelUnavailable:
 				cooldown.MarkCooledDown(cli, model, cooldownDuration)
-				lastErr = fmt.Errorf("model unavailable for %s:%s (on transient retry)", cli, model)
+				lastErr = fmt.Errorf("%w for %s:%s (on transient retry)", ErrModelUnavailable, cli, model)
 				continue
 			case ErrorClassFatal:
 				if err2 == nil {
@@ -131,11 +140,8 @@ func RunWithModelFallback(
 	// Include "rate limit" in the error message when all models were cooled down due to
 	// quota or model-unavailability. This allows the outer CLI-fallback router to advance
 	// to the next CLI rather than treating the failure as a permanent error.
-	if lastErr != nil {
-		msg := lastErr.Error()
-		if strings.Contains(msg, "quota exceeded") || strings.Contains(msg, "model unavailable") {
-			return nil, fmt.Errorf("all models exhausted (rate limit) for CLI %s: %w", cli, lastErr)
-		}
+	if errors.Is(lastErr, ErrQuotaExhausted) || errors.Is(lastErr, ErrModelUnavailable) {
+		return nil, fmt.Errorf("all models exhausted (rate limit) for CLI %s: %w", cli, lastErr)
 	}
 	return nil, fmt.Errorf("all models exhausted for CLI %s: %w", cli, lastErr)
 }

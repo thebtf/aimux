@@ -178,3 +178,35 @@ func TestClassifyError_QuotaWinsOverModelUnavailable(t *testing.T) {
 		t.Fatalf("expected ErrorClassQuota to win over ErrorClassModelUnavailable, got %v", got)
 	}
 }
+
+// --- Q5b: edge-case and uppercase tests ---
+
+func TestClassifyError_EmptyInputs_NonZeroExit(t *testing.T) {
+	got := executor.ClassifyError("", "", 1)
+	if got != executor.ErrorClassUnknown {
+		t.Fatalf("expected ErrorClassUnknown for empty non-zero, got %v", got)
+	}
+}
+
+func TestClassifyError_EmptyInputs_ZeroExit(t *testing.T) {
+	got := executor.ClassifyError("", "", 0)
+	if got != executor.ErrorClassNone {
+		t.Fatalf("expected ErrorClassNone for empty zero, got %v", got)
+	}
+}
+
+func TestClassifyError_Uppercase_ModelUnavailable(t *testing.T) {
+	got := executor.ClassifyError("ERROR: MODEL NOT FOUND", "", 1)
+	if got != executor.ErrorClassModelUnavailable {
+		t.Fatalf("expected ModelUnavailable for uppercase input, got %v", got)
+	}
+}
+
+// TestClassifyError_QuotaInContent_ModelUnavailableInStderr verifies that Quota
+// beats ModelUnavailable even when they appear in different fields (content vs stderr).
+func TestClassifyError_QuotaInContent_ModelUnavailableInStderr(t *testing.T) {
+	got := executor.ClassifyError("rate limit exceeded", "model not found", 1)
+	if got != executor.ErrorClassQuota {
+		t.Fatalf("expected Quota (cross-field priority), got %v", got)
+	}
+}

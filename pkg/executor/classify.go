@@ -5,13 +5,15 @@ import "strings"
 // ErrorClass indicates the category of a CLI error and drives retry strategy.
 type ErrorClass int
 
+// Values are ordered by retry priority — but ClassifyError uses explicit switch,
+// not integer comparison. Do not rely on iota order for priority.
 const (
-	ErrorClassNone             ErrorClass = iota // success (exit 0)
-	ErrorClassQuota                              // rate limit — model fallback + cooldown
-	ErrorClassTransient                          // network — retry same model
-	ErrorClassFatal                              // auth/config — skip CLI entirely
-	ErrorClassUnknown                            // non-zero exit with unrecognised message
-	ErrorClassModelUnavailable                   // model not accessible — model fallback + cooldown, no CLI skip
+	ErrorClassNone             ErrorClass = iota // 0 — success (exit 0)
+	ErrorClassQuota                              // 1 — rate-limited, highest retry priority
+	ErrorClassTransient                          // 2 — network blip, retry same model
+	ErrorClassModelUnavailable                   // 3 — model inaccessible, fall to next model
+	ErrorClassFatal                              // 4 — auth/config broken, skip CLI entirely
+	ErrorClassUnknown                            // 5 — non-zero exit, no pattern match
 )
 
 // quotaPatterns are substrings that indicate a quota or rate-limit error.
@@ -53,7 +55,6 @@ var modelUnavailablePatterns = []string{
 	"not authorized for model",
 	"not authorized for this model",
 	"model not enabled",
-	"model not enabled for",
 	"access denied to model",
 	"model not available",
 	"this model is not available",
