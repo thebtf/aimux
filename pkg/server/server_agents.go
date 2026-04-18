@@ -440,7 +440,12 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 			agentResult["hint"] = meta.Hint
 		}
 	}
-	return marshalToolResult(agentResult)
+	whitelist := budget.FieldWhitelist["agent"]
+	filtered, _, applyErr := budget.ApplyFields(agentResult, bp.Fields, whitelist)
+	if applyErr != nil {
+		return mcp.NewToolResultError(applyErr.Error()), nil
+	}
+	return marshalToolResult(filtered)
 }
 
 // findAgentInOverlay searches the per-project agent overlay by name.

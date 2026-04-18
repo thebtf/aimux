@@ -34,7 +34,7 @@ coverage.out
 .aider*
 cover.out
 
-# Editor backup files (numeric timestamps from aimux agent sessions)
+# Editor backup files (10-digit numeric timestamps from aimux agent sessions)
 *.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*
 
 # e2e aimux test log

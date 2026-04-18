@@ -276,7 +276,12 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 				}
 			}
 		}
-		return marshalToolResult(result)
+		whitelist := budget.FieldWhitelist["exec"]
+		filtered, _, applyErr := budget.ApplyFields(result, bp.Fields, whitelist)
+		if applyErr != nil {
+			return mcp.NewToolResultError(applyErr.Error()), nil
+		}
+		return marshalToolResult(filtered)
 	}
 
 	// Bootstrap prompt injection: prepend role-specific prompt from prompts.d/
@@ -387,7 +392,12 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 			result["hint"] = meta.Hint
 		}
 	}
-	return marshalToolResult(result)
+	whitelist := budget.FieldWhitelist["exec"]
+	filtered, _, applyErr := budget.ApplyFields(result, bp.Fields, whitelist)
+	if applyErr != nil {
+		return mcp.NewToolResultError(applyErr.Error()), nil
+	}
+	return marshalToolResult(filtered)
 }
 
 // executePairCoding runs a pair coding pipeline via orchestrator and updates job/session state.
