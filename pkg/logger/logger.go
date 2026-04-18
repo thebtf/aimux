@@ -5,8 +5,10 @@ package logger
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -63,34 +65,57 @@ type entry struct {
 type Logger struct {
 	level   Level
 	ch      chan entry
-	file    *os.File
+	file    *os.File // nil when writing to discard writer
+	writer  io.Writer
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	mu      sync.RWMutex // protects level changes
 }
 
+// isNullDevice returns true if path refers to the OS null device.
+// Accepts /dev/null (Unix convention) and NUL (Windows) cross-platform.
+func isNullDevice(path string) bool {
+	if path == "/dev/null" {
+		return true
+	}
+	if runtime.GOOS == "windows" && (path == "NUL" || path == "nul") {
+		return true
+	}
+	return false
+}
+
 // New creates a logger writing to the specified file path.
+// If path is empty or refers to the null device (/dev/null, NUL), log output
+// is discarded. This allows cross-platform test configs that use /dev/null.
 // Channel buffer size controls backpressure (default 1024).
 func New(path string, level Level) (*Logger, error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create log directory %s: %w", dir, err)
-	}
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open log file %s: %w", path, err)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 
 	l := &Logger{
 		level:  level,
 		ch:     make(chan entry, 1024),
-		file:   f,
 		ctx:    ctx,
 		cancel: cancel,
+	}
+
+	if path == "" || isNullDevice(path) {
+		// Discard all log output — used in tests and when no log file is configured.
+		l.writer = io.Discard
+	} else {
+		dir := filepath.Dir(path)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			cancel()
+			return nil, fmt.Errorf("create log directory %s: %w", dir, err)
+		}
+
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("open log file %s: %w", path, err)
+		}
+		l.file = f
+		l.writer = f
 	}
 
 	l.wg.Add(1)
@@ -137,7 +162,10 @@ func (l *Logger) Error(format string, args ...any) {
 func (l *Logger) Close() error {
 	l.cancel()
 	l.wg.Wait()
-	return l.file.Close()
+	if l.file != nil {
+		return l.file.Close()
+	}
+	return nil
 }
 
 func (l *Logger) log(level Level, format string, args ...any) {
@@ -192,5 +220,5 @@ func (l *Logger) writeEntry(e entry) {
 		e.level.String(),
 		e.message,
 	)
-	_, _ = l.file.WriteString(line)
+	_, _ = fmt.Fprint(l.writer, line)
 }

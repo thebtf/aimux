@@ -11,20 +11,26 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/executor"
 	conptyExec "github.com/thebtf/aimux/pkg/executor/conpty"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	ptyExec "github.com/thebtf/aimux/pkg/executor/pty"
-	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/parser"
 	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
 func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	bp, budgetErr := budget.ParseBudgetParams(request)
+	if budgetErr != nil {
+		return mcp.NewToolResultError(budgetErr.Error()), nil
+	}
+
 	prompt, err := request.RequireString("prompt")
 	if err != nil {
 		return mcp.NewToolResultError("prompt is required"), nil
@@ -217,14 +223,58 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 		// Parse strategy result to include fields at top level
 		var stratResult types.StrategyResult
 		if json.Unmarshal([]byte(j.Content), &stratResult) == nil {
-			result["content"] = stratResult.Content
+			contentLen := len(stratResult.Content)
+			if bp.Tail > 0 {
+				tail := stratResult.Content
+				if len(tail) > bp.Tail {
+					tail = tail[len(tail)-bp.Tail:]
+				}
+				result["content_tail"] = tail
+				result["content_length"] = contentLen
+				meta := budget.BuildTruncationMeta(nil, contentLen, "Use exec with include_content=true for full output.")
+				if meta.Truncated {
+					result["truncated"] = meta.Truncated
+					result["hint"] = meta.Hint
+				}
+			} else if bp.IncludeContent {
+				result["content"] = stratResult.Content
+			} else {
+				result["content_length"] = contentLen
+				meta := budget.BuildTruncationMeta(nil, contentLen, "Use exec with include_content=true for full output.")
+				if meta.Truncated {
+					result["truncated"] = meta.Truncated
+					result["hint"] = meta.Hint
+				}
+			}
 			result["turns"] = stratResult.Turns
 			result["participants"] = stratResult.Participants
 			if stratResult.ReviewReport != nil {
 				result["review_report"] = stratResult.ReviewReport
 			}
 		} else {
-			result["content"] = j.Content
+			contentLen := len(j.Content)
+			if bp.Tail > 0 {
+				tail := j.Content
+				if len(tail) > bp.Tail {
+					tail = tail[len(tail)-bp.Tail:]
+				}
+				result["content_tail"] = tail
+				result["content_length"] = contentLen
+				meta := budget.BuildTruncationMeta(nil, contentLen, "Use exec with include_content=true for full output.")
+				if meta.Truncated {
+					result["truncated"] = meta.Truncated
+					result["hint"] = meta.Hint
+				}
+			} else if bp.IncludeContent {
+				result["content"] = j.Content
+			} else {
+				result["content_length"] = contentLen
+				meta := budget.BuildTruncationMeta(nil, contentLen, "Use exec with include_content=true for full output.")
+				if meta.Truncated {
+					result["truncated"] = meta.Truncated
+					result["hint"] = meta.Hint
+				}
+			}
 		}
 		return marshalToolResult(result)
 	}
@@ -313,7 +363,29 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	result := map[string]any{
 		"session_id": sess.ID,
 		"status":     string(j.Status),
-		"content":    j.Content,
+	}
+	contentLen := len(j.Content)
+	if bp.Tail > 0 {
+		tail := j.Content
+		if len(tail) > bp.Tail {
+			tail = tail[len(tail)-bp.Tail:]
+		}
+		result["content_tail"] = tail
+		result["content_length"] = contentLen
+		meta := budget.BuildTruncationMeta(nil, contentLen, "Use exec with include_content=true for full output.")
+		if meta.Truncated {
+			result["truncated"] = meta.Truncated
+			result["hint"] = meta.Hint
+		}
+	} else if bp.IncludeContent {
+		result["content"] = j.Content
+	} else {
+		result["content_length"] = contentLen
+		meta := budget.BuildTruncationMeta(nil, contentLen, "Use exec with include_content=true for full output.")
+		if meta.Truncated {
+			result["truncated"] = meta.Truncated
+			result["hint"] = meta.Hint
+		}
 	}
 	return marshalToolResult(result)
 }

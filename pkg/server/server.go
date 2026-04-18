@@ -29,6 +29,7 @@ import (
 	"github.com/thebtf/aimux/pkg/ratelimit"
 	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/skills"
 	"github.com/thebtf/aimux/pkg/think"
@@ -902,6 +903,11 @@ func (s *Server) registerResources() {
 // --- Tool Handlers ---
 
 func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	bp, budgetErr := budget.ParseBudgetParams(request)
+	if budgetErr != nil {
+		return mcp.NewToolResultError(budgetErr.Error()), nil
+	}
+
 	jobID, err := request.RequireString("job_id")
 	if err != nil {
 		return mcp.NewToolResultError("job_id is required"), nil
@@ -919,12 +925,39 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 					"status": string(task.Status),
 				}
 				if task.Status.IsTerminal() {
-					result["content"] = task.Result
+					taskContentLen := len(task.Result)
+					if bp.Tail > 0 {
+						tail := task.Result
+						if len(tail) > bp.Tail {
+							tail = tail[len(tail)-bp.Tail:]
+						}
+						result["content_tail"] = tail
+						result["content_length"] = taskContentLen
+						meta := budget.BuildTruncationMeta(nil, taskContentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
+						if meta.Truncated {
+							result["truncated"] = meta.Truncated
+							result["hint"] = meta.Hint
+						}
+					} else if bp.IncludeContent {
+						result["content"] = task.Result
+					} else {
+						result["content_length"] = taskContentLen
+						meta := budget.BuildTruncationMeta(nil, taskContentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
+						if meta.Truncated {
+							result["truncated"] = meta.Truncated
+							result["hint"] = meta.Hint
+						}
+					}
 					if task.Error != "" {
 						result["error"] = task.Error
 					}
 				}
-				return marshalToolResult(result)
+				whitelist := budget.FieldWhitelist["status"]
+				filtered, _, applyErr := budget.ApplyFields(result, bp.Fields, whitelist)
+				if applyErr != nil {
+					return mcp.NewToolResultError(applyErr.Error()), nil
+				}
+				return marshalToolResult(filtered)
 			}
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("job %q not found", jobID)), nil
@@ -941,9 +974,31 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 	}
 
 	if j.Status == types.JobStatusCompleted || j.Status == types.JobStatusFailed {
-		result["content"] = j.Content
 		if j.Error != nil {
 			result["error"] = j.Error.Error()
+		}
+		contentLen := len(j.Content)
+		if bp.Tail > 0 {
+			tail := j.Content
+			if len(tail) > bp.Tail {
+				tail = tail[len(tail)-bp.Tail:]
+			}
+			result["content_tail"] = tail
+			result["content_length"] = contentLen
+			meta := budget.BuildTruncationMeta(nil, contentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
+			if meta.Truncated {
+				result["truncated"] = meta.Truncated
+				result["hint"] = meta.Hint
+			}
+		} else if bp.IncludeContent {
+			result["content"] = j.Content
+		} else {
+			result["content_length"] = contentLen
+			meta := budget.BuildTruncationMeta(nil, contentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
+			if meta.Truncated {
+				result["truncated"] = meta.Truncated
+				result["hint"] = meta.Hint
+			}
 		}
 	}
 
@@ -962,7 +1017,12 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		result["warning"] = fmt.Sprintf("Polling detected (%d calls). Use a Sonnet subagent wrapper — see aimux guide skill (poll-wrapper-subagent pattern).", pollCount)
 	}
 
-	return marshalToolResult(result)
+	whitelist := budget.FieldWhitelist["status"]
+	filtered, _, applyErr := budget.ApplyFields(result, bp.Fields, whitelist)
+	if applyErr != nil {
+		return mcp.NewToolResultError(applyErr.Error()), nil
+	}
+	return marshalToolResult(filtered)
 }
 
 func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

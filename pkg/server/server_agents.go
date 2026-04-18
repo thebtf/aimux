@@ -8,10 +8,11 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -111,10 +112,10 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			// The calling LLM knows the task context better than keyword matching.
 			candidates := agents.ListCandidates(s.agentReg, prompt, 20)
 			return marshalToolResult(map[string]any{
-				"action":  "choose_agent",
-				"message": "No agent specified. Review the candidates below and call again with agent=<name>.",
+				"action":     "choose_agent",
+				"message":    "No agent specified. Review the candidates below and call again with agent=<name>.",
 				"candidates": candidates,
-				"hint":    "Pick the agent whose 'when' description best matches your task. Use the 'agent' tool directly with agent=<name> for fastest execution.",
+				"hint":       "Pick the agent whose 'when' description best matches your task. Use the 'agent' tool directly with agent=<name> for fastest execution.",
 			})
 		} else {
 			// Check overlay first (project-specific agents), then shared registry.
@@ -212,6 +213,11 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 }
 
 func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	bp, budgetErr := budget.ParseBudgetParams(request)
+	if budgetErr != nil {
+		return mcp.NewToolResultError(budgetErr.Error()), nil
+	}
+
 	agentName, err := request.RequireString("agent")
 	if err != nil {
 		return mcp.NewToolResultError("agent is required"), nil
@@ -401,17 +407,40 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("agent %q failed: %v", agentName, runErr)), nil
 	}
 
-	return marshalToolResult(map[string]any{
+	agentResult := map[string]any{
 		"agent":       agentName,
 		"cli":         cli,
 		"model":       model,
 		"effort":      effort,
 		"status":      result.Status,
 		"turns":       result.Turns,
-		"content":     result.Content,
 		"duration_ms": result.DurationMS,
-		"turn_log":    result.TurnLog,
-	})
+	}
+	contentLen := len(result.Content)
+	if bp.Tail > 0 {
+		tail := result.Content
+		if len(tail) > bp.Tail {
+			tail = tail[len(tail)-bp.Tail:]
+		}
+		agentResult["content_tail"] = tail
+		agentResult["content_length"] = contentLen
+		meta := budget.BuildTruncationMeta(nil, contentLen, "Use agent with include_content=true for full output.")
+		if meta.Truncated {
+			agentResult["truncated"] = meta.Truncated
+			agentResult["hint"] = meta.Hint
+		}
+	} else if bp.IncludeContent {
+		agentResult["content"] = result.Content
+		agentResult["turn_log"] = result.TurnLog
+	} else {
+		agentResult["content_length"] = contentLen
+		meta := budget.BuildTruncationMeta(nil, contentLen, "Use agent with include_content=true for full output.")
+		if meta.Truncated {
+			agentResult["truncated"] = meta.Truncated
+			agentResult["hint"] = meta.Hint
+		}
+	}
+	return marshalToolResult(agentResult)
 }
 
 // findAgentInOverlay searches the per-project agent overlay by name.
