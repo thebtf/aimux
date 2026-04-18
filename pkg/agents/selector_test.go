@@ -124,6 +124,60 @@ func TestAutoSelectAgent_HighScoreSelected(t *testing.T) {
 	}
 }
 
+// TestListCandidates_WhenFieldPreferredOverDescription verifies that ListCandidates
+// returns the agent's When field (not Description) in the candidate's When slot,
+// and that a builtin agent's When field is non-empty and surfaced to callers.
+func TestListCandidates_WhenFieldPreferredOverDescription(t *testing.T) {
+	reg := agents.NewRegistry()
+	reg.Register(&agents.Agent{
+		Name:        "with-when",
+		Description: "short description",
+		When:        "Use when you need the when-field agent",
+		Role:        "coding",
+		Source:      "test",
+	})
+	reg.Register(&agents.Agent{
+		Name:        "without-when",
+		Description: "fallback description",
+		Role:        "coding",
+		Source:      "test",
+	})
+
+	candidates := agents.ListCandidates(reg, "", 0)
+
+	byName := make(map[string]agents.AgentCandidate, len(candidates))
+	for _, c := range candidates {
+		byName[c.Name] = c
+	}
+
+	// Agent with When set: the When field must appear verbatim in the candidate.
+	if got := byName["with-when"].When; got != "Use when you need the when-field agent" {
+		t.Errorf("with-when candidate When = %q, want explicit When value", got)
+	}
+
+	// Agent without When: falls back to Description.
+	if got := byName["without-when"].When; got != "fallback description" {
+		t.Errorf("without-when candidate When = %q, want fallback to Description", got)
+	}
+}
+
+// TestListCandidates_BuiltinWhenNonEmpty verifies that every builtin agent has a
+// non-empty When field that propagates into ListCandidates output.
+func TestListCandidates_BuiltinWhenNonEmpty(t *testing.T) {
+	reg := agents.NewRegistry()
+	agents.RegisterBuiltins(reg)
+
+	candidates := agents.ListCandidates(reg, "", 0)
+	if len(candidates) == 0 {
+		t.Fatal("expected at least one builtin candidate")
+	}
+	for _, c := range candidates {
+		if c.When == "" {
+			t.Errorf("builtin agent %q has empty When in ListCandidates output", c.Name)
+		}
+	}
+}
+
 // TestAutoSelectAgent_GenericPromptUsesGeneral verifies that the canonical
 // false-positive case — "Respond with 'test'" — does not match "incident-responder"
 // or any other agent and falls back to "generic".

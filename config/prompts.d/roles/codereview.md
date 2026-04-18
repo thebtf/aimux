@@ -58,3 +58,5 @@ Paths or conditions not covered by tests.
 ## Positive Observations
 What was done well — acknowledge good patterns.
 ```
+
+To implement these findings: use `exec(role="coding", prompt="<this output>")` in a follow-up call.

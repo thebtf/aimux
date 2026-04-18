@@ -23,8 +23,11 @@ command:
 prompt_flag: ""
 prompt_flag_type: "positional"
 
-# WARNING: --model expects hub slug format (owner/package), not bare model names.
-# Example: --model anthropic/claude-sonnet-4-5 (NOT --model claude-sonnet-4-5)
+# model_format: --model expects a hub slug (owner/package), NOT a bare model name.
+# Example: --model anthropic/claude-sonnet-4-5 (CORRECT)
+#          --model claude-sonnet-4-5            (WRONG — will fail silently)
+# The hub slug format is owner/package as listed on the Continue hub registry.
+# Bare model names (claude-sonnet-4-5, gpt-4o, etc.) are silently ignored by cn.
 default_model: ""
 model_flag: "--model"
 

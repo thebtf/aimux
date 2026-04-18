@@ -51,3 +51,5 @@ Read code using available tools. Never guess file contents.
 ## Action Items
 - [file:line] what to fix (if any)
 ```
+
+To implement these findings: use `exec(role="coding", prompt="<this output>")` in a follow-up call.

@@ -25,7 +25,10 @@ type Agent struct {
 	Content       string            `json:"content,omitempty"`
 	ContentPrefix string            `json:"-"` // first 200 runes of Content, pre-computed at registration
 	Tools         []string          `json:"tools,omitempty"`
-	MaxTurns      int               `json:"max_turns,omitempty"`
+	MaxTurns      int               `json:"max_turns,omitempty" yaml:"max_turns,omitempty"`
+	// When describes the conditions under which this agent should be selected.
+	// Used by agents(action="find") to match tasks to the right agent.
+	When          string            `json:"when,omitempty" yaml:"when,omitempty"`
 	Meta          map[string]string `json:"meta,omitempty"`
 }
 
@@ -294,10 +297,12 @@ func (r *Registry) Find(query string) []*Agent {
 
 	for _, a := range r.agents {
 		// Use pre-computed ContentPrefix (first 200 runes, set at registration).
+		// When is included so agents are findable by their use-case guidance text.
 		if strings.Contains(strings.ToLower(a.Name), query) ||
 			strings.Contains(strings.ToLower(a.Description), query) ||
 			strings.Contains(strings.ToLower(a.Domain), query) ||
 			strings.Contains(strings.ToLower(a.Role), query) ||
+			strings.Contains(strings.ToLower(a.When), query) ||
 			strings.Contains(strings.ToLower(a.ContentPrefix), query) {
 			matches = append(matches, a)
 		}
@@ -362,6 +367,8 @@ func parseFrontmatter(agent *Agent, content string) {
 			}
 		case "domain":
 			agent.Domain = val
+		case "when":
+			agent.When = val
 		}
 	}
 }

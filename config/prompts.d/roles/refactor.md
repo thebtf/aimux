@@ -58,3 +58,5 @@ Sequence of refactorings with rationale for ordering.
 ## Prerequisites
 Tests or other changes needed before refactoring can begin.
 ```
+
+To implement these findings: use `exec(role="coding", prompt="<this output>")` in a follow-up call.

@@ -44,6 +44,12 @@ audit(cwd="{{.Args.cwd}}/pkg/auth", mode="deep")
 audit(cwd="{{.Args.cwd}}/pkg/api", mode="deep")
 ```
 
+**ASYNC NOTE:** `audit` runs asynchronously by default and returns a `job_id` immediately
+(status: `running`). Use a poll-wrapper subagent pattern — call `status(job_id="...")` in a
+loop until a terminal status, then read findings from the final payload (see the workflow
+skill for the poll-wrapper-subagent pattern). If Phase 1 requires immediate findings in a
+single step, run `audit(async=false)`.
+
 **GATE:** Do NOT proceed until the audit tool has returned a findings list.
 - If `audit` returns empty results: verify `cwd` is correct and the project is indexed.
 - If `audit` times out: switch to `mode="quick"` and escalate scope incrementally.

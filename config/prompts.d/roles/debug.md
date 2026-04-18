@@ -65,3 +65,5 @@ Specific changes needed, with rationale.
 ## Regression Prevention
 How to prevent this category of bug in the future.
 ```
+
+To implement these findings: use `exec(role="coding", prompt="<this output>")` in a follow-up call.

@@ -65,3 +65,5 @@ Phase ordering and parallel opportunities.
 ## Critical Path
 The sequence that determines minimum completion.
 ```
+
+To implement these findings: use `exec(role="coding", prompt="<this output>")` in a follow-up call.
