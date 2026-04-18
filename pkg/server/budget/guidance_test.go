@@ -72,9 +72,6 @@ func TestAttachTruncation_NonMapResultUnchanged(t *testing.T) {
 	if env.Result != original {
 		t.Fatalf("Result mutated: %#v", env.Result)
 	}
-	if env.Result != original {
-		t.Fatal("result should remain the same non-map value")
-	}
 }
 
 func TestAttachTruncation_NoUpdateWhenNotTruncated(t *testing.T) {

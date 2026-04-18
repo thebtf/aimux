@@ -176,4 +176,55 @@ func TestParseBudgetParams(t *testing.T) {
 			t.Fatalf("LoomLimit = %d, want 10", got.LoomLimit)
 		}
 	})
+
+	t.Run("sessions_offset negative", func(t *testing.T) {
+		_, err := ParseBudgetParams(makeRequest(map[string]any{"sessions_offset": -1}))
+		if err == nil {
+			t.Fatal("expected error for negative sessions_offset")
+		}
+		if !strings.Contains(err.Error(), "sessions_offset must be >= 0") {
+			t.Fatalf("error = %q", err.Error())
+		}
+	})
+
+	t.Run("loom_offset negative", func(t *testing.T) {
+		_, err := ParseBudgetParams(makeRequest(map[string]any{"loom_offset": -1}))
+		if err == nil {
+			t.Fatal("expected error for negative loom_offset")
+		}
+		if !strings.Contains(err.Error(), "loom_offset must be >= 0") {
+			t.Fatalf("error = %q", err.Error())
+		}
+	})
+
+	t.Run("sessions_limit negative", func(t *testing.T) {
+		_, err := ParseBudgetParams(makeRequest(map[string]any{"sessions_limit": -1}))
+		if err == nil {
+			t.Fatal("expected error for negative sessions_limit")
+		}
+		if !strings.Contains(err.Error(), "sessions_limit must be >= 0") {
+			t.Fatalf("error = %q", err.Error())
+		}
+	})
+
+	t.Run("loom_limit negative", func(t *testing.T) {
+		_, err := ParseBudgetParams(makeRequest(map[string]any{"loom_limit": -1}))
+		if err == nil {
+			t.Fatal("expected error for negative loom_limit")
+		}
+		if !strings.Contains(err.Error(), "loom_limit must be >= 0") {
+			t.Fatalf("error = %q", err.Error())
+		}
+	})
+
+	t.Run("tail sentinel -999 is valid", func(t *testing.T) {
+		// The old sentinel trick would ignore tail=-999; now we use GetArguments() presence check.
+		got, err := ParseBudgetParams(makeRequest(map[string]any{"tail": -999}))
+		if err == nil {
+			t.Fatalf("tail=-999 should be rejected as <= 0, got params: %+v", got)
+		}
+		if !strings.Contains(err.Error(), "tail must be >= 1") {
+			t.Fatalf("error = %q", err.Error())
+		}
+	})
 }

@@ -71,11 +71,29 @@ func TestTaskStore_CountByProjectAndStatuses(t *testing.T) {
 	}
 }
 
+func TestTaskStore_CountByStatusesOnly(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Create(makeTask("t1", "proj-a", TaskStatusRunning)); err != nil {
+		t.Fatalf("Create t1: %v", err)
+	}
+	if err := store.Create(makeTask("t2", "proj-b", TaskStatusPending)); err != nil {
+		t.Fatalf("Create t2: %v", err)
+	}
+	if err := store.Create(makeTask("t3", "proj-c", TaskStatusRunning)); err != nil {
+		t.Fatalf("Create t3: %v", err)
+	}
+
+	got, err := store.Count(TaskFilter{Statuses: []TaskStatus{TaskStatusRunning}})
+	if err != nil {
+		t.Fatalf("Count running: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("running count = %d, want 2", got)
+	}
+}
+
 func TestLoomEngine_CountDelegatesToStore(t *testing.T) {
 	engine := New(newTestStore(t))
-	_ = engine
-	// newTestStore is not exported outside this package file scope, but it is
-	// available here because this test is in package loom.
 	store := engine.store
 
 	if err := store.Create(makeTask("t1", "proj-x", TaskStatusPending)); err != nil {

@@ -21,11 +21,16 @@ func AttachTruncation(envelope *guidance.ResponseEnvelope, meta TruncationMeta) 
 
 	switch r := envelope.Result.(type) {
 	case nil:
-		envelope.Result = map[string]any{
-			"truncated":      meta.Truncated,
-			"hint":           meta.Hint,
-			"content_length": meta.ContentLength,
+		m := map[string]any{
+			"truncated": meta.Truncated,
 		}
+		if meta.Hint != "" {
+			m["hint"] = meta.Hint
+		}
+		if meta.ContentLength > 0 {
+			m["content_length"] = meta.ContentLength
+		}
+		envelope.Result = m
 	case map[string]any:
 		r["truncated"] = meta.Truncated
 		if meta.Hint != "" {

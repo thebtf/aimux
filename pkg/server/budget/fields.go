@@ -7,9 +7,12 @@ import (
 )
 
 var FieldWhitelist = map[string][]string{
-	"status":                  {"job_id", "status", "progress", "poll_count", "session_id", "error", "content_length"},
+	// Content-bearing fields (content, transcript, full_report) are listed here
+	// so that callers using fields=content,… with include_content=true pass ApplyFields.
+	// ValidateContentBearingFields enforces that include_content=true is required.
+	"status":                  {"job_id", "status", "progress", "poll_count", "session_id", "error", "content_length", "content"},
 	"sessions/list":           {"sessions", "loom_tasks", "sessions_pagination", "loom_pagination"},
-	"sessions/info":           {"session", "jobs"},
+	"sessions/info":           {"session", "jobs", "content"},
 	"sessions/health":         {},
 	"sessions/cancel":         {},
 	"sessions/kill":           {},
@@ -17,23 +20,23 @@ var FieldWhitelist = map[string][]string{
 	"sessions/refresh-warmup": {},
 	"investigate/list":        {"session_id", "topic", "domain", "status", "finding_count"},
 	"investigate/status":      {"session_id", "topic", "domain", "status", "finding_count", "coverage_progress"},
-	"investigate/recall":      {"session_id", "topic", "finding_count", "content_length"},
+	"investigate/recall":      {"session_id", "topic", "finding_count", "content_length", "content", "full_report"},
 	"investigate/start":       {},
 	"investigate/finding":     {},
 	"investigate/assess":      {},
 	"investigate/report":      {},
 	"investigate/auto":        {},
 	"agents/list":             {"name", "description", "role", "domain"},
-	"agents/info":             {"name", "description", "role", "domain", "tools", "when", "content_length"},
+	"agents/info":             {"name", "description", "role", "domain", "tools", "when", "content_length", "content"},
 	"agents/find":             {"name", "description", "role", "domain"},
-	"exec":                    {"job_id", "status"},
-	"agent":                   {"job_id", "status", "session_id"},
-	"consensus":               {"job_id", "status", "session_id"},
-	"debate":                  {"job_id", "status", "session_id"},
-	"dialog":                  {"job_id", "status", "session_id"},
-	"audit":                   {"job_id", "status"},
+	"exec":                    {"job_id", "status", "content"},
+	"agent":                   {"job_id", "status", "session_id", "content", "transcript"},
+	"consensus":               {"job_id", "status", "session_id", "content", "transcript"},
+	"debate":                  {"job_id", "status", "session_id", "content", "transcript"},
+	"dialog":                  {"job_id", "status", "session_id", "content", "transcript"},
+	"audit":                   {"job_id", "status", "content", "transcript"},
 	"deepresearch":            {},
-	"workflow":                {"job_id", "status", "session_id"},
+	"workflow":                {"job_id", "status", "session_id", "content", "transcript"},
 	"think":                   {},
 	"upgrade":                 {},
 }
@@ -150,9 +153,3 @@ func ValidateContentBearingFields(fields []string, contentBearing []string, incl
 	return nil
 }
 
-func max(a int, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

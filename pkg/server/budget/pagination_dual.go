@@ -12,29 +12,35 @@ type DualSourceResponse[S any, L any] struct {
 // Cursor logic:
 //
 //	sessionsLimit = params.SessionsLimit if >0, else params.Limit if >0, else DefaultLimit
-//	sessionsOffset = params.SessionsOffset if SessionsLimit>0, else params.Offset
+//	sessionsOffset = params.SessionsOffset if SessionsOffset>0 or SessionsLimit>0, else params.Offset
 //	loomLimit = params.LoomLimit if >0, else params.Limit if >0, else DefaultLimit
-//	loomOffset = params.LoomOffset if LoomLimit>0, else params.Offset
+//	loomOffset = params.LoomOffset if LoomOffset>0 or LoomLimit>0, else params.Offset
 func PaginateDualSource[S any, L any](sessions []S, loomTasks []L, params BudgetParams) DualSourceResponse[S, L] {
-	sessionsLimit := params.SessionsLimit
-	sessionsOffset := params.SessionsOffset
-	if sessionsLimit <= 0 {
-		sessionsLimit = params.Limit
-		if sessionsLimit <= 0 {
-			sessionsLimit = DefaultLimit
+	// resolveLimit returns the effective page size: per-source > global > DefaultLimit.
+	resolveLimit := func(sourceLimit int) int {
+		if sourceLimit > 0 {
+			return sourceLimit
 		}
-		sessionsOffset = params.Offset
+		if params.Limit > 0 {
+			return params.Limit
+		}
+		return DefaultLimit
 	}
 
-	loomLimit := params.LoomLimit
-	loomOffset := params.LoomOffset
-	if loomLimit <= 0 {
-		loomLimit = params.Limit
-		if loomLimit <= 0 {
-			loomLimit = DefaultLimit
+	// resolveOffset returns the per-source offset when it is explicitly set
+	// (sourceOffset > 0 or sourceLimit > 0 signals per-source mode),
+	// otherwise falls back to the global offset.
+	resolveOffset := func(sourceOffset, sourceLimit int) int {
+		if sourceOffset > 0 || sourceLimit > 0 {
+			return sourceOffset
 		}
-		loomOffset = params.Offset
+		return params.Offset
 	}
+
+	sessionsLimit := resolveLimit(params.SessionsLimit)
+	sessionsOffset := resolveOffset(params.SessionsOffset, params.SessionsLimit)
+	loomLimit := resolveLimit(params.LoomLimit)
+	loomOffset := resolveOffset(params.LoomOffset, params.LoomLimit)
 
 	sessionsPage, sessionsMeta := PaginateSingle(sessions, sessionsLimit, sessionsOffset)
 	loomPage, loomMeta := PaginateSingle(loomTasks, loomLimit, loomOffset)

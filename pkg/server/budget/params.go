@@ -13,6 +13,9 @@ const DefaultLimit = 20
 // MaxLimit is the hard upper bound for list limits.
 const MaxLimit = 100
 
+// BudgetParams holds parsed pagination and filtering parameters from a tool request.
+// Dual-source fields (Sessions*, Loom*) are used by sessions/list for independent
+// cursor control per data source. Zero values for limits signal "use global limit".
 type BudgetParams struct {
 	Fields         []string
 	Limit          int
@@ -67,8 +70,8 @@ func ParseBudgetParams(request mcp.CallToolRequest) (BudgetParams, error) {
 
 	params.IncludeContent = request.GetBool("include_content", false)
 
-	rawTail := request.GetInt("tail", -999)
-	if rawTail != -999 {
+	if _, hasTail := request.GetArguments()["tail"]; hasTail {
+		rawTail := request.GetInt("tail", 0)
 		if rawTail <= 0 {
 			return BudgetParams{}, fmt.Errorf("tail must be >= 1")
 		}
@@ -76,9 +79,22 @@ func ParseBudgetParams(request mcp.CallToolRequest) (BudgetParams, error) {
 	}
 
 	params.SessionsLimit = request.GetInt("sessions_limit", 0)
+	if params.SessionsLimit < 0 {
+		return BudgetParams{}, fmt.Errorf("sessions_limit must be >= 0")
+	}
 	params.SessionsOffset = request.GetInt("sessions_offset", 0)
+	if params.SessionsOffset < 0 {
+		return BudgetParams{}, fmt.Errorf("sessions_offset must be >= 0")
+	}
+
 	params.LoomLimit = request.GetInt("loom_limit", 0)
+	if params.LoomLimit < 0 {
+		return BudgetParams{}, fmt.Errorf("loom_limit must be >= 0")
+	}
 	params.LoomOffset = request.GetInt("loom_offset", 0)
+	if params.LoomOffset < 0 {
+		return BudgetParams{}, fmt.Errorf("loom_offset must be >= 0")
+	}
 
 	return params, nil
 }

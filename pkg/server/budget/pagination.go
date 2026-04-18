@@ -16,6 +16,7 @@ type PaginationMeta struct {
 
 // PaginateSingle returns a stable copy of items[offset:offset+limit] and pagination metadata.
 // Uses append([]T(nil), ...) for immutable copy.
+// offset < 0 or limit <= 0 returns an empty page (no panic).
 func PaginateSingle[T any](items []T, limit, offset int) (page []T, meta PaginationMeta) {
 	meta = PaginationMeta{
 		Total:  len(items),
@@ -23,7 +24,7 @@ func PaginateSingle[T any](items []T, limit, offset int) (page []T, meta Paginat
 		Offset: offset,
 	}
 
-	if len(items) == 0 || offset >= len(items) || limit <= 0 {
+	if len(items) == 0 || offset < 0 || offset >= len(items) || limit <= 0 {
 		return []T{}, meta
 	}
 

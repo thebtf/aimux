@@ -30,15 +30,14 @@ func BuildTruncationMeta(omittedFields []string, contentLength int, hintTemplate
 		ContentLength: contentLength,
 	}
 
-	if hasContent && hasFields {
-		meta.Hint = fmt.Sprintf("content omitted (%d bytes); fields omitted: [%s]", contentLength, strings.Join(omittedFields, " "))
+	var parts []string
+	if hasContent {
+		parts = append(parts, fmt.Sprintf("content omitted (%d bytes)", contentLength))
 	}
-	if hasContent && !hasFields {
-		meta.Hint = fmt.Sprintf("content omitted (%d bytes)", contentLength)
+	if hasFields {
+		parts = append(parts, fmt.Sprintf("fields omitted: [%s]", strings.Join(omittedFields, " ")))
 	}
-	if !hasContent && hasFields {
-		meta.Hint = fmt.Sprintf("fields omitted: [%s]", strings.Join(omittedFields, " "))
-	}
+	meta.Hint = strings.Join(parts, "; ")
 
 	if hintTemplate != "" {
 		meta.Hint = fmt.Sprintf("%s. %s", meta.Hint, hintTemplate)

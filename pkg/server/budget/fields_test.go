@@ -22,13 +22,16 @@ func TestApplyFields(t *testing.T) {
 			t.Fatalf("ApplyFields() error = %v", err)
 		}
 
-		if len(got) != 4 {
-			t.Fatalf("len(got) = %d", len(got))
+		// "status" whitelist now includes "content" (synced with ContentBearingFields).
+		// truncated + content_length pass as policy metadata.
+		// Expected keys: job_id, status, content, truncated, content_length = 5.
+		if len(got) != 5 {
+			t.Fatalf("len(got) = %d, want 5", len(got))
 		}
 
-		expected := map[string]struct{}{"content": {}, "extra": {}}
+		expected := map[string]struct{}{"extra": {}}
 		if len(omitted) != len(expected) {
-			t.Fatalf("len(omitted) = %d, want %d", len(omitted), len(expected))
+			t.Fatalf("len(omitted) = %d, want %d; omitted=%v", len(omitted), len(expected), omitted)
 		}
 		for _, field := range omitted {
 			if _, ok := expected[field]; !ok {
