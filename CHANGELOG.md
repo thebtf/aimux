@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.3] - 2026-04-18
+
+Patch release: model-level fallback for inaccessible models.
+
+### Added
+
+- **`executor.ErrorClassModelUnavailable`** (#92) — new error classification
+  distinguishes model-level access failures from CLI-level auth failures. When
+  a model is inaccessible to the caller (e.g. `gpt-5.3-codex-spark` for a
+  ChatGPT account without spark access), aimux now falls through to the next
+  model in the `model_fallback` chain on the same CLI instead of skipping the
+  CLI entirely. Addresses the "model not found" Fatal misclassification that
+  caused instant failures for ChatGPT-account delegation.
+- **Sentinel errors `executor.ErrQuotaExhausted` and `executor.ErrModelUnavailable`**
+  (#92) — exported sentinel errors for reliable detection via `errors.Is`,
+  replacing fragile `strings.Contains` checks on error message text.
+
+### Fixed
+
+- **13 new ModelUnavailable patterns** in `pkg/executor/classify.go`:
+  `model not found`, `not available for your account`, `not authorized for model`,
+  `not authorized for this model`, `model not enabled`, `access denied to model`,
+  `access denied to this model`, `model not available`, `this model is not available`,
+  `you do not have access to model`, `you do not have access to this model`,
+  `you don't have access to model`, `you don't have access to this model`.
+- **Priority reordering**: `ErrorClass` iota now matches `ClassifyError` priority
+  (Quota → ModelUnavailable → Transient → Fatal → Unknown). Previous iota order
+  had ModelUnavailable appended at the end, which was internally inconsistent
+  with the switch check order.
+- **Regression protection**: bare `"unauthorized"` (without `for model` qualifier)
+  and bare `"access denied"` (without `to model` qualifier) remain classified as
+  Fatal — credential/permission problems, not model-level.
+
+### Internal
+
+- 17 new unit tests across `pkg/executor/classify_test.go` and the new
+  `pkg/executor/fallback_test.go`, covering every new pattern, priority edge
+  cases, cross-field collisions, empty inputs, uppercase variants, and the
+  transient-retry → ModelUnavailable nested path.
+- 2 new integration tests in `pkg/server/model_fallback_test.go`:
+  `TestModelFallback_ModelUnavailableThenSuccess` and
+  `TestModelFallback_AllModelsUnavailable_ReturnsRateLimitError`.
+- Spec: `.agent/specs/model-fallback-chain/spec.md` Amendment 2026-04-18 (FR-7/8/9).
+- Added `.claude/` to `.gitignore` (local Claude Code session state should not be
+  committed).
+
+### Compatibility
+
+- No API changes. `ErrorClass` enum is internal.
+- Downstream callers that check error strings for `"rate limit"` continue to work —
+  the outer error wrapper preserves that substring so CLI-fallback routing
+  behaves identically.
+- `ErrQuotaExhausted` / `ErrModelUnavailable` are newly exported but additive.
+
 ## [4.0.2] - 2026-04-18
 
 Patch release: muxcore dep bump to v0.20.0 and aimux internal skill prompt fixes.
