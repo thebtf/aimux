@@ -297,10 +297,12 @@ func (r *Registry) Find(query string) []*Agent {
 
 	for _, a := range r.agents {
 		// Use pre-computed ContentPrefix (first 200 runes, set at registration).
+		// When is included so agents are findable by their use-case guidance text.
 		if strings.Contains(strings.ToLower(a.Name), query) ||
 			strings.Contains(strings.ToLower(a.Description), query) ||
 			strings.Contains(strings.ToLower(a.Domain), query) ||
 			strings.Contains(strings.ToLower(a.Role), query) ||
+			strings.Contains(strings.ToLower(a.When), query) ||
 			strings.Contains(strings.ToLower(a.ContentPrefix), query) {
 			matches = append(matches, a)
 		}

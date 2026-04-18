@@ -61,7 +61,9 @@ What is tested and what is not.
 
 ## Generated Test Files
 
-For each test file to be created or extended, write the complete file content:
+For each test file:
+- if creating a new file, write the complete file content;
+- if extending an existing file, provide only the added or changed test blocks — do not overwrite unrelated tests.
 
 **File:** `pkg/foo/foo_test.go`
 ```go

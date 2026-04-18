@@ -44,7 +44,7 @@ project-defined agent).
    ```
    agents(action="find", prompt="review code security")
    ```
-   Returns a list of candidates with name, description, and `when` guidance.
+   Returns a list of candidates with `name`, `role`, and `when` guidance.
 
 2. Run the chosen agent:
    ```
@@ -61,8 +61,8 @@ project-defined agent).
 **When to prefer `agents` over `exec`:**
 - You need a specialist with a predefined persona and constraints (e.g., "reviewer" always
   provides file:line references; "implementer" always writes tests).
-- The project defines custom agents in `.aimux/agents/` or `.claude/agents/` — these are
-  surfaced only via `agents`, not `exec`.
+- The project defines custom agents in `.aimux/agents/`, `.claude/agents/`, `.codex/agents/`,
+  or `.claw/agents/` — these are surfaced only via `agents`, not `exec`.
 - Use `exec(role=...)` as the fallback when no named agent matches the task.
 
 ---

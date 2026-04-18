@@ -156,7 +156,12 @@ func ListCandidates(registry *Registry, prompt string, maxResults int) []AgentCa
 
 	scored := make([]scoredCandidate, 0, len(registry.agents))
 	for _, a := range registry.agents {
-		when := a.Description
+		// Prefer the explicit When field (set in frontmatter or builtin definition).
+		// Fall back to Description, then Domain for agents that pre-date the When field.
+		when := a.When
+		if when == "" {
+			when = a.Description
+		}
 		if when == "" {
 			when = a.Domain
 		}

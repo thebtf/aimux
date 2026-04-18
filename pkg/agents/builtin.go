@@ -54,10 +54,12 @@ var builtinAgents = []*Agent{
 	{
 		Name:        "generic",
 		Description: "General-purpose assistant — follows instructions literally, no assumptions",
-		// Role: "analyze" routes to a lighter-weight CLI than "coding", appropriate for a
-		// general-purpose agent whose tasks span analysis, Q&A, and simple transformations.
-		// Use "implementer" when the task specifically requires writing or modifying files.
-		Role:   "analyze",
+		// Role: "default" routes to a general-purpose CLI (codex, medium effort) — capable
+		// of both analysis and file modification, which is required for a last-resort agent
+		// that follows instructions literally (including "implement only what was described").
+		// "coding" was considered but is overkill for Q&A/analysis tasks. "analyze" routes
+		// to gemini (read-only advisory), which blocks implementation requests.
+		Role:   "default",
 		Domain: "general",
 		Content: "Follow the user's instructions exactly as written. Do not add, expand, or interpret beyond what was explicitly asked. If asked to respond with a specific phrase — respond with that phrase only. If asked to read a file — read it and report what was asked. If asked to implement — implement only what was described. No preamble, no summary, no extra steps.",
 		// MaxTurns: 1 — generic agent is designed for precise, bounded tasks. If a task
