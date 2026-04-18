@@ -55,9 +55,11 @@ var modelUnavailablePatterns = []string{
 	"not authorized for this model",
 	"model not enabled",
 	"access denied to model",
+	"access denied to this model",
 	"model not available",
 	"this model is not available",
 	"you do not have access to model",
+	"you do not have access to this model",
 	"you don't have access to this model",
 }
 
