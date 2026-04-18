@@ -98,3 +98,20 @@ func (r *Registry) AllCLIs() []string {
 	return result
 }
 
+// ProbeableCLIs returns names of CLIs whose binary has been resolved by Probe().
+// Warmup consults this list — not EnabledCLIs — so that CLIs marked unavailable
+// by a previous warmup probe can be retried and re-enabled on success.
+func (r *Registry) ProbeableCLIs() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make([]string, 0, len(r.profiles))
+	for name, profile := range r.profiles {
+		if profile != nil && profile.ResolvedPath != "" {
+			result = append(result, name)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+

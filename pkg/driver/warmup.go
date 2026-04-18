@@ -57,7 +57,10 @@ func runWarmupWithExec(ctx context.Context, reg *Registry, cfg *config.Config, e
 		return nil
 	}
 
-	clis := reg.EnabledCLIs()
+	// Probe every CLI with a resolved binary, not just the currently-enabled ones.
+	// This lets refresh-warmup re-enable a CLI that a prior warmup marked
+	// unavailable (e.g. transient timeout) once its probe passes again.
+	clis := reg.ProbeableCLIs()
 	if len(clis) == 0 {
 		return nil
 	}
@@ -89,23 +92,17 @@ func runWarmupWithExec(ctx context.Context, reg *Registry, cfg *config.Config, e
 	for r := range results {
 		if r.isQuota {
 			// Quota: CLI is healthy, just rate-limited. Model cooldown is handled
-			// by the executor layer during actual requests. Leave enabled.
+			// by the executor layer during actual requests. Mark available so a
+			// previously-unavailable CLI can come back online on the next refresh.
+			reg.SetAvailable(r.cli, true)
 			continue
 		}
-		if !r.passed {
-			reg.setUnavailable(r.cli)
-		}
+		// Always set availability explicitly from the probe outcome. Passing
+		// probes re-enable CLIs that an earlier warmup marked unavailable.
+		reg.SetAvailable(r.cli, r.passed)
 	}
 
 	return nil
-}
-
-// setUnavailable marks a CLI as unavailable in the registry.
-// Uses defer for panic-safe mutex release.
-func (r *Registry) setUnavailable(cli string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.available[cli] = false
 }
 
 // probeOne executes a single warmup probe for one CLI and returns the result.

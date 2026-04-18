@@ -62,9 +62,10 @@ func makeWarmupRegistry(t *testing.T, names ...string) *Registry {
 	profiles := make(map[string]*config.CLIProfile, len(names))
 	for _, name := range names {
 		profiles[name] = &config.CLIProfile{
-			Name:    name,
-			Binary:  "echo",
-			Command: config.CommandConfig{Base: "echo"},
+			Name:         name,
+			Binary:       "echo",
+			Command:      config.CommandConfig{Base: "echo"},
+			ResolvedPath: "/fake/path/" + name, // simulate successful Probe()
 			// WarmupTimeoutSeconds: 0 → use global default
 		}
 	}
@@ -151,12 +152,14 @@ func TestRunWarmup_OneTimesOut(t *testing.T) {
 			Name:                 "codex",
 			Binary:               "echo",
 			Command:              config.CommandConfig{Base: "echo"},
+			ResolvedPath:         "/fake/path/codex",
 			WarmupTimeoutSeconds: 1, // 1-second probe timeout
 		},
 		"gemini": {
 			Name:                 "gemini",
 			Binary:               "echo",
 			Command:              config.CommandConfig{Base: "echo"},
+			ResolvedPath:         "/fake/path/gemini",
 			WarmupTimeoutSeconds: 1,
 		},
 	}
@@ -295,14 +298,16 @@ func TestDaemon_WarmupExcludesMisconfiguredCLI(t *testing.T) {
 	// (simulating a misconfigured or stale CLI entry).
 	profiles := map[string]*config.CLIProfile{
 		"bogus-cli": {
-			Name:    "bogus-cli",
-			Binary:  "/nonexistent/path/to/bogus-cli-xyz-99999",
-			Command: config.CommandConfig{Base: "/nonexistent/path/to/bogus-cli-xyz-99999"},
+			Name:         "bogus-cli",
+			Binary:       "/nonexistent/path/to/bogus-cli-xyz-99999",
+			Command:      config.CommandConfig{Base: "/nonexistent/path/to/bogus-cli-xyz-99999"},
+			ResolvedPath: "/nonexistent/path/to/bogus-cli-xyz-99999", // simulates Probe match on stale path
 		},
 		"valid-cli": {
-			Name:    "valid-cli",
-			Binary:  "echo",
-			Command: config.CommandConfig{Base: "echo"},
+			Name:         "valid-cli",
+			Binary:       "echo",
+			Command:      config.CommandConfig{Base: "echo"},
+			ResolvedPath: "/fake/path/valid-cli",
 		},
 	}
 
@@ -348,5 +353,36 @@ func TestDaemon_WarmupExcludesMisconfiguredCLI(t *testing.T) {
 	}
 	if !foundValid {
 		t.Errorf("valid-cli should remain enabled after warmup, got: %v", enabled)
+	}
+}
+
+// TestRunWarmup_ReEnablesPassingCLI verifies that a CLI marked unavailable by
+// a prior warmup pass is restored to available when it passes a subsequent probe.
+// Regression guard for PR #97 (findings #3): `refresh-warmup` must be able to
+// bring a transiently-failed CLI back online.
+func TestRunWarmup_ReEnablesPassingCLI(t *testing.T) {
+	reg := makeWarmupRegistry(t, "codex", "gemini")
+
+	// Simulate a prior warmup that marked gemini unavailable.
+	reg.SetAvailable("gemini", false)
+	if got := reg.EnabledCLIs(); len(got) != 1 || got[0] != "codex" {
+		t.Fatalf("setup: expected only codex enabled before refresh, got %v", got)
+	}
+
+	// Second warmup: both CLIs now pass the probe.
+	exec := &warmupStubExecutor{
+		handlers: map[string]func(types.SpawnArgs) (*types.Result, error){
+			"codex":  func(_ types.SpawnArgs) (*types.Result, error) { return &types.Result{Content: `{"ok":true}`, ExitCode: 0}, nil },
+			"gemini": func(_ types.SpawnArgs) (*types.Result, error) { return &types.Result{Content: `{"ok":true}`, ExitCode: 0}, nil },
+		},
+	}
+
+	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec); err != nil {
+		t.Fatalf("RunWarmup: %v", err)
+	}
+
+	enabled := reg.EnabledCLIs()
+	if len(enabled) != 2 {
+		t.Errorf("expected 2 enabled CLIs after re-warmup (gemini re-enabled), got %d: %v", len(enabled), enabled)
 	}
 }

@@ -28,7 +28,8 @@ PR #96 (Phase 7 routing + warmup).
 - **`pkg/driver/warmup.go`** (#96) — `driver.RunWarmup(ctx, reg, cfg)`. Structured JSON probe
   (`reply with JSON: {"ok": true}`). Per-CLI defaults: codex/claude=8s, gemini/qwen=10s,
   aider/continue=20s, droid/cline/crush=15s. `AIMUX_WARMUP=false` env opt-out.
-- **`Router.KnownRoles() []string`** (#96) — returns configured role names for validation.
+- **`Router.KnownRoles() []string`** (#96) — returns the full set of understood role
+  names: configured defaults plus every capability declared by enabled CLI profiles.
 
 ### Changed
 
@@ -41,7 +42,7 @@ PR #96 (Phase 7 routing + warmup).
 - **`generic` builtin agent routes via `analyze`** (#95) — previously routed via `coding` which
   triggered expensive codex CLI for "follow instructions literally" tasks.
 - **`testgen` role is IMPLEMENTER, not ADVISOR** (#95) — resolves contradictory identity.
-- **ADVISOR roles have handoff paragraph** (#95) — refactor/planner/review/codereview/analyze/debug
+- **ADVISOR roles have handoff paragraph** (#95) — refactor/planner/codereview/analyze/debug
   now include `exec(role="coding")` handoff guidance in Output Format.
 - **Tool description expansions** (#94) — `status`, `exec`, `agent`, `agents`, `sessions`,
   `deepresearch`, `workflow` descriptions expanded with state machines, async contracts,
@@ -53,7 +54,15 @@ PR #96 (Phase 7 routing + warmup).
 
 - **F7.1 silent misrouting** (#96) — unknown role names no longer silently fall back to alphabetical-first CLI.
 - **F7.4 implicit alphabetical CLI priority** (#96) — replaced with explicit `cli_priority` config.
-- **F7.5 binary-exists ≠ operational** (#96) — warmup probe validates CLIs before routing accepts them.
+- **Warmup re-enables recovered CLIs** (#97) — `RunWarmup` now iterates every CLI whose
+  binary resolved (`Registry.ProbeableCLIs()`) and sets availability explicitly from the
+  probe outcome, so a passing probe restores a CLI that an earlier warmup marked
+  unavailable. `sessions(action="refresh-warmup")` inherits this recovery behavior.
+- **`Router.KnownRoles()` reports capability roles** (#97) — capability-routed role names
+  (e.g. roles supported by a CLI profile but absent from `roles:` defaults) now appear
+  in `KnownRoles()` output instead of only defaults-configured names.
+- **CLI binary validated before routing accepts it** (#96) — warmup probe (F7.5) verifies
+  `reply with JSON: {"ok": true}` so a resolvable binary alone is not enough to be routed to.
 - **CLI profile documentation** (#95) — codex `account_gating` + version note, gemini
   intentionality comment on omitted `model_fallback`, continue hub-slug format warning elevated.
 - **`config/p26/classification.v1.json`** (#96) — added `sessions/refresh-warmup` action entry.
@@ -69,7 +78,8 @@ PR #96 (Phase 7 routing + warmup).
 - **Structured JSON probe parsing** — `json.NewDecoder` replaces manual brace-counting;
   correctly handles brace characters inside JSON string literals.
 - **`Registry.AllCLIs()`** — deterministically sorted slice.
-- **`Registry.setUnavailable()`** — extracted helper with `defer mu.Unlock()` for panic safety.
+- **`Registry.ProbeableCLIs()`** (#97) — sorted list of CLIs with resolved binaries; used
+  by warmup so previously-unavailable CLIs can be retried and re-enabled.
 
 ### Compatibility
 

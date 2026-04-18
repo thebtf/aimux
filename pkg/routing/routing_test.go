@@ -170,6 +170,34 @@ func TestResolve_KnownRole_UsesPriorityOrder(t *testing.T) {
 	}
 }
 
+// TestKnownRoles_IncludesCapabilities verifies that KnownRoles() reports both
+// configured defaults and roles declared as CLI capabilities, plus the
+// hard-coded "default" role. Regression guard for PR #97 (findings #2).
+func TestKnownRoles_IncludesCapabilities(t *testing.T) {
+	defaults := map[string]types.RolePreference{
+		"coding": {CLI: "codex"},
+	}
+	profiles := map[string]*config.CLIProfile{
+		"codex":  {Name: "codex", Capabilities: []string{"coding", "refactor"}},
+		"gemini": {Name: "gemini", Capabilities: []string{"analyze", "deep-research"}},
+	}
+
+	r := routing.NewRouterWithPriority(defaults, []string{"codex", "gemini"}, profiles, []string{"codex", "gemini"})
+
+	known := r.KnownRoles()
+	knownSet := make(map[string]bool, len(known))
+	for _, name := range known {
+		knownSet[name] = true
+	}
+
+	want := []string{"coding", "refactor", "analyze", "deep-research", "default"}
+	for _, name := range want {
+		if !knownSet[name] {
+			t.Errorf("KnownRoles missing %q; got %v", name, known)
+		}
+	}
+}
+
 func TestIsAdvisory(t *testing.T) {
 	advisory := []string{
 		"thinkdeep", "codereview", "secaudit", "challenge", "planner",

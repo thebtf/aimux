@@ -121,12 +121,35 @@ func buildPrioritized(enabled []string, priority []string) []string {
 }
 
 // KnownRoles returns the set of role names this router understands.
-// Includes all configured defaults plus the hard-coded "default" role.
+// Includes all configured defaults plus every capability declared by enabled CLI
+// profiles, so capability-routed roles are also reported as known. The "default"
+// role is always present.
 func (r *Router) KnownRoles() []string {
 	roleSet := maps.Keys(r.defaults)
 	known := slices.Collect(roleSet)
-	// Ensure "default" is always present.
-	if !slices.Contains(known, "default") {
+
+	seen := make(map[string]bool, len(known))
+	for _, role := range known {
+		seen[role] = true
+	}
+
+	for _, cli := range r.enabledCLIsPrioritized {
+		if r.profiles == nil {
+			break
+		}
+		profile, ok := r.profiles[cli]
+		if !ok {
+			continue
+		}
+		for _, cap := range profile.Capabilities {
+			if !seen[cap] {
+				known = append(known, cap)
+				seen[cap] = true
+			}
+		}
+	}
+
+	if !seen["default"] {
 		known = append(known, "default")
 	}
 	sort.Strings(known)
