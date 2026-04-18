@@ -66,6 +66,9 @@ fallback_suffix_strip:
 # The base model (-codex without -spark) is always available.
 cooldown_seconds: 86400
 
+# warmup_timeout_seconds: covers CLI cold-start + prompt→response; adjust if false-negatives accumulate
+warmup_timeout_seconds: 8
+
 # Timeout defaults
 timeout_seconds: 3600
 

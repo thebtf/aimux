@@ -29,6 +29,21 @@ reasoning:
   flag: "--reasoning-effort"
   levels: [none, low, medium, high, xhigh]
 
+# stdin_sentinel: cline does not read from stdin; no sentinel needed.
+stdin_sentinel: ""
+
+# model_fallback: cline manages its own model selection internally; no explicit fallback list.
+model_fallback: []
+
+# cooldown_seconds: back-off duration for rate-limited models.
+cooldown_seconds: 60
+
+# completion_pattern: cline emits a task summary line when done.
+completion_pattern: "Task completed|task complete"
+
+# warmup_timeout_seconds: covers CLI cold-start + prompt→response; adjust if false-negatives accumulate
+warmup_timeout_seconds: 15
+
 timeout_seconds: 600
 
 stdin_threshold: 6000

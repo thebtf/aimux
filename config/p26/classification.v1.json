@@ -53,7 +53,8 @@
         "health": "sync_ok",
         "info": "sync_ok",
         "kill": "sync_ok",
-        "list": "sync_ok"
+        "list": "sync_ok",
+        "refresh-warmup": "sync_ok"
       }
     },
     "status": {

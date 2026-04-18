@@ -28,9 +28,12 @@ prompt_flag_type: "short"
 default_model: ""
 model_flag: "--model"
 
-# model_fallback: omitted intentionally — Gemini CLI defaults to its own model selection
-# and manages quota internally. Fallback to alternative Gemini models is not currently
-# configured. Add model_fallback if quota exhaustion becomes a recurring issue.
+# stdin_sentinel: gemini does not read from stdin; no sentinel needed.
+stdin_sentinel: ""
+
+# model_fallback: Gemini CLI manages quota internally; no explicit fallback list.
+# Add entries here if quota exhaustion becomes a recurring issue.
+model_fallback: []
 
 # Cooldown duration (seconds) for rate-limited models.
 # Gemini CLI manages quota internally; 3600s (1h) prevents rapid retry on API errors.
@@ -40,6 +43,9 @@ cooldown_seconds: 3600
 # Gemini CLI JSON output does not emit a structured completion token, so we match
 # common terminal-state words in any output line.
 completion_pattern: "completed|done|finished"
+
+# warmup_timeout_seconds: covers CLI cold-start + prompt→response; adjust if false-negatives accumulate
+warmup_timeout_seconds: 10
 
 timeout_seconds: 600
 

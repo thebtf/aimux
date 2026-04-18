@@ -432,6 +432,8 @@ func (s *Server) registerTools() {
 				"Use agent tool instead for task-based work — it auto-selects the best agent. "+
 				"Use exec only when you need a specific CLI or low-level control. "+
 				"Use role= for task routing — CLI selection is driven by config (default.yaml roles section), not hardcoded mappings. "+
+				"Unknown role names return a validation error immediately — no CLI is spawned. "+
+				"Routing uses operator-configured priority from config cli_priority, not alphabetical order. "+
 				"When async=true: returns job_id immediately; the CLI runs in the background. "+
 				"To collect results: spawn a Sonnet subagent wrapper — see aimux guide skill (poll-wrapper-subagent pattern)."),
 			mcp.WithString("prompt",
@@ -490,13 +492,14 @@ func (s *Server) registerTools() {
 	// sessions tool
 	s.mcp.AddTool(
 		mcp.NewTool("sessions",
-			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc. "+
+			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc, refresh-warmup. "+
 				"action=list returns all sessions and tasks with no server-side pagination — "+
-				"use the limit parameter to cap results on busy servers."),
+				"use the limit parameter to cap results on busy servers. "+
+				"action=refresh-warmup re-runs CLI warmup probes and updates the routing pool."),
 			mcp.WithString("action",
 				mcp.Required(),
-				mcp.Description("Action: list, info, kill, gc, health, cancel"),
-				mcp.Enum("list", "info", "kill", "gc", "health", "cancel"),
+				mcp.Description("Action: list, info, kill, gc, health, cancel, refresh-warmup"),
+				mcp.Enum("list", "info", "kill", "gc", "health", "cancel", "refresh-warmup"),
 			),
 			mcp.WithString("session_id",
 				mcp.Description("Session ID (required for info/kill)"),
@@ -1077,6 +1080,42 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			}
 		}
 		return marshalToolResult(map[string]any{"collected": collected})
+
+	case "refresh-warmup":
+		// Re-run CLI warmup probes and update registry availability.
+		// Returns refreshed=false (with reason) when warmup is disabled via env or config.
+		if os.Getenv("AIMUX_WARMUP") == "false" {
+			return marshalToolResult(map[string]any{
+				"refreshed": false,
+				"reason":    "warmup disabled via AIMUX_WARMUP=false",
+			})
+		}
+		if s.cfg != nil && !s.cfg.Server.WarmupEnabled {
+			return marshalToolResult(map[string]any{
+				"refreshed": false,
+				"reason":    "warmup disabled via warmup_enabled: false in config",
+			})
+		}
+		if err := driver.RunWarmup(ctx, s.registry, s.cfg); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("refresh-warmup failed: %v", err)), nil
+		}
+		enabled := s.registry.EnabledCLIs()
+		all := s.registry.AllCLIs()
+		enabledSet := make(map[string]bool, len(enabled))
+		for _, e := range enabled {
+			enabledSet[e] = true
+		}
+		var excluded []string
+		for _, name := range all {
+			if !enabledSet[name] {
+				excluded = append(excluded, name)
+			}
+		}
+		return marshalToolResult(map[string]any{
+			"refreshed": true,
+			"available": enabled,
+			"excluded":  excluded,
+		})
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
