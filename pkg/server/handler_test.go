@@ -308,6 +308,45 @@ func TestHandleExec_UnknownCLI(t *testing.T) {
 	}
 }
 
+// --- T039: TestExec_UnknownRoleReturnsValidationError ---
+
+// TestExec_UnknownRoleReturnsValidationError verifies that exec with an unknown
+// role returns a validation error immediately — no CLI is spawned, no job is created.
+func TestExec_UnknownRoleReturnsValidationError(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("exec", map[string]any{
+		"prompt": "do something",
+		"role":   "totally_unknown_role_xyz",
+	})
+
+	jobsBefore := srv.jobs.ListRunning()
+
+	result, err := srv.handleExec(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleExec returned unexpected Go error: %v", err)
+	}
+
+	// (a) Response must be an error, not a job_id.
+	if !result.IsError {
+		t.Errorf("expected error result for unknown role, got success; content: %v", result.Content)
+	}
+
+	// (b) Error message must contain the unknown role name.
+	if len(result.Content) > 0 {
+		if text, ok := result.Content[0].(mcp.TextContent); ok {
+			if !strings.Contains(text.Text, "totally_unknown_role_xyz") {
+				t.Errorf("error message should contain role name, got: %q", text.Text)
+			}
+		}
+	}
+
+	// (c) No job must have been created.
+	jobsAfter := srv.jobs.ListRunning()
+	if len(jobsAfter) > len(jobsBefore) {
+		t.Errorf("expected no new jobs for unknown role, got %d new running job(s)", len(jobsAfter)-len(jobsBefore))
+	}
+}
+
 func TestHandleExec_AsyncReturnsJobID(t *testing.T) {
 	srv := testServer(t)
 	req := makeRequest("exec", map[string]any{

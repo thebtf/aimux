@@ -37,6 +37,19 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 
 	cli := request.GetString("cli", "")
 	role := request.GetString("role", "default")
+
+	// Validate role name early — before any CLI resolution or spawning.
+	// Unknown role names return an error immediately with the list of valid roles.
+	// Skip validation when cli= is explicitly provided (role is advisory only).
+	if cli == "" {
+		knownRoles := s.router.KnownRoles()
+		if !contains(knownRoles, role) {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"unknown role %q; valid roles: %s",
+				role, strings.Join(knownRoles, ", "))), nil
+		}
+	}
+
 	model := request.GetString("model", "")
 	effort := request.GetString("reasoning_effort", "")
 	cwd := cwdFromRequestOrContext(request, ctx)
@@ -637,6 +650,16 @@ func (s *Server) injectBootstrap(role, userPrompt string) string {
 	}
 
 	return tmpl + "\n\n" + userPrompt
+}
+
+// contains reports whether s appears in the slice.
+func contains(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // checkConcurrencyLimit returns an error if the maximum concurrent job limit is reached.

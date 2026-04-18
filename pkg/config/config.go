@@ -28,6 +28,20 @@ type ServerConfig struct {
 	DefaultAsync                bool   `yaml:"default_async"`
 	DefaultTimeoutSeconds       int    `yaml:"default_timeout_seconds"`
 
+	// CLIPriority is the operator-configured tiebreak order for CLI selection.
+	// When multiple CLIs can serve a role, the first match in this list wins.
+	// CLIs absent from this list are appended after in stable load order.
+	// YAML key: cli_priority
+	CLIPriority []string `yaml:"cli_priority"`
+
+	// WarmupEnabled controls whether CLI warmup probes run at daemon startup.
+	// Set AIMUX_WARMUP=false to skip all probes (binary-only detection).
+	WarmupEnabled bool `yaml:"warmup_enabled"`
+
+	// WarmupTimeoutSeconds is the global per-CLI warmup probe timeout.
+	// Per-profile warmup_timeout_seconds overrides this for individual CLIs.
+	WarmupTimeoutSeconds int `yaml:"warmup_timeout_seconds"`
+
 	RateLimitRPS   float64 `yaml:"rate_limit_rps"`
 	RateLimitBurst int     `yaml:"rate_limit_burst"`
 	// AuthToken is the bearer token for HTTP/SSE transport authentication.
@@ -161,6 +175,16 @@ type CLIProfile struct {
 	// Default: 300 (5 minutes).
 	CooldownSeconds int `yaml:"cooldown_seconds,omitempty"`
 
+	// WarmupTimeoutSeconds is the per-profile warmup probe timeout override.
+	// Zero means use global ServerConfig.WarmupTimeoutSeconds.
+	// YAML key: warmup_timeout_seconds
+	WarmupTimeoutSeconds int `yaml:"warmup_timeout_seconds,omitempty"`
+
+	// WarmupProbePrompt is the probe prompt sent during warmup.
+	// Empty means use the global default: `reply with JSON: {"ok": true}`.
+	// YAML key: warmup_probe_prompt
+	WarmupProbePrompt string `yaml:"warmup_probe_prompt,omitempty"`
+
 	// EnvPassthrough is the explicit allowlist of environment variable names that this CLI
 	// is permitted to inherit from the parent process environment. Any parent env var
 	// NOT in this list (and not in the OS-essential baseline) is dropped by resolve.BuildEnv.
@@ -283,6 +307,11 @@ func applyDefaults(cfg *Config) {
 	}
 	if s.StreamingAutoCancelSeconds == 0 {
 		s.StreamingAutoCancelSeconds = 900
+	}
+
+	// Warmup defaults: enabled=true, 15s global timeout (per profile can override).
+	if s.WarmupTimeoutSeconds == 0 {
+		s.WarmupTimeoutSeconds = 15
 	}
 
 	cb := &cfg.CircuitBreaker

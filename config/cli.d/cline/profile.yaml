@@ -29,6 +29,9 @@ reasoning:
   flag: "--reasoning-effort"
   levels: [none, low, medium, high, xhigh]
 
+# warmup_timeout_seconds: covers CLI cold-start + prompt→response; adjust if false-negatives accumulate
+warmup_timeout_seconds: 15
+
 timeout_seconds: 600
 
 stdin_threshold: 6000

@@ -74,3 +74,25 @@ func (r *Registry) Get(name string) (*config.CLIProfile, error) {
 	return profile, nil
 }
 
+// SetAvailable marks a CLI as available or unavailable in the registry.
+// Intended for testing and programmatic warmup updates; normal availability
+// is set by Probe() and RunWarmup().
+func (r *Registry) SetAvailable(name string, available bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.available[name] = available
+}
+
+// AllCLIs returns names of all configured CLIs (enabled and disabled).
+// Used to compute the excluded list in refresh-warmup responses.
+func (r *Registry) AllCLIs() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make([]string, 0, len(r.profiles))
+	for name := range r.profiles {
+		result = append(result, name)
+	}
+	return result
+}
+

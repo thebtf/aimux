@@ -17,6 +17,14 @@ server:
   default_async: false
   default_timeout_seconds: 300
 
+  # cli_priority: tiebreak order when multiple CLIs can serve a role.
+  # CLIs absent from this list are appended after in stable load order.
+  cli_priority: [codex, claude, gemini, qwen, opencode, goose, crush, gptme, cline, aider, droid, cn]
+
+  # warmup_enabled: set AIMUX_WARMUP=false to skip all probes (binary-only detection).
+  warmup_enabled: true
+  warmup_timeout_seconds: 15
+
   # Audit pipeline configuration
   audit:
     scanner_role: codereview

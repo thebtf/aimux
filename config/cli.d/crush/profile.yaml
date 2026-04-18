@@ -25,6 +25,9 @@ prompt_flag_type: "positional"
 default_model: ""
 model_flag: "--model"
 
+# warmup_timeout_seconds: covers CLI cold-start + prompt→response; adjust if false-negatives accumulate
+warmup_timeout_seconds: 15
+
 timeout_seconds: 600
 
 stdin_threshold: 6000

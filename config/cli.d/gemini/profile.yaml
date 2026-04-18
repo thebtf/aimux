@@ -41,6 +41,9 @@ cooldown_seconds: 3600
 # common terminal-state words in any output line.
 completion_pattern: "completed|done|finished"
 
+# warmup_timeout_seconds: covers CLI cold-start + prompt→response; adjust if false-negatives accumulate
+warmup_timeout_seconds: 10
+
 timeout_seconds: 600
 
 stdin_threshold: 6000

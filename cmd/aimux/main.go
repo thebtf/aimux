@@ -52,8 +52,8 @@ func run() error {
 		return fmt.Errorf("no CLI tools found — install at least one of: codex, gemini, claude, qwen, aider, droid, opencode")
 	}
 
-	// Initialize role router with capability profiles for fallback routing
-	router := routing.NewRouterWithProfiles(cfg.Roles, enabled, cfg.CLIProfiles)
+	// Initialize role router with capability profiles and operator-configured priority.
+	router := routing.NewRouterWithPriority(cfg.Roles, enabled, cfg.CLIProfiles, cfg.Server.CLIPriority)
 
 	// Create MCP server
 	srv := aimuxServer.New(cfg, log, registry, router)
