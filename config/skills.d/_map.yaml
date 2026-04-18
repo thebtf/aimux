@@ -152,5 +152,5 @@ tool_usage:
   status: [guide, background]
   sessions: [guide]
   deepresearch: [research]
-  dialog: []
-  agents: []
+  dialog: [guide]
+  agents: [agent-exec, delegate, guide]

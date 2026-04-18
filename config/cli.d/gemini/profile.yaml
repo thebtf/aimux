@@ -28,6 +28,10 @@ prompt_flag_type: "short"
 default_model: ""
 model_flag: "--model"
 
+# model_fallback: omitted intentionally — Gemini CLI defaults to its own model selection
+# and manages quota internally. Fallback to alternative Gemini models is not currently
+# configured. Add model_fallback if quota exhaustion becomes a recurring issue.
+
 timeout_seconds: 600
 
 stdin_threshold: 6000

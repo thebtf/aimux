@@ -50,3 +50,5 @@ Table: package | version | status | notes
 ## Technical Debt Register
 Ranked list: item | severity | effort | recommendation
 ```
+
+To implement these findings: use `exec(role="coding", prompt="<this output>")` in a follow-up call.

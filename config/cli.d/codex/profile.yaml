@@ -34,6 +34,13 @@ prompt_flag_type: "positional"
 # Default model: codex CLI does NOT handle spark/base fallback internally.
 # Without -m, codex picks spark by default and fails on 429 with no retry.
 # Set explicit model so our suffix-strip fallback can detect and strip "-spark".
+#
+# account_gating: -spark models require a ChatGPT subscription; they are NOT available
+# via a bare OPENAI_API_KEY on the standard API plan. Use OPENAI_API_KEY with the
+# standard API plan and the -codex (non-spark) model for API-key-only access.
+#
+# version note: bump '5.3' when OpenAI releases a new Codex version; verify the new
+# version string via `codex --version` or the OpenAI changelog before updating.
 default_model: "gpt-5.3-codex-spark"
 
 # Model flag
