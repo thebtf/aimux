@@ -14,10 +14,10 @@ no consumer code modifications.
 
 - **muxcore v0.20.0 → v0.20.2** — ships two upstream patch releases back-to-back:
   - **v0.20.1** (PR thebtf/mcp-mux#66, #67) — 10 concurrency/race fixes observed in
-    aimux usage: shared-owner dedup race in `findSharedOwner`, upstream Wait-vs-ReadLine
-    race, counter bugs in owner lifecycle.
+    aimux usage: shared-owner dedup race in `findSharedOwner`, upstream
+    `Wait`-vs-`ReadLine` race, counter bugs in owner lifecycle.
   - **v0.20.2** — **critical** supervisor restart-loop storm fix. `owner.Serve()` used
-    to return `nil` on a closed `o.done` channel, which suture interpreted as a clean
+    to return `nil` on a closed `o.done` channel, which `suture` interpreted as a clean
     exit AND scheduled a restart in the same tick — resulting in flapping or
     permanently-dead MCP servers in live Claude Code sessions after
     `mcp-mux upgrade --restart`. v0.20.2 returns `suture.ErrDoNotRestart` on
