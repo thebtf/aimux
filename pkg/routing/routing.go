@@ -138,10 +138,14 @@ func (r *Router) KnownRoles() []string {
 			break
 		}
 		profile, ok := r.profiles[cli]
-		if !ok {
+		if !ok || profile == nil {
 			continue
 		}
 		for _, cap := range profile.Capabilities {
+			cap = strings.TrimSpace(cap)
+			if cap == "" {
+				continue
+			}
 			if !seen[cap] {
 				known = append(known, cap)
 				seen[cap] = true

@@ -2,6 +2,7 @@ package routing_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/config"
@@ -193,6 +194,41 @@ func TestKnownRoles_IncludesCapabilities(t *testing.T) {
 	want := []string{"coding", "refactor", "analyze", "deep-research", "default"}
 	for _, name := range want {
 		if !knownSet[name] {
+			t.Errorf("KnownRoles missing %q; got %v", name, known)
+		}
+	}
+}
+
+// TestKnownRoles_SkipsNilProfileAndBlankCapabilities guards the PR #97
+// CodeRabbit follow-up finding: KnownRoles() must tolerate a nil entry in the
+// profiles map and must not report empty or whitespace-only capabilities as
+// valid role names.
+func TestKnownRoles_SkipsNilProfileAndBlankCapabilities(t *testing.T) {
+	defaults := map[string]types.RolePreference{
+		"coding": {CLI: "codex"},
+	}
+	profiles := map[string]*config.CLIProfile{
+		"codex":  {Name: "codex", Capabilities: []string{"refactor", "  ", ""}},
+		"gemini": nil, // must not panic, must not contribute
+	}
+
+	r := routing.NewRouterWithPriority(defaults, []string{"codex", "gemini"}, profiles, []string{"codex", "gemini"})
+
+	known := r.KnownRoles()
+	for _, name := range known {
+		if name == "" || strings.TrimSpace(name) == "" {
+			t.Errorf("KnownRoles contains blank/whitespace role %q; got %v", name, known)
+		}
+	}
+
+	mustHave := map[string]bool{"coding": false, "refactor": false, "default": false}
+	for _, name := range known {
+		if _, ok := mustHave[name]; ok {
+			mustHave[name] = true
+		}
+	}
+	for name, present := range mustHave {
+		if !present {
 			t.Errorf("KnownRoles missing %q; got %v", name, known)
 		}
 	}
