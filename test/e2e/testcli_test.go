@@ -181,11 +181,9 @@ func TestE2E_Codex_JSONL(t *testing.T) {
 		t.Errorf("status = %v, want completed (full: %v)", status, data)
 	}
 
-	// Verify content contains the response
-	content, _ := data["content"].(string)
-	if content == "" {
+	if data["content_length"] == nil {
 		t.Logf("full data: %v", data)
-		t.Error("missing content in codex response")
+		t.Error("expected content_length in codex response")
 	}
 }
 
@@ -223,9 +221,10 @@ func TestE2E_Gemini_StreamJSON(t *testing.T) {
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
 		"name": "exec",
 		"arguments": map[string]any{
-			"prompt": "test gemini stream json",
-			"cli":    "gemini",
-			"async":  false,
+			"prompt":          "test gemini stream json",
+			"cli":             "gemini",
+			"async":           false,
+			"include_content": true,
 		},
 	}))
 
@@ -308,7 +307,7 @@ func TestE2E_TestCLI_CodexAsync(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		fmt.Fprint(stdin, jsonRPCRequest(3+i, "tools/call", map[string]any{
 			"name":      "status",
-			"arguments": map[string]any{"job_id": jobID},
+			"arguments": map[string]any{"job_id": jobID, "include_content": true},
 		}))
 		pollResp, pollErr := readResponse(reader, 5*time.Second)
 		if pollErr != nil {
@@ -682,10 +681,11 @@ func TestE2E_Claude_ThroughAimux(t *testing.T) {
 		t.Errorf("status = %v, want completed (full: %v)", status, data)
 	}
 
-	content, _ := data["content"].(string)
-	if content == "" {
+	// Budget policy: default-brief omits content; assert content_length instead (FR-11).
+	cl, _ := data["content_length"].(float64)
+	if cl <= 0 {
 		t.Logf("full data: %v", data)
-		t.Error("missing content in claude response")
+		t.Error("missing content_length > 0 in claude response (brief default)")
 	}
 }
 
@@ -1158,9 +1158,10 @@ func TestE2E_Behavior_StdinEOFHandling(t *testing.T) {
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
 		"name": "exec",
 		"arguments": map[string]any{
-			"prompt": longPrompt,
-			"cli":    "codex",
-			"async":  false,
+			"prompt":          longPrompt,
+			"cli":             "codex",
+			"async":           false,
+			"include_content": true,
 		},
 	}))
 
@@ -1293,7 +1294,7 @@ func TestE2E_Orchestrator_ConsensusMultiCLI(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		fmt.Fprint(stdin, jsonRPCRequest(3+i, "tools/call", map[string]any{
 			"name":      "status",
-			"arguments": map[string]any{"job_id": jobID},
+			"arguments": map[string]any{"job_id": jobID, "include_content": true},
 		}))
 		pollResp, pollErr := readResponse(reader, 5*time.Second)
 		if pollErr != nil {
@@ -1409,7 +1410,7 @@ func TestE2E_Orchestrator_SynthesisStdinPiping(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		fmt.Fprint(stdin, jsonRPCRequest(3+i, "tools/call", map[string]any{
 			"name":      "status",
-			"arguments": map[string]any{"job_id": jobID},
+			"arguments": map[string]any{"job_id": jobID, "include_content": true},
 		}))
 		pollResp, pollErr := readResponse(reader, 5*time.Second)
 		if pollErr != nil {

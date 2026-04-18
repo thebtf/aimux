@@ -369,6 +369,74 @@ func TestHandleExec_AsyncReturnsJobID(t *testing.T) {
 	}
 }
 
+func TestHandleExec_Sync_Brief_ContentLength(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("exec", map[string]any{
+		"prompt": "hello",
+		"cli":    "codex",
+		"async":  false,
+	})
+	result, err := srv.handleExec(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleExec: %v", err)
+	}
+	if result.IsError {
+		t.Skipf("exec failed (may be expected on CI without real CLI): %v", parseResult(t, result))
+	}
+	data := parseResult(t, result)
+	if data["content"] != nil {
+		t.Error("brief sync exec should not include content")
+	}
+	if data["content_length"] == nil {
+		t.Error("brief sync exec should include content_length")
+	}
+}
+
+func TestHandleExec_Sync_IncludeContent(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("exec", map[string]any{
+		"prompt":          "hello",
+		"cli":             "codex",
+		"async":           false,
+		"include_content": true,
+	})
+	result, err := srv.handleExec(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleExec: %v", err)
+	}
+	if result.IsError {
+		t.Skipf("exec failed (may be expected on CI without real CLI): %v", parseResult(t, result))
+	}
+	data := parseResult(t, result)
+	if data["content"] == nil {
+		t.Error("include_content=true should return content field")
+	}
+}
+
+func TestHandleExec_Sync_Tail(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("exec", map[string]any{
+		"prompt": "hello",
+		"cli":    "codex",
+		"async":  false,
+		"tail":   3,
+	})
+	result, err := srv.handleExec(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleExec: %v", err)
+	}
+	if result.IsError {
+		t.Skipf("exec failed (may be expected on CI without real CLI): %v", parseResult(t, result))
+	}
+	data := parseResult(t, result)
+	if data["content"] != nil {
+		t.Error("tail response should not include content field")
+	}
+	if data["content_tail"] == nil {
+		t.Error("tail response should include content_tail field")
+	}
+}
+
 func TestHandleExec_SessionResume_NotFound(t *testing.T) {
 	srv := testServer(t)
 	req := makeRequest("exec", map[string]any{
@@ -461,8 +529,112 @@ func TestHandleStatus_ExistingJob(t *testing.T) {
 	if data["status"] != "completed" {
 		t.Errorf("status = %v, want completed", data["status"])
 	}
-	if data["content"] != "test output" {
-		t.Errorf("content = %v, want 'test output'", data["content"])
+	if data["content"] != nil {
+		t.Errorf("content = %v, want omitted in brief response", data["content"])
+	}
+	if data["content_length"] == nil {
+		t.Error("brief status should include content_length")
+	}
+
+	reqFull := makeRequest("status", map[string]any{
+		"job_id":          job.ID,
+		"include_content": true,
+	})
+	resultFull, err := srv.handleStatus(context.Background(), reqFull)
+	if err != nil {
+		t.Fatalf("handleStatus include_content: %v", err)
+	}
+	dataFull := parseResult(t, resultFull)
+	if dataFull["content"] != "test output" {
+		t.Errorf("include_content content = %v, want 'test output'", dataFull["content"])
+	}
+}
+
+func TestHandleStatus_Brief_ContentOmitted(t *testing.T) {
+	srv := testServer(t)
+	largeContent := strings.Repeat("a", 100000)
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 0)
+	srv.jobs.CompleteJob(job.ID, largeContent, 0)
+
+	req := makeRequest("status", map[string]any{"job_id": job.ID})
+	result, err := srv.handleStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", parseResult(t, result))
+	}
+
+	data := parseResult(t, result)
+	if data["content"] != nil {
+		t.Error("brief response should not include content field")
+	}
+	cl, ok := data["content_length"].(float64)
+	if !ok || cl != float64(100000) {
+		t.Errorf("content_length = %v, want 100000", data["content_length"])
+	}
+
+	jsonBytes, _ := json.Marshal(data)
+	if len(jsonBytes) > 4096 {
+		t.Errorf("brief response %d bytes exceeds 4096 byte budget", len(jsonBytes))
+	}
+}
+
+func TestHandleStatus_IncludeContent(t *testing.T) {
+	srv := testServer(t)
+	content := "hello full content"
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 0)
+	srv.jobs.CompleteJob(job.ID, content, 0)
+
+	req := makeRequest("status", map[string]any{
+		"job_id":          job.ID,
+		"include_content": true,
+	})
+	result, err := srv.handleStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	data := parseResult(t, result)
+	if data["content"] != content {
+		t.Errorf("content = %v, want %q", data["content"], content)
+	}
+}
+
+func TestHandleStatus_Tail(t *testing.T) {
+	srv := testServer(t)
+	content := "hello world tail end"
+	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
+	job := srv.jobs.Create(sess.ID, "codex")
+	srv.jobs.StartJob(job.ID, 0)
+	srv.jobs.CompleteJob(job.ID, content, 0)
+
+	req := makeRequest("status", map[string]any{
+		"job_id": job.ID,
+		"tail":   3,
+	})
+	result, err := srv.handleStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	data := parseResult(t, result)
+	if data["content"] != nil {
+		t.Error("tail response should not include content field")
+	}
+	if data["content_tail"] != "end" {
+		t.Errorf("content_tail = %v, want 'end'", data["content_tail"])
+	}
+}
+
+func TestHandleStatus_InvalidParams(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("status", map[string]any{"job_id": "x", "tail": 0})
+	result, _ := srv.handleStatus(context.Background(), req)
+	if !result.IsError {
+		t.Error("expected error for tail=0")
 	}
 }
 
@@ -2002,6 +2174,92 @@ func TestHandleAgentRun_AgentNotFound(t *testing.T) {
 	textStr, _ := text["text"].(string)
 	if !strings.Contains(textStr, "nonexistent-agent-xyz") {
 		t.Errorf("error should mention agent name, got: %s", textStr)
+	}
+}
+
+func TestHandleAgentRun_Sync_Brief(t *testing.T) {
+	srv := testServer(t)
+	srv.agentReg.Register(&agents.Agent{
+		Name:    "test-budget-agent",
+		Content: strings.Repeat("x", 1000),
+		Role:    "default",
+	})
+	req := makeRequest("agent", map[string]any{
+		"agent":  "test-budget-agent",
+		"prompt": "test",
+		"cwd":    t.TempDir(),
+		"async":  false,
+	})
+	result, err := srv.handleAgentRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+	if result.IsError {
+		t.Skipf("agent run failed (may need real CLI): %v", parseResult(t, result))
+	}
+	data := parseResult(t, result)
+	if data["content"] != nil {
+		t.Error("brief agent response should not include content")
+	}
+	if data["content_length"] == nil {
+		t.Error("brief agent response should include content_length")
+	}
+}
+
+func TestHandleAgentRun_Sync_IncludeContent(t *testing.T) {
+	srv := testServer(t)
+	srv.agentReg.Register(&agents.Agent{
+		Name:    "test-budget-agent-2",
+		Content: "system prompt",
+		Role:    "default",
+	})
+	req := makeRequest("agent", map[string]any{
+		"agent":           "test-budget-agent-2",
+		"prompt":          "test",
+		"cwd":             t.TempDir(),
+		"async":           false,
+		"include_content": true,
+	})
+	result, err := srv.handleAgentRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+	if result.IsError {
+		t.Skipf("agent run failed: %v", parseResult(t, result))
+	}
+	data := parseResult(t, result)
+	if data["content"] == nil {
+		t.Error("include_content=true should return content field")
+	}
+}
+
+func TestHandleAgentRun_Sync_Tail(t *testing.T) {
+	srv := testServer(t)
+	srv.agentReg.Register(&agents.Agent{
+		Name:    "test-budget-agent-3",
+		Content: "system prompt for tail test",
+		Role:    "default",
+	})
+	req := makeRequest("agent", map[string]any{
+		"agent":  "test-budget-agent-3",
+		"prompt": "test",
+		"cwd":    t.TempDir(),
+		"async":  false,
+		"tail":   5,
+	})
+	result, err := srv.handleAgentRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleAgentRun: %v", err)
+	}
+	if result.IsError {
+		t.Skipf("agent run failed: %v", parseResult(t, result))
+	}
+	data := parseResult(t, result)
+	if data["content"] != nil {
+		t.Error("tail response should not include content field")
+	}
+	if data["content_tail"] == nil {
+		t.Error("tail response should include content_tail field")
 	}
 }
 

@@ -285,9 +285,10 @@ func TestE2E_ExecSync(t *testing.T) {
 	if execResult["status"] != "completed" {
 		t.Errorf("status = %v, want completed", execResult["status"])
 	}
-	// Echo CLI should echo the prompt back as content
-	if execResult["content"] == nil {
-		t.Error("missing content in exec result")
+	// Budget policy: default-brief omits content; content_length + truncated hint appear instead.
+	// This assertion validates the brief contract rather than the old full-payload shape.
+	if execResult["content_length"] == nil {
+		t.Error("missing content_length in exec result (brief default)")
 	}
 }
 

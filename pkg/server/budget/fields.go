@@ -10,7 +10,7 @@ var FieldWhitelist = map[string][]string{
 	// Content-bearing fields (content, transcript, full_report) are listed here
 	// so that callers using fields=content,… with include_content=true pass ApplyFields.
 	// ValidateContentBearingFields enforces that include_content=true is required.
-	"status":                  {"job_id", "status", "progress", "poll_count", "session_id", "error", "content_length", "content"},
+	"status":                  {"job_id", "status", "progress", "poll_count", "session_id", "error", "content_length", "content", "content_tail", "warning", "stall_warning", "stall_alert", "recommended_action", "cancel_command", "auto_cancel_recommended"},
 	"sessions/list":           {"sessions", "loom_tasks", "sessions_pagination", "loom_pagination"},
 	"sessions/info":           {"session", "jobs", "content"},
 	"sessions/health":         {},
@@ -29,8 +29,8 @@ var FieldWhitelist = map[string][]string{
 	"agents/list":             {"name", "description", "role", "domain"},
 	"agents/info":             {"name", "description", "role", "domain", "tools", "when", "content_length", "content"},
 	"agents/find":             {"name", "description", "role", "domain"},
-	"exec":                    {"job_id", "status", "content"},
-	"agent":                   {"job_id", "status", "session_id", "content", "transcript"},
+	"exec":                    {"job_id", "status", "session_id", "content", "content_tail", "content_length", "turns", "participants", "review_report"},
+	"agent":                   {"job_id", "status", "session_id", "agent", "cli", "model", "effort", "turns", "duration_ms", "turn_log", "content", "content_tail", "content_length", "transcript"},
 	"consensus":               {"job_id", "status", "session_id", "content", "transcript"},
 	"debate":                  {"job_id", "status", "session_id", "content", "transcript"},
 	"dialog":                  {"job_id", "status", "session_id", "content", "transcript"},
@@ -152,4 +152,3 @@ func ValidateContentBearingFields(fields []string, contentBearing []string, incl
 
 	return nil
 }
-
