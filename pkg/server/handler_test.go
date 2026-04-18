@@ -493,6 +493,65 @@ func TestHandleSessions_List(t *testing.T) {
 	}
 }
 
+func TestHandleSessions_ListHonorsLimit(t *testing.T) {
+	srv := testServer(t)
+	srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp/a")
+	srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp/b")
+	srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp/c")
+
+	req := makeRequest("sessions", map[string]any{
+		"action": "list",
+		"limit":  2,
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	data := parseResult(t, result)
+	gotCount, ok := data["count"].(float64)
+	if !ok {
+		t.Fatalf("count has unexpected type %T", data["count"])
+	}
+	if gotCount != 2 {
+		t.Fatalf("count = %v, want 2", gotCount)
+	}
+
+	sessions, ok := data["sessions"].([]any)
+	if !ok {
+		t.Fatalf("sessions has unexpected type %T", data["sessions"])
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("len(sessions) = %d, want 2", len(sessions))
+	}
+}
+
+func TestHandleSessions_ListWithoutLimitReturnsAll(t *testing.T) {
+	srv := testServer(t)
+	srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp/a")
+	srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp/b")
+	srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp/c")
+
+	req := makeRequest("sessions", map[string]any{
+		"action": "list",
+	})
+
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+
+	data := parseResult(t, result)
+	gotCount, ok := data["count"].(float64)
+	if !ok {
+		t.Fatalf("count has unexpected type %T", data["count"])
+	}
+	if gotCount != 3 {
+		t.Fatalf("count = %v, want 3", gotCount)
+	}
+}
+
 func TestHandleSessions_Health(t *testing.T) {
 	srv := testServer(t)
 	req := makeRequest("sessions", map[string]any{
@@ -671,7 +730,7 @@ func TestGuidedTool_Investigate_AcceptsInputParameters(t *testing.T) {
 func TestGuidedTool_Think_AcceptsInputParameters(t *testing.T) {
 	srv := testServer(t)
 	req := makeRequest("think", map[string]any{
-		"pattern": "decision_framework",
+		"pattern":  "decision_framework",
 		"decision": "switch to event sourcing",
 	})
 
@@ -3418,6 +3477,8 @@ func TestHandleAgentRun_EnvOverrideBeatsAgentFrontmatter(t *testing.T) {
 }
 
 func TestHandleAgentRun_FrontmatterBeatsRoleDefaultsWithoutEnv(t *testing.T) {
+	t.Setenv("AIMUX_ROLE_CODING", "")
+
 	srv := testServer(t)
 	agent := &agents.Agent{
 		Name:   "test-coding-agent-frontmatter",
@@ -3499,7 +3560,7 @@ func TestHandleSessions_KillNonexistentSession(t *testing.T) {
 // models were tried (via the -m flag in SpawnArgs.Args) and returns pre-configured
 // results or errors for each model name.
 type modelFallbackExecutor struct {
-	calls     []string            // ordered list of model names that were passed to Run
+	calls     []string // ordered list of model names that were passed to Run
 	responses map[string]*types.Result
 	errors    map[string]error
 }
@@ -3516,8 +3577,8 @@ func (m *modelFallbackExecutor) Start(_ context.Context, _ types.SpawnArgs) (typ
 	return nil, errors.New("modelFallbackExecutor does not support Start")
 }
 
-func (m *modelFallbackExecutor) Name() string      { return "model-fallback-test" }
-func (m *modelFallbackExecutor) Available() bool   { return true }
+func (m *modelFallbackExecutor) Name() string    { return "model-fallback-test" }
+func (m *modelFallbackExecutor) Available() bool { return true }
 
 // extractModelFromArgs scans an args slice for the value that follows "-m".
 // Returns empty string when the flag is absent.
@@ -3675,4 +3736,3 @@ func TestNotifier_NilNotifier(t *testing.T) {
 	// Must not panic.
 	lifecycle.OnProjectConnect(project)
 }
-

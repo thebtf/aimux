@@ -12,16 +12,17 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/agents"
+	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
+	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/guidance"
 	"github.com/thebtf/aimux/pkg/guidance/policies"
 	"github.com/thebtf/aimux/pkg/hooks"
 	"github.com/thebtf/aimux/pkg/logger"
-	"github.com/thebtf/aimux/loom"
-	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
 	"github.com/thebtf/aimux/pkg/metrics"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/prompt"
@@ -32,11 +33,10 @@ import (
 	"github.com/thebtf/aimux/pkg/skills"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
-	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
+	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/aimux/pkg/updater"
 	"github.com/thebtf/mcp-mux/muxcore"
-	"github.com/thebtf/aimux/pkg/types"
 )
 
 // Version is the canonical aimux version string. Used in MCP serverInfo handshake,
@@ -108,30 +108,30 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 
 // Server holds all dependencies for the MCP server.
 type Server struct {
-	cfg          *config.Config
-	log          *logger.Logger
-	registry     *driver.Registry
-	router       *routing.Router
-	sessions     *session.Registry
-	jobs         *session.JobManager
-	breakers     *executor.BreakerRegistry
-	executor     types.Executor
-	mcp          *server.MCPServer
-	orchestrator *orch.Orchestrator
-	agentReg     *agents.Registry
-	promptEng    *prompt.Engine
-	hooks        *hooks.Registry
-	metrics      *metrics.Collector
-	store        *session.Store
-	gcCancel     context.CancelFunc
-	skillEngine  *skills.Engine
-	rateLimiter  *ratelimit.Limiter
-	authToken        string
-	projectDir       string // directory used for initial agent discovery
-	guidanceReg      *guidance.Registry
-	cooldownTracker  *executor.ModelCooldownTracker
-	sessionHandler   muxcore.SessionHandler // stored for upgrade tool deferred restart
-	loom             *loom.LoomEngine       // central task mediator (LoomEngine v3)
+	cfg             *config.Config
+	log             *logger.Logger
+	registry        *driver.Registry
+	router          *routing.Router
+	sessions        *session.Registry
+	jobs            *session.JobManager
+	breakers        *executor.BreakerRegistry
+	executor        types.Executor
+	mcp             *server.MCPServer
+	orchestrator    *orch.Orchestrator
+	agentReg        *agents.Registry
+	promptEng       *prompt.Engine
+	hooks           *hooks.Registry
+	metrics         *metrics.Collector
+	store           *session.Store
+	gcCancel        context.CancelFunc
+	skillEngine     *skills.Engine
+	rateLimiter     *ratelimit.Limiter
+	authToken       string
+	projectDir      string // directory used for initial agent discovery
+	guidanceReg     *guidance.Registry
+	cooldownTracker *executor.ModelCooldownTracker
+	sessionHandler  muxcore.SessionHandler // stored for upgrade tool deferred restart
+	loom            *loom.LoomEngine       // central task mediator (LoomEngine v3)
 }
 
 // New creates a new MCP server with all dependencies wired.
@@ -474,10 +474,11 @@ func (s *Server) registerTools() {
 		mcp.NewTool("status",
 			mcp.WithDescription("Check async job status. "+
 				"Returns a result map with status field set to one of: queued, running, completing, completed, failed. "+
-				"The content field is only present when status=completed and contains the full CLI output. "+
+				"The content field is present when status=completed or status=failed and contains the full CLI output; "+
+				"a separate error field is also included on failed. "+
 				"While status=running, the response may include stall_warning (key present after 120s of silence) "+
 				"or stall_alert (key present after 600s of silence); both keys include cancel instructions. "+
-				"A stall_warning appears at TierSoftWarning (≥120s silent); stall_alert appears at TierHardStall (≥600s) and TierAutoCancel (≥900s)."),
+				"stall_warning appears at TierSoftWarning (120s+ silent); stall_alert appears at TierHardStall (600s+) and TierAutoCancel (900s+)."),
 			mcp.WithString("job_id",
 				mcp.Required(),
 				mcp.Description("Job ID from async exec response"),
@@ -490,8 +491,8 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(
 		mcp.NewTool("sessions",
 			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc. "+
-				"action=list returns ALL rows from the jobs table with no server-side pagination — "+
-				"use the limit parameter to bound result size on busy servers."),
+				"action=list returns all sessions and tasks with no server-side pagination — "+
+				"use the limit parameter to cap results on busy servers."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: list, info, kill, gc, health, cancel"),
@@ -507,7 +508,7 @@ func (s *Server) registerTools() {
 				mcp.Description("Filter by status: active, completed, failed, all"),
 			),
 			mcp.WithNumber("limit",
-				mcp.Description("Max results (default 10)"),
+				mcp.Description("Max results (optional; no server-side default cap)"),
 			),
 		),
 		s.handleSessions,
@@ -970,7 +971,11 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 	switch action {
 	case "list":
 		statusFilter := request.GetString("status", "")
+		limit := int(request.GetFloat("limit", 0))
 		sessions := s.sessions.List(types.SessionStatus(statusFilter))
+		if limit > 0 && len(sessions) > limit {
+			sessions = sessions[:limit]
+		}
 		result := map[string]any{
 			"sessions": sessions,
 			"count":    len(sessions),
@@ -1193,10 +1198,10 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 			sh.SetUpdatePending()
 		}
 		return marshalToolResult(map[string]any{
-			"status":          "updated",
+			"status":           "updated",
 			"previous_version": Version,
-			"new_version":     release.Version,
-			"message":         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+			"new_version":      release.Version,
+			"message":          "Binary updated. Daemon will restart when all CC sessions disconnect.",
 		})
 
 	default:

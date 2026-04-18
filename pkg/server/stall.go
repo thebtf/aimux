@@ -68,7 +68,7 @@ func applyStallGuidance(result map[string]any, tier InactivityTier, jobID string
 	switch tier {
 	case TierSoftWarning:
 		result["stall_warning"] = "No output for 120s. CLI may be waiting for input or stalled. " +
-			"If still stalled at 600s, cancel with: sessions(action=cancel, job_id=" + jobID + ")"
+			`If still stalled at 600s, cancel with: sessions(action="cancel", job_id="` + jobID + `")`
 	case TierHardStall:
 		result["stall_alert"] = "No output for 600s. Consider cancelling."
 		result["recommended_action"] = "cancel"
