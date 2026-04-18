@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.2] - 2026-04-18
+
+Patch release: muxcore dep bump to v0.20.0 and aimux internal skill prompt fixes.
+
+### Changed
+
+- **Bumped `github.com/thebtf/mcp-mux/muxcore` v0.19.4 → v0.20.0** (#90) — upstream
+  improvements: zombie-listener cleanup, async SendNotification, keepalive removal.
+  The v0.20.0 upstream API break is in `upstream.Start`, which aimux does not consume
+  (we use `SessionHandler` per CLAUDE.md architecture). Zero code-side changes in
+  aimux; only `go.mod` + `go.sum` updated. Closes engram issue aimux#84.
+
+### Fixed
+
+- **Skill prompt fix: `think(pattern="critic")` → `critical_thinking`** (#89) — four
+  occurrences across `config/skills.d/guide.md` and `config/skills.d/consensus.md`
+  referenced an invalid think-pattern enum value. Any orchestrator following those
+  skills verbatim got a runtime tool-validation error. The canonical pattern name is
+  `critical_thinking` (per `pkg/think/patterns/`).
+- **Skill prompt fix: `workflow` skill uses poll-wrapper fragment** (#89) —
+  `config/skills.d/workflow.md` previously instructed orchestrators to poll
+  `mcp__aimux__status` directly, contradicting the mandatory `poll-wrapper-subagent`
+  pattern enforced in `background`, `delegate`, and `agent-exec` skills. Replaced
+  with `{{template "poll-wrapper-subagent" .}}` include and registered the fragment
+  in `config/skills.d/_map.yaml`'s `workflow:` entry.
+- **Skill prompt fix: `consensus.md` uses `issue=` not `artifact=`** (#89, post-review
+  follow-up) — the `critical_thinking` validator requires the `issue` field; the
+  previous `artifact=` would fail at runtime.
+- **Skill registry consistency** (#89, post-review follow-up) — added `agent` tool
+  to `workflow.tools` in `_map.yaml` and registered `poll-wrapper-subagent` in the
+  shared `fragments:` section with `used_by: [workflow]`.
+
+### Internal
+
+- Marked 11 completed `loom-library` tasks as `[x]` in
+  `.agent/specs/loom-library/tasks.md` (P001-P003, T035, G005-G007, T047-T050). All
+  shipped as part of `loom/v0.1.0` and `loom/v0.1.1` releases; tracker was stale.
+- Produced internal audit report `.agent/reports/aimux-prompts-audit-2026-04-18.md`
+  with 18 findings across 6 categories of internal prompts, CLI profiles, role
+  prompts, MCP skill prompts, agent registry, and runtime guidance strings. Three
+  findings are fixed in this release (A1: critic pattern enum, A2: workflow
+  poll-wrapper, A3b: consensus `issue=` field + registry consistency — all via
+  #89); the remaining 15 are tracked as follow-ups.
+
 ## [4.0.1] - 2026-04-17
 
 Patch release fixing a version-constant split missed in v4.0.0. Introduces a single
