@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,7 +85,7 @@ func TestEvaluateInactivityTier_ConfigOverride(t *testing.T) {
 
 func TestApplyStallGuidance_NoGuidanceForNone(t *testing.T) {
 	result := map[string]any{"status": "running"}
-	applyStallGuidance(result, TierNone)
+	applyStallGuidance(result, TierNone, "job-test-1")
 	if _, ok := result["stall_warning"]; ok {
 		t.Error("TierNone should not add stall_warning")
 	}
@@ -91,25 +93,64 @@ func TestApplyStallGuidance_NoGuidanceForNone(t *testing.T) {
 
 func TestApplyStallGuidance_AddsWarningForSoft(t *testing.T) {
 	result := map[string]any{"status": "running"}
-	applyStallGuidance(result, TierSoftWarning)
+	applyStallGuidance(result, TierSoftWarning, "job-test-2")
 	if _, ok := result["stall_warning"]; !ok {
 		t.Error("TierSoftWarning should add stall_warning")
 	}
 }
 
+func TestApplyStallGuidance_SoftWarningContainsCancelInstruction(t *testing.T) {
+	result := map[string]any{"status": "running"}
+	applyStallGuidance(result, TierSoftWarning, "job-abc-123")
+	msg, ok := result["stall_warning"].(string)
+	if !ok {
+		t.Fatal("stall_warning should be a string")
+	}
+	wantCancel := `sessions(action="cancel", job_id="job-abc-123")`
+	if !strings.Contains(msg, wantCancel) {
+		t.Errorf("stall_warning should contain canonical cancel command %q, got: %s", wantCancel, msg)
+	}
+}
+
 func TestApplyStallGuidance_RecommendsCancelForHard(t *testing.T) {
 	result := map[string]any{"status": "running"}
-	applyStallGuidance(result, TierHardStall)
+	applyStallGuidance(result, TierHardStall, "job-test-3")
 	if action, ok := result["recommended_action"]; !ok || action != "cancel" {
 		t.Errorf("TierHardStall should recommend cancel, got %v", result)
 	}
 }
 
+func TestApplyStallGuidance_HardStallCancelCommandPreFilled(t *testing.T) {
+	result := map[string]any{"status": "running"}
+	applyStallGuidance(result, TierHardStall, "job-hard-456")
+	cmd, ok := result["cancel_command"].(string)
+	if !ok {
+		t.Fatal("TierHardStall should add cancel_command key")
+	}
+	want := `sessions(action="cancel", job_id="job-hard-456")`
+	if cmd != want {
+		t.Errorf("cancel_command = %q, want %q", cmd, want)
+	}
+}
+
 func TestApplyStallGuidance_AutoCancelForMax(t *testing.T) {
 	result := map[string]any{"status": "running"}
-	applyStallGuidance(result, TierAutoCancel)
+	applyStallGuidance(result, TierAutoCancel, "job-test-4")
 	if v, ok := result["auto_cancel_recommended"]; !ok || v != true {
 		t.Errorf("TierAutoCancel should set auto_cancel_recommended=true, got %v", result)
+	}
+}
+
+func TestApplyStallGuidance_AutoCancelCancelCommandPreFilled(t *testing.T) {
+	result := map[string]any{"status": "running"}
+	applyStallGuidance(result, TierAutoCancel, "job-auto-789")
+	cmd, ok := result["cancel_command"].(string)
+	if !ok {
+		t.Fatal("TierAutoCancel should add cancel_command key")
+	}
+	want := `sessions(action="cancel", job_id="job-auto-789")`
+	if cmd != want {
+		t.Errorf("cancel_command = %q, want %q", cmd, want)
 	}
 }
 
@@ -215,6 +256,18 @@ func TestHandleStatus_RunningJob_HardStall(t *testing.T) {
 	if _, ok := data["auto_cancel_recommended"]; ok {
 		t.Error("auto_cancel_recommended should not appear at hard-stall tier")
 	}
+	cmd, ok := data["cancel_command"].(string)
+	if !ok {
+		t.Fatal("TierHardStall integration: cancel_command should be present as a string")
+	}
+	if jobID, _ := data["job_id"].(string); jobID != "" {
+		want := fmt.Sprintf(`sessions(action="cancel", job_id="%s")`, jobID)
+		if cmd != want {
+			t.Errorf("cancel_command = %q, want %q", cmd, want)
+		}
+	} else if !strings.Contains(cmd, `sessions(action="cancel", job_id="`) {
+		t.Errorf("cancel_command %q does not match expected format", cmd)
+	}
 }
 
 func TestHandleStatus_RunningJob_AutoCancel(t *testing.T) {
@@ -231,6 +284,18 @@ func TestHandleStatus_RunningJob_AutoCancel(t *testing.T) {
 	autoCancelRec, _ := data["auto_cancel_recommended"].(bool)
 	if !autoCancelRec {
 		t.Error("expected auto_cancel_recommended=true for job silent 950s")
+	}
+	cmd, ok := data["cancel_command"].(string)
+	if !ok {
+		t.Fatal("TierAutoCancel integration: cancel_command should be present as a string")
+	}
+	if jobID, _ := data["job_id"].(string); jobID != "" {
+		want := fmt.Sprintf(`sessions(action="cancel", job_id="%s")`, jobID)
+		if cmd != want {
+			t.Errorf("cancel_command = %q, want %q", cmd, want)
+		}
+	} else if !strings.Contains(cmd, `sessions(action="cancel", job_id="`) {
+		t.Errorf("cancel_command %q does not match expected format", cmd)
 	}
 }
 
