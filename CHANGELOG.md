@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Response-budget policy — default response bodies are bounded to ~4 KiB so multi-step
+orchestrators do not blow their MCP context on large listings or job transcripts.
+Shipped across four PRs: #99 (budget package foundation), #100 (sync tools), #101
+(dual-source sessions + agents info), and an upcoming PR (investigate + orchestrate
++ descriptions + NFR-1 suite).
+
+### Added
+
+- **`pkg/server/budget/`** package — pagination helpers, field whitelists,
+  content-bearing field guards, truncation envelope, dual-source pagination.
+- **`include_content=true`** parameter on content-bearing tools — opts out of brief
+  mode and returns the full payload (job output, agent system prompt, investigation
+  report, orchestrator transcript).
+- **`tail=N`** parameter on `status` — returns the last N chars of job output
+  without pulling the full content.
+- **`sessions_limit` / `sessions_offset` / `loom_limit` / `loom_offset`** — independent
+  pagination cursors for the two sources surfaced by `sessions(action=list)`. Legacy
+  `limit` / `offset` still work and apply to both sources as a fallback.
+- **`content_length`** field on every brief response that omits content — byte count
+  of what was withheld, so callers can decide whether to fetch full content.
+- **NFR-1 per-tool budget test suite** — table-driven test asserts every non-exempt
+  tool's default brief response ≤ 4096 bytes on realistic fixtures.
+
+### Changed
+
+- **BREAKING — `sessions(action=list)` response shape** (FR-11 intentional break):
+  Loom tasks are now returned under a dedicated top-level `loom_tasks` key instead of
+  being folded into the same list as legacy sessions. The response now has
+  `{sessions, loom_tasks, sessions_pagination, loom_pagination}` with independent
+  pagination per source. Callers that previously iterated a single flat list of rows
+  MUST update to read both `sessions[]` and `loom_tasks[]`. Legacy `limit` still
+  works (caps both sources equally); use `sessions_limit` / `loom_limit` for
+  asymmetric caps.
+- **`agents(action=info)` default response** — large `Content` field (system prompt,
+  can be 500 KB+) is no longer returned by default. Use `include_content=true` to
+  retrieve it.
+- **`sessions(action=info)` per-job rows** — `content` field no longer returned by
+  default; `content_length` reports the byte count. Use `include_content=true` to
+  retrieve full content.
+- **`investigate(action=list/status/recall)` response shape** — brief rows with
+  `session_id, topic, domain, status, finding_count, coverage_progress`. `recall`
+  omits the full report by default; use `include_content=true` to retrieve it.
+- **All 14 tool descriptions** — now document the brief/full contract and surface
+  the relevant budget knobs. `deepresearch` is explicitly flagged as exempt from the
+  4k default budget.
+
+### Migration notes
+
+If your orchestrator reads `sessions(action=list)` and iterates results:
+
+```diff
+- for row in response.result["sessions"]:
+-     ... # previously included loom tasks
++ for row in response.result["sessions"]:
++     ... # legacy session rows only
++ for row in response.result["loom_tasks"]:
++     ... # loom task rows
+```
+
+If you previously relied on full content in sessions/agents/investigate briefs,
+pass `include_content=true` explicitly. If you need partial output for long jobs,
+use `tail=N` on `status`.
+
 ## [4.1.1] - 2026-04-18
 
 Patch release: muxcore dependency bump to v0.20.2. Drop-in upgrade — no API changes,

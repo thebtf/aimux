@@ -2519,8 +2519,12 @@ func TestHandleInvestigate_List(t *testing.T) {
 	if !ok {
 		t.Fatal("expected result payload")
 	}
-	if resultData["active_count"] == nil {
-		t.Error("expected result.active_count field")
+	// FR-5: investigate/list now returns investigations[] + pagination brief shape.
+	if resultData["investigations"] == nil {
+		t.Error("expected result.investigations field")
+	}
+	if resultData["pagination"] == nil {
+		t.Error("expected result.pagination field")
 	}
 }
 
@@ -3004,14 +3008,15 @@ func TestHandleInvestigate_FullCycle(t *testing.T) {
 	if statusResultData["topic"] != "server crash on startup" {
 		t.Errorf("result.topic = %v, want 'server crash on startup'", statusResultData["topic"])
 	}
-	if statusResultData["iteration"] == nil {
-		t.Error("expected result.iteration")
+	// FR-5: investigate/status brief shape — session_id, topic, domain, status, finding_count, coverage_progress.
+	if statusResultData["status"] == nil {
+		t.Error("expected result.status")
 	}
-	if statusResultData["findings_count"] == nil {
-		t.Error("expected result.findings_count")
+	if statusResultData["finding_count"] == nil {
+		t.Error("expected result.finding_count")
 	}
-	if statusResultData["coverage_unchecked"] == nil {
-		t.Error("expected result.coverage_unchecked")
+	if _, ok := statusResultData["coverage_progress"]; !ok {
+		t.Error("expected result.coverage_progress")
 	}
 
 	// 3. Finding
