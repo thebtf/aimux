@@ -58,7 +58,14 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 				"tools":       a.Tools,
 			}
 		}
-		return marshalToolResult(map[string]any{"agents": summaries, "count": len(summaries)})
+		return marshalToolResult(map[string]any{
+			"agents": summaries,
+			"count":  len(summaries),
+			"hint": "Flat catalog — no relevance ranking. For task dispatch, use action=find(prompt=...) " +
+				"or action=run without agent (both return ranked candidates). Always read the description " +
+				"field before selecting; never dispatch by name token match. Agents whose description " +
+				"contains experimental/test/probe are NOT for production work.",
+		})
 
 	case "find":
 		query := request.GetString("prompt", "")
