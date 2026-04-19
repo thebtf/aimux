@@ -151,7 +151,7 @@ func TestAppendProgress_ProgressLines_EmbeddedNewlines(t *testing.T) {
 
 func TestAppendProgress_ProgressLines_MonotonicallyIncreasing(t *testing.T) {
 	m, id := newRunningJob(t)
-	prev := 0
+	var prev int64
 	for i := 0; i < 10; i++ {
 		m.AppendProgress(id, "line")
 		snap := m.GetSnapshot(id)
