@@ -86,9 +86,9 @@ func TestMigrateV2_FreshDB(t *testing.T) {
 		}
 	}
 
-	// schema version must be 2
-	if v := schemaVersion(t, db); v != 2 {
-		t.Errorf("schema_version = %d, want 2", v)
+	// schema version must be 3 (v2 + v3 aborted_job_ids migration)
+	if v := schemaVersion(t, db); v != 3 {
+		t.Errorf("schema_version = %d, want 3", v)
 	}
 }
 
@@ -147,6 +147,9 @@ func TestMigrateV2_V1DB(t *testing.T) {
 
 	// Insert a pre-existing row to verify existing rows survive the migration
 	// with NULL in the new columns.
+	// NOTE: job status is 'completed' (not 'running') so that ReconcileOnStartup
+	// called inside NewStore does not mark it as aborted — which would set aborted_at
+	// and break the NULL assertion below.
 	_, err = rawDB.Exec(`
 		INSERT INTO sessions (id, cli, mode, status, created_at, last_active_at)
 		VALUES ('sess-1', 'codex', 'live', 'created', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
@@ -156,7 +159,7 @@ func TestMigrateV2_V1DB(t *testing.T) {
 	}
 	_, err = rawDB.Exec(`
 		INSERT INTO jobs (id, session_id, cli, status, created_at, progress_updated_at)
-		VALUES ('job-1', 'sess-1', 'codex', 'running', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+		VALUES ('job-1', 'sess-1', 'codex', 'completed', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
 	`)
 	if err != nil {
 		t.Fatalf("insert test job: %v", err)
@@ -186,9 +189,9 @@ func TestMigrateV2_V1DB(t *testing.T) {
 		}
 	}
 
-	// schema version must be 2
-	if v := schemaVersion(t, db); v != 2 {
-		t.Errorf("schema_version = %d, want 2", v)
+	// schema version must be 3 (v2 + v3 aborted_job_ids migration)
+	if v := schemaVersion(t, db); v != 3 {
+		t.Errorf("schema_version = %d, want 3", v)
 	}
 
 	// Existing rows must have NULL in the new columns (not an error, just NULL).

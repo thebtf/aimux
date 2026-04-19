@@ -21,6 +21,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every `AppendProgress` call; no buffer scan on status poll.
 - `pkg/util.TruncateUTF8` — shared UTF-8-safe byte-budget truncation helper.
 - **Fallback observability** (`pkg/executor/fallback.go`, `pkg/metrics/fallback_metrics.go`): structured per-attempt log lines (`module=executor.fallback`) and `aimux_fallback_attempts_total{cli,model,result}` counter in every `RunWithModelFallback` call. Opt-out via `AIMUX_FALLBACK_VERBOSE=false` (counter always increments). Prerequisite for Phase 2 codex account×model routing fix (engram #115).
+- **`pkg/session/reconcile.go`** — `ReconcileOnStartup(ctx, db, currentUUID)` scans for
+  orphaned jobs and sessions (those owned by a different daemon UUID or with NULL UUID) and
+  marks them aborted in a single atomic transaction on startup. Returns the IDs of all
+  reconciled jobs and sessions for logging.
+- **Orphan job abort** — orphaned jobs with `status=running` are updated to
+  `status=aborted, aborted_at=NOW` during reconciliation. Other statuses are preserved.
+- **Session-level rollup** — sessions that had running jobs aborted receive
+  `aborted_at=NOW` and `aborted_job_ids` (JSON array of the aborted job IDs). Sessions
+  where all remaining jobs are aborted (or aborted+completed) also get `status=aborted`.
+- **`sessions(action=list, status=aborted)` filter** — the sessions MCP tool now returns
+  only aborted sessions when `status=aborted` is passed. Filter implemented via the
+  existing `Registry.List(status)` path; no new code path needed.
+- **Schema migration v3** — `sessions.aborted_job_ids TEXT` column added via
+  `migrateV2point1` in `pkg/session/schema.go`. Migration is atomic and idempotent
+  (skips if column already exists).
+- **`types.JobStatusAborted`** and **`types.SessionStatusAborted`** enum constants.
+- **`BenchmarkReconcile10k`** in `pkg/session/reconcile_test.go` — reconciles 10,000
+  orphaned running jobs; measured at 116 ms on dev hardware (NFR-1 requires < 5 s).
 
 ## [4.2.0] - 2026-04-19
 

@@ -1,9 +1,11 @@
 package session
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -36,6 +38,13 @@ func NewStore(path string) (*Store, error) {
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate sqlite: %w", err)
+	}
+
+	orphanedJobs, orphanedSessions, reconcileErr := ReconcileOnStartup(context.Background(), db, GetDaemonUUID())
+	if reconcileErr != nil {
+		fmt.Fprintf(os.Stderr, "session: startup reconciliation warning: %v\n", reconcileErr)
+	} else if len(orphanedJobs) > 0 || len(orphanedSessions) > 0 {
+		fmt.Fprintf(os.Stderr, "session: reconciled %d orphaned jobs, %d orphaned sessions\n", len(orphanedJobs), len(orphanedSessions))
 	}
 
 	return &Store{db: db}, nil
@@ -133,6 +142,21 @@ func migrate(db *sql.DB) error {
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration 2: %w", err)
+		}
+	}
+
+	// Migration 3: add aborted_job_ids column to sessions (session durability Phase 3).
+	if version < 3 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 3: %w", err)
+		}
+		if err := migrateV2point1(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration 3: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 3: %w", err)
 		}
 	}
 

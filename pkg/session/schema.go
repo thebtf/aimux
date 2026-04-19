@@ -43,3 +43,19 @@ func migrateV2(tx *sql.Tx) error {
 	}
 	return nil
 }
+
+// migrateV2point1 applies schema migration v2 → v3:
+//   - sessions: ADD aborted_job_ids TEXT (JSON array of aborted job IDs)
+//
+// Callers: migrate() in sqlite.go calls this when version < 3.
+func migrateV2point1(tx *sql.Tx) error {
+	if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN aborted_job_ids TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrateV2point1: sessions.aborted_job_ids: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_version (version) VALUES (3)`); err != nil {
+		return fmt.Errorf("migrateV2point1: bump schema_version to 3: %w", err)
+	}
+	return nil
+}
