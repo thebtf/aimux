@@ -436,7 +436,8 @@ func (s *Server) registerTools() {
 				"Unknown role names return a validation error immediately — no CLI is spawned. "+
 				"Routing uses operator-configured priority from config cli_priority, not alphabetical order. "+
 				"When async=true: returns job_id immediately; the CLI runs in the background. "+
-				"To collect results: spawn a Sonnet subagent wrapper — see aimux guide skill (poll-wrapper-subagent pattern)."),
+				"To collect results: spawn a Sonnet subagent wrapper — see aimux guide skill (poll-wrapper-subagent pattern). "+
+				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full output."),
 			mcp.WithString("prompt",
 				mcp.Required(),
 				mcp.Description("The prompt to send to the CLI"),
@@ -468,6 +469,9 @@ func (s *Server) registerTools() {
 			mcp.WithNumber("timeout_seconds",
 				mcp.Description("Timeout override in seconds"),
 			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("Sync mode: return full CLI output instead of brief metadata (default false)"),
+			),
 		),
 		s.handleExec,
 	)
@@ -477,14 +481,20 @@ func (s *Server) registerTools() {
 		mcp.NewTool("status",
 			mcp.WithDescription("Check async job status. "+
 				"Returns a result map with status field set to one of: queued, running, completing, completed, failed. "+
-				"The content field is present when status=completed or status=failed and contains the full CLI output; "+
-				"a separate error field is also included on failed. "+
+				"Default returns metadata only (fits ~4k chars). Add include_content=true for full job output. Use tail=N for last N chars. "+
+				"When content is omitted, content_length gives the byte count of the full output. "+
 				"While status=running, the response may include stall_warning (key present after 120s of silence) "+
 				"or stall_alert (key present after 600s of silence); both keys include cancel instructions. "+
 				"stall_warning appears at TierSoftWarning (120s+ silent); stall_alert appears at TierHardStall (600s+) and TierAutoCancel (900s+)."),
 			mcp.WithString("job_id",
 				mcp.Required(),
 				mcp.Description("Job ID from async exec response"),
+			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("Return full job output instead of brief metadata (default false)"),
+			),
+			mcp.WithNumber("tail",
+				mcp.Description("Return last N chars of job output without fetching full content"),
 			),
 		),
 		s.handleStatus,
@@ -494,8 +504,10 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(
 		mcp.NewTool("sessions",
 			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc, refresh-warmup. "+
-				"action=list returns all sessions and tasks with no server-side pagination — "+
-				"use the limit parameter to cap results on busy servers. "+
+				"action=list returns dual-source brief rows (sessions + loom_tasks) — default fits ~4k chars. "+
+				"Use sessions_limit/sessions_offset and loom_limit/loom_offset for independent pagination per source; "+
+				"legacy limit/offset applies to both sources as a fallback. "+
+				"action=info: per-job rows include content_length; add include_content=true to fetch job content. "+
 				"action=refresh-warmup re-runs CLI warmup probes and updates the routing pool."),
 			mcp.WithString("action",
 				mcp.Required(),
@@ -512,7 +524,25 @@ func (s *Server) registerTools() {
 				mcp.Description("Filter by status: active, completed, failed, all"),
 			),
 			mcp.WithNumber("limit",
-				mcp.Description("Max results (optional; no server-side default cap)"),
+				mcp.Description("Max results per source (default 20, max 100). Use sessions_limit/loom_limit for independent control."),
+			),
+			mcp.WithNumber("offset",
+				mcp.Description("Zero-based offset for list pagination (applies to both sources; use sessions_offset/loom_offset for independent control)"),
+			),
+			mcp.WithNumber("sessions_limit",
+				mcp.Description("Max legacy session rows (default 20, max 100)"),
+			),
+			mcp.WithNumber("sessions_offset",
+				mcp.Description("Zero-based offset for legacy session rows"),
+			),
+			mcp.WithNumber("loom_limit",
+				mcp.Description("Max loom task rows (default 20, max 100)"),
+			),
+			mcp.WithNumber("loom_offset",
+				mcp.Description("Zero-based offset for loom task rows"),
+			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("Return full job content in info action (default false)"),
 			),
 		),
 		s.handleSessions,
@@ -521,7 +551,8 @@ func (s *Server) registerTools() {
 	// audit tool
 	s.mcp.AddTool(
 		mcp.NewTool("audit",
-			mcp.WithDescription("Run multi-agent codebase audit: scan→validate→investigate"),
+			mcp.WithDescription("Run multi-agent codebase audit: scan→validate→investigate. "+
+				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full audit output."),
 			mcp.WithString("cwd",
 				mcp.Description("Working directory to audit"),
 			),
@@ -536,6 +567,9 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("async",
 				mcp.Description("Run in background"),
 			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("Sync mode: return full audit output instead of brief metadata (default false)"),
+			),
 		),
 		s.handleAudit,
 	)
@@ -543,7 +577,8 @@ func (s *Server) registerTools() {
 	// think tool
 	s.mcp.AddTool(
 		mcp.NewTool("think",
-			mcp.WithDescription(mustStatefulToolDescription("think")),
+			mcp.WithDescription(mustStatefulToolDescription("think")+" "+
+				"Returns structured reasoning metadata (fits ~4k chars); all fields are compact by design."),
 			mcp.WithString("pattern",
 				mcp.Required(),
 				mcp.Description("Pattern name"),
@@ -644,7 +679,10 @@ func (s *Server) registerTools() {
 	// investigate tool
 	s.mcp.AddTool(
 		mcp.NewTool("investigate",
-			mcp.WithDescription(mustStatefulToolDescription("investigate")),
+			mcp.WithDescription(mustStatefulToolDescription("investigate")+" "+
+				"action=list: returns brief rows (fits ~4k chars); supports limit (default 20, max 100) and offset. "+
+				"action=status: returns brief metadata (fits ~4k chars). "+
+				"action=recall: default omits full report; add include_content=true to retrieve it."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: start, finding, assess, report, auto, status, list, recall"),
@@ -688,6 +726,15 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("force",
 				mcp.Description("Generate report even when evidence is incomplete (optional for action=report)"),
 			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("action=recall: return full saved report instead of brief (default false)"),
+			),
+			mcp.WithNumber("limit",
+				mcp.Description("action=list: max rows returned (default 20, max 100)"),
+			),
+			mcp.WithNumber("offset",
+				mcp.Description("action=list: zero-based pagination offset"),
+			),
 		),
 		s.handleInvestigate,
 	)
@@ -695,7 +742,8 @@ func (s *Server) registerTools() {
 	// consensus tool
 	s.mcp.AddTool(
 		mcp.NewTool("consensus",
-			mcp.WithDescription(mustStatefulToolDescription("consensus")),
+			mcp.WithDescription(mustStatefulToolDescription("consensus")+" "+
+				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full transcript."),
 			mcp.WithString("topic",
 				mcp.Required(),
 				mcp.Description("Topic for consensus"),
@@ -712,6 +760,9 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("async",
 				mcp.Description("Run in background"),
 			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("Sync mode: return full consensus transcript instead of brief metadata (default false)"),
+			),
 		),
 		s.handleConsensus,
 	)
@@ -719,7 +770,8 @@ func (s *Server) registerTools() {
 	// debate tool
 	s.mcp.AddTool(
 		mcp.NewTool("debate",
-			mcp.WithDescription(mustStatefulToolDescription("debate")),
+			mcp.WithDescription(mustStatefulToolDescription("debate")+" "+
+				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full transcript."),
 			mcp.WithString("topic",
 				mcp.Required(),
 				mcp.Description("Topic for debate"),
@@ -733,6 +785,9 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("async",
 				mcp.Description("Run in background"),
 			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("Sync mode: return full debate transcript instead of brief metadata (default false)"),
+			),
 		),
 		s.handleDebate,
 	)
@@ -740,7 +795,8 @@ func (s *Server) registerTools() {
 	// dialog tool
 	s.mcp.AddTool(
 		mcp.NewTool("dialog",
-			mcp.WithDescription(mustStatefulToolDescription("dialog")),
+			mcp.WithDescription(mustStatefulToolDescription("dialog")+" "+
+				"Default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full transcript."),
 			mcp.WithString("prompt",
 				mcp.Required(),
 				mcp.Description("Dialog topic or initial prompt"),
@@ -751,6 +807,9 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("async",
 				mcp.Description("Run in background"),
 			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("Sync mode: return full dialog transcript instead of brief metadata (default false)"),
+			),
 		),
 		s.handleDialog,
 	)
@@ -759,9 +818,11 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(
 		mcp.NewTool("agents",
 			mcp.WithDescription("PRIMARY tool for task execution. "+
-				"Actions: run (execute task with agent=<name>), list (show agents), find (search agents). "+
+				"Actions: run (execute task with agent=<name>), list (show agents), find (search agents), info (agent details). "+
 				"For run: specify agent=<name> to select the agent. If omitted, returns a candidate list for you to choose from. "+
 				"Use find(prompt=<query>) to search agents by keyword, or list to see all available agents with descriptions. "+
+				"action=list/find: default returns brief rows (fits ~4k chars); supports limit (default 20, max 100) and offset. "+
+				"action=info: default omits system prompt (can be 500KB+); add include_content=true to retrieve it. "+
 				"Prefer agents(action=run) over exec when you want an agent with a pre-built system prompt and role — "+
 				"exec is for raw prompt dispatch when no matching agent exists or you need low-level CLI control."),
 			mcp.WithString("action",
@@ -778,6 +839,15 @@ func (s *Server) registerTools() {
 			mcp.WithString("cwd",
 				mcp.Description("Working directory (required for action=run)"),
 			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("action=info: return full agent system prompt (default false)"),
+			),
+			mcp.WithNumber("limit",
+				mcp.Description("action=list/find: max rows returned (default 20, max 100)"),
+			),
+			mcp.WithNumber("offset",
+				mcp.Description("action=list/find: zero-based pagination offset"),
+			),
 		),
 		s.handleAgents,
 	)
@@ -790,7 +860,8 @@ func (s *Server) registerTools() {
 				"The CLI IS the agent — it reads files, runs commands, edits code. "+
 				"When async=true: returns job_id immediately; use the status tool to poll for completion. "+
 				"For long-running agents, spawn a Sonnet subagent wrapper rather than polling in the main context — "+
-				"see aimux guide skill (poll-wrapper-subagent pattern)."),
+				"see aimux guide skill (poll-wrapper-subagent pattern). "+
+				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full output."),
 			mcp.WithString("agent",
 				mcp.Required(),
 				mcp.Description("Agent name from registry"),
@@ -812,6 +883,9 @@ func (s *Server) registerTools() {
 			mcp.WithNumber("timeout_seconds",
 				mcp.Description("Timeout override in seconds"),
 			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("Sync mode: return full agent output instead of brief metadata (default false)"),
+			),
 		),
 		s.handleAgentRun,
 	)
@@ -820,6 +894,7 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(
 		mcp.NewTool("deepresearch",
 			mcp.WithDescription("Deep research via Google Gemini API with file attachments and caching. "+
+				"Returns full synthesized report; not subject to the 4k default budget. "+
 				"This tool is synchronous — it blocks until research is complete and returns content directly (no job_id). "+
 				"Results are cached by topic; use force=true to bypass the cache and trigger a fresh Gemini call. "+
 				"Cache-miss calls can be slow (30s–120s depending on topic complexity) — plan accordingly."),
@@ -843,7 +918,8 @@ func (s *Server) registerTools() {
 	// workflow tool
 	s.mcp.AddTool(
 		mcp.NewTool("workflow",
-			mcp.WithDescription(mustStatefulToolDescription("workflow")),
+			mcp.WithDescription(mustStatefulToolDescription("workflow")+" "+
+				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full output."),
 			mcp.WithString("name",
 				mcp.Description("Workflow name (for logging)"),
 			),
@@ -857,6 +933,9 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("async",
 				mcp.Description("Run in background"),
 			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("Sync mode: return full workflow output instead of brief metadata (default false)"),
+			),
 		),
 		s.handleWorkflow,
 	)
@@ -866,11 +945,16 @@ func (s *Server) registerTools() {
 		mcp.NewTool("upgrade",
 			mcp.WithDescription("Check for and apply aimux binary updates from GitHub releases. "+
 				"action=check: detect latest version. action=apply: download, verify checksum, replace binary. "+
-				"After apply, daemon will exit when all CC sessions disconnect (deferred restart)."),
+				"After apply, daemon will exit when all CC sessions disconnect (deferred restart). "+
+				"action=check returns compact status fields (fits ~4k chars); release_notes are omitted by default (release_notes_length is reported). "+
+				"Use include_content=true to return the full release_notes body."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: check (detect latest version) or apply (download and replace binary)"),
 				mcp.Enum("check", "apply"),
+			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("action=check: return full release_notes body (default false)"),
 			),
 		),
 		s.handleUpgrade,
@@ -1353,14 +1437,26 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 				"current_version": Version,
 			})
 		}
-		return marshalToolResult(map[string]any{
-			"status":          "update_available",
-			"current_version": Version,
-			"latest_version":  release.Version,
-			"asset_name":      release.AssetName,
-			"release_notes":   release.ReleaseNotes,
-			"published_at":    release.PublishedAt,
-		})
+		// Brief: compact status fields. release_notes can exceed 4 KiB on feature releases,
+		// so it is omitted by default; callers who need the full body use
+		// upgrade(action=check, include_content=true) or fetch the GitHub release page.
+		includeContent := request.GetBool("include_content", false)
+		releaseNotesLen := len(release.ReleaseNotes)
+		payload := map[string]any{
+			"status":                "update_available",
+			"current_version":       Version,
+			"latest_version":        release.Version,
+			"asset_name":            release.AssetName,
+			"published_at":          release.PublishedAt,
+			"release_notes_length":  releaseNotesLen,
+		}
+		if includeContent {
+			payload["release_notes"] = release.ReleaseNotes
+		} else if releaseNotesLen > 0 {
+			payload["truncated"] = true
+			payload["hint"] = "release_notes omitted (" + fmt.Sprintf("%d", releaseNotesLen) + " bytes). Use upgrade(action=check, include_content=true) for full body."
+		}
+		return marshalToolResult(payload)
 
 	case "apply":
 		release, applyErr := updater.ApplyUpdate(ctx, Version)

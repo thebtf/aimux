@@ -24,6 +24,14 @@ and spawns the appropriate CLI subprocess.
 - Strategy pattern for orchestrator (consensus, debate, dialog, pair, audit)
 - Constructor injection for dependencies (Executor, CLIResolver)
 - Profile-based CLI configuration via YAML in `config/cli.d/`
+- **Response budget helper:** `pkg/server/budget/` shapes MCP tool responses to a
+  ~4096-byte default with explicit `include_content=true` opt-in for full content.
+  Handlers wire `budget.ParseBudgetParams` → `budget.ApplyFields` →
+  `budget.AttachTruncation(envelope.Result, meta)`. Field whitelists live in
+  `pkg/server/budget/fields.go`; pagination helpers in `pagination.go` and
+  `pagination_dual.go`. Counter interfaces on `pkg/session.Store` /
+  `pkg/session.Registry` and `loom.LoomEngine` / `loom.TaskStore` enable SQL
+  COUNT without loading rows. See `.agent/specs/response-budget-policy/spec.md`.
 
 ### File Ownership
 - `pkg/server/server.go` — 1355 LOC, main MCP handler file

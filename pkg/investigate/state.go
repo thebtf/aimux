@@ -74,6 +74,7 @@ func ListInvestigations() []InvestigationSummary {
 		result = append(result, InvestigationSummary{
 			SessionID:     id,
 			Topic:         s.Topic,
+			Domain:        s.Domain,
 			Iteration:     s.Iteration,
 			FindingsCount: len(s.Findings),
 		})

@@ -14,6 +14,7 @@ import (
 	"github.com/thebtf/aimux/pkg/guidance/policies"
 	"github.com/thebtf/aimux/pkg/parser"
 	"github.com/thebtf/aimux/pkg/resolve"
+	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/types"
@@ -490,43 +491,87 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		if state == nil {
 			return mcp.NewToolResultError(fmt.Sprintf("investigation %q not found", sessionID)), nil
 		}
-		var unchecked []string
+
+		// Brief: session_id, topic, domain, status, finding_count, coverage_progress (FR-2).
+		totalAreas := len(state.CoverageAreas)
+		checkedAreas := 0
 		for _, a := range state.CoverageAreas {
-			if !state.CoverageChecked[a] {
-				unchecked = append(unchecked, a)
+			if state.CoverageChecked[a] {
+				checkedAreas++
 			}
 		}
-		result := map[string]any{
-			"session_id":         sessionID,
-			"topic":              state.Topic,
-			"iteration":          state.Iteration,
-			"findings_count":     len(state.Findings),
-			"corrections_count":  len(state.Corrections),
-			"coverage_unchecked": unchecked,
-			"last_activity":      state.LastActivityAt,
+		coverageProgress := 0.0
+		if totalAreas > 0 {
+			coverageProgress = float64(checkedAreas) / float64(totalAreas)
 		}
-		return s.marshalGuidedToolResult("investigate", action, state, result)
+		result := map[string]any{
+			"session_id":        sessionID,
+			"topic":             state.Topic,
+			"domain":            state.Domain,
+			"status":            "active",
+			"finding_count":     len(state.Findings),
+			"coverage_progress": coverageProgress,
+		}
+		whitelist := budget.FieldWhitelist["investigate/status"]
+		filtered, _, applyErr := budget.ApplyFields(result, nil, whitelist)
+		if applyErr != nil {
+			return mcp.NewToolResultError(applyErr.Error()), nil
+		}
+		return s.marshalGuidedToolResult("investigate", action, state, filtered)
 
 	case "list":
-		active := inv.ListInvestigations()
-		cwd := request.GetString("cwd", "")
-		if cwd != "" {
-			if err := validateCWD(cwd); err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-		} else {
-			cwd, _ = os.Getwd()
+		bp, budgetErr := budget.ParseBudgetParams(request)
+		if budgetErr != nil {
+			return mcp.NewToolResultError(budgetErr.Error()), nil
 		}
-		savedReports, _ := inv.ListReports(cwd)
+
+		active := inv.ListInvestigations()
+
+		// Build brief rows: session_id, topic, domain, status, finding_count (FR-2).
+		type investigationBrief struct {
+			SessionID    string `json:"session_id"`
+			Topic        string `json:"topic"`
+			Domain       string `json:"domain"`
+			Status       string `json:"status"`
+			FindingCount int    `json:"finding_count"`
+		}
+
+		// Collect briefs from active investigations. Domain comes directly from the
+		// summary (no per-item GetInvestigation lookup — avoids N+1 on busy servers).
+		allBriefs := make([]investigationBrief, len(active))
+		for i, s := range active {
+			allBriefs[i] = investigationBrief{
+				SessionID:    s.SessionID,
+				Topic:        s.Topic,
+				Domain:       s.Domain,
+				Status:       "active",
+				FindingCount: s.FindingsCount,
+			}
+		}
+
+		page, meta := budget.PaginateSingle(allBriefs, bp.Limit, bp.Offset)
+		// investigations + pagination are the wrapper keys. fields= filtering applies
+		// to per-row fields only; the wrapper is returned as-is so "investigations"
+		// (not listed in the per-row whitelist) is not inadvertently dropped.
 		result := map[string]any{
-			"active_investigations": active,
-			"active_count":          len(active),
-			"saved_reports":         savedReports,
-			"saved_count":           len(savedReports),
+			"investigations": page,
+			"pagination":     meta,
 		}
 		return s.marshalGuidedToolResult("investigate", action, nil, result)
 
 	case "recall":
+		bp, budgetErr := budget.ParseBudgetParams(request)
+		if budgetErr != nil {
+			return mcp.NewToolResultError(budgetErr.Error()), nil
+		}
+		if valErr := budget.ValidateContentBearingFields(
+			bp.Fields,
+			budget.ContentBearingFields["investigate/recall"],
+			bp.IncludeContent,
+		); valErr != nil {
+			return mcp.NewToolResultError(valErr.Error()), nil
+		}
+
 		topic := request.GetString("topic", "")
 		if topic == "" {
 			return mcp.NewToolResultError("topic required for recall"), nil
@@ -539,32 +584,58 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		} else {
 			cwd, _ = os.Getwd()
 		}
-		result, err := inv.RecallReport(cwd, topic)
+		recallResult, err := inv.RecallReport(cwd, topic)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("recall error: %v", err)), nil
 		}
-		if result == nil {
+		if recallResult == nil {
 			// Return available topics to help the user
 			reports, _ := inv.ListReports(cwd)
 			topics := make([]string, 0, len(reports))
 			for _, r := range reports {
 				topics = append(topics, r.Topic)
 			}
-			result := map[string]any{
+			notFoundPayload := map[string]any{
 				"found":            false,
 				"message":          fmt.Sprintf("No report found matching %q", topic),
 				"available_topics": topics,
 			}
-			return s.marshalGuidedToolResult("investigate", action, nil, result)
+			return s.marshalGuidedToolResult("investigate", action, nil, notFoundPayload)
 		}
+
+		// Brief: session_id, topic, finding_count, content_length; content omitted unless include_content=true (FR-2).
+		//
+		// NB: for action=recall only, "session_id" carries the persisted report
+		// *filename*, not an in-memory investigation ID. Filenames are stable
+		// across aimux restarts while investigation IDs are not; using the
+		// filename lets callers round-trip recall results without consulting
+		// other state. Other investigate actions use the real session ID.
+		// Documented for callers in CHANGELOG and the investigate tool description.
+		contentLength := len(recallResult.Content)
 		payload := map[string]any{
-			"found":    true,
-			"filename": result.Filename,
-			"topic":    result.Topic,
-			"date":     result.Date,
-			"content":  result.Content,
+			"found":          true,
+			"session_id":     recallResult.Filename, // filename — stable identifier; see doc note above
+			"topic":          recallResult.Topic,
+			"date":           recallResult.Date,
+			"finding_count":  0, // report file doesn't surface count separately
+			"content_length": contentLength,
 		}
-		return s.marshalGuidedToolResult("investigate", action, nil, payload)
+		if bp.IncludeContent {
+			payload["content"] = recallResult.Content
+		} else if contentLength > 0 {
+			meta := budget.BuildTruncationMeta(nil, contentLength,
+				"Use investigate(action=recall, topic=..., include_content=true) for full report.")
+			if meta.Truncated {
+				payload["truncated"] = meta.Truncated
+				payload["hint"] = meta.Hint
+			}
+		}
+		whitelist := budget.FieldWhitelist["investigate/recall"]
+		filtered, _, applyErr := budget.ApplyFields(payload, bp.Fields, whitelist)
+		if applyErr != nil {
+			return mcp.NewToolResultError(applyErr.Error()), nil
+		}
+		return s.marshalGuidedToolResult("investigate", action, nil, filtered)
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil

@@ -13,6 +13,7 @@ import (
 	"github.com/thebtf/aimux/pkg/guidance/policies"
 	"github.com/thebtf/aimux/loom"
 	orch "github.com/thebtf/aimux/pkg/orchestrator"
+	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -99,6 +100,16 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		return marshalToolResult(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 	}
 
+	bp, budgetErr := budget.ParseBudgetParams(request)
+	if budgetErr != nil {
+		return mcp.NewToolResultError(budgetErr.Error()), nil
+	}
+	if valErr := budget.ValidateContentBearingFields(
+		bp.Fields, budget.ContentBearingFields["consensus"], bp.IncludeContent,
+	); valErr != nil {
+		return mcp.NewToolResultError(valErr.Error()), nil
+	}
+
 	result, err := s.orchestrator.Execute(ctx, "consensus", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("consensus failed: %v", err)), nil
@@ -108,7 +119,30 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 		Turns:      result.Turns,
 		Status:     result.Status,
 	}
-	return s.marshalGuidedToolResult("consensus", "", consensusState, result)
+
+	// Brief sync path: compact summary + content_length; full transcript on include_content=true (FR-2).
+	contentLen := len(result.Content)
+	rawPayload := map[string]any{
+		"status": result.Status,
+		"turns":  result.Turns,
+	}
+	if bp.IncludeContent {
+		rawPayload["content"] = result.Content
+		rawPayload["transcript"] = result.Content
+	} else {
+		rawPayload["content_length"] = contentLen
+		meta := budget.BuildTruncationMeta(nil, contentLen,
+			"Use consensus(include_content=true) for full transcript.")
+		if meta.Truncated {
+			rawPayload["truncated"] = meta.Truncated
+			rawPayload["hint"] = meta.Hint
+		}
+	}
+	filtered, _, applyErr := budget.ApplyFields(rawPayload, bp.Fields, budget.FieldWhitelist["consensus"])
+	if applyErr != nil {
+		return mcp.NewToolResultError(applyErr.Error()), nil
+	}
+	return s.marshalGuidedToolResult("consensus", "", consensusState, filtered)
 }
 
 func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -169,6 +203,16 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		return marshalToolResult(map[string]any{"job_id": job.ID, "session_id": sess.ID, "status": "running"})
 	}
 
+	bpDebate, budgetErrDebate := budget.ParseBudgetParams(request)
+	if budgetErrDebate != nil {
+		return mcp.NewToolResultError(budgetErrDebate.Error()), nil
+	}
+	if valErr := budget.ValidateContentBearingFields(
+		bpDebate.Fields, budget.ContentBearingFields["debate"], bpDebate.IncludeContent,
+	); valErr != nil {
+		return mcp.NewToolResultError(valErr.Error()), nil
+	}
+
 	result, err := s.orchestrator.Execute(ctx, "debate", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("debate failed: %v", err)), nil
@@ -179,13 +223,49 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 		Synthesize: synthesize,
 		Status:     result.Status,
 	}
-	return s.marshalGuidedToolResult("debate", "", debateState, result)
+
+	// Brief sync path: compact summary + content_length; full transcript on include_content=true (FR-2).
+	debateContentLen := len(result.Content)
+	debatePayload := map[string]any{
+		"status": result.Status,
+		"turns":  result.Turns,
+	}
+	if bpDebate.IncludeContent {
+		debatePayload["content"] = result.Content
+		debatePayload["transcript"] = result.Content
+	} else {
+		debatePayload["content_length"] = debateContentLen
+		debateMeta := budget.BuildTruncationMeta(nil, debateContentLen,
+			"Use debate(include_content=true) for full transcript.")
+		if debateMeta.Truncated {
+			debatePayload["truncated"] = debateMeta.Truncated
+			debatePayload["hint"] = debateMeta.Hint
+		}
+	}
+	debateFiltered, _, debateApplyErr := budget.ApplyFields(debatePayload, bpDebate.Fields, budget.FieldWhitelist["debate"])
+	if debateApplyErr != nil {
+		return mcp.NewToolResultError(debateApplyErr.Error()), nil
+	}
+	return s.marshalGuidedToolResult("debate", "", debateState, debateFiltered)
 }
 
 func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	prompt, err := request.RequireString("prompt")
 	if err != nil {
 		return mcp.NewToolResultError("prompt is required"), nil
+	}
+
+	// Parse + validate budget params BEFORE any orchestrator work so that invalid
+	// requests (bad fields, missing include_content, etc.) return errors without
+	// spawning CLIs, creating job history, or mutating session state.
+	bpDialog, budgetErrDialog := budget.ParseBudgetParams(request)
+	if budgetErrDialog != nil {
+		return mcp.NewToolResultError(budgetErrDialog.Error()), nil
+	}
+	if valErr := budget.ValidateContentBearingFields(
+		bpDialog.Fields, budget.ContentBearingFields["dialog"], bpDialog.IncludeContent,
+	); valErr != nil {
+		return mcp.NewToolResultError(valErr.Error()), nil
 	}
 
 	enabled := s.registry.EnabledCLIs()
@@ -255,12 +335,26 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		ss.Turns = result.Turns
 	})
 
-	rawPayload := map[string]any{
+	// Brief sync path: compact summary + content_length; full transcript on include_content=true (FR-2).
+	// bpDialog was parsed + validated at handler entry (above EnabledCLIs check).
+	dialogContentLen := len(result.Content)
+	dialogPayload := map[string]any{
 		"session_id":   sess.ID,
 		"status":       result.Status,
 		"turns":        result.Turns,
-		"content":      result.Content,
 		"participants": result.Participants,
+	}
+	if bpDialog.IncludeContent {
+		dialogPayload["content"] = result.Content
+		dialogPayload["transcript"] = result.Content
+	} else {
+		dialogPayload["content_length"] = dialogContentLen
+		dialogMeta := budget.BuildTruncationMeta(nil, dialogContentLen,
+			"Use dialog(session_id=..., include_content=true) for full transcript.")
+		if dialogMeta.Truncated {
+			dialogPayload["truncated"] = dialogMeta.Truncated
+			dialogPayload["hint"] = dialogMeta.Hint
+		}
 	}
 	dialogState := &policies.DialogPolicyInput{
 		SessionID:    sess.ID,
@@ -268,7 +362,11 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		Status:       result.Status,
 		Participants: result.Participants,
 	}
-	return s.marshalGuidedToolResult("dialog", "", dialogState, rawPayload)
+	dialogFiltered, _, dialogApplyErr := budget.ApplyFields(dialogPayload, bpDialog.Fields, budget.FieldWhitelist["dialog"])
+	if dialogApplyErr != nil {
+		return mcp.NewToolResultError(dialogApplyErr.Error()), nil
+	}
+	return s.marshalGuidedToolResult("dialog", "", dialogState, dialogFiltered)
 }
 
 // findDialogTurnHistory scans jobs for the most recent dialog turn history
@@ -345,11 +443,44 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 		return marshalToolResult(map[string]any{"job_id": job.ID, "status": "running"})
 	}
 
+	bpAudit, budgetErrAudit := budget.ParseBudgetParams(request)
+	if budgetErrAudit != nil {
+		return mcp.NewToolResultError(budgetErrAudit.Error()), nil
+	}
+	if valErr := budget.ValidateContentBearingFields(
+		bpAudit.Fields, budget.ContentBearingFields["audit"], bpAudit.IncludeContent,
+	); valErr != nil {
+		return mcp.NewToolResultError(valErr.Error()), nil
+	}
+
 	result, err := s.orchestrator.Execute(ctx, "audit", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("audit failed: %v", err)), nil
 	}
-	return marshalToolResult(result)
+
+	// Brief sync path: compact summary + content_length; full output on include_content=true (FR-2).
+	auditContentLen := len(result.Content)
+	auditPayload := map[string]any{
+		"status": result.Status,
+		"turns":  result.Turns,
+	}
+	if bpAudit.IncludeContent {
+		auditPayload["content"] = result.Content
+		auditPayload["transcript"] = result.Content
+	} else {
+		auditPayload["content_length"] = auditContentLen
+		auditMeta := budget.BuildTruncationMeta(nil, auditContentLen,
+			"Use audit(cwd=..., async=false, include_content=true) for full output.")
+		if auditMeta.Truncated {
+			auditPayload["truncated"] = auditMeta.Truncated
+			auditPayload["hint"] = auditMeta.Hint
+		}
+	}
+	auditFiltered, _, auditApplyErr := budget.ApplyFields(auditPayload, bpAudit.Fields, budget.FieldWhitelist["audit"])
+	if auditApplyErr != nil {
+		return mcp.NewToolResultError(auditApplyErr.Error()), nil
+	}
+	return marshalToolResult(auditFiltered)
 }
 
 // handleWorkflow executes a declarative multi-step pipeline as a single MCP call.
@@ -423,12 +554,45 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 		return marshalToolResult(map[string]any{"job_id": job.ID, "status": "running"})
 	}
 
+	bpWorkflow, budgetErrWorkflow := budget.ParseBudgetParams(request)
+	if budgetErrWorkflow != nil {
+		return mcp.NewToolResultError(budgetErrWorkflow.Error()), nil
+	}
+	if valErr := budget.ValidateContentBearingFields(
+		bpWorkflow.Fields, budget.ContentBearingFields["workflow"], bpWorkflow.IncludeContent,
+	); valErr != nil {
+		return mcp.NewToolResultError(valErr.Error()), nil
+	}
+
 	result, err := s.orchestrator.Execute(ctx, "workflow", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("workflow failed: %v", err)), nil
 	}
+
+	// Brief sync path: compact summary + content_length; full output on include_content=true (FR-2).
+	wfContentLen := len(result.Content)
+	wfPayload := map[string]any{
+		"status": result.Status,
+		"turns":  result.Turns,
+	}
+	if bpWorkflow.IncludeContent {
+		wfPayload["content"] = result.Content
+		wfPayload["transcript"] = result.Content
+	} else {
+		wfPayload["content_length"] = wfContentLen
+		wfMeta := budget.BuildTruncationMeta(nil, wfContentLen,
+			"Use workflow(steps=..., include_content=true) for full output.")
+		if wfMeta.Truncated {
+			wfPayload["truncated"] = wfMeta.Truncated
+			wfPayload["hint"] = wfMeta.Hint
+		}
+	}
 	workflowState := buildWorkflowPolicyInput(name, result)
-	return s.marshalGuidedToolResult("workflow", "", workflowState, result)
+	wfFiltered, _, wfApplyErr := budget.ApplyFields(wfPayload, bpWorkflow.Fields, budget.FieldWhitelist["workflow"])
+	if wfApplyErr != nil {
+		return mcp.NewToolResultError(wfApplyErr.Error()), nil
+	}
+	return s.marshalGuidedToolResult("workflow", "", workflowState, wfFiltered)
 }
 
 // buildWorkflowPolicyInput derives a WorkflowPolicyInput from the raw strategy result.
