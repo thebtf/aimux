@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 
 	"github.com/creativeprojects/go-selfupdate"
@@ -161,10 +162,18 @@ func ApplyUpdate(ctx context.Context, currentVersion string) (*Release, error) {
 		return nil, fmt.Errorf("locate executable: %w", err)
 	}
 
-	// Download to a temp path first so the three-step flow is exercised
-	// even in the backwards-compat wrapper. This ensures the split functions
-	// are used in production and avoids the current-exe-is-target edge case.
-	tmpPath := exe + ".update.tmp"
+	// Download to a unique temp file in the same directory as the executable.
+	// Placing the temp file on the same filesystem as the target ensures that
+	// Install's atomic rename (via go-selfupdate/update.Apply) avoids a
+	// cross-device copy. os.CreateTemp gives a unique name, preventing collisions
+	// if ApplyUpdate is ever called concurrently (T013 adds an explicit guard in
+	// Phase 3; this makes the interim behavior safe regardless).
+	tmpFile, err := os.CreateTemp(filepath.Dir(exe), "aimux-update-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close() // Download reopens by path; close the placeholder handle now
 	defer os.Remove(tmpPath) // clean up temp regardless of outcome
 
 	release, err := Download(ctx, currentVersion, tmpPath)

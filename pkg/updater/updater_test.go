@@ -25,7 +25,9 @@ func TestVerifyChecksum_MissingFile(t *testing.T) {
 	}
 }
 
-// TestVerifyChecksum_ValidFile verifies that an existing file with non-nil release succeeds.
+// TestVerifyChecksum_ValidFile verifies Phase 1 behavior: file existence + non-nil release metadata.
+// Note: Cryptographic checksum re-verification is deferred to Phase 3 (the go-selfupdate
+// ChecksumValidator already verifies SHA256 during Download via UpdateTo).
 func TestVerifyChecksum_ValidFile(t *testing.T) {
 	// Create a temp file to simulate a downloaded binary.
 	dir := t.TempDir()

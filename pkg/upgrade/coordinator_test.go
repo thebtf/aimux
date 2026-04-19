@@ -7,6 +7,8 @@ import (
 )
 
 type mockSessionHandler struct {
+	// pendingCalled will be used in Phase 3 tests once Apply() can be tested
+	// without network access (requires an injectable updater interface).
 	pendingCalled bool
 }
 

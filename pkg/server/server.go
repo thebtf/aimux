@@ -1469,15 +1469,14 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 			return mcp.NewToolResultError(fmt.Sprintf("locate executable: %v", exeErr)), nil
 		}
 
-		// Detect engine mode: aimuxHandler is constructed only in engine/session mode.
-		// Non-engine stdio transport lacks IPC sockets to hand off, so hot-swap
-		// (Phase 3) is disabled in that mode per clarification C2.
-		_, engineMode := s.sessionHandler.(*aimuxHandler)
-
-		// Build upgrade.SessionHandler adapter. aimuxHandler.SetUpdatePending()
-		// satisfies the upgrade.SessionHandler interface directly.
+		// Detect engine mode and build upgrade.SessionHandler adapter in one assertion.
+		// aimuxHandler is constructed only in engine/session mode; non-engine stdio
+		// transport lacks IPC sockets to hand off, so hot-swap (Phase 3) is disabled
+		// in that mode per clarification C2. aimuxHandler.SetUpdatePending() satisfies
+		// the upgrade.SessionHandler interface directly.
+		h, engineMode := s.sessionHandler.(*aimuxHandler)
 		var sh upgrade.SessionHandler
-		if h, ok := s.sessionHandler.(*aimuxHandler); ok {
+		if engineMode {
 			sh = h
 		}
 
