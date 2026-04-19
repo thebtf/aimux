@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.0] - 2026-04-19
+
+Minor release consolidating three engram-driven features: session durability (Phase 1+3),
+codex fallback observability (Phase 0), and status()/UI activity signals. Also bumps
+muxcore dependency to v0.20.4 for FR-28 token handshake + FR-29 socket 0600 hardening.
+
 ### Added
 
+#### status() visibility (#116, PR #105)
 - **`progress_tail` field on `status()`** — last non-empty line of the job's
   accumulated progress buffer, UTF-8-safe truncated to ≤100 bytes. Gives
   Claude Code UI and debugging operators a compact real-time activity signal
@@ -20,25 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pkg/session.Job.LastOutputLine` and `Job.ProgressLines` — maintained O(1) on
   every `AppendProgress` call; no buffer scan on status poll.
 - `pkg/util.TruncateUTF8` — shared UTF-8-safe byte-budget truncation helper.
-- **Fallback observability** (`pkg/executor/fallback.go`, `pkg/metrics/fallback_metrics.go`): structured per-attempt log lines (`module=executor.fallback`) and `aimux_fallback_attempts_total{cli,model,result}` counter in every `RunWithModelFallback` call. Opt-out via `AIMUX_FALLBACK_VERBOSE=false` (counter always increments). Prerequisite for Phase 2 codex account×model routing fix (engram #115).
-- **`pkg/session/reconcile.go`** — `ReconcileOnStartup(ctx, db, currentUUID)` scans for
-  orphaned jobs and sessions (those owned by a different daemon UUID or with NULL UUID) and
-  marks them aborted in a single atomic transaction on startup. Returns the IDs of all
-  reconciled jobs and sessions for logging.
-- **Orphan job abort** — orphaned jobs with `status=running` are updated to
-  `status=aborted, aborted_at=NOW` during reconciliation. Other statuses are preserved.
-- **Session-level rollup** — sessions that had running jobs aborted receive
-  `aborted_at=NOW` and `aborted_job_ids` (JSON array of the aborted job IDs). Sessions
-  where all remaining jobs are aborted (or aborted+completed) also get `status=aborted`.
-- **`sessions(action=list, status=aborted)` filter** — the sessions MCP tool now returns
-  only aborted sessions when `status=aborted` is passed. Filter implemented via the
-  existing `Registry.List(status)` path; no new code path needed.
-- **Schema migration v3** — `sessions.aborted_job_ids TEXT` column added via
-  `migrateV2point1` in `pkg/session/schema.go`. Migration is atomic and idempotent
-  (skips if column already exists).
+
+#### Fallback observability (#115 Phase 0, PR #106)
+- **Structured per-attempt log** and **`aimux_fallback_attempts_total{cli,model,result}`** counter in every `RunWithModelFallback` call (pkg/executor/fallback.go, pkg/metrics/fallback_metrics.go).
+- **Opt-out via `AIMUX_FALLBACK_VERBOSE=false`** — counter always increments; logs suppressed.
+- Prerequisite for Phase 2 codex account×model routing fix (deferred pending ≥1w telemetry data).
+- Optimizations (Gemini review): atomic.Bool verbose-flag cache (zero syscall on hot path), atomic.Int64 O(1) `Total()`.
+
+#### Session durability Phase 1+3 (#111, PR #107)
+- **Schema v1→v2**: `sessions.daemon_uuid`, `sessions.aborted_at`, `jobs.daemon_uuid`, `jobs.last_seen_at`, `jobs.aborted_at` (all nullable, additive migration).
+- **Schema v2→v3**: `sessions.aborted_job_ids TEXT` (JSON array).
+- **`pkg/session/daemon.go`** — `GetDaemonUUID()` via crypto/rand sync.Once (32-char hex, in-memory per process).
+- **`pkg/session/reconcile.go`** — `ReconcileOnStartup(ctx, db, currentUUID)` scans for orphaned jobs/sessions (different daemon UUID or NULL UUID), marks running orphans as aborted in a single atomic transaction, rolls up session-level `aborted_job_ids` and `status=aborted` when all child jobs aborted.
+- **`sessions(action=list, status=aborted)` filter** — new MCP tool filter (pkg/server/server_session.go).
 - **`types.JobStatusAborted`** and **`types.SessionStatusAborted`** enum constants.
-- **`BenchmarkReconcile10k`** in `pkg/session/reconcile_test.go` — reconciles 10,000
-  orphaned running jobs; measured at 116 ms on dev hardware (NFR-1 requires < 5 s).
+- **`BenchmarkReconcile10k`** — 10k orphaned jobs reconcile in 116ms (NFR-1 requires < 5s).
+- **Deferred to v4.4.0**: Phase 2 (PersistTransition on every state change), Phase 4 (`AIMUX_SESSION_STORE=memory` opt-out + tool descriptions).
+
+### Changed
+
+- **muxcore v0.20.2 → v0.20.4** (#113, PR #104): drop-in dependency bump for FR-28 token handshake enforcement + FR-29 socket 0600 permissions hardening. Zero code changes required on aimux side.
 
 ## [4.2.0] - 2026-04-19
 
