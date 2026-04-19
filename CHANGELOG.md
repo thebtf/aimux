@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0] - 2026-04-19
+
+Minor release: **hot-swap upgrade structural prep** (Phase 1 of engram #129).
+
+Establishes the `pkg/upgrade.Coordinator` type, splits `pkg/updater` into composable Download/VerifyChecksum/Install, and rewires `handleUpgrade` to delegate through the Coordinator. Zero behavior change vs v4.3.0 — all upgrade modes still route to the deferred path (daemon restart when all CC sessions disconnect).
+
+Phase 2-4 (active hot-swap via muxcore handoff) is deferred to v4.5.0+ pending upstream mcp-mux public export of `PerformHandoff`/`ReceiveHandoff` (tracked as engram cross-project issue #130).
+
+### Added
+
+- **`pkg/upgrade` package** — new. `Coordinator` type orchestrates upgrade lifecycle. `Mode` enum: `auto` | `hot_swap` | `deferred`. `Result` struct includes `HandoffTransferred`, `HandoffDurationMs`, `HandoffError` fields reserved for Phase 3.
+- **`pkg/upgrade.SessionHandler` interface** — minimal `SetUpdatePending()` contract satisfied by `aimuxHandler`.
+- **`updater.Download(ctx, currentVersion, targetPath) (*Release, error)`** — downloads and checksum-verifies to any path (not just current exe). Foundation for Phase 3 hot-swap where binary is staged to temp before install.
+- **`updater.VerifyChecksum(binaryPath, release) error`** — post-download existence + metadata check hook.
+- **`updater.Install(newBinaryPath, currentExePath) error`** — atomic cross-platform install via `go-selfupdate/update.Apply` (Windows-safe running-exe replacement).
+
+### Changed
+
+- `updater.ApplyUpdate` — now a thin wrapper calling Download → VerifyChecksum → Install. Uses `os.CreateTemp` for staging (collision-safe).
+- `pkg/server/server.go:handleUpgrade("apply")` — delegates to `upgrade.Coordinator.Apply(ctx, ModeAuto)`. Response envelope adds `hot_swap` branch (unreachable in v4.4.0, activated in v4.5.0). `deferred` response preserves v4.3.0 wire format: `status: "updated"`.
+
+### Deferred to v4.5.0+
+
+- Phase 2 — successor daemon mode (`--handoff-from` / `--handoff-token` flags in `cmd/aimux/main.go`).
+- Phase 3 — predecessor `tryHotSwap` flow via `muxcore.daemon.PerformHandoff`.
+- Phase 4 — cross-platform parity, structured logging, integration tests.
+
+**Blocker:** muxcore handoff entry points are package-private (`performHandoff`, `receiveHandoff`, token helpers). aimux cannot integrate from outside the `muxcore/daemon` package. Engram cross-project issue #130 requests public export in muxcore v0.21.0+.
+
 ## [4.3.0] - 2026-04-19
 
 Minor release consolidating three engram-driven features: session durability (Phase 1+3),
