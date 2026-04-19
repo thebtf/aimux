@@ -4,11 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/metrics"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+// fallbackVerboseFlag caches AIMUX_FALLBACK_VERBOSE at process start using an
+// atomic bool. The env var is expected to be static for the lifetime of the
+// process; caching avoids a repeated os.Getenv syscall on every fallback attempt.
+// Tests may override via setFallbackVerboseForTest (see export_test.go).
+var fallbackVerboseFlag atomic.Bool
+
+func init() {
+	fallbackVerboseFlag.Store(os.Getenv("AIMUX_FALLBACK_VERBOSE") != "false")
+}
 
 // ErrQuotaExhausted is wrapped by RunWithModelFallback when a model is rate-limited.
 // The outer CLI-fallback router detects this via errors.Is to advance to the next CLI.
@@ -17,6 +30,24 @@ var ErrQuotaExhausted = errors.New("quota exhausted")
 // ErrModelUnavailable is wrapped when a model is inaccessible (wrong account, not enabled, etc).
 // Like ErrQuotaExhausted, flagged via errors.Is so the outer router advances CLI.
 var ErrModelUnavailable = errors.New("model unavailable")
+
+// errorClassToResult maps an ErrorClass to the result label used in structured logs and metrics.
+func errorClassToResult(ec ErrorClass) string {
+	switch ec {
+	case ErrorClassNone:
+		return metrics.FallbackResultSuccess
+	case ErrorClassQuota:
+		return metrics.FallbackResultRateLimit
+	case ErrorClassModelUnavailable:
+		return metrics.FallbackResultUnavailable
+	case ErrorClassTransient:
+		return metrics.FallbackResultTransient
+	case ErrorClassFatal:
+		return metrics.FallbackResultFatal
+	default:
+		return metrics.FallbackResultTransient
+	}
+}
 
 // RunWithModelFallback is the canonical model-fallback state machine used by both
 // the server and the agents runner. It iterates the model chain, applying cooldown
@@ -29,6 +60,10 @@ var ErrModelUnavailable = errors.New("model unavailable")
 // On success: returns result.
 // When all models are on cooldown the returned error contains "rate limit" so that
 // callers that check for retriable conditions will advance to the next CLI.
+//
+// counter may be nil; if non-nil, aimux_fallback_attempts_total is incremented on
+// every attempt. AIMUX_FALLBACK_VERBOSE=false suppresses logFn calls (counter still
+// increments).
 func RunWithModelFallback(
 	ctx context.Context,
 	exec types.Executor,
@@ -38,8 +73,11 @@ func RunWithModelFallback(
 	cooldown types.ModelCooldownTracker,
 	cooldownDuration time.Duration,
 	logFn func(format string, args ...any),
+	counter *metrics.FallbackCounter,
 ) (*types.Result, error) {
 	cli := baseArgs.CLI
+	verbose := fallbackVerboseFlag.Load()
+	attemptIdx := 0
 
 	if cooldownDuration == 0 {
 		cooldownDuration = 24 * time.Hour // default: 24h (spark weekly limits can exhaust for days)
@@ -51,12 +89,33 @@ func RunWithModelFallback(
 		return nil, fmt.Errorf("all models on cooldown (rate limit) for CLI %s", cli)
 	}
 
+	// recordAttempt emits a structured log line and increments the fallback counter.
+	// cooldownRemaining is the number of seconds until the model becomes available again
+	// (0 if the model was not just cooled down).
+	recordAttempt := func(idx int, model string, ec ErrorClass, latencyMs, cooldownRemaining int64) {
+		result := errorClassToResult(ec)
+		if counter != nil {
+			counter.Inc(cli, model, result)
+		}
+		if verbose && logFn != nil {
+			modelLabel := model
+			if modelLabel == "" {
+				modelLabel = "<unset>"
+			}
+			logFn("module=executor.fallback attempt=%d cli=%s model=%s result=%s error_class=%d latency_ms=%d cooldown_seconds_remaining=%d",
+				idx, cli, modelLabel, result, int(ec), latencyMs, cooldownRemaining)
+		}
+	}
+
 	var lastErr error
 	for _, model := range available {
+		attemptIdx++
 		args := baseArgs
 		args.Args = ReplaceModelFlag(baseArgs.Args, modelFlag, model)
 
+		start := time.Now()
 		result, err := exec.Run(ctx, args)
+		latencyMs := time.Since(start).Milliseconds()
 
 		var content, stderr string
 		var exitCode int
@@ -72,32 +131,28 @@ func RunWithModelFallback(
 
 		switch errClass {
 		case ErrorClassNone:
+			recordAttempt(attemptIdx, model, errClass, latencyMs, 0)
 			return result, err
 
 		case ErrorClassQuota:
 			cooldown.MarkCooledDown(cli, model, cooldownDuration)
-			if logFn != nil {
-				logFn("model fallback: cli=%s model=%s → next (reason: quota, cooldown: %ds)",
-					cli, model, int(cooldownDuration.Seconds()))
-			}
+			recordAttempt(attemptIdx, model, errClass, latencyMs, int64(cooldownDuration.Seconds()))
 			lastErr = fmt.Errorf("%w for %s:%s", ErrQuotaExhausted, cli, model)
 			continue
 
 		case ErrorClassModelUnavailable:
 			cooldown.MarkCooledDown(cli, model, cooldownDuration)
-			if logFn != nil {
-				logFn("model fallback: cli=%s model=%s → next (reason: model unavailable, cooldown: %ds)",
-					cli, model, int(cooldownDuration.Seconds()))
-			}
+			recordAttempt(attemptIdx, model, errClass, latencyMs, int64(cooldownDuration.Seconds()))
 			lastErr = fmt.Errorf("%w for %s:%s", ErrModelUnavailable, cli, model)
 			continue
 
 		case ErrorClassTransient:
 			// Retry same model once, then apply full classification to the retry result.
-			if logFn != nil {
-				logFn("model fallback: cli=%s model=%s transient error, retrying once", cli, model)
-			}
+			recordAttempt(attemptIdx, model, errClass, latencyMs, 0)
+			attemptIdx++
+			retryStart := time.Now()
 			result2, err2 := exec.Run(ctx, args)
+			retryLatencyMs := time.Since(retryStart).Milliseconds()
 			var c2, s2 string
 			var ec2 int
 			if result2 != nil {
@@ -110,26 +165,32 @@ func RunWithModelFallback(
 			retryClass := ClassifyError(c2, s2, ec2)
 			switch retryClass {
 			case ErrorClassNone:
+				recordAttempt(attemptIdx, model, retryClass, retryLatencyMs, 0)
 				return result2, err2
 			case ErrorClassQuota:
 				cooldown.MarkCooledDown(cli, model, cooldownDuration)
+				recordAttempt(attemptIdx, model, retryClass, retryLatencyMs, int64(cooldownDuration.Seconds()))
 				lastErr = fmt.Errorf("%w for %s:%s (on transient retry)", ErrQuotaExhausted, cli, model)
 				continue
 			case ErrorClassModelUnavailable:
 				cooldown.MarkCooledDown(cli, model, cooldownDuration)
+				recordAttempt(attemptIdx, model, retryClass, retryLatencyMs, int64(cooldownDuration.Seconds()))
 				lastErr = fmt.Errorf("%w for %s:%s (on transient retry)", ErrModelUnavailable, cli, model)
 				continue
 			case ErrorClassFatal:
+				recordAttempt(attemptIdx, model, retryClass, retryLatencyMs, 0)
 				if err2 == nil {
 					err2 = fmt.Errorf("fatal error detected in output")
 				}
 				return result2, fmt.Errorf("fatal error on %s:%s: %w", cli, model, err2)
 			default:
+				recordAttempt(attemptIdx, model, retryClass, retryLatencyMs, 0)
 				lastErr = fmt.Errorf("transient error on %s:%s after retry", cli, model)
 				continue
 			}
 
 		case ErrorClassFatal:
+			recordAttempt(attemptIdx, model, errClass, latencyMs, 0)
 			if err == nil {
 				err = fmt.Errorf("fatal error detected in output")
 			}

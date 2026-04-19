@@ -17,23 +17,23 @@ const (
 
 // RunConfig holds configuration for an agent run.
 type RunConfig struct {
-	Agent    *Agent                 // agent definition
-	CLI      string                 // which CLI to use
-	Prompt   string                 // user task
-	CWD      string                 // working directory
-	MaxTurns int                    // max conversation turns (default: 1)
-	Timeout  int                    // per-turn timeout in seconds
-	Model    string                 // model override (passed to CLI via profile model flag)
-	Effort   string                 // reasoning effort override (passed to CLI via profile effort flag)
-	Executor        types.Executor              // process executor
-	Resolver        types.CLIResolver           // CLI resolver
-	OnOutput        func(cli, line string)      // forwarded to SpawnArgs.OnOutput with resolved CLI context
-	ModelFallback       []string                    // ordered model fallback chain (from profile)
-	FallbackSuffixStrip []string                    // suffix-strip rules for dynamic fallback
-	ModelFlag           string                      // CLI flag for model (e.g. "-m")
-	CooldownTracker     types.ModelCooldownTracker  // optional: cooldown tracker for rate-limited models
-	CooldownSeconds     int                         // cooldown duration after quota error
-	Env                 map[string]string           // per-session environment (API keys from ProjectContext)
+	Agent               *Agent                     // agent definition
+	CLI                 string                     // which CLI to use
+	Prompt              string                     // user task
+	CWD                 string                     // working directory
+	MaxTurns            int                        // max conversation turns (default: 1)
+	Timeout             int                        // per-turn timeout in seconds
+	Model               string                     // model override (passed to CLI via profile model flag)
+	Effort              string                     // reasoning effort override (passed to CLI via profile effort flag)
+	Executor            types.Executor             // process executor
+	Resolver            types.CLIResolver          // CLI resolver
+	OnOutput            func(cli, line string)     // forwarded to SpawnArgs.OnOutput with resolved CLI context
+	ModelFallback       []string                   // ordered model fallback chain (from profile)
+	FallbackSuffixStrip []string                   // suffix-strip rules for dynamic fallback
+	ModelFlag           string                     // CLI flag for model (e.g. "-m")
+	CooldownTracker     types.ModelCooldownTracker // optional: cooldown tracker for rate-limited models
+	CooldownSeconds     int                        // cooldown duration after quota error
+	Env                 map[string]string          // per-session environment (API keys from ProjectContext)
 }
 
 // RunResult holds the outcome of an agent run.
@@ -149,7 +149,7 @@ func runWithModelFallbackAgent(
 	baseArgs types.SpawnArgs,
 ) (*types.Result, error) {
 	cooldownDuration := time.Duration(cooldownSeconds) * time.Second
-	return executor.RunWithModelFallback(ctx, exec, baseArgs, modelChain, modelFlag, tracker, cooldownDuration, nil)
+	return executor.RunWithModelFallback(ctx, exec, baseArgs, modelChain, modelFlag, tracker, cooldownDuration, nil, nil)
 }
 
 // buildSystemPrompt assembles the full first-turn prompt for the agent.
@@ -249,4 +249,3 @@ func resolveArgs(cfg RunConfig, prompt string) (types.SpawnArgs, error) {
 func isComplete(response string) bool {
 	return strings.Contains(strings.ToUpper(response), strings.ToUpper(CompletionSignal))
 }
-

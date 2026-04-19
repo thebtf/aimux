@@ -16,8 +16,8 @@ import (
 // entry in the funcs slice; if the counter exceeds the slice length the last
 // entry is reused.
 type stubFallbackExecutor struct {
-	n    atomic.Int32
-	fns  []func(types.SpawnArgs) (*types.Result, error)
+	n   atomic.Int32
+	fns []func(types.SpawnArgs) (*types.Result, error)
 }
 
 func (s *stubFallbackExecutor) Run(_ context.Context, args types.SpawnArgs) (*types.Result, error) {
@@ -81,6 +81,7 @@ func TestModelFallback_TransientThenModelUnavailable(t *testing.T) {
 		tracker,
 		1*time.Second,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("RunWithModelFallback: unexpected error: %v", err)
@@ -116,7 +117,7 @@ func TestModelFallback_SentinelErrors_ErrQuotaExhausted(t *testing.T) {
 	baseArgs := types.SpawnArgs{CLI: "codex", Command: "echo", Args: []string{"-p", "hi"}}
 	_, err := executor.RunWithModelFallback(
 		context.Background(), stub, baseArgs,
-		[]string{"model-a"}, "", tracker, 1*time.Second, nil,
+		[]string{"model-a"}, "", tracker, 1*time.Second, nil, nil,
 	)
 	if err == nil {
 		t.Fatal("expected error when all models are quota-limited")
@@ -141,7 +142,7 @@ func TestModelFallback_SentinelErrors_ErrModelUnavailable(t *testing.T) {
 	baseArgs := types.SpawnArgs{CLI: "codex", Command: "echo", Args: []string{"-p", "hi"}}
 	_, err := executor.RunWithModelFallback(
 		context.Background(), stub, baseArgs,
-		[]string{"model-a"}, "", tracker, 1*time.Second, nil,
+		[]string{"model-a"}, "", tracker, 1*time.Second, nil, nil,
 	)
 	if err == nil {
 		t.Fatal("expected error when all models are unavailable")
