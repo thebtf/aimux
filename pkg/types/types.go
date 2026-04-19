@@ -21,6 +21,7 @@ const (
 	JobStatusRunning    JobStatus = "running"
 	JobStatusCompleting JobStatus = "completing"
 	JobStatusCompleted  JobStatus = "completed"
+	JobStatusAborted    JobStatus = "aborted"
 	JobStatusFailed     JobStatus = "failed"
 )
 
@@ -31,6 +32,7 @@ const (
 	SessionStatusCreated   SessionStatus = "created"
 	SessionStatusRunning   SessionStatus = "running"
 	SessionStatusCompleted SessionStatus = "completed"
+	SessionStatusAborted   SessionStatus = "aborted"
 	SessionStatusFailed    SessionStatus = "failed"
 	SessionStatusExpired   SessionStatus = "expired"
 )
