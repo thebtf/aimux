@@ -280,8 +280,14 @@ func (r *Registry) Get(name string) (*Agent, error) {
 	// always kept.
 	if filepath.IsAbs(agent.Source) {
 		if _, err := os.Stat(agent.Source); err != nil {
+			// TOCTOU guard: re-check inside write lock. Another goroutine may
+			// have replaced the stale entry with a freshly-registered agent
+			// (same name, new Source) between our RUnlock and Lock. Delete
+			// only when the map still holds the same stale pointer.
 			r.mu.Lock()
-			delete(r.agents, name)
+			if current, stillThere := r.agents[name]; stillThere && current == agent {
+				delete(r.agents, name)
+			}
 			r.mu.Unlock()
 			return nil, fmt.Errorf("agent %q not found", name)
 		}

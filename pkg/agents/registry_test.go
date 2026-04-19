@@ -2,9 +2,12 @@ package agents_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/pkg/agents"
 )
@@ -454,5 +457,83 @@ func TestBuiltinAgents_NoStatCheck(t *testing.T) {
 	}
 	if a.Name != "builtin" {
 		t.Errorf("Get(builtin) returned %q", a.Name)
+	}
+}
+
+// TestRegistry_ConcurrentListGetFind exercises List/Get/Find + Register
+// concurrently under the race detector to catch any lock-ordering or map
+// mutation issues introduced by the stat-validate + lazy-purge path.
+//
+// Disk churn is simulated by deleting source files mid-flight so the purge
+// path fires while other goroutines iterate the map.
+func TestRegistry_ConcurrentListGetFind(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	reg := agents.NewRegistry()
+	// Seed with 20 filesystem-backed agents + 2 built-ins.
+	for i := 0; i < 20; i++ {
+		name := fmt.Sprintf("agent-%02d", i)
+		path := filepath.Join(tmpDir, name+".md")
+		content := "---\ndescription: stress\n---\nBody"
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		reg.Register(&agents.Agent{
+			Name:    name,
+			Source:  path,
+			Content: content,
+		})
+	}
+	reg.Register(&agents.Agent{Name: "builtin-a", Source: "builtin"})
+	reg.Register(&agents.Agent{Name: "builtin-b", Source: ""})
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Readers: List / Find / Get in tight loops.
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = reg.List()
+				_ = reg.Find("stress")
+				_, _ = reg.Get(fmt.Sprintf("agent-%02d", id%20))
+				_, _ = reg.Get("builtin-a")
+			}
+		}(i)
+	}
+
+	// Mutator: delete files mid-flight to trigger purge.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.Remove(filepath.Join(tmpDir, fmt.Sprintf("agent-%02d.md", i)))
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	// Let the storm run briefly.
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// Built-ins must survive the storm.
+	if _, err := reg.Get("builtin-a"); err != nil {
+		t.Errorf("builtin-a purged by concurrent storm: %v", err)
+	}
+	if _, err := reg.Get("builtin-b"); err != nil {
+		t.Errorf("builtin-b purged by concurrent storm: %v", err)
 	}
 }

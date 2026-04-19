@@ -144,6 +144,11 @@ type AgentCandidate struct {
 // When prompt is empty the list is sorted alphabetically for stable output.
 // Limited to maxResults entries (0 = no limit).
 func ListCandidates(registry *Registry, prompt string, maxResults int) []AgentCandidate {
+	// Use Registry.List() so stale filesystem-backed agents are purged at read
+	// time (consistent with Get/Find behaviour). Without this, ListCandidates
+	// would surface ghost entries whose source files were deleted after startup.
+	liveAgents := registry.List()
+
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
 
@@ -154,8 +159,8 @@ func ListCandidates(registry *Registry, prompt string, maxResults int) []AgentCa
 		score int
 	}
 
-	scored := make([]scoredCandidate, 0, len(registry.agents))
-	for _, a := range registry.agents {
+	scored := make([]scoredCandidate, 0, len(liveAgents))
+	for _, a := range liveAgents {
 		// Prefer the explicit When field (set in frontmatter or builtin definition).
 		// Fall back to Description, then Domain for agents that pre-date the When field.
 		when := a.When
