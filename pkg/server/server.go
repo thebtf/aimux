@@ -828,10 +828,8 @@ func (s *Server) registerTools() {
 				"action=info: default omits system prompt (can be 500KB+); add include_content=true to retrieve it. "+
 				"Prefer agents(action=run) over exec when you want an agent with a pre-built system prompt and role — "+
 				"exec is for raw prompt dispatch when no matching agent exists or you need low-level CLI control. "+
-				"WARNING: action=list returns an unranked flat catalog — use it for enumeration, not task dispatch. "+
-				"For task dispatch prefer action=find(prompt=...) (relevance-ranked) or action=run without agent (ranked candidates + hint). "+
-				"NEVER select an agent from action=list by name token match without reading its description field — "+
-				"experimental/probe/test agents often share tokens with production agents (e.g., codex-self-delegate is an experimental probe, not a codex-dispatch wrapper)."),
+				"Dispatch policy: "+agentsListHint+
+				" Example of the name-match trap: codex-self-delegate is an experimental probe, not a codex-dispatch wrapper."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: list, run, info, find"),

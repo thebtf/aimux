@@ -204,6 +204,8 @@ func TestServerSession_RefreshWarmup_ExcludedAfterFail(t *testing.T) {
 }
 
 // --- T136: TestOnProjectConnect broadcast fixes ---
+//
+// mockNotifier is defined in handler_test.go — reused here.
 
 // TestOnProjectConnect_BroadcastsOnNewState verifies that Broadcast fires
 // on first connect even when no project-specific agents are discovered.
@@ -226,7 +228,7 @@ func TestOnProjectConnect_BroadcastsOnNewState(t *testing.T) {
 	lifecycle.OnProjectConnect(project)
 
 	if notifier.broadcastCount() != 1 {
-		t.Errorf("expected exactly 1 Broadcast on new-state connect (got %d); broadcast must fire regardless of agent count", notifier.broadcastCount())
+		t.Fatalf("expected exactly 1 Broadcast on new-state connect (got %d); broadcast must fire regardless of agent count", notifier.broadcastCount())
 	}
 
 	notifier.mu.Lock()

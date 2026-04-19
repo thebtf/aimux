@@ -4038,8 +4038,11 @@ type mockNotifier struct {
 
 func (m *mockNotifier) Notify(projectID string, notification []byte) error { return nil }
 func (m *mockNotifier) Broadcast(notification []byte) {
+	// Copy payload — callers may reuse the slice.
+	cp := make([]byte, len(notification))
+	copy(cp, notification)
 	m.mu.Lock()
-	m.broadcasts = append(m.broadcasts, notification)
+	m.broadcasts = append(m.broadcasts, cp)
 	m.mu.Unlock()
 }
 

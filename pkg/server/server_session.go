@@ -12,6 +12,11 @@ import (
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
+// toolsListChangedNotification is the MCP JSON-RPC notification payload that
+// instructs connected CC sessions to re-request tools/list. Single source of
+// truth — used by both the new-state and reconnect paths in OnProjectConnect.
+const toolsListChangedNotification = `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`
+
 // projectContextKey is the context key for storing ProjectContext.
 type projectContextKey struct{}
 
@@ -79,6 +84,14 @@ func (h *aimuxHandler) SetNotifier(n muxcore.Notifier) {
 	h.notifier = n
 }
 
+// broadcastToolsListChanged sends a tools/list_changed notification to all
+// connected CC sessions. No-op when no Notifier is configured (direct stdio mode).
+func (h *aimuxHandler) broadcastToolsListChanged() {
+	if h.notifier != nil {
+		h.notifier.Broadcast([]byte(toolsListChangedNotification))
+	}
+}
+
 // HandleRequest processes one MCP JSON-RPC request with project context.
 // Called concurrently from multiple goroutines by the muxcore engine owner.
 func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.ProjectContext, request []byte) ([]byte, error) {
@@ -140,10 +153,7 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 		state.refcount.Add(1)
 		h.srv.log.Info("session-handler: project %s reconnected (refcount=%d, cwd=%s)",
 			project.ID, state.refcount.Load(), project.Cwd)
-		if h.notifier != nil {
-			notification := []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
-			h.notifier.Broadcast(notification)
-		}
+		h.broadcastToolsListChanged()
 		return
 	}
 
@@ -163,10 +173,7 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 
 	// Broadcast tools/list_changed so that connected CC sessions re-request
 	// tools/list and discover any project-specific agents just found.
-	if h.notifier != nil {
-		notification := []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
-		h.notifier.Broadcast(notification)
-	}
+	h.broadcastToolsListChanged()
 
 	// Signal ready — HandleRequest waiters unblock after this.
 	close(state.ready)
