@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   body includes a `hint` field with the same guidance. Prevents experimental/probe
   agents (e.g., `codex-self-delegate`) from being accidentally dispatched to
   production tasks. Investigation: `.agent/investigations/codex-self-delegate-hallucination-2026-04-20.md`.
+- Agent registry: deleted agent source files no longer appear in `agents(action=list/find/info)` results. Registry stat-validates agent sources at read time and purges stale entries from the in-memory map (engram #139).
 
 ### Changed
 
