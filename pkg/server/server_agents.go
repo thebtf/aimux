@@ -17,6 +17,14 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
+// agentsListHint is the dispatch-policy hint returned with agents/list results.
+// Single source of truth — also referenced by the agents tool description in server.go
+// to keep the two surfaces consistent without copy-paste divergence.
+const agentsListHint = "Flat catalog — no relevance ranking. For task dispatch, use action=find(prompt=...) " +
+	"or action=run without agent (both return ranked candidates). Always read the description " +
+	"field before selecting; never dispatch by name token match. Agents whose description " +
+	"contains experimental/test/probe are NOT for production work."
+
 func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	action, err := request.RequireString("action")
 	if err != nil {
@@ -58,7 +66,11 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 				"tools":       a.Tools,
 			}
 		}
-		return marshalToolResult(map[string]any{"agents": summaries, "count": len(summaries)})
+		return marshalToolResult(map[string]any{
+			"agents": summaries,
+			"count":  len(summaries),
+			"hint":   agentsListHint,
+		})
 
 	case "find":
 		query := request.GetString("prompt", "")

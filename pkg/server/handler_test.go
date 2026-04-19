@@ -4038,8 +4038,11 @@ type mockNotifier struct {
 
 func (m *mockNotifier) Notify(projectID string, notification []byte) error { return nil }
 func (m *mockNotifier) Broadcast(notification []byte) {
+	// Copy payload — callers may reuse the slice.
+	cp := make([]byte, len(notification))
+	copy(cp, notification)
 	m.mu.Lock()
-	m.broadcasts = append(m.broadcasts, notification)
+	m.broadcasts = append(m.broadcasts, cp)
 	m.mu.Unlock()
 }
 
@@ -4100,30 +4103,6 @@ func TestNotifier_BroadcastOnConnect(t *testing.T) {
 	}
 	if msg["method"] != "notifications/tools/list_changed" {
 		t.Errorf("broadcast method = %v, want notifications/tools/list_changed", msg["method"])
-	}
-}
-
-// TestNotifier_NoBroadcastWithoutAgents verifies that Broadcast is NOT called
-// when a project connects but has no agents directory.
-func TestNotifier_NoBroadcastWithoutAgents(t *testing.T) {
-	srv := testServer(t)
-	handler := srv.SessionHandler()
-
-	notifier := &mockNotifier{}
-	aware := handler.(muxcore.NotifierAware)
-	aware.SetNotifier(notifier)
-
-	// Use a bare temp dir with no .claude/agents/ subdirectory.
-	project := muxcore.ProjectContext{
-		ID:  "notifier-no-agents-test",
-		Cwd: t.TempDir(),
-	}
-
-	lifecycle := handler.(muxcore.ProjectLifecycle)
-	lifecycle.OnProjectConnect(project)
-
-	if notifier.broadcastCount() != 0 {
-		t.Errorf("expected no Broadcast when project has no agents, got %d calls", notifier.broadcastCount())
 	}
 }
 

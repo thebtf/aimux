@@ -827,7 +827,9 @@ func (s *Server) registerTools() {
 				"action=list/find: default returns brief rows (fits ~4k chars); supports limit (default 20, max 100) and offset. "+
 				"action=info: default omits system prompt (can be 500KB+); add include_content=true to retrieve it. "+
 				"Prefer agents(action=run) over exec when you want an agent with a pre-built system prompt and role — "+
-				"exec is for raw prompt dispatch when no matching agent exists or you need low-level CLI control."),
+				"exec is for raw prompt dispatch when no matching agent exists or you need low-level CLI control. "+
+				"Dispatch policy: "+agentsListHint+
+				" Example of the name-match trap: codex-self-delegate is an experimental probe, not a codex-dispatch wrapper."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: list, run, info, find"),

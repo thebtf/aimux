@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Tools visibility: daemon now always emits `notifications/tools/list_changed` on
+  project connect and reconnect, so Claude Code re-queries tools after shim
+  reconnect, daemon restart, or binary upgrade (engram #136).
+- Orchestration hygiene: `agents(action=list)` tool description now warns against
+  name-match selection and steers callers to `action=find(prompt=...)` or
+  `action=run` without agent (both return relevance-ranked candidates). Response
+  body includes a `hint` field with the same guidance. Prevents experimental/probe
+  agents (e.g., `codex-self-delegate`) from being accidentally dispatched to
+  production tasks. Investigation: `.agent/investigations/codex-self-delegate-hallucination-2026-04-20.md`.
+
+### Changed
+
+- `TECHNICAL_DEBT.md` moved from repo root to `.agent/TECHNICAL_DEBT.md` — aligns
+  with the convention that all agent-managed artifacts live under `.agent/`.
+
 ## [4.4.0] - 2026-04-19
 
 Minor release: **hot-swap upgrade structural prep** (Phase 1 of engram #129).
@@ -428,7 +445,7 @@ CLI-profile-driven environment allowlist, and hardens the multi-user SSE/HTTP tr
 - **`validateCWD`** — strict cwd validator: non-empty, absolute path, no NUL/newline/CR characters, must exist, must be a directory. Used in `handleAudit` and propagated through investigate handlers. (#85, SEC-HIGH-3)
 - **`AIMUX_ENGINE_NAME`** — environment variable override for the muxcore engine instance name, enabling `aimux-dev` vs `aimux` isolation when running development and production binaries on the same host. (#71)
 - **`govulncheck` CI workflow** (`.github/workflows/security.yml`) — soft-fail `govulncheck ./...` on every push/PR to establish a vulnerability baseline. (#85)
-- **`TECHNICAL_DEBT.md`** — formal deferral register, seeded with the `pkg/ratelimit` wiring deferral. (#85, SEC-MED-1)
+- **`.agent/TECHNICAL_DEBT.md`** — formal deferral register, seeded with the `pkg/ratelimit` wiring deferral. (#85, SEC-MED-1; moved to `.agent/` in v4.5.0)
 
 ### Changed
 
