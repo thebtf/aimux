@@ -25,6 +25,7 @@ type FallbackAttemptKey struct {
 // FallbackCounter is a thread-safe counter for aimux_fallback_attempts_total{cli,model,result}.
 // The zero value is NOT valid; use NewFallbackCounter.
 type FallbackCounter struct {
+	total   atomic.Int64 // running total across all label tuples; O(1) read via Total()
 	mu      sync.RWMutex
 	entries map[FallbackAttemptKey]*atomic.Int64
 }
@@ -44,6 +45,7 @@ func (c *FallbackCounter) Inc(cli, model, result string) {
 	c.mu.RUnlock()
 	if e != nil {
 		e.Add(1)
+		c.total.Add(1)
 		return
 	}
 	c.mu.Lock()
@@ -53,6 +55,7 @@ func (c *FallbackCounter) Inc(cli, model, result string) {
 		c.entries[key] = e
 	}
 	e.Add(1)
+	c.total.Add(1)
 }
 
 // Get returns the current count for (cli, model, result). Returns 0 if never incremented.
@@ -67,15 +70,11 @@ func (c *FallbackCounter) Get(cli, model, result string) int64 {
 	return e.Load()
 }
 
-// Total returns the sum of all counters across all label tuples.
+// Total returns the total number of attempts recorded across all label tuples.
+// This is a constant-time O(1) operation; the running total is maintained in an
+// atomic counter incremented by every Inc call.
 func (c *FallbackCounter) Total() int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	var total int64
-	for _, e := range c.entries {
-		total += e.Load()
-	}
-	return total
+	return c.total.Load()
 }
 
 // Snapshot returns a copy of all (key → count) entries for metrics export.
