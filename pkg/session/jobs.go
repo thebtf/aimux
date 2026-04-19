@@ -385,6 +385,20 @@ func (m *JobManager) ListRunning() []*Job {
 	return result
 }
 
+// CountsBySession returns a map of sessionID → job count for all tracked jobs.
+// Acquires the read lock once (O(J) total) rather than once per session,
+// avoiding the N+1 pattern in session list handlers.
+func (m *JobManager) CountsBySession() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]int, len(m.jobs))
+	for _, j := range m.jobs {
+		result[j.SessionID]++
+	}
+	return result
+}
+
 // CountRunning returns the number of jobs in running state.
 func (m *JobManager) CountRunning() int {
 	m.mu.RLock()

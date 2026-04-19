@@ -1044,15 +1044,16 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		statusFilter := request.GetString("status", "")
 		allSessions := s.sessions.List(types.SessionStatus(statusFilter))
 
+		// Build session briefs using a single-pass job count map to avoid N+1.
+		jobCounts := s.jobs.CountsBySession()
 		sessionBriefs := make([]SessionBrief, len(allSessions))
 		for i, sess := range allSessions {
-			jobs := s.jobs.ListBySessionSnapshot(sess.ID)
 			sessionBriefs[i] = SessionBrief{
 				ID:        sess.ID,
 				Status:    sess.Status,
 				CLI:       sess.CLI,
 				CreatedAt: sess.CreatedAt,
-				JobCount:  len(jobs),
+				JobCount:  jobCounts[sess.ID],
 			}
 		}
 
@@ -1065,6 +1066,17 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			} else {
 				allLoomTasks = tasks
 			}
+		}
+		// Apply status filter to loom tasks using the same direct-match semantics
+		// as sessions.List(statusFilter): empty string means include all.
+		if statusFilter != "" && len(allLoomTasks) > 0 {
+			filteredLoom := make([]*loom.Task, 0, len(allLoomTasks))
+			for _, t := range allLoomTasks {
+				if string(t.Status) == statusFilter {
+					filteredLoom = append(filteredLoom, t)
+				}
+			}
+			allLoomTasks = filteredLoom
 		}
 
 		loomBriefs := make([]LoomTaskBrief, len(allLoomTasks))

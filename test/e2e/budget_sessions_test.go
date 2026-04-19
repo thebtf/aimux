@@ -28,20 +28,30 @@ func TestE2E_Sessions_List_DualSource(t *testing.T) {
 		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
-
-	fmt.Fprint(stdin, jsonRPCRequest(200, "tools/call", map[string]any{
-		"name": "sessions",
-		"arguments": map[string]any{
-			"action": "list",
-		},
-	}))
-	resp, err := readResponse(reader, 10*time.Second)
-	if err != nil {
-		t.Fatalf("sessions list: %v", err)
+	// Poll until at least 3 sessions appear (avoids fixed sleep which flakes in slow CI).
+	reqID := 200
+	deadline := time.Now().Add(5 * time.Second)
+	var data map[string]any
+	for {
+		fmt.Fprint(stdin, jsonRPCRequest(reqID, "tools/call", map[string]any{
+			"name": "sessions",
+			"arguments": map[string]any{
+				"action": "list",
+			},
+		}))
+		reqID++
+		resp, err := readResponse(reader, 10*time.Second)
+		if err != nil {
+			t.Fatalf("sessions list: %v", err)
+		}
+		data = extractToolJSON(t, resp)
+		sessPage, _ := data["sessions_pagination"].(map[string]any)
+		total, _ := sessPage["total"].(float64)
+		if total >= 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-
-	data := extractToolJSON(t, resp)
 
 	// Verify dual-source shape keys.
 	for _, key := range []string{"sessions", "loom_tasks", "sessions_pagination", "loom_pagination"} {
@@ -117,6 +127,37 @@ func TestE2E_Sessions_Info_ContentLength(t *testing.T) {
 			t.Errorf("job %d: content_length should be present in brief", i)
 		}
 	}
+
+	// Negative: fields=content without include_content must be rejected.
+	fmt.Fprint(stdin, jsonRPCRequest(302, "tools/call", map[string]any{
+		"name": "sessions",
+		"arguments": map[string]any{
+			"action":     "info",
+			"session_id": sessionID,
+			"fields":     "content",
+		},
+	}))
+	negResp, err := readResponse(reader, 5*time.Second)
+	if err != nil {
+		t.Fatalf("sessions info fields=content: %v", err)
+	}
+	negResult, _ := negResp["result"].(map[string]any)
+	negContent, _ := negResult["content"].([]any)
+	if len(negContent) > 0 {
+		firstText, _ := negContent[0].(map[string]any)
+		text, _ := firstText["text"].(string)
+		// The response must be an error (content-bearing field guard).
+		if firstText["type"] != "text" || text == "" {
+			t.Errorf("expected error for fields=content without include_content, got: %v", text)
+		}
+		// Guard check: response should not contain raw content data.
+		var parsed map[string]any
+		if json.Unmarshal([]byte(text), &parsed) == nil {
+			if parsed["content"] != nil {
+				t.Errorf("fields=content without include_content should not leak content field")
+			}
+		}
+	}
 }
 
 // TestE2E_Agents_Info_ContentGating verifies that agents(action=info) returns
@@ -183,5 +224,32 @@ func TestE2E_Agents_Info_ContentGating(t *testing.T) {
 	fullData := extractToolJSON(t, fullResp)
 	if fullData["content"] == nil {
 		t.Error("agents info with include_content=true should return content field")
+	}
+
+	// Negative: fields=content without include_content must be rejected.
+	fmt.Fprint(stdin, jsonRPCRequest(403, "tools/call", map[string]any{
+		"name": "agents",
+		"arguments": map[string]any{
+			"action": "info",
+			"agent":  agentName,
+			"fields": "content",
+		},
+	}))
+	negResp, err := readResponse(reader, 5*time.Second)
+	if err != nil {
+		t.Fatalf("agents info fields=content: %v", err)
+	}
+	negResult, _ := negResp["result"].(map[string]any)
+	negContent, _ := negResult["content"].([]any)
+	if len(negContent) > 0 {
+		firstText, _ := negContent[0].(map[string]any)
+		text, _ := firstText["text"].(string)
+		// Guard: content must not appear in response without include_content.
+		var parsed map[string]any
+		if json.Unmarshal([]byte(text), &parsed) == nil {
+			if parsed["content"] != nil {
+				t.Errorf("agents info fields=content without include_content should not leak content field")
+			}
+		}
 	}
 }

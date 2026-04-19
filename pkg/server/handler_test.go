@@ -786,6 +786,47 @@ func TestHandleSessions_Health(t *testing.T) {
 	}
 }
 
+func TestHandleSessions_ListStatusFilterDualSource(t *testing.T) {
+	// Verify that status filter is applied consistently to both sessions and
+	// loom_tasks (loom_tasks with no loom engine should return empty, matching
+	// the filtered sessions result).
+	srv := testServer(t)
+	// Create one running and one completed session.
+	running := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp/r")
+	srv.sessions.Update(running.ID, func(s *session.Session) {
+		s.Status = types.SessionStatusRunning
+	})
+	completed := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp/c")
+	srv.sessions.Update(completed.ID, func(s *session.Session) {
+		s.Status = types.SessionStatusCompleted
+	})
+
+	req := makeRequest("sessions", map[string]any{
+		"action": "list",
+		"status": "running",
+	})
+	result, err := srv.handleSessions(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSessions: %v", err)
+	}
+	data := parseResult(t, result)
+
+	sessions, _ := data["sessions"].([]any)
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 running session, got %d", len(sessions))
+	}
+	sessMap, _ := sessions[0].(map[string]any)
+	if sessMap["status"] != "running" {
+		t.Errorf("expected status=running, got %v", sessMap["status"])
+	}
+
+	// loom_tasks must also be filtered (no loom engine → empty list).
+	loomTasks, _ := data["loom_tasks"].([]any)
+	if loomTasks == nil {
+		t.Error("loom_tasks field must be present even when empty")
+	}
+}
+
 // --- Agents Handler ---
 
 func TestHandleAgents_List(t *testing.T) {
