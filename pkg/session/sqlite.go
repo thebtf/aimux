@@ -120,24 +120,44 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Migration 2: add daemon_uuid, last_seen_at (jobs only), aborted_at columns
+	// to sessions and jobs tables (session durability Phase 1).
+	if version < 2 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 2: %w", err)
+		}
+		if err := migrateV2(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration 2: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 2: %w", err)
+		}
+	}
+
 	return nil
 }
 
 // SnapshotSession upserts a session into SQLite.
+// daemon_uuid is stamped on every write so the row reflects the current daemon.
 func (s *Store) SnapshotSession(sess *Session) error {
 	metadataJSON, _ := json.Marshal(sess.Metadata)
 	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.CLI, sess.Mode, sess.CLISessionID, sess.PID,
 		sess.Status, sess.Turns, sess.CWD, string(metadataJSON),
 		sess.CreatedAt.Format(time.RFC3339),
 		sess.LastActiveAt.Format(time.RFC3339),
+		GetDaemonUUID(),
 	)
 	return err
 }
 
 // SnapshotJob upserts a job into SQLite.
+// daemon_uuid and last_seen_at are stamped on every write using the current
+// daemon's UUID and wall clock, providing the data needed by startup reconciliation.
 func (s *Store) SnapshotJob(job *Job) error {
 	var errorJSON, pheromonesJSON, pipelineJSON []byte
 
@@ -157,14 +177,18 @@ func (s *Store) SnapshotJob(job *Job) error {
 		completedAt = &t
 	}
 
+	lastSeenAt := time.Now().UTC().Format(time.RFC3339)
+
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO jobs (id, session_id, cli, status, progress, content, exit_code,
-			error_json, poll_count, pheromones_json, pipeline_json, pid, created_at, progress_updated_at, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			error_json, poll_count, pheromones_json, pipeline_json, pid, created_at, progress_updated_at, completed_at,
+			daemon_uuid, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.ID, job.SessionID, job.CLI, job.Status, job.Progress, job.Content, job.ExitCode,
 		string(errorJSON), job.PollCount, string(pheromonesJSON), string(pipelineJSON),
 		job.PID, job.CreatedAt.Format(time.RFC3339), job.ProgressUpdatedAt.Format(time.RFC3339),
 		completedAt,
+		GetDaemonUUID(), lastSeenAt,
 	)
 	return err
 }
@@ -177,15 +201,19 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	}
 	defer tx.Rollback()
 
+	uuid := GetDaemonUUID()
+	snapshotTime := time.Now().UTC().Format(time.RFC3339)
+
 	for _, sess := range sessions.List("") {
 		metadataJSON, _ := json.Marshal(sess.Metadata)
 		if _, execErr := tx.Exec(`
-			INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.CLI, sess.Mode, sess.CLISessionID, sess.PID,
 			sess.Status, sess.Turns, sess.CWD, string(metadataJSON),
 			sess.CreatedAt.Format(time.RFC3339),
 			sess.LastActiveAt.Format(time.RFC3339),
+			uuid,
 		); execErr != nil {
 			return execErr
 		}
@@ -208,12 +236,14 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 		}
 		if _, execErr := tx.Exec(`
 			INSERT OR REPLACE INTO jobs (id, session_id, cli, status, progress, content, exit_code,
-				error_json, poll_count, pheromones_json, pipeline_json, pid, created_at, progress_updated_at, completed_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				error_json, poll_count, pheromones_json, pipeline_json, pid, created_at, progress_updated_at, completed_at,
+				daemon_uuid, last_seen_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			job.ID, job.SessionID, job.CLI, job.Status, job.Progress, job.Content, job.ExitCode,
 			string(errorJSON), job.PollCount, string(pheromonesJSON), string(pipelineJSON),
 			job.PID, job.CreatedAt.Format(time.RFC3339), job.ProgressUpdatedAt.Format(time.RFC3339),
 			completedAt,
+			uuid, snapshotTime,
 		); execErr != nil {
 			return execErr
 		}

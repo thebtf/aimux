@@ -58,9 +58,20 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 // already exists (SQLite returns "duplicate column name" error).
 const migrateRequestIDColumn = `ALTER TABLE tasks ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`
 
+// migrateV2Columns lists the ALTER TABLE statements for session-durability
+// Phase 1: daemon_uuid, last_seen_at, aborted_at.
+// Each ALTER is run individually so a "duplicate column name" error on one
+// does not block the others (idempotent by design).
+var migrateV2Columns = []string{
+	`ALTER TABLE tasks ADD COLUMN daemon_uuid TEXT`,
+	`ALTER TABLE tasks ADD COLUMN last_seen_at TEXT`,
+	`ALTER TABLE tasks ADD COLUMN aborted_at TEXT`,
+}
+
 // TaskStore persists tasks in SQLite.
 type TaskStore struct {
-	db *sql.DB
+	db         *sql.DB
+	daemonUUID string // set via SetDaemonUUID; empty string means not configured
 }
 
 // NewTaskStore initialises the tasks table and returns a TaskStore.
@@ -71,11 +82,24 @@ func NewTaskStore(db *sql.DB) (*TaskStore, error) {
 	// Migrate: add request_id column if not present (pre-Phase 4a databases).
 	// Ignore "duplicate column name" errors — ALTER is idempotent by design.
 	db.Exec(migrateRequestIDColumn) //nolint:errcheck
+	// Session-durability Phase 1: add daemon_uuid, last_seen_at, aborted_at.
+	// Each ALTER is run individually; "duplicate column name" is silently ignored.
+	for _, stmt := range migrateV2Columns {
+		db.Exec(stmt) //nolint:errcheck
+	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
 	// These PRAGMAs are idempotent — safe even if already set.
 	db.Exec("PRAGMA journal_mode=WAL")  //nolint:errcheck
 	db.Exec("PRAGMA synchronous=NORMAL") //nolint:errcheck
 	return &TaskStore{db: db}, nil
+}
+
+// SetDaemonUUID configures the daemon-lifetime UUID to be stamped on every
+// new task row. Called once at startup by the main binary after generating
+// the UUID via pkg/session.GetDaemonUUID(). Loom is a separate module and
+// cannot import pkg/session directly, so the UUID is injected here.
+func (s *TaskStore) SetDaemonUUID(uuid string) {
+	s.daemonUUID = uuid
 }
 
 // Create inserts a new task into the store.
@@ -89,11 +113,14 @@ func (s *TaskStore) Create(task *Task) error {
 		return fmt.Errorf("loom store: marshal metadata: %w", err)
 	}
 
+	lastSeenAt := time.Now().UTC().Format(time.RFC3339)
+
 	_, err = s.db.Exec(`
 		INSERT INTO tasks
 			(id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)`,
+			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+			 daemon_uuid, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)`,
 		task.ID,
 		string(task.Status),
 		string(task.WorkerType),
@@ -112,6 +139,8 @@ func (s *TaskStore) Create(task *Task) error {
 		task.CreatedAt,
 		task.DispatchedAt,
 		task.CompletedAt,
+		s.daemonUUID,
+		lastSeenAt,
 	)
 	if err != nil {
 		return fmt.Errorf("loom store: insert task: %w", err)
