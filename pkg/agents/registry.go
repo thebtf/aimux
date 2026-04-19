@@ -264,38 +264,87 @@ func (r *Registry) scanDir(dir, source string) {
 }
 
 // Get returns an agent by name.
+// If the agent has a non-empty Source and the source file no longer exists,
+// the entry is purged from the map under write lock and NotFound is returned.
 func (r *Registry) Get(name string) (*Agent, error) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	agent, ok := r.agents[name]
+	r.mu.RUnlock()
+
 	if !ok {
 		return nil, fmt.Errorf("agent %q not found", name)
 	}
+
+	// Stat-validate filesystem-backed agents. Only absolute paths are stat'd —
+	// empty Source and magic markers like "builtin" are not files, so they're
+	// always kept.
+	if filepath.IsAbs(agent.Source) {
+		if _, err := os.Stat(agent.Source); err != nil {
+			r.mu.Lock()
+			delete(r.agents, name)
+			r.mu.Unlock()
+			return nil, fmt.Errorf("agent %q not found", name)
+		}
+	}
+
 	return agent, nil
 }
 
-// List returns all registered agents.
+// List returns all registered agents whose source files still exist on disk.
+// Agents with empty Source (built-ins registered via Register) are always included.
+// Stale entries (Source != "" and file missing) are purged from the map under
+// write lock before returning.
 func (r *Registry) List() []*Agent {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
+	var stale []string
 	result := make([]*Agent, 0, len(r.agents))
-	for _, a := range r.agents {
+	for name, a := range r.agents {
+		// Skip stat-validate for non-filesystem-backed agents: empty Source and
+		// magic markers like "builtin" are not file paths. Only absolute paths
+		// are stat'd. Keeps built-in agents alive even when no agent files exist.
+		if !filepath.IsAbs(a.Source) {
+			result = append(result, a)
+			continue
+		}
+		if _, err := os.Stat(a.Source); err != nil {
+			stale = append(stale, name)
+			continue
+		}
 		result = append(result, a)
 	}
+	r.mu.RUnlock()
+
+	if len(stale) > 0 {
+		r.mu.Lock()
+		for _, name := range stale {
+			delete(r.agents, name)
+		}
+		r.mu.Unlock()
+	}
+
 	return result
 }
 
 // Find searches agents by keyword matching on name, description, domain, role, and content.
+// Stale entries (Source != "" and file missing) are purged from the map and excluded
+// from results, consistent with List and Get behaviour.
 func (r *Registry) Find(query string) []*Agent {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	query = strings.ToLower(query)
+	var stale []string
 	var matches []*Agent
 
-	for _, a := range r.agents {
+	for name, a := range r.agents {
+		// Stat-validate filesystem-backed agents before scoring. Only absolute
+		// paths are stat'd — empty Source and magic markers like "builtin" are
+		// not files, so they're always kept.
+		if filepath.IsAbs(a.Source) {
+			if _, err := os.Stat(a.Source); err != nil {
+				stale = append(stale, name)
+				continue
+			}
+		}
+
 		// Use pre-computed ContentPrefix (first 200 runes, set at registration).
 		// When is included so agents are findable by their use-case guidance text.
 		if strings.Contains(strings.ToLower(a.Name), query) ||
@@ -306,6 +355,15 @@ func (r *Registry) Find(query string) []*Agent {
 			strings.Contains(strings.ToLower(a.ContentPrefix), query) {
 			matches = append(matches, a)
 		}
+	}
+	r.mu.RUnlock()
+
+	if len(stale) > 0 {
+		r.mu.Lock()
+		for _, name := range stale {
+			delete(r.agents, name)
+		}
+		r.mu.Unlock()
 	}
 
 	return matches

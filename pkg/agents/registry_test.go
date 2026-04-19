@@ -306,3 +306,153 @@ func TestRegistry_DiscoverPluginAgents_InvalidJSON(t *testing.T) {
 		}
 	}
 }
+
+// TestList_FiltersDeletedSources verifies that List purges agents whose source
+// files have been removed after registration and excludes them from the result.
+func TestList_FiltersDeletedSources(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write 3 agent files with valid frontmatter.
+	for _, name := range []string{"a", "b", "c"} {
+		content := "---\ndescription: agent " + name + "\n---\nBody"
+		path := filepath.Join(tmpDir, name+".md")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+
+	// Register agents manually (scanDir is unexported).
+	reg := agents.NewRegistry()
+	for _, name := range []string{"a", "b", "c"} {
+		path := filepath.Join(tmpDir, name+".md")
+		content, _ := os.ReadFile(path)
+		reg.Register(&agents.Agent{
+			Name:        name,
+			Description: "agent " + name,
+			Source:      path,
+			Content:     string(content),
+		})
+	}
+
+	// Delete b.md to simulate post-boot deletion.
+	if err := os.Remove(filepath.Join(tmpDir, "b.md")); err != nil {
+		t.Fatalf("Remove(b.md): %v", err)
+	}
+
+	all := reg.List()
+	if len(all) != 2 {
+		t.Errorf("List() returned %d agents, want 2", len(all))
+	}
+	for _, a := range all {
+		if a.Name == "b" {
+			t.Errorf("List() included stale agent %q", a.Name)
+		}
+	}
+
+	// Get("b") must return NotFound after List purged it.
+	if _, err := reg.Get("b"); err == nil {
+		t.Error("Get(b): expected error after source deleted, got nil")
+	}
+}
+
+// TestGet_PurgesStaleOnRead verifies that Get removes the stale entry from the
+// map and that a subsequent List confirms the map shrank.
+func TestGet_PurgesStaleOnRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "x.md")
+	if err := os.WriteFile(path, []byte("---\ndescription: x\n---"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	reg := agents.NewRegistry()
+	reg.Register(&agents.Agent{Name: "x", Source: path})
+
+	// Confirm it's present.
+	if _, err := reg.Get("x"); err != nil {
+		t.Fatalf("Get(x) before delete: %v", err)
+	}
+
+	// Delete the backing file.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Get must return NotFound and purge the entry.
+	if _, err := reg.Get("x"); err == nil {
+		t.Error("Get(x) after delete: expected error, got nil")
+	}
+
+	// List must now show 0 agents (purge already happened in Get).
+	if n := len(reg.List()); n != 0 {
+		t.Errorf("List() after Get purge: got %d, want 0", n)
+	}
+}
+
+// TestFind_FiltersDeletedSources verifies that Find excludes agents whose source
+// files have been deleted and purges them from the internal map.
+func TestFind_FiltersDeletedSources(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	writeAgent := func(name, description string) string {
+		path := filepath.Join(tmpDir, name+".md")
+		content := "---\ndescription: " + description + "\n---"
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+		return path
+	}
+
+	pathKeep := writeAgent("keep-agent", "matching query text")
+	pathDrop := writeAgent("drop-agent", "matching query text")
+
+	reg := agents.NewRegistry()
+	reg.Register(&agents.Agent{Name: "keep-agent", Description: "matching query text", Source: pathKeep})
+	reg.Register(&agents.Agent{Name: "drop-agent", Description: "matching query text", Source: pathDrop})
+
+	// Delete the source for drop-agent.
+	if err := os.Remove(pathDrop); err != nil {
+		t.Fatalf("Remove(drop-agent source): %v", err)
+	}
+
+	matches := reg.Find("matching query text")
+	if len(matches) != 1 {
+		t.Errorf("Find() returned %d matches, want 1", len(matches))
+	}
+	if len(matches) > 0 && matches[0].Name != "keep-agent" {
+		t.Errorf("Find() returned %q, want keep-agent", matches[0].Name)
+	}
+}
+
+// TestBuiltinAgents_NoStatCheck verifies that agents registered with empty Source
+// are always included in List/Get results — no os.Stat is attempted for them.
+func TestBuiltinAgents_NoStatCheck(t *testing.T) {
+	reg := agents.NewRegistry()
+
+	// Register a built-in agent with no filesystem backing.
+	reg.Register(&agents.Agent{
+		Name:        "builtin",
+		Description: "A built-in agent",
+		Source:      "", // empty Source — never stat'd
+	})
+
+	// List must include the built-in.
+	all := reg.List()
+	found := false
+	for _, a := range all {
+		if a.Name == "builtin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("List() did not include built-in agent with empty Source")
+	}
+
+	// Get must return the built-in.
+	a, err := reg.Get("builtin")
+	if err != nil {
+		t.Fatalf("Get(builtin): %v", err)
+	}
+	if a.Name != "builtin" {
+		t.Errorf("Get(builtin) returned %q", a.Name)
+	}
+}
