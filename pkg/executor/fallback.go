@@ -6,16 +6,22 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/metrics"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-// fallbackVerbose caches AIMUX_FALLBACK_VERBOSE at process start.
-// The env var is expected to be static for the lifetime of the process.
-// Cached here to avoid repeated os.Getenv calls on every fallback attempt.
-var fallbackVerbose = os.Getenv("AIMUX_FALLBACK_VERBOSE") != "false"
+// fallbackVerboseFlag caches AIMUX_FALLBACK_VERBOSE at process start using an
+// atomic bool. The env var is expected to be static for the lifetime of the
+// process; caching avoids a repeated os.Getenv syscall on every fallback attempt.
+// Tests may override via setFallbackVerboseForTest (see export_test.go).
+var fallbackVerboseFlag atomic.Bool
+
+func init() {
+	fallbackVerboseFlag.Store(os.Getenv("AIMUX_FALLBACK_VERBOSE") != "false")
+}
 
 // ErrQuotaExhausted is wrapped by RunWithModelFallback when a model is rate-limited.
 // The outer CLI-fallback router detects this via errors.Is to advance to the next CLI.
@@ -70,7 +76,7 @@ func RunWithModelFallback(
 	counter *metrics.FallbackCounter,
 ) (*types.Result, error) {
 	cli := baseArgs.CLI
-	verbose := fallbackVerbose
+	verbose := fallbackVerboseFlag.Load()
 	attemptIdx := 0
 
 	if cooldownDuration == 0 {

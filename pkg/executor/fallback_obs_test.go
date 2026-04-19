@@ -3,7 +3,6 @@ package executor_test
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -37,7 +36,8 @@ func (l *testLogger) Lines() []string {
 // TestFallbackObs_LogLinesPerAttempt verifies structured log emission:
 // 3 models: first=quota, second=unavailable, third=success -> 3 log lines.
 func TestFallbackObs_LogLinesPerAttempt(t *testing.T) {
-	os.Unsetenv("AIMUX_FALLBACK_VERBOSE")
+	old := executor.SetFallbackVerboseForTest(true)
+	t.Cleanup(func() { executor.SetFallbackVerboseForTest(old) })
 
 	tracker := executor.NewModelCooldownTracker()
 	logger := &testLogger{}
@@ -103,7 +103,8 @@ func TestFallbackObs_LogLinesPerAttempt(t *testing.T) {
 
 // TestFallbackObs_CounterIncrements verifies counter values after 3 attempts.
 func TestFallbackObs_CounterIncrements(t *testing.T) {
-	os.Unsetenv("AIMUX_FALLBACK_VERBOSE")
+	old := executor.SetFallbackVerboseForTest(true)
+	t.Cleanup(func() { executor.SetFallbackVerboseForTest(old) })
 
 	tracker := executor.NewModelCooldownTracker()
 	counter := metrics.NewFallbackCounter()
@@ -149,7 +150,8 @@ func TestFallbackObs_CounterIncrements(t *testing.T) {
 
 // TestFallbackObs_VerboseFalse verifies that AIMUX_FALLBACK_VERBOSE=false suppresses logs but counter increments.
 func TestFallbackObs_VerboseFalse(t *testing.T) {
-	t.Setenv("AIMUX_FALLBACK_VERBOSE", "false")
+	old := executor.SetFallbackVerboseForTest(false)
+	t.Cleanup(func() { executor.SetFallbackVerboseForTest(old) })
 
 	tracker := executor.NewModelCooldownTracker()
 	logger := &testLogger{}
@@ -187,7 +189,8 @@ func TestFallbackObs_VerboseFalse(t *testing.T) {
 
 // TestFallbackObs_LogLine_Transient verifies that a transient error produces TWO log lines (attempt + retry).
 func TestFallbackObs_LogLine_Transient(t *testing.T) {
-	os.Unsetenv("AIMUX_FALLBACK_VERBOSE")
+	old := executor.SetFallbackVerboseForTest(true)
+	t.Cleanup(func() { executor.SetFallbackVerboseForTest(old) })
 
 	tracker := executor.NewModelCooldownTracker()
 	logger := &testLogger{}
@@ -234,7 +237,8 @@ func TestFallbackObs_LogLine_Transient(t *testing.T) {
 
 // TestFallbackObs_CounterNilSafe verifies that passing nil counter does not panic.
 func TestFallbackObs_CounterNilSafe(t *testing.T) {
-	os.Unsetenv("AIMUX_FALLBACK_VERBOSE")
+	old := executor.SetFallbackVerboseForTest(true)
+	t.Cleanup(func() { executor.SetFallbackVerboseForTest(old) })
 
 	tracker := executor.NewModelCooldownTracker()
 	stub := &stubFallbackExecutor{
