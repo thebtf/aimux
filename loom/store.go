@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -83,9 +84,13 @@ func NewTaskStore(db *sql.DB) (*TaskStore, error) {
 	// Ignore "duplicate column name" errors — ALTER is idempotent by design.
 	db.Exec(migrateRequestIDColumn) //nolint:errcheck
 	// Session-durability Phase 1: add daemon_uuid, last_seen_at, aborted_at.
-	// Each ALTER is run individually; "duplicate column name" is silently ignored.
+	// Each ALTER is run individually; "duplicate column name" is silently ignored
+	// (idempotent migration). Any other error is propagated — a partial schema
+	// would cause Create() to fail on the first INSERT into the missing column.
 	for _, stmt := range migrateV2Columns {
-		db.Exec(stmt) //nolint:errcheck
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return nil, fmt.Errorf("loom store: migrate v2 columns: %w", err)
+		}
 	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
 	// These PRAGMAs are idempotent — safe even if already set.

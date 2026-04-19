@@ -78,9 +78,11 @@ func TestTaskStore_Create_EmptyDaemonUUID(t *testing.T) {
 	if err := row.Scan(&gotUUID); err != nil {
 		t.Fatalf("scan daemon_uuid: %v", err)
 	}
-	// Either NULL or empty string is acceptable when UUID was not configured.
-	// The key invariant: it must not contain a non-empty non-matching value.
-	if gotUUID.Valid && gotUUID.String != "" {
-		t.Errorf("daemon_uuid = %q, want empty or NULL when not configured", gotUUID.String)
+	// Create() must write an explicit empty string — not NULL — so that
+	// reconciliation queries using (daemon_uuid != ? OR daemon_uuid IS NULL)
+	// reliably exclude rows from the current daemon even when UUID was not
+	// configured. A NULL would make the IS NULL branch match unintentionally.
+	if !gotUUID.Valid || gotUUID.String != "" {
+		t.Errorf("daemon_uuid = %#v, want valid empty string (not NULL) when not configured", gotUUID)
 	}
 }

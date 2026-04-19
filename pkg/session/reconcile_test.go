@@ -74,7 +74,7 @@ func TestReconcileOnStartup_OrphanedRunningJobsAborted(t *testing.T) {
 		insertJob(t, db, fmt.Sprintf("current-running-%02d", i), "sess-current-t010", "running", currentUUID)
 	}
 
-	orphanedJobs, orphanedSessions, err := session.ReconcileOnStartup(context.Background(), db, currentUUID)
+	orphanedJobs, orphanedSessions, _, err := session.ReconcileOnStartup(context.Background(), db, currentUUID)
 	if err != nil {
 		t.Fatalf("ReconcileOnStartup: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestReconcileOnStartup_SessionRollup(t *testing.T) {
 	insertJob(t, db, "job-D1", "sess-D", "completed", oldUUID)
 	insertJob(t, db, "job-D2", "sess-D", "completed", oldUUID)
 
-	_, _, err := session.ReconcileOnStartup(context.Background(), db, currentUUID)
+	_, _, _, err := session.ReconcileOnStartup(context.Background(), db, currentUUID)
 	if err != nil {
 		t.Fatalf("ReconcileOnStartup: %v", err)
 	}
@@ -258,7 +258,7 @@ func BenchmarkReconcile10k(b *testing.B) {
 	start := time.Now()
 
 	for i := 0; i < b.N; i++ {
-		if _, _, reconcileErr := session.ReconcileOnStartup(context.Background(), db, newUUID); reconcileErr != nil {
+		if _, _, _, reconcileErr := session.ReconcileOnStartup(context.Background(), db, newUUID); reconcileErr != nil {
 			b.Fatalf("ReconcileOnStartup: %v", reconcileErr)
 		}
 		// Reset after first run so subsequent runs have rows to process.

@@ -40,11 +40,14 @@ func NewStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("migrate sqlite: %w", err)
 	}
 
-	orphanedJobs, orphanedSessions, reconcileErr := ReconcileOnStartup(context.Background(), db, GetDaemonUUID())
+	orphanedJobs, orphanedSessions, abortedJobs, reconcileErr := ReconcileOnStartup(context.Background(), db, GetDaemonUUID())
 	if reconcileErr != nil {
 		fmt.Fprintf(os.Stderr, "session: startup reconciliation warning: %v\n", reconcileErr)
 	} else if len(orphanedJobs) > 0 || len(orphanedSessions) > 0 {
-		fmt.Fprintf(os.Stderr, "session: reconciled %d orphaned jobs, %d orphaned sessions\n", len(orphanedJobs), len(orphanedSessions))
+		// Report the actually-aborted count (running→aborted transitions) separately
+		// from the total orphaned count (which includes already-terminal rows).
+		fmt.Fprintf(os.Stderr, "session: found %d orphaned jobs (%d aborted), %d orphaned sessions\n",
+			len(orphanedJobs), abortedJobs, len(orphanedSessions))
 	}
 
 	return &Store{db: db}, nil
@@ -165,11 +168,28 @@ func migrate(db *sql.DB) error {
 
 // SnapshotSession upserts a session into SQLite.
 // daemon_uuid is stamped on every write so the row reflects the current daemon.
+//
+// Uses INSERT ... ON CONFLICT DO UPDATE (upsert) instead of INSERT OR REPLACE to
+// preserve reconciliation metadata (aborted_at, aborted_job_ids) set by
+// ReconcileOnStartup. INSERT OR REPLACE deletes and reinserts the row, wiping
+// those columns; ON CONFLICT DO UPDATE only touches the listed mutable fields.
 func (s *Store) SnapshotSession(sess *Session) error {
 	metadataJSON, _ := json.Marshal(sess.Metadata)
 	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			cli            = excluded.cli,
+			mode           = excluded.mode,
+			cli_session_id = excluded.cli_session_id,
+			pid            = excluded.pid,
+			status         = excluded.status,
+			turns          = excluded.turns,
+			cwd            = excluded.cwd,
+			metadata_json  = excluded.metadata_json,
+			created_at     = excluded.created_at,
+			last_active_at = excluded.last_active_at,
+			daemon_uuid    = excluded.daemon_uuid`,
 		sess.ID, sess.CLI, sess.Mode, sess.CLISessionID, sess.PID,
 		sess.Status, sess.Turns, sess.CWD, string(metadataJSON),
 		sess.CreatedAt.Format(time.RFC3339),
@@ -203,11 +223,30 @@ func (s *Store) SnapshotJob(job *Job) error {
 
 	lastSeenAt := time.Now().UTC().Format(time.RFC3339)
 
+	// ON CONFLICT upsert preserves jobs.aborted_at set by ReconcileOnStartup.
+	// INSERT OR REPLACE would delete+reinsert, wiping that column.
 	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO jobs (id, session_id, cli, status, progress, content, exit_code,
+		INSERT INTO jobs (id, session_id, cli, status, progress, content, exit_code,
 			error_json, poll_count, pheromones_json, pipeline_json, pid, created_at, progress_updated_at, completed_at,
 			daemon_uuid, last_seen_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			session_id           = excluded.session_id,
+			cli                  = excluded.cli,
+			status               = excluded.status,
+			progress             = excluded.progress,
+			content              = excluded.content,
+			exit_code            = excluded.exit_code,
+			error_json           = excluded.error_json,
+			poll_count           = excluded.poll_count,
+			pheromones_json      = excluded.pheromones_json,
+			pipeline_json        = excluded.pipeline_json,
+			pid                  = excluded.pid,
+			created_at           = excluded.created_at,
+			progress_updated_at  = excluded.progress_updated_at,
+			completed_at         = excluded.completed_at,
+			daemon_uuid          = excluded.daemon_uuid,
+			last_seen_at         = excluded.last_seen_at`,
 		job.ID, job.SessionID, job.CLI, job.Status, job.Progress, job.Content, job.ExitCode,
 		string(errorJSON), job.PollCount, string(pheromonesJSON), string(pipelineJSON),
 		job.PID, job.CreatedAt.Format(time.RFC3339), job.ProgressUpdatedAt.Format(time.RFC3339),
@@ -231,8 +270,20 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	for _, sess := range sessions.List("") {
 		metadataJSON, _ := json.Marshal(sess.Metadata)
 		if _, execErr := tx.Exec(`
-			INSERT OR REPLACE INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				cli            = excluded.cli,
+				mode           = excluded.mode,
+				cli_session_id = excluded.cli_session_id,
+				pid            = excluded.pid,
+				status         = excluded.status,
+				turns          = excluded.turns,
+				cwd            = excluded.cwd,
+				metadata_json  = excluded.metadata_json,
+				created_at     = excluded.created_at,
+				last_active_at = excluded.last_active_at,
+				daemon_uuid    = excluded.daemon_uuid`,
 			sess.ID, sess.CLI, sess.Mode, sess.CLISessionID, sess.PID,
 			sess.Status, sess.Turns, sess.CWD, string(metadataJSON),
 			sess.CreatedAt.Format(time.RFC3339),
@@ -259,10 +310,27 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 			completedAt = job.CompletedAt.Format(time.RFC3339)
 		}
 		if _, execErr := tx.Exec(`
-			INSERT OR REPLACE INTO jobs (id, session_id, cli, status, progress, content, exit_code,
+			INSERT INTO jobs (id, session_id, cli, status, progress, content, exit_code,
 				error_json, poll_count, pheromones_json, pipeline_json, pid, created_at, progress_updated_at, completed_at,
 				daemon_uuid, last_seen_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				session_id          = excluded.session_id,
+				cli                 = excluded.cli,
+				status              = excluded.status,
+				progress            = excluded.progress,
+				content             = excluded.content,
+				exit_code           = excluded.exit_code,
+				error_json          = excluded.error_json,
+				poll_count          = excluded.poll_count,
+				pheromones_json     = excluded.pheromones_json,
+				pipeline_json       = excluded.pipeline_json,
+				pid                 = excluded.pid,
+				created_at          = excluded.created_at,
+				progress_updated_at = excluded.progress_updated_at,
+				completed_at        = excluded.completed_at,
+				daemon_uuid         = excluded.daemon_uuid,
+				last_seen_at        = excluded.last_seen_at`,
 			job.ID, job.SessionID, job.CLI, job.Status, job.Progress, job.Content, job.ExitCode,
 			string(errorJSON), job.PollCount, string(pheromonesJSON), string(pipelineJSON),
 			job.PID, job.CreatedAt.Format(time.RFC3339), job.ProgressUpdatedAt.Format(time.RFC3339),
