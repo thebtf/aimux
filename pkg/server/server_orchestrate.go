@@ -138,7 +138,11 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 			rawPayload["hint"] = meta.Hint
 		}
 	}
-	return s.marshalGuidedToolResult("consensus", "", consensusState, rawPayload)
+	filtered, _, applyErr := budget.ApplyFields(rawPayload, bp.Fields, budget.FieldWhitelist["consensus"])
+	if applyErr != nil {
+		return mcp.NewToolResultError(applyErr.Error()), nil
+	}
+	return s.marshalGuidedToolResult("consensus", "", consensusState, filtered)
 }
 
 func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -238,7 +242,11 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 			debatePayload["hint"] = debateMeta.Hint
 		}
 	}
-	return s.marshalGuidedToolResult("debate", "", debateState, debatePayload)
+	debateFiltered, _, debateApplyErr := budget.ApplyFields(debatePayload, bpDebate.Fields, budget.FieldWhitelist["debate"])
+	if debateApplyErr != nil {
+		return mcp.NewToolResultError(debateApplyErr.Error()), nil
+	}
+	return s.marshalGuidedToolResult("debate", "", debateState, debateFiltered)
 }
 
 func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -354,7 +362,11 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		Status:       result.Status,
 		Participants: result.Participants,
 	}
-	return s.marshalGuidedToolResult("dialog", "", dialogState, dialogPayload)
+	dialogFiltered, _, dialogApplyErr := budget.ApplyFields(dialogPayload, bpDialog.Fields, budget.FieldWhitelist["dialog"])
+	if dialogApplyErr != nil {
+		return mcp.NewToolResultError(dialogApplyErr.Error()), nil
+	}
+	return s.marshalGuidedToolResult("dialog", "", dialogState, dialogFiltered)
 }
 
 // findDialogTurnHistory scans jobs for the most recent dialog turn history
@@ -464,7 +476,11 @@ func (s *Server) handleAudit(ctx context.Context, request mcp.CallToolRequest) (
 			auditPayload["hint"] = auditMeta.Hint
 		}
 	}
-	return marshalToolResult(auditPayload)
+	auditFiltered, _, auditApplyErr := budget.ApplyFields(auditPayload, bpAudit.Fields, budget.FieldWhitelist["audit"])
+	if auditApplyErr != nil {
+		return mcp.NewToolResultError(auditApplyErr.Error()), nil
+	}
+	return marshalToolResult(auditFiltered)
 }
 
 // handleWorkflow executes a declarative multi-step pipeline as a single MCP call.
@@ -572,7 +588,11 @@ func (s *Server) handleWorkflow(ctx context.Context, request mcp.CallToolRequest
 		}
 	}
 	workflowState := buildWorkflowPolicyInput(name, result)
-	return s.marshalGuidedToolResult("workflow", "", workflowState, wfPayload)
+	wfFiltered, _, wfApplyErr := budget.ApplyFields(wfPayload, bpWorkflow.Fields, budget.FieldWhitelist["workflow"])
+	if wfApplyErr != nil {
+		return mcp.NewToolResultError(wfApplyErr.Error()), nil
+	}
+	return s.marshalGuidedToolResult("workflow", "", workflowState, wfFiltered)
 }
 
 // buildWorkflowPolicyInput derives a WorkflowPolicyInput from the raw strategy result.

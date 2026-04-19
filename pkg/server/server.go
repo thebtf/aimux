@@ -946,11 +946,15 @@ func (s *Server) registerTools() {
 			mcp.WithDescription("Check for and apply aimux binary updates from GitHub releases. "+
 				"action=check: detect latest version. action=apply: download, verify checksum, replace binary. "+
 				"After apply, daemon will exit when all CC sessions disconnect (deferred restart). "+
-				"Returns compact status fields (fits ~4k chars); no content-bearing fields."),
+				"action=check returns compact status fields (fits ~4k chars); release_notes are omitted by default (release_notes_length is reported). "+
+				"Use include_content=true to return the full release_notes body."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: check (detect latest version) or apply (download and replace binary)"),
 				mcp.Enum("check", "apply"),
+			),
+			mcp.WithBoolean("include_content",
+				mcp.Description("action=check: return full release_notes body (default false)"),
 			),
 		),
 		s.handleUpgrade,
@@ -1433,14 +1437,26 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 				"current_version": Version,
 			})
 		}
-		return marshalToolResult(map[string]any{
-			"status":          "update_available",
-			"current_version": Version,
-			"latest_version":  release.Version,
-			"asset_name":      release.AssetName,
-			"release_notes":   release.ReleaseNotes,
-			"published_at":    release.PublishedAt,
-		})
+		// Brief: compact status fields. release_notes can exceed 4 KiB on feature releases,
+		// so it is omitted by default; callers who need the full body use
+		// upgrade(action=check, include_content=true) or fetch the GitHub release page.
+		includeContent := request.GetBool("include_content", false)
+		releaseNotesLen := len(release.ReleaseNotes)
+		payload := map[string]any{
+			"status":                "update_available",
+			"current_version":       Version,
+			"latest_version":        release.Version,
+			"asset_name":            release.AssetName,
+			"published_at":          release.PublishedAt,
+			"release_notes_length":  releaseNotesLen,
+		}
+		if includeContent {
+			payload["release_notes"] = release.ReleaseNotes
+		} else if releaseNotesLen > 0 {
+			payload["truncated"] = true
+			payload["hint"] = "release_notes omitted (" + fmt.Sprintf("%d", releaseNotesLen) + " bytes). Use upgrade(action=check, include_content=true) for full body."
+		}
+		return marshalToolResult(payload)
 
 	case "apply":
 		release, applyErr := updater.ApplyUpdate(ctx, Version)
