@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`progress_tail` field on `status()`** — last non-empty line of the job's
+  accumulated progress buffer, UTF-8-safe truncated to ≤100 bytes. Gives
+  Claude Code UI and debugging operators a compact real-time activity signal
+  without pulling the full progress buffer. Empty string when no output yet.
+- **`progress_lines` field on `status()`** — total newline count in the
+  accumulated progress buffer (monotonically increasing). Lets callers detect
+  that work is advancing even when `progress_tail` text stays the same.
+- Both fields added to `budget.FieldWhitelist["status"]` (non-breaking addition).
+- `pkg/session.Job.LastOutputLine` and `Job.ProgressLines` — maintained O(1) on
+  every `AppendProgress` call; no buffer scan on status poll.
+- `pkg/util.TruncateUTF8` — shared UTF-8-safe byte-budget truncation helper.
+
 ## [4.2.0] - 2026-04-19
 
 Minor release: **response-budget-policy**. Default MCP tool response bodies are

@@ -483,6 +483,8 @@ func (s *Server) registerTools() {
 				"Returns a result map with status field set to one of: queued, running, completing, completed, failed. "+
 				"Default returns metadata only (fits ~4k chars). Add include_content=true for full job output. Use tail=N for last N chars. "+
 				"When content is omitted, content_length gives the byte count of the full output. "+
+				"progress_tail: last non-empty output line, UTF-8-safe truncated to 100 bytes — compact real-time activity signal. "+
+				"progress_lines: total newline count in the accumulated progress buffer. "+
 				"While status=running, the response may include stall_warning (key present after 120s of silence) "+
 				"or stall_alert (key present after 600s of silence); both keys include cancel instructions. "+
 				"stall_warning appears at TierSoftWarning (120s+ silent); stall_alert appears at TierHardStall (600s+) and TierAutoCancel (900s+)."),
@@ -1050,11 +1052,13 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 	pollCount := s.jobs.IncrementPoll(jobID)
 
 	result := map[string]any{
-		"job_id":     j.ID,
-		"status":     string(j.Status),
-		"progress":   j.Progress,
-		"poll_count": pollCount,
-		"session_id": j.SessionID,
+		"job_id":         j.ID,
+		"status":         string(j.Status),
+		"progress":       j.Progress,
+		"poll_count":     pollCount,
+		"session_id":     j.SessionID,
+		"progress_tail":  j.LastOutputLine,
+		"progress_lines": j.ProgressLines,
 	}
 
 	if j.Status == types.JobStatusCompleted || j.Status == types.JobStatusFailed {

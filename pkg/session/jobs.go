@@ -2,11 +2,13 @@ package session
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/thebtf/aimux/pkg/types"
+	"github.com/thebtf/aimux/pkg/util"
 )
 
 // Job represents an async execution task.
@@ -27,6 +29,13 @@ type Job struct {
 	ProgressUpdatedAt time.Time            `json:"progress_updated_at"`
 	LastOutputAt      time.Time            `json:"last_output_at,omitempty"`
 	CompletedAt       *time.Time           `json:"completed_at,omitempty"`
+	// LastOutputLine is the last non-empty line of accumulated progress, UTF-8-safe
+	// truncated to ≤100 bytes. Updated on every AppendProgress call. O(1) extraction.
+	LastOutputLine string `json:"last_output_line,omitempty"`
+	// ProgressLines is the total count of lines seen in progress buffer writes
+	// (one per AppendProgress call, plus one per embedded \n). Monotonically increasing.
+	// int64 to avoid overflow on 32-bit architectures for extremely long-running jobs.
+	ProgressLines int64 `json:"progress_lines,omitempty"`
 }
 
 // Deprecated: JobManager is superseded by pkg/loom.LoomEngine for task management.
@@ -204,6 +213,8 @@ func (m *JobManager) UpdateProgress(id, progress string) bool {
 
 // AppendProgress appends a line to the progress text for a running job.
 // More efficient than UpdateProgress for streaming — avoids resending the full buffer.
+// Also maintains LastOutputLine (last non-empty line, ≤100 UTF-8 bytes) and
+// ProgressLines (total line count: 1 per call + embedded \n count) for O(1) compact-field access on status().
 func (m *JobManager) AppendProgress(id, line string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -216,10 +227,42 @@ func (m *JobManager) AppendProgress(id, line string) bool {
 		j.Progress += "\n"
 	}
 	j.Progress += line
+
+	// Each AppendProgress call contributes at least 1 line to the count
+	// (the content being appended), plus any embedded newlines within it.
+	j.ProgressLines += 1 + int64(strings.Count(line, "\n"))
+
+	// Update LastOutputLine: use the last non-empty line from the appended text.
+	// If line contains embedded newlines, walk them to find the last non-empty segment.
+	lastNonEmpty := lastNonEmptyLine(line)
+	if lastNonEmpty != "" {
+		j.LastOutputLine = util.TruncateUTF8(lastNonEmpty, 100)
+	}
+	// If line was all whitespace, LastOutputLine retains its previous value.
+
 	now := time.Now()
 	j.ProgressUpdatedAt = now
 	j.LastOutputAt = now
 	return true
+}
+
+// lastNonEmptyLine returns the last non-empty (non-whitespace-only) segment
+// when s is split by newlines. Returns "" if s contains only whitespace.
+// Uses a reverse scan via strings.LastIndex to avoid allocating a []string
+// for the whole input — O(n) in the worst case but avoids per-segment allocations.
+func lastNonEmptyLine(s string) string {
+	for {
+		idx := strings.LastIndex(s, "\n")
+		line := s[idx+1:]
+		if strings.TrimSpace(line) != "" {
+			return line
+		}
+		if idx == -1 {
+			break
+		}
+		s = s[:idx]
+	}
+	return ""
 }
 
 // CompleteJob transitions a job to completed state.
