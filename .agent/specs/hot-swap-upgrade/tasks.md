@@ -24,7 +24,19 @@
 
 **Checkpoint Phase 1:** updater split + Coordinator wiring. No hot-swap yet, v4.3.0 behavior preserved.
 
-## Phase 2: Successor daemon mode
+## BLOCKED: Phase 2-4 require upstream muxcore work (engram #130)
+
+**Discovered during Phase 2 investigation (2026-04-19):** All muxcore handoff entry points (`performHandoff`, `receiveHandoff`, token helpers) are unexported (lowercase). Current muxcore public surface exposes only `ErrTokenMismatch`, `HandoffResult`/`HandoffUpstream` types, and protocol message constructors — insufficient for external daemon integration.
+
+Filed engram cross-project issue #130 targeting mcp-mux for `PerformHandoff` + `ReceiveHandoff` + `WriteHandoffToken`/`ReadHandoffToken`/`DeleteHandoffToken` public exports. Once that ships in muxcore v0.21.0+, Phase 2-4 unblock.
+
+**Revised v4.4.0 scope:** Ship Phase 1 only (updater split + Coordinator skeleton + handleUpgrade delegation). Structural prep that preserves v4.3.0 behavior while establishing the shape for future hot-swap integration. Release as v4.4.0 MINOR with CHANGELOG note that hot-swap is infrastructure-ready but inactive pending upstream.
+
+**v4.5.0 scope:** Phase 2-4 after muxcore v0.21.0 merges.
+
+---
+
+## Phase 2: Successor daemon mode (BLOCKED on engram #130)
 
 - [ ] T004 [EXECUTOR: sonnet] Add `--handoff-from <socket>` and `--handoff-token <hex>` flag parsing to `cmd/aimux/main.go`
   AC: flags parsed via standard `flag` package · validation: token is 64-char hex, socket path exists · if either flag set, both must be set · unit test for flag parsing + validation errors · swap body→return nil ⇒ tests fail
