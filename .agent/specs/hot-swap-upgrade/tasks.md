@@ -6,16 +6,16 @@
 
 ## Phase 1: Foundation — updater split + Coordinator skeleton
 
-- [ ] T001 [EXECUTOR: sonnet] Split `pkg/updater/updater.go`: separate `Download(ctx, version, targetPath) (*Release, error)`, `VerifyChecksum(path, expected) error`, `Install(newExePath) error` from monolithic `ApplyUpdate`
+- [x] T001 [EXECUTOR: sonnet] Split `pkg/updater/updater.go`: separate `Download(ctx, version, targetPath) (*Release, error)`, `VerifyChecksum(path, expected) error`, `Install(newExePath) error` from monolithic `ApplyUpdate`
   AC: ApplyUpdate becomes thin wrapper calling Download + VerifyChecksum + Install · backwards compat: existing handleUpgrade still works · unit tests for each split function · swap body→return nil ⇒ tests fail
 
-- [ ] T002 [EXECUTOR: sonnet] Create `pkg/upgrade/coordinator.go` with Coordinator type + Mode enum + Result struct (per plan "Internal contract") — skeleton only, methods return `Result{Method: "deferred"}` for now
+- [x] T002 [EXECUTOR: sonnet] Create `pkg/upgrade/coordinator.go` with Coordinator type + Mode enum + Result struct (per plan "Internal contract") — skeleton only, methods return `Result{Method: "deferred"}` for now
   AC: Coordinator{Version, BinaryPath, SessionHandler, EngineMode, Logger} compiles · Mode enum with ModeAuto/ModeHotSwap/ModeDeferred · Apply(ctx, mode) returns placeholder Result · unit test constructs Coordinator + calls Apply · swap body→return nil ⇒ tests fail
 
-- [ ] T003 [EXECUTOR: sonnet] Rewire `pkg/server/server.go:handleUpgrade("apply")` to delegate to `upgrade.Coordinator.Apply(ctx, ModeAuto)` — preserving current `SetUpdatePending` behavior via the Deferred path for now
+- [x] T003 [EXECUTOR: sonnet] Rewire `pkg/server/server.go:handleUpgrade("apply")` to delegate to `upgrade.Coordinator.Apply(ctx, ModeAuto)` — preserving current `SetUpdatePending` behavior via the Deferred path for now
   AC: handleUpgrade builds Coordinator, calls Apply · response envelope derived from Result · existing "daemon will restart..." message preserved for deferred path · unit tests for handleUpgrade pass unchanged · swap body→return nil ⇒ tests fail
 
-- [ ] G001 [EXECUTOR: MAIN] VERIFY Phase 1 — BLOCKED until T001-T003 all [x]
+- [x] G001 [EXECUTOR: MAIN] VERIFY Phase 1 — BLOCKED until T001-T003 all [x]
   RUN: `go build ./... && go test ./pkg/updater/... ./pkg/upgrade/... ./pkg/server/... -count=1 -timeout 120s`. Skill("code-review", "lite") on phase files.
   CHECK: zero behavior change vs v4.3.0 · handleUpgrade still produces deferred restart message
   ENFORCE: Zero stubs in production path (Coordinator skeleton with delegation is OK since Phase 1 goal is structural). Zero TODOs.
