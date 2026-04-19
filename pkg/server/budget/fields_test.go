@@ -119,6 +119,70 @@ func TestApplyFields(t *testing.T) {
 	})
 }
 
+// TestFieldWhitelist_StatusProgressTailFields verifies T004 AC:
+// progress_tail and progress_lines are in FieldWhitelist["status"].
+func TestFieldWhitelist_StatusProgressTailFields(t *testing.T) {
+	whitelist := FieldWhitelist["status"]
+
+	hasProgressTail := false
+	hasProgressLines := false
+	for _, f := range whitelist {
+		switch f {
+		case "progress_tail":
+			hasProgressTail = true
+		case "progress_lines":
+			hasProgressLines = true
+		}
+	}
+
+	if !hasProgressTail {
+		t.Error("progress_tail not found in FieldWhitelist[\"status\"]")
+	}
+	if !hasProgressLines {
+		t.Error("progress_lines not found in FieldWhitelist[\"status\"]")
+	}
+}
+
+// TestApplyFields_ProgressTailFilter verifies that fields=progress_tail
+// successfully passes ApplyFields without an unknown-field error (T004 AC).
+func TestApplyFields_ProgressTailFilter(t *testing.T) {
+	src := map[string]any{
+		"job_id":         "job-1",
+		"status":         "running",
+		"progress_tail":  "Processing file 42/100",
+		"progress_lines": 42,
+	}
+
+	got, _, err := ApplyFields(src, []string{"progress_tail"}, FieldWhitelist["status"])
+	if err != nil {
+		t.Fatalf("ApplyFields fields=progress_tail: unexpected error: %v", err)
+	}
+	if got["progress_tail"] != "Processing file 42/100" {
+		t.Errorf("progress_tail = %v, want %q", got["progress_tail"], "Processing file 42/100")
+	}
+}
+
+// TestApplyFields_ProgressLinesFilter verifies that fields=progress_lines
+// successfully passes ApplyFields without an unknown-field error (T004 AC).
+func TestApplyFields_ProgressLinesFilter(t *testing.T) {
+	src := map[string]any{
+		"job_id":         "job-1",
+		"status":         "running",
+		"progress_lines": 17,
+	}
+
+	got, _, err := ApplyFields(src, []string{"progress_lines"}, FieldWhitelist["status"])
+	if err != nil {
+		t.Fatalf("ApplyFields fields=progress_lines: unexpected error: %v", err)
+	}
+	if got["progress_lines"] != 17 {
+		t.Errorf("progress_lines = %v, want 17", got["progress_lines"])
+	}
+}
+
+// Swap-body guard for T004: if FieldWhitelist["status"] were empty/nil,
+// both TestFieldWhitelist_StatusProgressTailFields checks above would fail.
+
 func TestValidateContentBearingFields(t *testing.T) {
 	t.Run("content field without include", func(t *testing.T) {
 		err := ValidateContentBearingFields([]string{"content"}, ContentBearingFields["status"], false)

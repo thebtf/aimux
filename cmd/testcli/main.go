@@ -56,6 +56,8 @@ func main() {
 		exitCode = runCline()
 	case "continue":
 		exitCode = runContinue()
+	case "slow-codex":
+		exitCode = runSlowCodex()
 	default:
 		fmt.Fprintf(os.Stderr, "testcli: unknown CLI %q\n", subcmd)
 		exitCode = 1

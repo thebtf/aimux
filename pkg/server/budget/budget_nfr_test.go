@@ -82,6 +82,10 @@ func nfrBriefFixture(key string) map[string]any {
 			"content_length": 142000, // 142k real output — omitted in brief
 			"truncated":      true,
 			"hint":           "content omitted (142000 bytes). Use status(job_id=job-abc123, include_content=true) for full output.",
+			// progress_tail: worst-case 100-byte UTF-8 string (FR-1 cap).
+			"progress_tail": strings.Repeat("x", 100),
+			// progress_lines: realistic 10-digit int (NFR-1 additive weight check).
+			"progress_lines": 9999999999,
 		}
 	case "sessions/list":
 		// Realistic: 20 session rows + 5 loom rows + pagination objects.

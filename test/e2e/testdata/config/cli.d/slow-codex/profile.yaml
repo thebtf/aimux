@@ -1,0 +1,27 @@
+# slow-codex emulator profile for e2e progress_tail testing.
+# Emits 3 plain text lines with 200ms pauses — designed to observe
+# progress_tail changes between status() polls.
+name: slow-codex
+binary: testcli
+display_name: "Slow Codex (emulated)"
+
+features:
+  streaming: false
+  headless: true
+  read_only: false
+  session_resume: false
+  json: false
+  jsonl: false
+  stdin_pipe: false
+
+output_format: text
+
+command:
+  base: "testcli slow-codex"
+
+prompt_flag: "-p"
+prompt_flag_type: flag
+default_model: ""
+model_flag: ""
+timeout_seconds: 10
+stdin_threshold: 0
