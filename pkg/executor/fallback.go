@@ -12,6 +12,11 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
+// fallbackVerbose caches AIMUX_FALLBACK_VERBOSE at process start.
+// The env var is expected to be static for the lifetime of the process.
+// Cached here to avoid repeated os.Getenv calls on every fallback attempt.
+var fallbackVerbose = os.Getenv("AIMUX_FALLBACK_VERBOSE") != "false"
+
 // ErrQuotaExhausted is wrapped by RunWithModelFallback when a model is rate-limited.
 // The outer CLI-fallback router detects this via errors.Is to advance to the next CLI.
 var ErrQuotaExhausted = errors.New("quota exhausted")
@@ -65,7 +70,7 @@ func RunWithModelFallback(
 	counter *metrics.FallbackCounter,
 ) (*types.Result, error) {
 	cli := baseArgs.CLI
-	verbose := os.Getenv("AIMUX_FALLBACK_VERBOSE") != "false"
+	verbose := fallbackVerbose
 	attemptIdx := 0
 
 	if cooldownDuration == 0 {
