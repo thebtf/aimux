@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Response-budget policy — default response bodies are bounded to ~4 KiB so multi-step
 orchestrators do not blow their MCP context on large listings or job transcripts.
 Shipped across four PRs: #99 (budget package foundation), #100 (sync tools), #101
-(dual-source sessions + agents info), and an upcoming PR (investigate + orchestrate
-+ descriptions + NFR-1 suite).
+(dual-source sessions + agents info), and #102 (investigate + orchestrate +
+descriptions + NFR-1 suite).
 
 ### Added
 
@@ -46,9 +46,18 @@ Shipped across four PRs: #99 (budget package foundation), #100 (sync tools), #10
 - **`sessions(action=info)` per-job rows** — `content` field no longer returned by
   default; `content_length` reports the byte count. Use `include_content=true` to
   retrieve full content.
-- **`investigate(action=list/status/recall)` response shape** — brief rows with
-  `session_id, topic, domain, status, finding_count, coverage_progress`. `recall`
-  omits the full report by default; use `include_content=true` to retrieve it.
+- **`investigate(action=list)` response shape** — brief rows with
+  `session_id, topic, domain, status, finding_count`, paginated via `limit`/`offset`.
+  The former `active_count`/`saved_reports`/`saved_count` keys are removed.
+- **`investigate(action=status)` response shape** — brief fields
+  `session_id, topic, domain, status, finding_count, coverage_progress`.
+  The former `iteration`/`findings_count`/`corrections_count`/`coverage_unchecked`/`last_activity`
+  keys are removed. `coverage_progress` is a 0..1 ratio of checked vs. total coverage areas.
+- **`investigate(action=recall)` response shape** — brief fields
+  `found, session_id, topic, date, finding_count, content_length` (`session_id` here
+  is the saved report filename, not an in-memory investigation ID — kept stable
+  across server restarts). `recall` omits the full report by default; use
+  `include_content=true` to retrieve it.
 - **All 14 tool descriptions** — now document the brief/full contract and surface
   the relevant budget knobs. `deepresearch` is explicitly flagged as exempt from the
   4k default budget.

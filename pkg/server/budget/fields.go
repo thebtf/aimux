@@ -20,7 +20,7 @@ var FieldWhitelist = map[string][]string{
 	"sessions/refresh-warmup": {},
 	"investigate/list":        {"session_id", "topic", "domain", "status", "finding_count"},
 	"investigate/status":      {"session_id", "topic", "domain", "status", "finding_count", "coverage_progress"},
-	"investigate/recall":      {"session_id", "topic", "finding_count", "content_length", "content", "full_report"},
+	"investigate/recall":      {"session_id", "topic", "finding_count", "content_length", "content", "full_report", "found", "date"},
 	"investigate/start":       {},
 	"investigate/finding":     {},
 	"investigate/assess":      {},

@@ -75,6 +75,7 @@ type InvestigationState struct {
 type InvestigationSummary struct {
 	SessionID     string `json:"session_id"`
 	Topic         string `json:"topic"`
+	Domain        string `json:"domain"`
 	Iteration     int    `json:"iteration"`
 	FindingsCount int    `json:"findings_count"`
 }

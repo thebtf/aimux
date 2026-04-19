@@ -2647,6 +2647,72 @@ func TestHandleInvestigate_RecallNotFound(t *testing.T) {
 	}
 }
 
+// TestHandleInvestigate_RecallFound verifies the found=true path returns
+// found, date, session_id, topic, finding_count, and content_length fields.
+// This exercises the ApplyFields whitelist for investigate/recall — previously
+// found and date were dropped because they were absent from the whitelist.
+func TestHandleInvestigate_RecallFound(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Save a report so recall has something to find.
+	reportContent := "# Investigation Report\n\nFinding: the bug was in line 42."
+	_, err := inv.SaveReport(tmpDir, "recall-found-test", reportContent)
+	if err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+
+	srv := testServer(t)
+	req := makeRequest("investigate", map[string]any{
+		"action": "recall",
+		"topic":  "recall-found-test",
+		"cwd":    tmpDir,
+	})
+
+	result, handlerErr := srv.handleInvestigate(context.Background(), req)
+	if handlerErr != nil {
+		t.Fatalf("handleInvestigate recall: %v", handlerErr)
+	}
+	if result.IsError {
+		t.Fatalf("recall returned error for existing topic: %v", result)
+	}
+
+	data := parseResult(t, result)
+	resultPayload, ok := data["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result payload, got %T; full: %v", data["result"], data)
+	}
+
+	// found must be true and present (would be absent if whitelist drops it).
+	found, ok := resultPayload["found"].(bool)
+	if !ok {
+		t.Fatalf("result.found missing or wrong type — whitelist may have dropped it; keys: %v", resultPayload)
+	}
+	if !found {
+		t.Errorf("result.found = false, want true")
+	}
+
+	// date must be present.
+	if resultPayload["date"] == nil {
+		t.Error("result.date missing — whitelist may have dropped it")
+	}
+
+	// Other mandatory fields.
+	if resultPayload["session_id"] == nil {
+		t.Error("result.session_id missing")
+	}
+	if resultPayload["topic"] == nil {
+		t.Error("result.topic missing")
+	}
+	if _, ok := resultPayload["content_length"]; !ok {
+		t.Error("result.content_length missing (brief mode should include it)")
+	}
+
+	// content must be absent in brief mode.
+	if resultPayload["content"] != nil {
+		t.Error("brief recall should not include content — use include_content=true")
+	}
+}
+
 func TestHandleInvestigate_FindingWhenCoverageCompletePromotesAssess(t *testing.T) {
 	srv := testServer(t)
 	startReq := makeRequest("investigate", map[string]any{

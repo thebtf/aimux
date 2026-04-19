@@ -247,6 +247,19 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("prompt is required"), nil
 	}
 
+	// Parse + validate budget params BEFORE any orchestrator work so that invalid
+	// requests (bad fields, missing include_content, etc.) return errors without
+	// spawning CLIs, creating job history, or mutating session state.
+	bpDialog, budgetErrDialog := budget.ParseBudgetParams(request)
+	if budgetErrDialog != nil {
+		return mcp.NewToolResultError(budgetErrDialog.Error()), nil
+	}
+	if valErr := budget.ValidateContentBearingFields(
+		bpDialog.Fields, budget.ContentBearingFields["dialog"], bpDialog.IncludeContent,
+	); valErr != nil {
+		return mcp.NewToolResultError(valErr.Error()), nil
+	}
+
 	enabled := s.registry.EnabledCLIs()
 	if len(enabled) < 2 {
 		return mcp.NewToolResultError("dialog requires at least 2 CLIs"), nil
@@ -314,17 +327,8 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 		ss.Turns = result.Turns
 	})
 
-	bpDialog, budgetErrDialog := budget.ParseBudgetParams(request)
-	if budgetErrDialog != nil {
-		return mcp.NewToolResultError(budgetErrDialog.Error()), nil
-	}
-	if valErr := budget.ValidateContentBearingFields(
-		bpDialog.Fields, budget.ContentBearingFields["dialog"], bpDialog.IncludeContent,
-	); valErr != nil {
-		return mcp.NewToolResultError(valErr.Error()), nil
-	}
-
 	// Brief sync path: compact summary + content_length; full transcript on include_content=true (FR-2).
+	// bpDialog was parsed + validated at handler entry (above EnabledCLIs check).
 	dialogContentLen := len(result.Content)
 	dialogPayload := map[string]any{
 		"session_id":   sess.ID,

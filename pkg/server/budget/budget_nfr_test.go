@@ -1,14 +1,24 @@
 package budget
 
 // NFR-1: Per-tool default budget test.
-// Each of the 13 non-exempt tools MUST have a test asserting that the default
-// brief response (no optional budget params) is <= 4096 UTF-8 bytes on a
-// realistic fixture. deepresearch is exempt per FR-8.
+// Each non-exempt tool MUST have a test asserting that the default brief response
+// (no optional budget params) is <= 4096 UTF-8 bytes on a realistic fixture.
+// deepresearch is exempt per FR-8.
 //
-// These tests use realistic in-package fixtures (serialised JSON maps) that
-// represent what each handler would produce before handing off to the MCP
-// transport layer. The byte limit is applied to json.Marshal of the result
-// map — the same value the MCP transport writes to the wire (C1/FR-9).
+// The MCP wire response for most aimux tools is NOT a bare result map — it is a
+// guided envelope built by pkg/guidance ResponseBuilder.BuildPayload, which adds
+// fields like `result`, `state`, `you_are_here`, `how_this_tool_works`,
+// `choose_your_path[]`, `gaps[]`, `stop_conditions`, `do_not[]`. Measuring only
+// `json.Marshal(fixture)` understates the real payload size.
+//
+// The tests below wrap each fixture in wrapInEnvelope() — a representative
+// approximation of the guided envelope with conservative (upper-bound) policy
+// text. If `wrapped` serialises to <= 4096 bytes, the real wire response will
+// also fit, because real policy text is usually shorter than the upper-bound
+// simulation here.
+//
+// Pure-schema tools (upgrade, status when used for quick polling) do NOT go
+// through marshalGuidedToolResult and measure against the raw fixture.
 
 import (
 	"encoding/json"
@@ -17,6 +27,45 @@ import (
 )
 
 const nfrBudgetLimit = 4096
+
+// envelopeOverhead represents an upper-bound approximation of the bytes added by
+// guidance.ResponseBuilder.BuildPayload to the raw result map. Real policy text
+// for most tools is shorter; this is intentionally conservative so tests fail
+// early if a brief fixture drifts toward the envelope budget headroom.
+//
+// The concrete fields mirror those set by BuildPayload (builder.go:22) and the
+// typical volumes produced by pkg/guidance/policies/*.
+func envelopeOverhead() map[string]any {
+	return map[string]any{
+		"state":        "ok",
+		"you_are_here": "Tool returned a brief result. Call again with include_content=true for full output when needed.",
+		"how_this_tool_works": "Default responses are bounded to ~4 KiB so multi-step orchestrators do not exhaust their MCP context window. " +
+			"Use include_content=true to opt into the full payload for a single call. Use tail=N on status for partial output.",
+		"choose_your_path": []string{
+			"next: call with include_content=true if the brief is insufficient",
+			"next: paginate with limit/offset if listing",
+			"next: consume content_length to decide whether to fetch full content",
+		},
+		"gaps": []string{
+			"If content_length > 0 and include_content was omitted, the full payload is withheld.",
+		},
+		"stop_conditions": "Stop when the brief answers your question, or when include_content returns the full payload.",
+		"do_not": []string{
+			"Do not assume the brief is a complete answer if content_length > 0.",
+			"Do not retry without include_content=true if the brief flagged truncation.",
+		},
+	}
+}
+
+// wrapInEnvelope produces a payload shape that mirrors what pkg/guidance
+// ResponseBuilder.BuildPayload emits on the wire: the raw result under
+// `result` plus representative guidance fields. This lets NFR-1 assert the
+// realistic wire payload, not just the stripped result map (coderabbit PR #102).
+func wrapInEnvelope(result map[string]any) map[string]any {
+	wrapped := envelopeOverhead()
+	wrapped["result"] = result
+	return wrapped
+}
 
 // nfrFixture returns a realistic brief response fixture for the given tool/action
 // key, sized to represent a real-world (non-adversarial) payload while staying
@@ -267,14 +316,24 @@ func TestNFR1_DefaultBriefBudget(t *testing.T) {
 				t.Fatalf("nil fixture for %q", tc.fixtKey)
 			}
 
-			b, err := json.Marshal(fixture)
+			// upgrade bypasses the guided envelope (plain status tool); measure raw.
+			// All other non-exempt tools go through marshalGuidedToolResult at wire
+			// time, so wrap the fixture to reflect the realistic payload.
+			var payload map[string]any
+			if tc.fixtKey == "upgrade" {
+				payload = fixture
+			} else {
+				payload = wrapInEnvelope(fixture)
+			}
+
+			b, err := json.Marshal(payload)
 			if err != nil {
-				t.Fatalf("json.Marshal fixture for %q: %v", tc.fixtKey, err)
+				t.Fatalf("json.Marshal payload for %q: %v", tc.fixtKey, err)
 			}
 
 			byteCount := len(b)
 			if byteCount > nfrBudgetLimit {
-				t.Errorf("tool %q default brief response = %d bytes, want <= %d bytes (NFR-1 violation)",
+				t.Errorf("tool %q default wire response = %d bytes, want <= %d bytes (NFR-1 violation)",
 					tc.name, byteCount, nfrBudgetLimit)
 			}
 

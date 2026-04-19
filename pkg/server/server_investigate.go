@@ -536,18 +536,14 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 			FindingCount int    `json:"finding_count"`
 		}
 
-		// Collect all summaries from active investigations with domain info.
+		// Collect briefs from active investigations. Domain comes directly from the
+		// summary (no per-item GetInvestigation lookup — avoids N+1 on busy servers).
 		allBriefs := make([]investigationBrief, len(active))
 		for i, s := range active {
-			state := inv.GetInvestigation(s.SessionID)
-			domain := ""
-			if state != nil {
-				domain = state.Domain
-			}
 			allBriefs[i] = investigationBrief{
 				SessionID:    s.SessionID,
 				Topic:        s.Topic,
-				Domain:       domain,
+				Domain:       s.Domain,
 				Status:       "active",
 				FindingCount: s.FindingsCount,
 			}
@@ -608,10 +604,17 @@ func (s *Server) handleInvestigate(ctx context.Context, request mcp.CallToolRequ
 		}
 
 		// Brief: session_id, topic, finding_count, content_length; content omitted unless include_content=true (FR-2).
+		//
+		// NB: for action=recall only, "session_id" carries the persisted report
+		// *filename*, not an in-memory investigation ID. Filenames are stable
+		// across aimux restarts while investigation IDs are not; using the
+		// filename lets callers round-trip recall results without consulting
+		// other state. Other investigate actions use the real session ID.
+		// Documented for callers in CHANGELOG and the investigate tool description.
 		contentLength := len(recallResult.Content)
 		payload := map[string]any{
 			"found":          true,
-			"session_id":     recallResult.Filename, // filename serves as stable identifier
+			"session_id":     recallResult.Filename, // filename — stable identifier; see doc note above
 			"topic":          recallResult.Topic,
 			"date":           recallResult.Date,
 			"finding_count":  0, // report file doesn't surface count separately
