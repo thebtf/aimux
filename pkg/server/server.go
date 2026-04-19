@@ -37,6 +37,7 @@ import (
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/aimux/pkg/updater"
+	"github.com/thebtf/aimux/pkg/upgrade"
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
@@ -1463,26 +1464,75 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		return marshalToolResult(payload)
 
 	case "apply":
-		release, applyErr := updater.ApplyUpdate(ctx, Version)
+		binaryPath, exeErr := os.Executable()
+		if exeErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("locate executable: %v", exeErr)), nil
+		}
+
+		// Detect engine mode: aimuxHandler is constructed only in engine/session mode.
+		// Non-engine stdio transport lacks IPC sockets to hand off, so hot-swap
+		// (Phase 3) is disabled in that mode per clarification C2.
+		_, engineMode := s.sessionHandler.(*aimuxHandler)
+
+		// Build upgrade.SessionHandler adapter. aimuxHandler.SetUpdatePending()
+		// satisfies the upgrade.SessionHandler interface directly.
+		var sh upgrade.SessionHandler
+		if h, ok := s.sessionHandler.(*aimuxHandler); ok {
+			sh = h
+		}
+
+		coord := &upgrade.Coordinator{
+			Version:        Version,
+			BinaryPath:     binaryPath,
+			SessionHandler: sh,
+			EngineMode:     engineMode,
+			Logger:         s.log,
+		}
+
+		result, applyErr := coord.Apply(ctx, upgrade.ModeAuto)
 		if applyErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("update failed: %v", applyErr)), nil
 		}
-		if release == nil {
+
+		// Response envelope. Phase 1: Method is always "deferred" or "up_to_date"
+		// (hot-swap not yet implemented — blocked on engram #130 / muxcore v0.21.0+).
+		// Phase 3 will add "hot_swap" branch with HandoffTransferred + HandoffDurationMs.
+		switch result.Method {
+		case "up_to_date":
 			return marshalToolResult(map[string]any{
 				"status":          "up_to_date",
 				"current_version": Version,
 			})
+		case "hot_swap":
+			return marshalToolResult(map[string]any{
+				"status":                   "updated_hot_swap",
+				"previous_version":         result.PreviousVersion,
+				"new_version":              result.NewVersion,
+				"handoff_transferred_ids":  result.HandoffTransferred,
+				"handoff_duration_ms":      result.HandoffDurationMs,
+				"message":                  result.Message,
+			})
+		case "deferred":
+			// Preserve v4.3.0 wire format: status="updated" for backwards compat.
+			// Phase 3 will switch to status="updated_deferred" when adding hot-swap.
+			payload := map[string]any{
+				"status":           "updated",
+				"previous_version": result.PreviousVersion,
+				"new_version":      result.NewVersion,
+				"message":          result.Message,
+			}
+			if result.HandoffError != "" {
+				payload["handoff_error"] = result.HandoffError
+			}
+			return marshalToolResult(payload)
+		default:
+			return marshalToolResult(map[string]any{
+				"status":           "updated",
+				"previous_version": result.PreviousVersion,
+				"new_version":      result.NewVersion,
+				"message":          result.Message,
+			})
 		}
-		// Signal deferred restart via SessionHandler.
-		if sh, ok := s.sessionHandler.(*aimuxHandler); ok {
-			sh.SetUpdatePending()
-		}
-		return marshalToolResult(map[string]any{
-			"status":           "updated",
-			"previous_version": Version,
-			"new_version":      release.Version,
-			"message":          "Binary updated. Daemon will restart when all CC sessions disconnect.",
-		})
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown upgrade action %q (use check or apply)", action)), nil
