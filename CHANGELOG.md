@@ -5,13 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.2.0] - 2026-04-19
 
-Response-budget policy — default response bodies are bounded to ~4 KiB so multi-step
-orchestrators do not blow their MCP context on large listings or job transcripts.
-Shipped across four PRs: #99 (budget package foundation), #100 (sync tools), #101
-(dual-source sessions + agents info), and #102 (investigate + orchestrate +
+Minor release: **response-budget-policy**. Default MCP tool response bodies are
+bounded to ~4 KiB so multi-step orchestrators do not blow their MCP context on
+large listings or job transcripts. Shipped across four PRs:
+#99 (budget package foundation), #100 (sync tools),
+#101 (dual-source sessions + agents info), #102 (investigate + orchestrate +
 descriptions + NFR-1 suite).
+
+Contains one **BREAKING** change to `sessions(action=list)` response shape
+(FR-11 intentional break). See Migration notes below.
 
 ### Added
 
