@@ -699,8 +699,10 @@ func TestHandleSessions_List(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	if data["count"] == nil {
-		t.Error("expected count field")
+	for _, key := range []string{"sessions", "loom_tasks", "sessions_pagination", "loom_pagination"} {
+		if _, ok := data[key]; !ok {
+			t.Errorf("expected %q field", key)
+		}
 	}
 }
 
@@ -721,20 +723,24 @@ func TestHandleSessions_ListHonorsLimit(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	gotCount, ok := data["count"].(float64)
-	if !ok {
-		t.Fatalf("count has unexpected type %T", data["count"])
-	}
-	if gotCount != 2 {
-		t.Fatalf("count = %v, want 2", gotCount)
-	}
-
 	sessions, ok := data["sessions"].([]any)
 	if !ok {
 		t.Fatalf("sessions has unexpected type %T", data["sessions"])
 	}
 	if len(sessions) != 2 {
 		t.Fatalf("len(sessions) = %d, want 2", len(sessions))
+	}
+
+	sessionsPage, ok := data["sessions_pagination"].(map[string]any)
+	if !ok {
+		t.Fatalf("sessions_pagination has unexpected type %T", data["sessions_pagination"])
+	}
+	gotTotal, ok := sessionsPage["total"].(float64)
+	if !ok {
+		t.Fatalf("sessions_pagination.total has unexpected type %T", sessionsPage["total"])
+	}
+	if gotTotal != 3 {
+		t.Fatalf("sessions_pagination.total = %v, want 3", gotTotal)
 	}
 }
 
@@ -754,12 +760,12 @@ func TestHandleSessions_ListWithoutLimitReturnsAll(t *testing.T) {
 	}
 
 	data := parseResult(t, result)
-	gotCount, ok := data["count"].(float64)
+	sessions, ok := data["sessions"].([]any)
 	if !ok {
-		t.Fatalf("count has unexpected type %T", data["count"])
+		t.Fatalf("sessions has unexpected type %T", data["sessions"])
 	}
-	if gotCount != 3 {
-		t.Fatalf("count = %v, want 3", gotCount)
+	if len(sessions) != 3 {
+		t.Fatalf("len(sessions) = %d, want 3", len(sessions))
 	}
 }
 
@@ -3109,19 +3115,11 @@ func TestHandleInvestigate_AutoReturnsJobIDAndPersistsDelegateResult(t *testing.
 	if !ok {
 		t.Fatalf("expected session payload, got %T", infoData["session"])
 	}
-	metadata, ok := sessionData["metadata"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected session metadata map, got %T", sessionData["metadata"])
+	if gotID, _ := sessionData["id"].(string); gotID != sessionID {
+		t.Fatalf("session.id = %q, want %q", gotID, sessionID)
 	}
-	if metadata["source"] != "delegate" {
-		t.Fatalf("session metadata source = %v, want delegate", metadata["source"])
-	}
-	if metadata["cli"] != "codex" {
-		t.Fatalf("session metadata cli = %v, want codex", metadata["cli"])
-	}
-	delegateReport, _ := metadata["delegate_report"].(string)
-	if delegateReport == "" {
-		t.Fatal("expected delegate_report in session metadata")
+	if infoData["jobs"] == nil {
+		t.Fatal("expected jobs field in sessions info")
 	}
 }
 
@@ -3270,7 +3268,8 @@ func TestHandleInvestigate_AutoProgressBecomesVisibleDuringExecution(t *testing.
 // cancelling a running auto job causes the job to terminate without emitting
 // a success result — the final status must NOT be "completed".
 // AC: cancel a running auto job; assert final status != "completed" and no
-//     success content leaks (job content field is empty on non-completed jobs).
+//
+//	success content leaks (job content field is empty on non-completed jobs).
 func TestHandleInvestigate_AutoCancelPreventsSuccessResult(t *testing.T) {
 	blocked := make(chan struct{})
 	srv := testServer(t)

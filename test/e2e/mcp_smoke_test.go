@@ -327,9 +327,14 @@ func TestE2E_SessionsList(t *testing.T) {
 	var sessResult map[string]any
 	json.Unmarshal([]byte(text), &sessResult)
 
-	count, _ := sessResult["count"].(float64)
-	if count < 1 {
-		t.Errorf("expected at least 1 session, got %v", count)
+	sessions, _ := sessResult["sessions"].([]any)
+	if len(sessions) < 1 {
+		t.Errorf("expected at least 1 session in sessions array, got %d", len(sessions))
+	}
+	sessionsPage, _ := sessResult["sessions_pagination"].(map[string]any)
+	total, _ := sessionsPage["total"].(float64)
+	if total < 1 {
+		t.Errorf("expected sessions_pagination.total >= 1, got %v", total)
 	}
 }
 
