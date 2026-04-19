@@ -32,6 +32,8 @@ type BudgetParams struct {
 // ParseBudgetParams parses budget params from mcp.CallToolRequest.
 // limit<1 -> error "limit must be >= 1".
 // limit>100 -> clamp and set LimitClamped=true.
+// sessions_limit>100 -> clamp to MaxLimit and set LimitClamped=true (0 = use global limit).
+// loom_limit>100 -> clamp to MaxLimit and set LimitClamped=true (0 = use global limit).
 // offset<0 -> error "offset must be >= 0".
 // tail<=0 when supplied -> error "tail must be >= 1".
 // fields="" treated as omitted.
@@ -81,6 +83,9 @@ func ParseBudgetParams(request mcp.CallToolRequest) (BudgetParams, error) {
 	params.SessionsLimit = request.GetInt("sessions_limit", 0)
 	if params.SessionsLimit < 0 {
 		return BudgetParams{}, fmt.Errorf("sessions_limit must be >= 0")
+	} else if params.SessionsLimit > MaxLimit {
+		params.SessionsLimit = MaxLimit
+		params.LimitClamped = true
 	}
 	params.SessionsOffset = request.GetInt("sessions_offset", 0)
 	if params.SessionsOffset < 0 {
@@ -90,6 +95,9 @@ func ParseBudgetParams(request mcp.CallToolRequest) (BudgetParams, error) {
 	params.LoomLimit = request.GetInt("loom_limit", 0)
 	if params.LoomLimit < 0 {
 		return BudgetParams{}, fmt.Errorf("loom_limit must be >= 0")
+	} else if params.LoomLimit > MaxLimit {
+		params.LoomLimit = MaxLimit
+		params.LimitClamped = true
 	}
 	params.LoomOffset = request.GetInt("loom_offset", 0)
 	if params.LoomOffset < 0 {

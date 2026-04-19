@@ -83,7 +83,45 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 				return mcp.NewToolResultError(fmt.Sprintf("agent %q not found", agentName)), nil
 			}
 		}
-		return marshalToolResult(agent)
+		bp, budgetErr := budget.ParseBudgetParams(request)
+		if budgetErr != nil {
+			return mcp.NewToolResultError(budgetErr.Error()), nil
+		}
+		if valErr := budget.ValidateContentBearingFields(
+			bp.Fields,
+			budget.ContentBearingFields["agents/info"],
+			bp.IncludeContent,
+		); valErr != nil {
+			return mcp.NewToolResultError(valErr.Error()), nil
+		}
+
+		contentLength := len(agent.Content)
+		agentResult := map[string]any{
+			"name":           agent.Name,
+			"description":    agent.Description,
+			"role":           agent.Role,
+			"domain":         agent.Domain,
+			"tools":          agent.Tools,
+			"when":           agent.When,
+			"content_length": contentLength,
+		}
+		if bp.IncludeContent {
+			agentResult["content"] = agent.Content
+		}
+		if contentLength > 0 && !bp.IncludeContent {
+			meta := budget.BuildTruncationMeta(nil, contentLength, "Use agents(action=info, include_content=true) for full content.")
+			if meta.Truncated {
+				agentResult["truncated"] = meta.Truncated
+				agentResult["hint"] = meta.Hint
+			}
+		}
+
+		whitelist := budget.FieldWhitelist["agents/info"]
+		filtered, _, applyErr := budget.ApplyFields(agentResult, bp.Fields, whitelist)
+		if applyErr != nil {
+			return mcp.NewToolResultError(applyErr.Error()), nil
+		}
+		return marshalToolResult(filtered)
 
 	case "run":
 		prompt := request.GetString("prompt", "")

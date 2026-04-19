@@ -217,6 +217,52 @@ func TestParseBudgetParams(t *testing.T) {
 		}
 	})
 
+	t.Run("sessions_limit>MaxLimit is clamped", func(t *testing.T) {
+		got, err := ParseBudgetParams(makeRequest(map[string]any{"sessions_limit": 999999}))
+		if err != nil {
+			t.Fatalf("ParseBudgetParams() error = %v", err)
+		}
+		if got.SessionsLimit != MaxLimit {
+			t.Fatalf("SessionsLimit = %d, want %d (clamped)", got.SessionsLimit, MaxLimit)
+		}
+		if !got.LimitClamped {
+			t.Fatal("LimitClamped = false, want true")
+		}
+	})
+
+	t.Run("loom_limit>MaxLimit is clamped", func(t *testing.T) {
+		got, err := ParseBudgetParams(makeRequest(map[string]any{"loom_limit": 999999}))
+		if err != nil {
+			t.Fatalf("ParseBudgetParams() error = %v", err)
+		}
+		if got.LoomLimit != MaxLimit {
+			t.Fatalf("LoomLimit = %d, want %d (clamped)", got.LoomLimit, MaxLimit)
+		}
+		if !got.LimitClamped {
+			t.Fatal("LimitClamped = false, want true")
+		}
+	})
+
+	t.Run("sessions_limit=0 is allowed (fallback to global)", func(t *testing.T) {
+		got, err := ParseBudgetParams(makeRequest(map[string]any{"sessions_limit": 0}))
+		if err != nil {
+			t.Fatalf("ParseBudgetParams() error = %v", err)
+		}
+		if got.SessionsLimit != 0 {
+			t.Fatalf("SessionsLimit = %d, want 0 (global fallback)", got.SessionsLimit)
+		}
+	})
+
+	t.Run("loom_limit=0 is allowed (fallback to global)", func(t *testing.T) {
+		got, err := ParseBudgetParams(makeRequest(map[string]any{"loom_limit": 0}))
+		if err != nil {
+			t.Fatalf("ParseBudgetParams() error = %v", err)
+		}
+		if got.LoomLimit != 0 {
+			t.Fatalf("LoomLimit = %d, want 0 (global fallback)", got.LoomLimit)
+		}
+	})
+
 	t.Run("tail sentinel -999 is valid", func(t *testing.T) {
 		// The old sentinel trick would ignore tail=-999; now we use GetArguments() presence check.
 		got, err := ParseBudgetParams(makeRequest(map[string]any{"tail": -999}))

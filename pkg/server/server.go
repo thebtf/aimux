@@ -1033,33 +1033,89 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 
 	switch action {
 	case "list":
+		// FR-11 (BREAKING): sessions(action=list) now returns dual-source shape.
+		// Legacy merged "sessions" array is replaced by separate "sessions" and
+		// "loom_tasks" arrays with independent pagination. Callers reading loom
+		// task fields from the old merged sessions array must migrate to "loom_tasks".
+		bp, budgetErr := budget.ParseBudgetParams(request)
+		if budgetErr != nil {
+			return mcp.NewToolResultError(budgetErr.Error()), nil
+		}
 		statusFilter := request.GetString("status", "")
-		limit := int(request.GetFloat("limit", 0))
-		sessions := s.sessions.List(types.SessionStatus(statusFilter))
-		if limit > 0 && len(sessions) > limit {
-			sessions = sessions[:limit]
-		}
-		result := map[string]any{
-			"sessions": sessions,
-			"count":    len(sessions),
-		}
-		// Include Loom tasks filtered by ProjectContext.ID when available.
-		if s.loom != nil {
-			projectID := projectIDFromContext(ctx)
-			if projectID != "" {
-				tasks, taskErr := s.loom.List(projectID)
-				if taskErr != nil {
-					s.log.Warn("sessions list: loom list failed for project %s: %v", projectID, taskErr)
-					result["loom_error"] = taskErr.Error()
-				} else {
-					result["tasks"] = tasks
-					result["task_count"] = len(tasks)
-				}
+		allSessions := s.sessions.List(types.SessionStatus(statusFilter))
+
+		// Build session briefs using a single-pass job count map to avoid N+1.
+		jobCounts := s.jobs.CountsBySession()
+		sessionBriefs := make([]SessionBrief, len(allSessions))
+		for i, sess := range allSessions {
+			sessionBriefs[i] = SessionBrief{
+				ID:        sess.ID,
+				Status:    sess.Status,
+				CLI:       sess.CLI,
+				CreatedAt: sess.CreatedAt,
+				JobCount:  jobCounts[sess.ID],
 			}
 		}
-		return marshalToolResult(result)
+
+		var allLoomTasks []*loom.Task
+		projectID := projectIDFromContext(ctx)
+		if s.loom != nil && projectID != "" {
+			tasks, taskErr := s.loom.List(projectID)
+			if taskErr != nil {
+				s.log.Warn("sessions list: loom list failed for project %s: %v", projectID, taskErr)
+			} else {
+				allLoomTasks = tasks
+			}
+		}
+		// Apply status filter to loom tasks using the same direct-match semantics
+		// as sessions.List(statusFilter): empty string means include all.
+		if statusFilter != "" && len(allLoomTasks) > 0 {
+			filteredLoom := make([]*loom.Task, 0, len(allLoomTasks))
+			for _, t := range allLoomTasks {
+				if string(t.Status) == statusFilter {
+					filteredLoom = append(filteredLoom, t)
+				}
+			}
+			allLoomTasks = filteredLoom
+		}
+
+		loomBriefs := make([]LoomTaskBrief, len(allLoomTasks))
+		for i, t := range allLoomTasks {
+			loomBriefs[i] = LoomTaskBrief{
+				ID:                t.ID,
+				Status:            t.Status,
+				Kind:              string(t.WorkerType),
+				CreatedAt:         t.CreatedAt,
+				ProgressLineCount: 0,
+			}
+		}
+
+		dsr := budget.PaginateDualSource(sessionBriefs, loomBriefs, bp)
+		result := map[string]any{
+			"sessions":            dsr.Sessions,
+			"loom_tasks":          dsr.LoomTasks,
+			"sessions_pagination": dsr.SessionsPagination,
+			"loom_pagination":     dsr.LoomPagination,
+		}
+		filtered, _, applyErr := budget.ApplyFields(result, bp.Fields, budget.FieldWhitelist["sessions/list"])
+		if applyErr != nil {
+			return mcp.NewToolResultError(applyErr.Error()), nil
+		}
+		return marshalToolResult(filtered)
 
 	case "info":
+		bp, budgetErr := budget.ParseBudgetParams(request)
+		if budgetErr != nil {
+			return mcp.NewToolResultError(budgetErr.Error()), nil
+		}
+		if valErr := budget.ValidateContentBearingFields(
+			bp.Fields,
+			budget.ContentBearingFields["sessions/info"],
+			bp.IncludeContent,
+		); valErr != nil {
+			return mcp.NewToolResultError(valErr.Error()), nil
+		}
+
 		sessionID := request.GetString("session_id", "")
 		if sessionID == "" {
 			return mcp.NewToolResultError("session_id required for info"), nil
@@ -1068,11 +1124,36 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
-		jobs := s.jobs.ListBySessionSnapshot(sessionID)
-		return marshalToolResult(map[string]any{
-			"session": sess,
-			"jobs":    jobs,
-		})
+		rawJobs := s.jobs.ListBySessionSnapshot(sessionID)
+
+		jobBriefs := make([]JobBrief, len(rawJobs))
+		for i, j := range rawJobs {
+			brief := JobBrief{
+				ID:            j.ID,
+				Status:        j.Status,
+				Progress:      j.Progress,
+				ContentLength: len(j.Content),
+			}
+			if bp.IncludeContent {
+				brief.Content = j.Content
+			}
+			jobBriefs[i] = brief
+		}
+
+		result := map[string]any{
+			"session": map[string]any{
+				"id":         sess.ID,
+				"status":     sess.Status,
+				"cli":        sess.CLI,
+				"created_at": sess.CreatedAt,
+			},
+			"jobs": jobBriefs,
+		}
+		filtered, _, applyErr := budget.ApplyFields(result, bp.Fields, budget.FieldWhitelist["sessions/info"])
+		if applyErr != nil {
+			return mcp.NewToolResultError(applyErr.Error()), nil
+		}
+		return marshalToolResult(filtered)
 
 	case "health":
 		running := s.jobs.ListRunning()
