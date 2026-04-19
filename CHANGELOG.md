@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pkg/session.Job.LastOutputLine` and `Job.ProgressLines` — maintained O(1) on
   every `AppendProgress` call; no buffer scan on status poll.
 - `pkg/util.TruncateUTF8` — shared UTF-8-safe byte-budget truncation helper.
+- **Fallback observability** (`pkg/executor/fallback.go`, `pkg/metrics/fallback_metrics.go`): structured per-attempt log lines (`module=executor.fallback`) and `aimux_fallback_attempts_total{cli,model,result}` counter in every `RunWithModelFallback` call. Opt-out via `AIMUX_FALLBACK_VERBOSE=false` (counter always increments). Prerequisite for Phase 2 codex account×model routing fix (engram #115).
 
 ## [4.2.0] - 2026-04-19
 

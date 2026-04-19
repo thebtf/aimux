@@ -698,6 +698,7 @@ func (s *Server) runWithModelFallback(
 		s.cooldownTracker,
 		cooldownDuration,
 		func(format string, args ...any) { s.log.Warn(format, args...) },
+		nil,
 	)
 }
 
