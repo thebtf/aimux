@@ -4103,30 +4103,6 @@ func TestNotifier_BroadcastOnConnect(t *testing.T) {
 	}
 }
 
-// TestNotifier_NoBroadcastWithoutAgents verifies that Broadcast is NOT called
-// when a project connects but has no agents directory.
-func TestNotifier_NoBroadcastWithoutAgents(t *testing.T) {
-	srv := testServer(t)
-	handler := srv.SessionHandler()
-
-	notifier := &mockNotifier{}
-	aware := handler.(muxcore.NotifierAware)
-	aware.SetNotifier(notifier)
-
-	// Use a bare temp dir with no .claude/agents/ subdirectory.
-	project := muxcore.ProjectContext{
-		ID:  "notifier-no-agents-test",
-		Cwd: t.TempDir(),
-	}
-
-	lifecycle := handler.(muxcore.ProjectLifecycle)
-	lifecycle.OnProjectConnect(project)
-
-	if notifier.broadcastCount() != 0 {
-		t.Errorf("expected no Broadcast when project has no agents, got %d calls", notifier.broadcastCount())
-	}
-}
-
 // TestNotifier_NilNotifier verifies that connecting a project without calling
 // SetNotifier first does not panic.
 func TestNotifier_NilNotifier(t *testing.T) {

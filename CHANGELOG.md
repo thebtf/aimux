@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Tools visibility: daemon now always emits `notifications/tools/list_changed` on
+  project connect and reconnect, so Claude Code re-queries tools after shim
+  reconnect, daemon restart, or binary upgrade (engram #136).
+
 ## [4.4.0] - 2026-04-19
 
 Minor release: **hot-swap upgrade structural prep** (Phase 1 of engram #129).

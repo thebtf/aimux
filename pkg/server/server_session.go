@@ -54,7 +54,7 @@ type projectState struct {
 	session  *mcpserver.InProcessSession
 	agents   []*agents.Agent // project-specific agent overlay
 	refcount atomic.Int32    // number of CC sessions sharing this project
-	ready    chan struct{}    // closed after session registered; HandleRequest waits on this
+	ready    chan struct{}   // closed after session registered; HandleRequest waits on this
 }
 
 // aimuxHandler implements muxcore.SessionHandler and muxcore.ProjectLifecycle.
@@ -64,8 +64,8 @@ type aimuxHandler struct {
 	srv           *Server
 	projects      sync.Map // map[string]*projectState keyed by ProjectContext.ID
 	notifier      muxcore.Notifier
-	updatePending atomic.Bool   // set after successful binary update; daemon exits on last disconnect
-	cancelFunc    func()        // cancels the engine context to stop daemon
+	updatePending atomic.Bool // set after successful binary update; daemon exits on last disconnect
+	cancelFunc    func()      // cancels the engine context to stop daemon
 }
 
 // Compile-time interface assertions.
@@ -140,6 +140,10 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 		state.refcount.Add(1)
 		h.srv.log.Info("session-handler: project %s reconnected (refcount=%d, cwd=%s)",
 			project.ID, state.refcount.Load(), project.Cwd)
+		if h.notifier != nil {
+			notification := []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
+			h.notifier.Broadcast(notification)
+		}
 		return
 	}
 
@@ -159,7 +163,7 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 
 	// Broadcast tools/list_changed so that connected CC sessions re-request
 	// tools/list and discover any project-specific agents just found.
-	if h.notifier != nil && len(state.agents) > 0 {
+	if h.notifier != nil {
 		notification := []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
 		h.notifier.Broadcast(notification)
 	}

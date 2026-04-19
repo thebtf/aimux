@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/types"
+	"github.com/thebtf/mcp-mux/muxcore"
 )
 
 // --- T038: TestServerSession_RefreshWarmup ---
@@ -26,12 +28,12 @@ func buildRefreshWarmupServer(t *testing.T) (*Server, *driver.Registry) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
-			LogLevel:             "error",
-			LogFile:              t.TempDir() + "/test.log",
+			LogLevel:              "error",
+			LogFile:               t.TempDir() + "/test.log",
 			DefaultTimeoutSeconds: 10,
-			WarmupEnabled:        true,
-			WarmupTimeoutSeconds: 5,
-			Pair: config.PairConfig{MaxRounds: 2},
+			WarmupEnabled:         true,
+			WarmupTimeoutSeconds:  5,
+			Pair:                  config.PairConfig{MaxRounds: 2},
 			Audit: config.AuditConfig{
 				ScannerRole:      "codereview",
 				ValidatorRole:    "analyze",
@@ -198,5 +200,78 @@ func TestServerSession_RefreshWarmup_ExcludedAfterFail(t *testing.T) {
 	}
 	if _, ok := data["excluded"]; !ok {
 		t.Error("expected 'excluded' in response")
+	}
+}
+
+// --- T136: TestOnProjectConnect broadcast fixes ---
+
+// TestOnProjectConnect_BroadcastsOnNewState verifies that Broadcast fires
+// on first connect even when no project-specific agents are discovered.
+// Regression test for the len(state.agents) > 0 guard that was removed.
+func TestOnProjectConnect_BroadcastsOnNewState(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	notifier := &mockNotifier{}
+	aware := handler.(muxcore.NotifierAware)
+	aware.SetNotifier(notifier)
+
+	// Use a bare temp dir — no .claude/agents/ subdir, so agents=0.
+	project := muxcore.ProjectContext{
+		ID:  "new-state-no-agents",
+		Cwd: t.TempDir(),
+	}
+
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	lifecycle.OnProjectConnect(project)
+
+	if notifier.broadcastCount() != 1 {
+		t.Errorf("expected exactly 1 Broadcast on new-state connect (got %d); broadcast must fire regardless of agent count", notifier.broadcastCount())
+	}
+
+	notifier.mu.Lock()
+	payload := notifier.broadcasts[0]
+	notifier.mu.Unlock()
+
+	var msg map[string]any
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("broadcast payload is not valid JSON: %v — raw: %s", err, payload)
+	}
+	if msg["method"] != "notifications/tools/list_changed" {
+		t.Errorf("broadcast method = %v, want notifications/tools/list_changed", msg["method"])
+	}
+}
+
+// TestOnProjectConnect_BroadcastsOnReconnect verifies that Broadcast fires
+// on the reconnect path (LoadOrStore loaded=true) so CC re-queries tools
+// after shim reconnect.
+func TestOnProjectConnect_BroadcastsOnReconnect(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	notifier := &mockNotifier{}
+	aware := handler.(muxcore.NotifierAware)
+	aware.SetNotifier(notifier)
+
+	project := muxcore.ProjectContext{
+		ID:  "reconnect-broadcast-test",
+		Cwd: t.TempDir(),
+	}
+
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+
+	// First connect — initializes state (LoadOrStore loaded=false).
+	lifecycle.OnProjectConnect(project)
+
+	// Reset to isolate the reconnect broadcast.
+	notifier.mu.Lock()
+	notifier.broadcasts = nil
+	notifier.mu.Unlock()
+
+	// Second connect for same project ID — hits LoadOrStore loaded=true branch.
+	lifecycle.OnProjectConnect(project)
+
+	if notifier.broadcastCount() != 1 {
+		t.Errorf("expected exactly 1 Broadcast on reconnect (got %d); reconnect path must re-announce tools", notifier.broadcastCount())
 	}
 }
