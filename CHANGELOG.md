@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.2] - 2026-04-21
+
+### Fixed
+
+- Non-blocking warmup: `driver.RunWarmup` moved to a background goroutine. Shim startup no longer blocks on CLI health probes; `/mcp reconnect aimux` returns within CC's 20s handshake window even under concurrent multi-session contention.
+- Warmup fallback: when every CLI probe returns `passed=false` (common in spawned daemon env where PATH is not inherited), daemon now falls back to binary-only detection instead of hard-failing. Adds `log.Warn` line `"all CLI probes failed — falling back to binary-only detection (health-gate bypassed)"`.
+
+### Added
+
+- `cmd/ctl/main.go` — new `aimux-ctl` diagnostic binary. Speaks muxcore's `control.SendWithTimeout` protocol against the aimux daemon's control socket. Commands: `status`, `shutdown`, `graceful-restart`. Usage: `aimux-ctl -cmd graceful-restart -drain-ms 10000`.
+
+---
+
 ## [4.5.1] - 2026-04-20
 
 Patch release: **CR-1 (US1)** — reliable delegation, cooldown observability, secret scrubbing.
@@ -144,6 +157,7 @@ Minor release: **CR-2 (US2)** — honest persisted record, live progress on asyn
 
 ---
 
+[4.5.2]: https://github.com/thebtf/aimux/compare/v4.5.1...v4.5.2
 [4.5.1]: https://github.com/thebtf/aimux/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/thebtf/aimux/compare/v4.4.0...v4.5.0
 
