@@ -9,9 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.5.0] - 2026-04-20
 
-Minor release bundling four merged PRs: tools visibility (#111 → #136), agent cache hygiene (#112 → #139), session durability Phase 2+4 (#113 → #111), and muxcore v0.21.1 with F2 shim reconnect passthrough (#114).
+Minor release bundling four merged PRs: tools visibility (PR #111, resolves engram #136), agent cache hygiene (PR #112, resolves engram #139), session durability Phase 2+4 (PR #113, resolves engram #111), and muxcore v0.21.1 with F2 shim reconnect passthrough (PR #114).
 
-Silent-failure classes closed: false `completed` status after aimux restart (Phase 2 PersistTransition), stale agent entries after source file deletion (registry stat-validation), invisible tools after shim reconnect (`notifications/tools/list_changed` on every project connect event), and accidental probe-agent dispatch (`agents(action=list)` steering hint).
+Silent-failure classes closed:
+
+- False `completed` status after aimux restart (Phase 2 PersistTransition wires `SnapshotJob` on every state change)
+- Stale agent entries after source file deletion (registry stat-validates sources at read time and purges missing entries)
+- Invisible tools after shim reconnect or daemon restart (`notifications/tools/list_changed` emitted on every project connect event)
+- Accidental probe-agent dispatch (`agents(action=list)` tool description + response `hint` field steer callers to `find`/`run` instead of name-match)
 
 ### Changed
 
@@ -58,6 +63,8 @@ Silent-failure classes closed: false `completed` status after aimux restart (Pha
 
 - `TECHNICAL_DEBT.md` moved from repo root to `.agent/TECHNICAL_DEBT.md` — aligns
   with the convention that all agent-managed artifacts live under `.agent/`.
+
+[4.5.0]: https://github.com/thebtf/aimux/compare/v4.4.0...v4.5.0
 
 ## [4.4.0] - 2026-04-19
 
