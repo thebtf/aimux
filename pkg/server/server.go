@@ -169,9 +169,17 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 		log.Warn("server: auth_token loaded from YAML — prefer AIMUX_AUTH_TOKEN env var for secrets")
 	}
 
+	// AIMUX_SESSION_STORE=memory opt-out: skip all SQLite persistence.
+	// Useful for tests and embedded scenarios where durability is not required.
+	// Default (empty or "sqlite") preserves the v4.3.0 behavior.
+	sessionStoreMode := os.Getenv("AIMUX_SESSION_STORE")
+	if sessionStoreMode == "memory" {
+		log.Info("SQLite persistence disabled (AIMUX_SESSION_STORE=memory)")
+	}
+
 	// Initialize SQLite persistence and WAL recovery
 	dbPath := config.ExpandPath(cfg.Server.DBPath)
-	if dbPath != "" {
+	if dbPath != "" && sessionStoreMode != "memory" {
 		store, err := session.NewStore(dbPath)
 		if err != nil {
 			log.Warn("SQLite persistence unavailable: %v (continuing in-memory only)", err)
@@ -481,7 +489,9 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(
 		mcp.NewTool("status",
 			mcp.WithDescription("Check async job status. "+
-				"Returns a result map with status field set to one of: queued, running, completing, completed, failed. "+
+				"Returns a result map with status field set to one of: queued, running, completing, completed, failed, aborted. "+
+				"status=aborted means the job was running when the daemon restarted (SIGKILL/crash); the job did not complete. "+
+				"last_seen_at: timestamp of the last SnapshotJob write for this job; useful for determining when the daemon last observed it alive. "+
 				"Default returns metadata only (fits ~4k chars). Add include_content=true for full job output. Use tail=N for last N chars. "+
 				"When content is omitted, content_length gives the byte count of the full output. "+
 				"progress_tail: last non-empty output line, UTF-8-safe truncated to 100 bytes — compact real-time activity signal. "+
@@ -511,7 +521,10 @@ func (s *Server) registerTools() {
 				"Use sessions_limit/sessions_offset and loom_limit/loom_offset for independent pagination per source; "+
 				"legacy limit/offset applies to both sources as a fallback. "+
 				"action=info: per-job rows include content_length; add include_content=true to fetch job content. "+
-				"action=refresh-warmup re-runs CLI warmup probes and updates the routing pool."),
+				"action=refresh-warmup re-runs CLI warmup probes and updates the routing pool. "+
+				"Session status=aborted indicates the daemon restarted while this session had running jobs (SIGKILL/crash recovery). "+
+				"aborted_job_ids lists the job IDs that were aborted during that restart reconciliation. "+
+				"last_seen_at on job rows tracks the most recent SnapshotJob write; used by ReconcileOnStartup to identify orphaned jobs."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: list, info, kill, gc, health, cancel, refresh-warmup"),
@@ -1062,9 +1075,14 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		"session_id":     j.SessionID,
 		"progress_tail":  j.LastOutputLine,
 		"progress_lines": j.ProgressLines,
+		// last_seen_at: time of the most recent SnapshotJob write for this job.
+		// ProgressUpdatedAt is updated on every state transition (Create, StartJob,
+		// AppendProgress, CompleteJob, FailJob, CancelJob) which corresponds 1:1 with
+		// SnapshotJob calls, making it the correct in-memory proxy for the SQLite column.
+		"last_seen_at": j.ProgressUpdatedAt,
 	}
 
-	if j.Status == types.JobStatusCompleted || j.Status == types.JobStatusFailed {
+	if j.Status == types.JobStatusCompleted || j.Status == types.JobStatusFailed || j.Status == types.JobStatusAborted {
 		if j.Error != nil {
 			result["error"] = j.Error.Error()
 		}

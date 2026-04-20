@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Session durability opt-out: `AIMUX_SESSION_STORE=memory` skips SQLite persistence
+  entirely (tests and embedded use cases where durability is not required).
+  Default (`sqlite` or unset) preserves v4.3.0 behavior (engram #111 Phase 4).
+
 ### Fixed
 
+- Session durability Phase 2: every async job state transition
+  (Created → Running → Completed/Failed/Aborted) now persists to SQLite immediately
+  via `SnapshotJob`. Previously `StartJob` and `CancelJob` skipped the snapshot,
+  leaving mid-transition states invisible to startup reconciliation. Resolves the
+  final acceptance criterion of engram #111 Phase 1+3 remediation scope.
 - Tools visibility: daemon now always emits `notifications/tools/list_changed` on
   project connect and reconnect, so Claude Code re-queries tools after shim
   reconnect, daemon restart, or binary upgrade (engram #136).

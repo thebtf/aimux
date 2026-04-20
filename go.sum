@@ -12,6 +12,8 @@ github.com/42wim/httpsig v1.2.3/go.mod h1:nZq9OlYKDrUBhptd77IHx4/sZZD+IxTBADvAPI
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/Masterminds/semver/v3 v3.4.0 h1:Zog+i5UMtVoCU8oKka5P7i9q9HgrJeGzI9SA1Xbatp0=
 github.com/Masterminds/semver/v3 v3.4.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
+github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
+github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
@@ -123,8 +125,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/thebtf/aimux/loom v0.1.1 h1:cmBspz9FqNIYSgpYvirKCEWN0jeFkrltRoL52K2njms=
 github.com/thebtf/aimux/loom v0.1.1/go.mod h1:RhaAm49BssZqO4Ziqt0LJgV2WUpMim7V/xnZaimCpWk=
-github.com/thebtf/mcp-mux/muxcore v0.20.4 h1:26s0iGZnfmijGqNhyEbQh0dYbhGdY2hSHs38rsFKD8s=
-github.com/thebtf/mcp-mux/muxcore v0.20.4/go.mod h1:y7XcVEo6g9mYpbZogClriDmOoNk0E/Efzd69CYdjFlY=
+github.com/thebtf/mcp-mux/muxcore v0.21.0 h1:N3s5jvkiT6PbXONIseLp3l9WQ/qgfxipH7mrQkovrjw=
+github.com/thebtf/mcp-mux/muxcore v0.21.0/go.mod h1:tC/9aFAgj/ESYYLjohqT17mDucbYZH8uKNqBQCWMH/8=
 github.com/thejerf/suture/v4 v4.0.6 h1:QsuCEsCqb03xF9tPAsWAj8QOAJBgQI1c0VqJNaingg8=
 github.com/thejerf/suture/v4 v4.0.6/go.mod h1:gu9Y4dXNUWFrByqRt30Rm9/UZ0wzRSt9AJS6xu/ZGxU=
 github.com/ulikunitz/xz v0.5.15 h1:9DNdB5s+SgV3bQ2ApL10xRc35ck0DuIX/isZvIk+ubY=
