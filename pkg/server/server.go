@@ -1075,9 +1075,14 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		"session_id":     j.SessionID,
 		"progress_tail":  j.LastOutputLine,
 		"progress_lines": j.ProgressLines,
+		// last_seen_at: time of the most recent SnapshotJob write for this job.
+		// ProgressUpdatedAt is updated on every state transition (Create, StartJob,
+		// AppendProgress, CompleteJob, FailJob, CancelJob) which corresponds 1:1 with
+		// SnapshotJob calls, making it the correct in-memory proxy for the SQLite column.
+		"last_seen_at": j.ProgressUpdatedAt,
 	}
 
-	if j.Status == types.JobStatusCompleted || j.Status == types.JobStatusFailed {
+	if j.Status == types.JobStatusCompleted || j.Status == types.JobStatusFailed || j.Status == types.JobStatusAborted {
 		if j.Error != nil {
 			result["error"] = j.Error.Error()
 		}

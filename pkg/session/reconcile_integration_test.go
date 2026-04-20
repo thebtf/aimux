@@ -122,57 +122,57 @@ func TestReconcile_SIGKILLRestart(t *testing.T) {
 	}
 }
 
-// BenchmarkReconcileIntegration10k seeds 10,000 running rows owned by an old
-// daemon UUID and measures how long ReconcileOnStartup takes on a fresh daemon start.
+// TestReconcile10k_Performance seeds 10,000 running rows owned by an old daemon UUID
+// and measures how long ReconcileOnStartup takes on a fresh daemon start.
 // Must complete in < 5 seconds (NFR-1 from engram #111).
 //
-// Run: go test -bench=BenchmarkReconcileIntegration10k -benchtime=1x -run=^$ ./pkg/session/
-func BenchmarkReconcileIntegration10k(b *testing.B) {
+// Converted from BenchmarkReconcileIntegration10k: the NFR-1 threshold assertion
+// (< 5 s absolute wall clock) is incompatible with benchmark semantics — b.N scales
+// iteration count, so elapsed at b.N=2 is ~2× the single-run cost and the assertion
+// false-fails at higher b.N values. A regular test asserts once on a single reconcile.
+func TestReconcile10k_Performance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 10k performance test in short mode")
+	}
+
 	session.ResetDaemonUUID()
-	oldUUID := "old-uuid-integration-bench-10k"
+	oldUUID := "old-uuid-integration-perf-10k"
 
-	dir := b.TempDir()
-	dbPath := filepath.Join(dir, "integration_bench.db")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "perf_10k.db")
 
-	// Use daemon A UUID to seed data, close, then open with daemon B.
-	// We need a raw DB connection to seed without triggering reconcile yet.
-	// Open with the OLD UUID as the current daemon, seed, close.
-	session.ResetDaemonUUID()
-	// Override: we need to seed rows with a specific "old" UUID.
-	// Use the insertJob/insertSession helpers from reconcile_test.go (same package).
-	// Those helpers accept an explicit daemon UUID so we can set it directly.
-
-	// Open a temporary store with the OLD uuid to seed data.
-	// After seeding, reset daemon UUID to simulate a new daemon and call NewStore.
+	// Seed phase: open a store (triggers reconcile on empty DB — instant), then
+	// insert 10,000 running rows with the OLD daemon UUID so that the next open
+	// (with a NEW daemon UUID) has real work to reconcile.
 	seedStore, err := session.NewStore(dbPath)
 	if err != nil {
-		b.Fatalf("NewStore (seed): %v", err)
+		t.Fatalf("NewStore (seed): %v", err)
 	}
 	seedDB := seedStore.DB()
 
-	// Insert a single parent session.
+	// Insert a single parent session row.
 	if _, insertErr := seedDB.Exec(`
 		INSERT INTO sessions (id, cli, mode, status, created_at, last_active_at, daemon_uuid)
-		VALUES ('bench-integ-sess', 'codex', 'once_stateless', 'running', datetime('now'), datetime('now'), ?)`,
+		VALUES ('perf-sess', 'codex', 'once_stateless', 'running', datetime('now'), datetime('now'), ?)`,
 		oldUUID,
 	); insertErr != nil {
 		seedStore.Close()
-		b.Fatalf("insert bench session: %v", insertErr)
+		t.Fatalf("insert perf session: %v", insertErr)
 	}
 
-	// Batch-insert 10,000 running rows with old daemon UUID inside one transaction.
+	// Batch-insert 10,000 running rows inside one transaction.
 	tx, txErr := seedDB.Begin()
 	if txErr != nil {
 		seedStore.Close()
-		b.Fatalf("begin seeding tx: %v", txErr)
+		t.Fatalf("begin seeding tx: %v", txErr)
 	}
 	stmt, stmtErr := tx.Prepare(`
 		INSERT INTO jobs (id, session_id, cli, status, created_at, progress_updated_at, daemon_uuid)
-		VALUES (?, 'bench-integ-sess', 'codex', 'running', datetime('now'), datetime('now'), ?)`)
+		VALUES (?, 'perf-sess', 'codex', 'running', datetime('now'), datetime('now'), ?)`)
 	if stmtErr != nil {
 		tx.Rollback()
 		seedStore.Close()
-		b.Fatalf("prepare seeding stmt: %v", stmtErr)
+		t.Fatalf("prepare seeding stmt: %v", stmtErr)
 	}
 	for i := 0; i < 10000; i++ {
 		id := benchJobID(i)
@@ -180,57 +180,32 @@ func BenchmarkReconcileIntegration10k(b *testing.B) {
 			stmt.Close()
 			tx.Rollback()
 			seedStore.Close()
-			b.Fatalf("insert bench job %d: %v", i, execErr)
+			t.Fatalf("insert perf job %d: %v", i, execErr)
 		}
 	}
 	stmt.Close()
 	if commitErr := tx.Commit(); commitErr != nil {
 		seedStore.Close()
-		b.Fatalf("commit seeding tx: %v", commitErr)
+		t.Fatalf("commit seeding tx: %v", commitErr)
 	}
 	seedStore.Close()
 
-	// Reset daemon UUID to simulate a new daemon restart.
+	// Measurement phase: open a NEW store (new daemon UUID) which triggers
+	// ReconcileOnStartup on the 10,000 orphaned rows. Assert single-run wall clock.
 	session.ResetDaemonUUID()
 
-	b.ResetTimer()
 	start := time.Now()
-
-	for i := 0; i < b.N; i++ {
-		// Opening a new store triggers ReconcileOnStartup.
-		benchStore, openErr := session.NewStore(dbPath)
-		if openErr != nil {
-			b.Fatalf("NewStore (daemon B, iter %d): %v", i, openErr)
-		}
-		benchStore.Close()
-
-		// After first iteration reset rows so subsequent runs have work to do.
-		if i < b.N-1 {
-			session.ResetDaemonUUID()
-			resetStore, resetErr := session.NewStore(dbPath)
-			if resetErr != nil {
-				b.Fatalf("NewStore (reset, iter %d): %v", i, resetErr)
-			}
-			rDB := resetStore.DB()
-			if _, resetJobErr := rDB.Exec(`UPDATE jobs SET status = 'running', aborted_at = NULL, daemon_uuid = ?`, oldUUID); resetJobErr != nil {
-				resetStore.Close()
-				b.Fatalf("reset bench jobs: %v", resetJobErr)
-			}
-			if _, resetSessErr := rDB.Exec(`UPDATE sessions SET status = 'running', aborted_at = NULL, aborted_job_ids = NULL, daemon_uuid = ?`, oldUUID); resetSessErr != nil {
-				resetStore.Close()
-				b.Fatalf("reset bench sessions: %v", resetSessErr)
-			}
-			resetStore.Close()
-			session.ResetDaemonUUID()
-		}
+	perfStore, openErr := session.NewStore(dbPath)
+	if openErr != nil {
+		t.Fatalf("NewStore (perf run): %v", openErr)
 	}
-
+	perfStore.Close()
 	elapsed := time.Since(start)
-	b.ReportMetric(float64(elapsed.Milliseconds()), "ms/total")
 
 	if elapsed > 5*time.Second {
-		b.Fatalf("BenchmarkReconcileIntegration10k: reconciliation took %v, want < 5s (NFR-1)", elapsed)
+		t.Fatalf("reconcile 10k jobs took %v, NFR-1 requires < 5s", elapsed)
 	}
+	t.Logf("reconcile 10k jobs: %v (NFR-1 limit 5s)", elapsed)
 }
 
 // benchJobID returns a zero-padded bench job ID string.

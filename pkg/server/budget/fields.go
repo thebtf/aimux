@@ -10,7 +10,7 @@ var FieldWhitelist = map[string][]string{
 	// Content-bearing fields (content, transcript, full_report) are listed here
 	// so that callers using fields=content,… with include_content=true pass ApplyFields.
 	// ValidateContentBearingFields enforces that include_content=true is required.
-	"status":                  {"job_id", "status", "progress", "poll_count", "session_id", "error", "content_length", "content", "content_tail", "warning", "stall_warning", "stall_alert", "recommended_action", "cancel_command", "auto_cancel_recommended", "progress_tail", "progress_lines"},
+	"status":                  {"job_id", "status", "progress", "poll_count", "session_id", "error", "content_length", "content", "content_tail", "warning", "stall_warning", "stall_alert", "recommended_action", "cancel_command", "auto_cancel_recommended", "progress_tail", "progress_lines", "last_seen_at"},
 	"sessions/list":           {"sessions", "loom_tasks", "sessions_pagination", "loom_pagination"},
 	"sessions/info":           {"session", "jobs", "content"},
 	"sessions/health":         {},

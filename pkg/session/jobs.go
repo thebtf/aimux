@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -90,7 +92,9 @@ func (m *JobManager) Create(sessionID, cli string) *Job {
 
 	// Immediate persist — survive process restart between 30s snapshot intervals.
 	if m.store != nil {
-		_ = m.store.SnapshotJob(j)
+		if snapErr := m.store.SnapshotJob(j); snapErr != nil {
+			fmt.Fprintf(os.Stderr, "session: Create: SnapshotJob failed for job %s (durability warning): %v\n", j.ID, snapErr)
+		}
 	}
 
 	return j
@@ -195,7 +199,9 @@ func (m *JobManager) StartJob(id string, pid int) bool {
 	j.PID = pid
 	j.ProgressUpdatedAt = time.Now()
 	if m.store != nil {
-		_ = m.store.SnapshotJob(j)
+		if snapErr := m.store.SnapshotJob(j); snapErr != nil {
+			fmt.Fprintf(os.Stderr, "session: StartJob: SnapshotJob failed for job %s (durability warning): %v\n", id, snapErr)
+		}
 	}
 	return true
 }
@@ -295,7 +301,9 @@ func (m *JobManager) CompleteJob(id, content string, exitCode int) bool {
 	}
 
 	if m.store != nil {
-		_ = m.store.SnapshotJob(j)
+		if snapErr := m.store.SnapshotJob(j); snapErr != nil {
+			fmt.Fprintf(os.Stderr, "session: CompleteJob: SnapshotJob failed for job %s (durability warning): %v\n", j.ID, snapErr)
+		}
 	}
 
 	return true
@@ -339,7 +347,9 @@ func (m *JobManager) failJobLocked(id string, err *types.TypedError, activeOnly 
 	}
 
 	if m.store != nil {
-		_ = m.store.SnapshotJob(j)
+		if snapErr := m.store.SnapshotJob(j); snapErr != nil {
+			fmt.Fprintf(os.Stderr, "session: failJobLocked: SnapshotJob failed for job %s (durability warning): %v\n", j.ID, snapErr)
+		}
 	}
 
 	return true
@@ -490,7 +500,9 @@ func (m *JobManager) CancelJob(id string) bool {
 		j.CompletedAt = &now
 	}
 	if m.store != nil {
-		_ = m.store.SnapshotJob(j)
+		if snapErr := m.store.SnapshotJob(j); snapErr != nil {
+			fmt.Fprintf(os.Stderr, "session: CancelJob: SnapshotJob failed for job %s (durability warning): %v\n", id, snapErr)
+		}
 	}
 	return true
 }
