@@ -1359,7 +1359,26 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if err := driver.RunWarmup(ctx, s.registry, s.cfg); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("refresh-warmup failed: %v", err)), nil
 		}
+		// Reset ALL circuit breakers after a successful re-probe. The user
+		// explicitly asked us to re-verify CLI reachability, so prior stale
+		// failures should not keep a now-healthy backend gated out. Without
+		// this, a transient upstream outage that ended hours ago still leaves
+		// the breaker open until the per-breaker cooldown elapses — producing
+		// the "codex простаивает while breaker open" symptom reported 2026-04-21.
+		s.breakers.ResetAll()
 		enabled := s.registry.EnabledCLIs()
+		// Binary-only fallback: if warmup marked every probeable CLI as
+		// unavailable (common when the spawned daemon PATH cannot locate the
+		// probe child process, or when quota errors surface as probe failures),
+		// restore every CLI with a resolved binary to available. This matches
+		// the startup fallback in cmd/aimux/main.go added in v4.5.2 PR #118.
+		if len(enabled) == 0 {
+			s.log.Warn("refresh-warmup: all CLI probes failed — restoring binary-only pool (health-gate bypassed)")
+			for _, name := range s.registry.ProbeableCLIs() {
+				s.registry.SetAvailable(name, true)
+			}
+			enabled = s.registry.EnabledCLIs()
+		}
 		all := s.registry.AllCLIs()
 		enabledSet := make(map[string]bool, len(enabled))
 		for _, e := range enabled {
@@ -1372,9 +1391,11 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			}
 		}
 		return marshalToolResult(map[string]any{
-			"refreshed": true,
-			"available": enabled,
-			"excluded":  excluded,
+			"refreshed":         true,
+			"available":         enabled,
+			"excluded":          excluded,
+			"breakers_reset":    true,
+			"binary_only_fallback_applied": len(enabled) > 0 && len(excluded) == 0,
 		})
 
 	default:

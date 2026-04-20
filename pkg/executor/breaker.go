@@ -180,3 +180,24 @@ func (r *BreakerRegistry) AvailableCLIs(clis []string) []string {
 	}
 	return available
 }
+
+// ResetAll transitions every known breaker back to Closed state and clears
+// its failure counter. Used by refresh-warmup and the binary-only-fallback
+// path in main.go when we've externally verified that CLIs should be reachable
+// (e.g., the user re-ran warmup probes or the startup fallback triggered).
+// Without this, a transient upstream outage can leave the breaker open for
+// the full cooldown duration even after the outage ends — leaving a working
+// CLI backend idle. Fixes the "codex простаивает" symptom: breaker stayed
+// open after stale 503s cleared upstream; refresh-warmup now force-closes.
+func (r *BreakerRegistry) ResetAll() {
+	r.mu.RLock()
+	breakers := make([]*CircuitBreaker, 0, len(r.breakers))
+	for _, cb := range r.breakers {
+		breakers = append(breakers, cb)
+	}
+	r.mu.RUnlock()
+
+	for _, cb := range breakers {
+		cb.RecordSuccess() // sets state=BreakerClosed, failures=0
+	}
+}
