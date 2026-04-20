@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.0] - 2026-04-20
+
+Minor release bundling four merged PRs: tools visibility (#111 → #136), agent cache hygiene (#112 → #139), session durability Phase 2+4 (#113 → #111), and muxcore v0.21.1 with F2 shim reconnect passthrough (#114).
+
+Silent-failure classes closed: false `completed` status after aimux restart (Phase 2 PersistTransition), stale agent entries after source file deletion (registry stat-validation), invisible tools after shim reconnect (`notifications/tools/list_changed` on every project connect event), and accidental probe-agent dispatch (`agents(action=list)` steering hint).
+
 ### Changed
 
 - Bumped `github.com/thebtf/mcp-mux/muxcore` from v0.21.0 → v0.21.1 (additive patch
