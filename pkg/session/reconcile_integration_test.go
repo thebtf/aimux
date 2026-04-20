@@ -199,8 +199,25 @@ func TestReconcile10k_Performance(t *testing.T) {
 	if openErr != nil {
 		t.Fatalf("NewStore (perf run): %v", openErr)
 	}
-	perfStore.Close()
 	elapsed := time.Since(start)
+
+	// Verify reconcile actually processed the rows — NewStore logs a warning and
+	// continues on ReconcileOnStartup error, so timing alone cannot detect a no-op.
+	perfDB := perfStore.DB()
+	var runningCount, abortedCount int
+	if err := perfDB.QueryRow(`SELECT COUNT(*) FROM jobs WHERE session_id = 'perf-sess' AND status = 'running'`).Scan(&runningCount); err != nil {
+		perfStore.Close()
+		t.Fatalf("count running jobs after reconcile: %v", err)
+	}
+	if err := perfDB.QueryRow(`SELECT COUNT(*) FROM jobs WHERE session_id = 'perf-sess' AND status = 'aborted'`).Scan(&abortedCount); err != nil {
+		perfStore.Close()
+		t.Fatalf("count aborted jobs after reconcile: %v", err)
+	}
+	perfStore.Close()
+
+	if runningCount != 0 || abortedCount != 10000 {
+		t.Fatalf("unexpected reconcile result: running=%d aborted=%d (want 0 and 10000)", runningCount, abortedCount)
+	}
 
 	if elapsed > 5*time.Second {
 		t.Fatalf("reconcile 10k jobs took %v, NFR-1 requires < 5s", elapsed)
