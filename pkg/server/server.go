@@ -45,7 +45,7 @@ import (
 // transport log lines, status tool, and updater checks. Single source of truth —
 // cmd/aimux/main.go references this value directly to keep log lines and MCP
 // handshake consistent across binary and transport layers.
-const Version = "4.5.1"
+const Version = "4.5.2"
 
 // aimuxInstructions is delivered to every MCP client on connect via server.WithInstructions().
 // This replaces the need for an external SKILL.md file — the server documents itself.
