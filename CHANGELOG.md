@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped `github.com/thebtf/mcp-mux/muxcore` from v0.21.0 → v0.21.1 (additive patch
+  release). v0.21.1 adds transparent F2 shim-reconnect with token refresh — after a
+  shim disconnect, the engine attempts up to 3 token refreshes before falling back
+  to full-spawn. Refresh/fallback/give-up counters exposed via muxcore's daemon
+  `HandleStatus` (accessible through `mcp__mcp-mux__mux_list`), shim reconnect
+  structured log markers (`shim.reconnect.refresh_ok|refresh_fail|fallback_spawn`)
+  enabled. aimux's own `mcp__aimux__status` tool is unaffected — F2 is entirely
+  internal to the muxcore engine layer. muxcore's `rotlog` package NOT wired (aimux
+  has its own logging).
+
 ### Added
 
 - Session durability opt-out: `AIMUX_SESSION_STORE=memory` skips SQLite persistence
