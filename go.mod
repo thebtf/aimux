@@ -5,10 +5,11 @@ go 1.25.4
 require (
 	github.com/creack/pty v1.1.24
 	github.com/creativeprojects/go-selfupdate v1.5.2
+	github.com/fsnotify/fsnotify v1.8.0
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/thebtf/aimux/loom v0.1.1
-	github.com/thebtf/mcp-mux/muxcore v0.21.1
+	github.com/thebtf/mcp-mux/muxcore v0.21.4
 	google.golang.org/genai v1.52.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.1
