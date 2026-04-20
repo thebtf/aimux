@@ -579,9 +579,19 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 
 // buildFallbackCandidates returns an ordered list of CLIs to try for a job.
 // The primary is always first. When role is non-empty, up to 2 additional
-// capable CLIs are appended (those whose circuit breakers allow requests).
+// capable CLIs are appended, subject to three read-only filters:
+//
+//  1. Circuit breaker is open (BreakerOpen) — skip, reason: breaker_open
+//  2. Rolling failure rate ≥95% over ≥10 requests — skip, reason: failure_rate
+//  3. CLI requires a TTY but ConPTY is unavailable on this platform — skip, reason: no_tty
+//
+// Each skipped candidate emits an INFO log entry. If all fallbacks are filtered
+// and at least one existed in the router table, an additional "no viable fallback"
+// log is emitted to signal that the primary is the only option.
 func (s *Server) buildFallbackCandidates(role, primaryCLI string, primaryCB *executor.CircuitBreaker) []types.RolePreference {
 	const maxFallbacks = 2
+	const failureRateThreshold = 0.95
+	const failureRateMinRequests = 10
 
 	primary := types.RolePreference{CLI: primaryCLI}
 
@@ -600,13 +610,28 @@ func (s *Server) buildFallbackCandidates(role, primaryCLI string, primaryCB *exe
 		if pref.CLI == primaryCLI || added >= maxFallbacks {
 			continue
 		}
-		// Only include CLIs whose breakers allow requests.
-		if s.breakers.Get(pref.CLI).Allow() {
-			ordered = append(ordered, pref)
-			added++
+		// Filter 1: circuit breaker open — read-only State() check (no side-effect).
+		if s.breakers.Get(pref.CLI).State() == executor.BreakerOpen {
+			s.log.Info("exec: fallback candidate=%s skipped reason=breaker_open", pref.CLI)
+			continue
 		}
+		// Filter 2: rolling failure rate ≥95% (requires ≥10 recorded requests).
+		if s.metrics.FailureRate(pref.CLI, failureRateMinRequests) >= failureRateThreshold {
+			s.log.Info("exec: fallback candidate=%s skipped reason=failure_rate", pref.CLI)
+			continue
+		}
+		// Filter 3: CLI requires TTY but ConPTY is unavailable on this platform.
+		if p, err := s.registry.Get(pref.CLI); err == nil && p.RequiresTTY && !conptyExec.Available() {
+			s.log.Info("exec: fallback candidate=%s skipped reason=no_tty", pref.CLI)
+			continue
+		}
+		ordered = append(ordered, pref)
+		added++
 	}
 
+	if len(ordered) == 1 && len(all) > 1 {
+		s.log.Info("exec: no viable fallback candidates after filtering — primary only")
+	}
 	return ordered
 }
 
@@ -688,7 +713,7 @@ func (s *Server) runWithModelFallback(
 	cooldownDuration := time.Duration(profile.CooldownSeconds) * time.Second
 	// Detect current model from args to feed into suffix-strip chain.
 	currentModel := executor.DetectModelFromArgs(baseArgs.Args, profile.ModelFlag)
-	models := executor.BuildModelChain(currentModel, profile.ModelFallback, profile.FallbackSuffixStrip)
+	models := executor.BuildModelChain(currentModel, profile.ModelFallback, profile.FallbackSuffixStrip, executor.ErrorClassNone)
 	return executor.RunWithModelFallback(
 		ctx,
 		exec,

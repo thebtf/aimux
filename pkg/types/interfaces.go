@@ -60,13 +60,32 @@ type CLIResolver interface {
 	ResolveSpawnArgs(cli string, prompt string) (SpawnArgs, error)
 }
 
+// CooldownEntry is a snapshot of one active model cooldown entry.
+type CooldownEntry struct {
+	CLI           string    `json:"cli"`
+	Model         string    `json:"model"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	TriggerStderr string    `json:"trigger_stderr"`
+}
+
 // ModelCooldownTracker tracks rate-limited models to skip them during fallback.
 // Passed to agent runner so it can participate in model fallback without
 // depending on the executor package directly.
 type ModelCooldownTracker interface {
-	MarkCooledDown(cli, model string, duration time.Duration)
+	// MarkCooledDown records that a (cli, model) pair should not be used until
+	// duration expires. triggerStderr is the redacted stderr excerpt that caused
+	// this cooldown (empty string if unknown).
+	MarkCooledDown(cli, model string, duration time.Duration, triggerStderr string)
 	IsAvailable(cli, model string) bool
 	FilterAvailable(cli string, models []string) []string
+	// SetDuration stores a duration override for the next MarkCooledDown call
+	// for the given (cli, model) pair. Not retroactive.
+	SetDuration(cli, model string, duration time.Duration)
+	// Flush removes the cooldown entry immediately.
+	// Returns nil if removed, error if no entry found.
+	Flush(cli, model string) error
+	// List returns a snapshot of all non-expired cooldown entries.
+	List() []CooldownEntry
 }
 
 // ModelledCLIResolver extends CLIResolver with model and effort overrides.

@@ -58,10 +58,33 @@ type Executor struct {
 	available bool
 }
 
-// New creates a ConPTY executor. Probes for ConPTY support on creation.
+// packageAvailable caches the probe result for the package-level Available() func.
+// Populated on first call via probeOnce; all subsequent calls read without locking.
+var (
+	probeOnce       sync.Once
+	probeResult     bool
+)
+
+// Available returns whether ConPTY is supported on this platform. The result
+// is cached after the first call (probe runs exactly once per process). This
+// package-level function is used by buildFallbackCandidates to skip TTY-only
+// CLIs when ConPTY is unavailable, without needing an *Executor instance.
+//
+// Callers that need fail-open semantics on probe error should check:
+//
+//	if !conpty.Available() && profile.RequiresTTY { skip }
+func Available() bool {
+	probeOnce.Do(func() {
+		probeResult = probeConPTY()
+	})
+	return probeResult
+}
+
+// New creates a ConPTY executor. Uses the cached Available() result so that
+// future expensive Win32 probes (see TODO below) are not repeated per-call.
 func New() *Executor {
 	return &Executor{
-		available: probeConPTY(),
+		available: Available(),
 	}
 }
 

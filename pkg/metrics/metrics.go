@@ -166,6 +166,29 @@ func (c *Collector) Snapshot() *Snapshot {
 	return snap
 }
 
+// FailureRate returns the cumulative error rate for a CLI when at least
+// minRequests have been recorded. Returns 0.0 when the CLI is unknown or
+// fewer than minRequests have been recorded (fail-open: allow candidate).
+//
+// Used by buildFallbackCandidates to skip CLIs whose error rate exceeds a
+// threshold (e.g., 0.95 on N=10 requests). The cumulative rate reflects
+// real production signal — it is not a rolling window, but it is sourced
+// from live counters and is accurate enough for the 95% skip heuristic.
+func (c *Collector) FailureRate(cli string, minRequests int) float64 {
+	c.mu.RLock()
+	m := c.perCLI[cli]
+	c.mu.RUnlock()
+	if m == nil {
+		return 0.0
+	}
+	reqs := m.Requests.Load()
+	if reqs < int64(minRequests) {
+		return 0.0 // not enough data — fail-open
+	}
+	errs := m.Errors.Load()
+	return safeRate(errs, reqs)
+}
+
 // Reset zeroes all counters and clears per-CLI and per-project data.
 func (c *Collector) Reset() {
 	c.totalRequests.Store(0)

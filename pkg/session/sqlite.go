@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/executor/redact"
 	"github.com/thebtf/aimux/pkg/types"
 	_ "modernc.org/sqlite"
 )
@@ -206,7 +207,11 @@ func (s *Store) SnapshotJob(job *Job) error {
 	var errorJSON, pheromonesJSON, pipelineJSON []byte
 
 	if job.Error != nil {
-		errorJSON, _ = json.Marshal(job.Error)
+		// Redact secrets from the error message before persisting to error_json.
+		// The in-memory job.Error struct is NOT mutated — we build a sanitised copy.
+		sanitised := *job.Error
+		sanitised.Message = redact.RedactSecrets(sanitised.Message)
+		errorJSON, _ = json.Marshal(&sanitised)
 	}
 	if len(job.Pheromones) > 0 {
 		pheromonesJSON, _ = json.Marshal(job.Pheromones)
@@ -297,7 +302,11 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	for _, job := range jobs.ListNonTerminal() {
 		var errorJSON, pheromonesJSON, pipelineJSON []byte
 		if job.Error != nil {
-			errorJSON, _ = json.Marshal(job.Error)
+			// Redact secrets from the error message before persisting to error_json.
+			// Same sanitisation as SnapshotJob — the in-memory struct is NOT mutated.
+			sanitised := *job.Error
+			sanitised.Message = redact.RedactSecrets(sanitised.Message)
+			errorJSON, _ = json.Marshal(&sanitised)
 		}
 		if len(job.Pheromones) > 0 {
 			pheromonesJSON, _ = json.Marshal(job.Pheromones)
