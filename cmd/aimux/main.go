@@ -41,6 +41,27 @@ func run() error {
 
 	log.Info("aimux v%s starting", aimuxServer.Version)
 
+	// NEW: mode detection before any heavy init (T005, AIMUX-6).
+	// detectMode mirrors muxcore's own isDaemonMode logic so daemon/shim agree.
+	// Returns error on MCP_MUX_SESSION_ID (proxy rejection per FR-4).
+	mode, modeErr := detectMode(os.Args, os.Getenv)
+	if modeErr != nil {
+		fmt.Fprintln(os.Stderr, modeErr.Error())
+		return modeErr
+	}
+
+	// NEW: hoist ctx creation so both branches share it.
+	// Shim branch passes ctx to runShim; daemon branch passes ctx to engine.Run.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// NEW: shim branch — return directly without any heavy init.
+	if mode == ModeShim {
+		return runShim(ctx, cfg, log)
+	}
+
+	// DAEMON BRANCH (existing code below stays; T006-T009 edit it)
+
 	// Discover CLIs
 	registry := driver.NewRegistry(cfg.CLIProfiles)
 	registry.Probe()
@@ -85,7 +106,7 @@ func run() error {
 	router := routing.NewRouterWithPriority(cfg.Roles, afterWarmup, cfg.CLIProfiles, cfg.Server.CLIPriority)
 
 	// Create MCP server
-	srv := aimuxServer.New(cfg, log, registry, router)
+	srv := aimuxServer.NewDaemon(cfg, log, registry, router)
 	defer srv.Shutdown()
 
 	// Select transport: env var MCP_TRANSPORT overrides config
@@ -126,8 +147,6 @@ func run() error {
 		}
 
 		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer cancel()
 		eng, engErr := engine.New(engine.Config{
 			Name:           engineName,
 			SessionHandler: srv.SessionHandler(),
