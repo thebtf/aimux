@@ -103,7 +103,7 @@ Minor release: **CR-2 (US2)** — honest persisted record, live progress on asyn
 
 ---
 
-## [4.5.1] - Unreleased
+## [4.5.1] - 2026-04-20
 
 Patch release: **CR-1 (US1)** — reliable delegation, cooldown observability, secret scrubbing.
 
@@ -144,6 +144,7 @@ Patch release: **CR-1 (US1)** — reliable delegation, cooldown observability, s
 
 ---
 
+[4.5.1]: https://github.com/thebtf/aimux/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/thebtf/aimux/compare/v4.4.0...v4.5.0
 
 ## [4.4.0] - 2026-04-19
