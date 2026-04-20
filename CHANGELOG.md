@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Mode-aware startup gate (AIMUX-6).** `aimux.exe` now detects daemon vs shim mode via `detectMode()` in `cmd/aimux/mode.go` **before** any heavy init. Shim processes skip `aimuxServer.New*`, `driver.NewRegistry/Probe`, `driver.RunWarmup`, LoomEngine boot, and SQLite open entirely — they construct only the minimum needed to serve as a stdio↔IPC bridge via muxcore. Typical shim startup target: <200ms p95 (NFR-1). Eliminates the shim-induced `sessions.db` reconcile that caused the observed "aimux tools disappear / think hangs / reconnect fails" symptom class (investigation `019dac5a-7cdf-79b3-9bfb-e73c6c7b2134`).
+- `aimuxServer.NewDaemon(cfg, log, reg, router) *Server` — the explicitly-named daemon-mode constructor. All production callers migrate here. `aimuxServer.New` remains as a deprecated delegator (one-time `log.Warn` via `sync.Once`) so existing tests compile unchanged.
+- `pkg/build.Version` — thin package exposing the build-time `Version` constant with zero dependencies. Allows shim binaries to reference version info without pulling in the full daemon dependency graph via `pkg/server`.
+- `cmd/aimux/shim.go`:
+  - `runShim(ctx, cfg, log) error` — shim-mode entry point. Reads `AIMUX_ENGINE_NAME` with default `"aimux"` to honour dev/prod socket isolation (same contract as PR #71).
+  - `stubSessionHandler` — defence-in-depth `muxcore.SessionHandler` for the shim branch. Never invoked in normal operation (muxcore `runClient` is a pure stdio↔IPC bridge). If ever dispatched to (indicates a future muxcore regression), returns JSON-RPC `INTERNAL_ERROR -32603` with an actionable hint pointing the operator to `aimux.log`; logs the method/id/stack-trace ONCE per process via `sync.Once` to prevent log flood.
+- FR-8 audit log line emitted on every `aimux.exe` invocation, immediately after `aimux v<ver> starting`: `aimux v<ver> mode=<daemon|shim> signal=<arg|default>`. Postmortem-friendly — first two lines of any log identify the startup path taken.
+- `test/e2e/shim_startup_test.go` — mechanical regression gate via fsnotify on `sessions.db{,-wal,-shm}`. Asserts zero write events during shim lifetime (NFR-3). Catches any future drift where daemon-only init leaks into the shim path.
+- `test/e2e/shim_latency_test.go` — NFR-1 p95 latency gate (20-invocation sample against warm daemon; p95 < 200ms, p50 < 100ms).
+- `cmd/aimux/main_test.go` — 8-row table test for `detectMode` covering all combinations of daemon-flag / `MCP_MUX_SESSION_ID` / `AIMUX_NO_ENGINE` (NFR-4 determinism).
+
+### Changed
+
+- `go.mod`: `github.com/thebtf/mcp-mux/muxcore v0.21.1 → v0.21.4`. Brings PR #95 upgrade-restart split-state fix, PR #92 `Daemon()/Mode()/Ready()/ControlSocketPath()` accessors, and confirmed-public `engine.Config.DaemonFlag` field (consumed by `detectMode`). Zero API breakage.
+- `go.mod`: adds `github.com/fsnotify/fsnotify v1.8.0` as direct test-only dep (pinned via `test/e2e/deps.go` tools-tag stub) for NFR-3 regression gate.
+- `pkg/server/server.go`: constructor split. `New` is now a deprecated delegator to `NewDaemon`. Existing callers remain functional; migrations to `NewDaemon` are a follow-up PR concern.
+
+### Deprecated
+
+- `MCP_MUX_SESSION_ID` env var (proxy-mode bypass). Setting this variable now causes `aimux` to refuse to start with an explicit stderr error pointing to this release's notes. Rationale: the previous proxy-mode code path was built without a clear integration semantic and the correct integration puts mcp-mux in the shim role (see AIMUX-6 spec FR-4 "Future Integration" note). For emergency local debugging, set `AIMUX_ALLOW_LEGACY_PROXY=1` to bypass the rejection — undocumented escape hatch that may be removed without notice.
+- `aimuxServer.New()` callers outside `cmd/aimux/main.go` — emits a one-time `log.Warn` at first use. Migrate to `aimuxServer.NewDaemon()` in your next PR.
+
+### Removed
+
+- `AIMUX_NO_ENGINE=1` env-var bypass (stdio-direct path). Setting the variable now emits a single deprecation `log.Warn` to `aimux.log` and an `fmt.Fprintf` stderr notice, then is otherwise ignored — `aimux` always runs via muxcore engine (daemon or shim branch per `detectMode`). Rationale: reduces startup path surface from 4 potential branches (daemon / shim / proxy / no-engine) to exactly 2.
+
+### Fixed
+
+- Root cause of the "aimux tools disappear / think hangs / reconnect fails" symptom class. Prior to v4.6.0, every `aimux.exe` invocation (daemon OR shim) called `aimuxServer.New`, which opened `sessions.db` and ran `ReconcileOnStartup` with a fresh daemon UUID — flipping the daemon's active jobs to `aborted` in persistence and causing CC agents to lose visibility of `mcp__aimux__*` tools mid-session. v4.6.0 routes shim invocations past `aimuxServer.New`, eliminating the shim-induced reconcile corruption.
+- Shim startup no longer contends for SQLite WAL with the daemon (NFR-3). Prior multi-shim-startup restore timings of ~7.5s (vs v4.0.1's ~19ms) are gone.
+
+### Migration
+
+No action required for operators who do not touch the documented env vars (`MCP_MUX_SESSION_ID`, `AIMUX_NO_ENGINE`). Expected observable changes:
+- Faster `/mcp reconnect aimux` (from ~8s worst-case under contention → <1s consistent)
+- Fewer spurious `status` reports of `aborted` on async jobs
+- One additional log line per invocation (FR-8 mode/signal audit)
+
+---
+
 ## [4.5.2] - 2026-04-21
 
 ### Fixed
