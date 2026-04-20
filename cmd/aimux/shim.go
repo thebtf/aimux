@@ -10,9 +10,9 @@ import (
 	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/logger"
-	aimuxServer "github.com/thebtf/aimux/pkg/server"
 	"github.com/thebtf/mcp-mux/muxcore"
 	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
@@ -35,11 +35,11 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error 
 		engineName = "aimux"
 	}
 
-	log.Info("aimux v%s shim ready (name=%s)", aimuxServer.Version, engineName)
+	log.Info("aimux v%s shim ready (name=%s)", build.Version, engineName)
 
 	eng, engErr := engine.New(engine.Config{
 		Name:           engineName,
-		DaemonFlag:     "--muxcore-daemon",
+		DaemonFlag:     daemonFlagValue(),
 		Persistent:     true,
 		SessionHandler: &stubSessionHandler{log: log},
 	})

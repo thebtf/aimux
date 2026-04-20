@@ -27,14 +27,7 @@ const (
 // args: typically os.Args
 // env:  typically os.Getenv (function form enables deterministic testing)
 func detectMode(args []string, env func(string) string) (Mode, error) {
-	// Determine the daemon flag. engine.Config{}.DaemonFlag is the zero value
-	// of the struct field (empty string in a literal); engine.New applies the
-	// "--muxcore-daemon" default only when constructing. We replicate that
-	// fallback here so both pre- and post-v0.21.4 muxcore behave identically.
-	daemonFlag := engine.Config{}.DaemonFlag
-	if daemonFlag == "" {
-		daemonFlag = "--muxcore-daemon"
-	}
+	daemonFlag := daemonFlagValue()
 
 	// FR-5: AIMUX_NO_ENGINE=1 is deprecated and ignored. Log to stderr and
 	// proceed — the muxcore engine is always used after AIMUX-6.
@@ -69,4 +62,20 @@ func detectMode(args []string, env func(string) string) (Mode, error) {
 	}
 
 	return ModeShim, nil
+}
+
+// daemonFlagValue returns the muxcore daemon flag with the same fallback as
+// detectMode uses. Factored out so cmd/aimux/shim.go can share the exact
+// same value without drift.
+//
+// engine.Config{}.DaemonFlag is the zero value of the struct field (empty string
+// in a literal); engine.New applies the "--muxcore-daemon" default only when
+// constructing. We replicate that fallback here so both pre- and post-v0.21.4
+// muxcore behave identically.
+func daemonFlagValue() string {
+	daemonFlag := engine.Config{}.DaemonFlag
+	if daemonFlag == "" {
+		daemonFlag = "--muxcore-daemon"
+	}
+	return daemonFlag
 }

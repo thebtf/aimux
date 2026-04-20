@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/agents"
 	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
@@ -46,7 +47,9 @@ import (
 // transport log lines, status tool, and updater checks. Single source of truth —
 // cmd/aimux/main.go references this value directly to keep log lines and MCP
 // handshake consistent across binary and transport layers.
-const Version = "4.5.2"
+// The actual string lives in pkg/build so thin binaries (shim mode) can import
+// it without pulling in the full daemon dependency graph.
+const Version = build.Version
 
 // aimuxInstructions is delivered to every MCP client on connect via server.WithInstructions().
 // This replaces the need for an external SKILL.md file — the server documents itself.
