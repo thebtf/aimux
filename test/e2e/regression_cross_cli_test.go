@@ -191,7 +191,10 @@ func TestRegression_SC9_NilErrorWrap(t *testing.T) {
 	t.Logf("SC-9: dispatched job_id=%s; waiting for terminal state", jobID)
 
 	// Wait for the job to reach a terminal state.
-	finalData := waitForJobTerminal(t, stdin, reader, jobID, 10*time.Second)
+	// 30s budget: testcli codex subprocess cold-start + retry loop through
+	// classifier + cooldown marker + persistence can take several seconds on CI
+	// runners; 10s hit the wire on Windows CI.
+	finalData := waitForJobTerminal(t, stdin, reader, jobID, 30*time.Second)
 
 	// Verify error message is not corrupted.
 	if errMsg, found := extractJobErrorMessage(t, finalData, jobID); found {
