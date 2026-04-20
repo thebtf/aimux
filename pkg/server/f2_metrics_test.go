@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thebtf/mcp-mux/muxcore/control"
@@ -39,10 +41,21 @@ func serveFakeControl(t *testing.T, socketPath string, resp control.Response) ch
 	return done
 }
 
-// tempSocket returns a unique Unix socket path inside t.TempDir().
+// tempSocket returns a unique Unix socket path short enough for macOS sun_path
+// (104-byte limit). t.TempDir() on macOS resolves to /var/folders/... paths that
+// routinely exceed 104 bytes once the socket filename is appended, causing
+// `bind: invalid argument` during Listen. Use os.TempDir() with a short
+// pid + test-name suffix instead; t.Cleanup removes the socket on test exit.
 func tempSocket(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "test.ctl.sock")
+	name := strings.ReplaceAll(t.Name(), "/", "_")
+	if len(name) > 40 {
+		name = name[:40]
+	}
+	sock := filepath.Join(os.TempDir(), fmt.Sprintf("f2-%d-%s.sock", os.Getpid(), name))
+	_ = os.Remove(sock)
+	t.Cleanup(func() { _ = os.Remove(sock) })
+	return sock
 }
 
 // TestQueryF2MetricsAt_AllCounters verifies all three counters are unmarshaled correctly.
