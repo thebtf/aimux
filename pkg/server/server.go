@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -136,8 +137,17 @@ type Server struct {
 	loom            *loom.LoomEngine       // central task mediator (LoomEngine v3)
 }
 
-// New creates a new MCP server with all dependencies wired.
-func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *routing.Router) *Server {
+// deprecationOnce ensures the New deprecation warning fires at most once per process.
+var deprecationOnce sync.Once
+
+// NewDaemon creates a fully-initialised daemon-mode Server. This is the ONLY
+// constructor that performs heavy init (SQLite open, migrate, reconcile,
+// LoomEngine, skill engine, orchestrator wiring, periodic snapshot loop).
+//
+// Callers MUST invoke NewDaemon only after detectMode() has confirmed daemon
+// mode. Calling it from shim or legacy-proxy context will corrupt daemon
+// persistent state (spec FR-3, NFR-3, architecture doc §2.3 anti-pattern).
+func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *routing.Router) *Server {
 	s := &Server{
 		cfg:      cfg,
 		log:      log,
@@ -364,6 +374,17 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	s.registerSkillPrompts()
 
 	return s
+}
+
+// New creates a new MCP server with all dependencies wired.
+// Deprecated: use NewDaemon for daemon-mode construction. Callers outside
+// cmd/aimux/main.go (including tests) may continue to use New until a
+// follow-up PR migrates them.
+func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *routing.Router) *Server {
+	deprecationOnce.Do(func() {
+		log.Warn("aimuxServer.New is deprecated; use NewDaemon. See AIMUX-6 spec.")
+	})
+	return NewDaemon(cfg, log, reg, router)
 }
 
 // runSnapshotLoop periodically saves in-memory state to SQLite.
