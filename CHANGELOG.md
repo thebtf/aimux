@@ -10,16 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Bumped `github.com/thebtf/mcp-mux/muxcore` from v0.21.0 → v0.21.1 (additive patch
-  release). v0.21.1 adds transparent F2 shim-reconnect with token refresh — after a
-  shim disconnect, the engine attempts up to 3 token refreshes before falling back
-  to full-spawn. Refresh/fallback/give-up counters exposed via muxcore's daemon
-  `HandleStatus` (accessible through `mcp__mcp-mux__mux_list`), shim reconnect
-  structured log markers (`shim.reconnect.refresh_ok|refresh_fail|fallback_spawn`)
-  enabled. aimux's own `mcp__aimux__status` tool is unaffected — F2 is entirely
-  internal to the muxcore engine layer. muxcore's `rotlog` package NOT wired (aimux
-  has its own logging).
+  release with F2 shim-reconnect — engine attempts up to 3 token refreshes after
+  shim disconnect before falling back to full-spawn). `rotlog` package NOT wired
+  (aimux has its own logging).
 
 ### Added
+
+- `sessions(action="health")` response now includes three F2 shim-reconnect
+  counters from the aimux daemon: `shim_reconnect_refreshed`,
+  `shim_reconnect_fallback_spawned`, `shim_reconnect_gave_up`. Counters are
+  read via the muxcore control socket and gracefully degrade to absent when
+  the socket is unreachable. **TEMPORARY implementation:** uses control-socket
+  loopback in daemon mode too, pending upstream muxcore API for in-process
+  access (tracked as engram mcp-mux#146). When `engine.MuxEngine.Status()`
+  lands, aimux will branch on mode and use direct in-memory access from the
+  daemon path.
 
 - Session durability opt-out: `AIMUX_SESSION_STORE=memory` skips SQLite persistence
   entirely (tests and embedded use cases where durability is not required).

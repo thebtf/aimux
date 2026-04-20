@@ -1284,6 +1284,16 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 				}
 			}
 		}
+		// F2 shim-reconnect counters (muxcore v0.21.1+). Silent graceful
+		// degradation if control socket unreachable — health endpoint
+		// must never fail because of optional observability passthrough.
+		if f2, err := queryF2Metrics(); err == nil {
+			health["shim_reconnect_refreshed"] = f2.Refreshed
+			health["shim_reconnect_fallback_spawned"] = f2.FallbackSpawned
+			health["shim_reconnect_gave_up"] = f2.GaveUp
+		} else {
+			s.log.Debug("sessions health: F2 metrics unavailable: %v", err)
+		}
 		return marshalToolResult(health)
 
 	case "cancel":
