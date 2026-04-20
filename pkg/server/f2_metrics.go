@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/thebtf/mcp-mux/muxcore/control"
 	"github.com/thebtf/mcp-mux/muxcore/serverid"
@@ -47,10 +48,17 @@ func queryF2Metrics() (F2Metrics, error) {
 // queryF2MetricsAt contacts the control socket at socketPath and extracts
 // the three F2 shim-reconnect counters. Separated from queryF2Metrics so
 // unit tests can inject a local socket path without env-var trickery.
+//
+// A 5-second timeout guards the blocking control.Send call via muxcore's
+// native control.SendWithTimeout helper — the health endpoint never hangs
+// indefinitely even if the daemon is deadlocked or the socket unresponsive.
 func queryF2MetricsAt(socketPath string) (F2Metrics, error) {
-	resp, err := control.Send(socketPath, control.Request{Cmd: "status"})
+	resp, err := control.SendWithTimeout(socketPath, control.Request{Cmd: "status"}, 5*time.Second)
 	if err != nil {
 		return F2Metrics{}, err
+	}
+	if resp == nil {
+		return F2Metrics{}, fmt.Errorf("control: nil response")
 	}
 	if !resp.OK {
 		return F2Metrics{}, fmt.Errorf("control: %s", resp.Message)
@@ -60,10 +68,24 @@ func queryF2MetricsAt(socketPath string) (F2Metrics, error) {
 		return F2Metrics{}, err
 	}
 	var m F2Metrics
-	// Missing keys are treated as zero (graceful degradation — daemon may not
-	// yet expose these counters on older builds or during startup).
-	_ = json.Unmarshal(raw["shim_reconnect_refreshed"], &m.Refreshed)
-	_ = json.Unmarshal(raw["shim_reconnect_fallback_spawned"], &m.FallbackSpawned)
-	_ = json.Unmarshal(raw["shim_reconnect_gave_up"], &m.GaveUp)
+	// Absent keys are left as zero (graceful degradation — older daemon builds
+	// or startup state may not yet expose these counters). A key that IS present
+	// but contains malformed JSON is a contract violation; propagate the error
+	// so callers detect format incompatibility rather than silently reading zeros.
+	if v, ok := raw["shim_reconnect_refreshed"]; ok && len(v) > 0 {
+		if err := json.Unmarshal(v, &m.Refreshed); err != nil {
+			return F2Metrics{}, fmt.Errorf("invalid shim_reconnect_refreshed: %w", err)
+		}
+	}
+	if v, ok := raw["shim_reconnect_fallback_spawned"]; ok && len(v) > 0 {
+		if err := json.Unmarshal(v, &m.FallbackSpawned); err != nil {
+			return F2Metrics{}, fmt.Errorf("invalid shim_reconnect_fallback_spawned: %w", err)
+		}
+	}
+	if v, ok := raw["shim_reconnect_gave_up"]; ok && len(v) > 0 {
+		if err := json.Unmarshal(v, &m.GaveUp); err != nil {
+			return F2Metrics{}, fmt.Errorf("invalid shim_reconnect_gave_up: %w", err)
+		}
+	}
 	return m, nil
 }

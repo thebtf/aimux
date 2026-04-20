@@ -30,10 +30,18 @@ func serveFakeControl(t *testing.T, socketPath string, resp control.Response) ch
 			return
 		}
 		defer conn.Close()
-		// Drain the incoming request (we don't inspect it).
+		// Decode the incoming request and assert the expected command so that
+		// a regression sending the wrong Cmd is caught immediately.
 		dec := json.NewDecoder(conn)
 		var req control.Request
-		_ = dec.Decode(&req)
+		if err := dec.Decode(&req); err != nil {
+			t.Errorf("serveFakeControl: decode request: %v", err)
+			return
+		}
+		if req.Cmd != "status" {
+			t.Errorf("serveFakeControl: unexpected cmd: got %q, want %q", req.Cmd, "status")
+			return
+		}
 		// Write the canned response.
 		enc := json.NewEncoder(conn)
 		_ = enc.Encode(resp)
