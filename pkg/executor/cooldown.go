@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/thebtf/aimux/pkg/executor/redact"
 	"github.com/thebtf/aimux/pkg/types"
@@ -95,7 +96,7 @@ func (t *ModelCooldownTracker) MarkCooledDown(cli, model string, duration time.D
 	}
 	overridesMu.RUnlock()
 
-	redacted := redact.RedactSecrets(truncateCooldownStr(triggerStderr, 200))
+	redacted := truncateCooldownStr(redact.RedactSecrets(triggerStderr), 200)
 	expiry := time.Now().Add(duration)
 	entry := types.CooldownEntry{
 		CLI:           cli,
@@ -173,12 +174,15 @@ func (t *ModelCooldownTracker) List() []types.CooldownEntry {
 	return result
 }
 
-// truncateCooldownStr truncates s to at most n bytes for log/storage fields.
-// Does not split multi-byte UTF-8 sequences gracefully — callers that need
-// clean truncation should use a rune-aware helper.
+// truncateCooldownStr truncates s to at most n bytes for log/storage fields,
+// respecting UTF-8 rune boundaries so no multi-byte sequence is split.
 func truncateCooldownStr(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	// Walk back from byte n until we land on a valid rune boundary.
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

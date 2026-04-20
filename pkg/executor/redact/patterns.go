@@ -26,14 +26,21 @@ type SecretPattern struct {
 //   - docs.anthropic.com/claude/reference/authentication
 //   - console.cloud.google.com/apis/credentials
 var SecretPatterns = []SecretPattern{
+	// Specific prefixes MUST precede the generic legacy `sk-...` pattern —
+	// the legacy regex matches any `sk-[A-Za-z0-9_\-]{20,}` substring and
+	// would otherwise swallow anthropic/project/svcacct keys under the
+	// wrong label. Order is load-bearing.
+
 	// OpenAI project key (sk-proj-<base62>)
 	{Label: "openai-key-project", Regex: regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{20,}`)},
 	// OpenAI service-account key (sk-svcacct-<base62>)
 	{Label: "openai-key-svcacct", Regex: regexp.MustCompile(`sk-svcacct-[A-Za-z0-9_\-]{20,}`)},
-	// OpenAI legacy key (sk-<base62>) — checked AFTER project/svcacct prefixes
-	{Label: "openai-key-legacy", Regex: regexp.MustCompile(`sk-[A-Za-z0-9]{20,}`)},
-	// Anthropic key (sk-ant-api<NN>-<base62>)
+	// Anthropic key (sk-ant-api<NN>-<base62>) — before legacy to prevent
+	// `sk-ant-api03-<token>` from being tagged `openai-key-legacy`.
 	{Label: "anthropic-key", Regex: regexp.MustCompile(`sk-ant-api\d{2}-[A-Za-z0-9_\-]{20,}`)},
+	// OpenAI legacy key (sk-<base64url>) — LAST of the sk-* family.
+	// Includes underscores and hyphens per base64url encoding (OpenAI docs, 2026-04-20).
+	{Label: "openai-key-legacy", Regex: regexp.MustCompile(`sk-[A-Za-z0-9_\-]{20,}`)},
 	// Google AI / Gemini key (AIza<base62>)
 	{Label: "google-ai-key", Regex: regexp.MustCompile(`AIza[A-Za-z0-9_\-]{35,}`)},
 	// Generic Bearer token (Authorization: Bearer <token>)

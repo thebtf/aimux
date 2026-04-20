@@ -80,10 +80,11 @@ func Available() bool {
 	return probeResult
 }
 
-// New creates a ConPTY executor. Probes for ConPTY support on creation.
+// New creates a ConPTY executor. Uses the cached Available() result so that
+// future expensive Win32 probes (see TODO below) are not repeated per-call.
 func New() *Executor {
 	return &Executor{
-		available: probeConPTY(),
+		available: Available(),
 	}
 }
 

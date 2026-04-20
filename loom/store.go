@@ -14,13 +14,16 @@ import (
 // Go module and cannot import pkg/executor/redact, so patterns are inlined here.
 // Pattern list MUST stay in sync with pkg/executor/redact/patterns.go (PatternVersion 2026-04-20).
 // Update both when API key formats change.
+// Order is load-bearing: specific sk-*-prefix patterns (project/svcacct/anthropic)
+// MUST precede the generic legacy `sk-...` regex, which would otherwise swallow
+// them under a wrong label.
 var storeSecretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{90,}`),                   // openai-key-project
-	regexp.MustCompile(`sk-svcacct-[A-Za-z0-9_\-]{90,}`),               // openai-key-svcacct
-	regexp.MustCompile(`sk-[A-Za-z0-9]{48,}`),                           // openai-key-legacy
-	regexp.MustCompile(`sk-ant-api\d{2}-[A-Za-z0-9_\-]{90,}`),          // anthropic-key
-	regexp.MustCompile(`AIza[A-Za-z0-9_\-]{35}`),                        // google-ai-key
-	regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]{20,}`),         // bearer-token
+	regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{20,}`),                   // openai-key-project
+	regexp.MustCompile(`sk-svcacct-[A-Za-z0-9_\-]{20,}`),               // openai-key-svcacct
+	regexp.MustCompile(`sk-ant-api\d{2}-[A-Za-z0-9_\-]{20,}`),          // anthropic-key
+	regexp.MustCompile(`sk-[A-Za-z0-9_\-]{20,}`),                        // openai-key-legacy (LAST of sk-*)
+	regexp.MustCompile(`AIza[A-Za-z0-9_\-]{35,}`),                       // google-ai-key
+	regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9_\-\.=]{20,}`),          // bearer-token
 	regexp.MustCompile(`(?i)Authorization:\s*[^\s]{20,}`),               // auth-header
 }
 

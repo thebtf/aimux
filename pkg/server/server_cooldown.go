@@ -30,11 +30,15 @@ func (s *Server) handleCooldown(_ context.Context, request mcp.CallToolRequest, 
 		views := make([]entryView, 0, len(entries))
 		now := time.Now()
 		for _, e := range entries {
+			secsLeft := int64(e.ExpiresAt.Sub(now).Seconds())
+			if secsLeft < 0 {
+				secsLeft = 0
+			}
 			views = append(views, entryView{
 				CLI:           e.CLI,
 				Model:         e.Model,
 				ExpiresAt:     e.ExpiresAt,
-				SecondsLeft:   int64(e.ExpiresAt.Sub(now).Seconds()),
+				SecondsLeft:   secsLeft,
 				TriggerStderr: e.TriggerStderr,
 			})
 		}

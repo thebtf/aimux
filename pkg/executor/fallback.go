@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/thebtf/aimux/pkg/executor/redact"
 	"github.com/thebtf/aimux/pkg/metrics"
@@ -50,12 +51,15 @@ func errorClassToResult(ec ErrorClass) string {
 	}
 }
 
-// truncateStr truncates s to at most n bytes for error excerpts.
-// Does not split multi-byte UTF-8 sequences gracefully; callers that need
-// clean truncation should use a rune-aware helper.
+// truncateStr truncates s to at most n bytes for error excerpts,
+// respecting UTF-8 rune boundaries so no multi-byte sequence is split.
 func truncateStr(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	// Walk back from byte n until we land on a valid rune boundary.
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }
@@ -208,12 +212,14 @@ func RunWithModelFallback(
 			return result, fmt.Errorf("fatal error on %s:%s: %w", cli, model, err)
 
 		default: // ErrorClassUnknown (5) — non-zero exit with unrecognised message
-			excerpt := truncateStr(stderr, 200)
+			// Redact before truncation: truncating first can split a secret at the
+			// boundary, preventing the regex from matching and leaking a key prefix.
+			excerpt := truncateStr(redact.RedactSecrets(stderr), 200)
 			if excerpt == "" && content != "" {
-				excerpt = truncateStr(content, 200)
+				excerpt = truncateStr(redact.RedactSecrets(content), 200)
 			}
 			lastErr = fmt.Errorf("unknown error on %s:%s (exit=%d): %s",
-				cli, model, exitCode, redact.RedactSecrets(excerpt))
+				cli, model, exitCode, excerpt)
 			recordAttempt(attemptIdx, model, ErrorClassUnknown, latencyMs, 0)
 			continue
 		}
