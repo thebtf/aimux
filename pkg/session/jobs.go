@@ -194,6 +194,9 @@ func (m *JobManager) StartJob(id string, pid int) bool {
 	j.Status = types.JobStatusRunning
 	j.PID = pid
 	j.ProgressUpdatedAt = time.Now()
+	if m.store != nil {
+		_ = m.store.SnapshotJob(j)
+	}
 	return true
 }
 
@@ -485,6 +488,9 @@ func (m *JobManager) CancelJob(id string) bool {
 		j.Status = types.JobStatusFailed
 		j.Error = types.NewExecutorError("job cancelled", nil, j.Content)
 		j.CompletedAt = &now
+	}
+	if m.store != nil {
+		_ = m.store.SnapshotJob(j)
 	}
 	return true
 }
