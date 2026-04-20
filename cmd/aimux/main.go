@@ -50,6 +50,19 @@ func run() error {
 		return modeErr
 	}
 
+	// FR-8: emit audit log line naming the detected mode and signal before any
+	// mode-specific branch executes. Enables postmortem correlation with the
+	// "aimux v<version> starting" line — first two log lines identify the path taken.
+	modeSignal := "default"
+	if mode == ModeDaemon {
+		modeSignal = "arg"
+	}
+	modeName := "shim"
+	if mode == ModeDaemon {
+		modeName = "daemon"
+	}
+	log.Info("aimux v%s mode=%s signal=%s", aimuxServer.Version, modeName, modeSignal)
+
 	// NEW: hoist ctx creation so both branches share it.
 	// Shim branch passes ctx to runShim; daemon branch passes ctx to engine.Run.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
