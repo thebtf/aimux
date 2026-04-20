@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.0] - 2026-04-20
+
+Minor release bundling four merged PRs: tools visibility (PR #111, resolves engram #136), agent cache hygiene (PR #112, resolves engram #139), session durability Phase 2+4 (PR #113, resolves engram #111), and muxcore v0.21.1 with F2 shim reconnect passthrough (PR #114).
+
+Silent-failure classes closed:
+
+- False `completed` status after aimux restart (Phase 2 PersistTransition wires `SnapshotJob` on every state change)
+- Stale agent entries after source file deletion (registry stat-validates sources at read time and purges missing entries)
+- Invisible tools after shim reconnect or daemon restart (`notifications/tools/list_changed` emitted on every project connect event)
+- Accidental probe-agent dispatch (`agents(action=list)` tool description + response `hint` field steer callers to `find`/`run` instead of name-match)
+
 ### Changed
 
 - Bumped `github.com/thebtf/mcp-mux/muxcore` from v0.21.0 → v0.21.1 (additive patch
@@ -132,6 +143,8 @@ Patch release: **CR-1 (US1)** — reliable delegation, cooldown observability, s
 - **SC-9 regression** `test/e2e/regression_cross_cli_test.go` — `TestRegression_SC9_NilErrorWrap` dispatches a quota-like failing exec and asserts the recorded error message does not contain `%!w(` (the nil-wrap sentinel from the pre-fix code path).
 
 ---
+
+[4.5.0]: https://github.com/thebtf/aimux/compare/v4.4.0...v4.5.0
 
 ## [4.4.0] - 2026-04-19
 
