@@ -141,15 +141,11 @@ func run() error {
 		log.Info("aimux v%s ready — serving MCP on HTTP at %s", aimuxServer.Version, port)
 		return srv.ServeHTTP(port)
 	default:
-		// Engine mode is DEFAULT for stdio transport.
-		// Engine auto-detects: daemon flag → daemon mode, MCP_MUX_SESSION_ID → proxy mode,
-		// otherwise → client/shim mode (spawn daemon, bridge stdio↔IPC transparently).
-		// AIMUX_NO_ENGINE=1 bypasses for debugging.
-		if os.Getenv("AIMUX_NO_ENGINE") == "1" {
-			log.Info("aimux v%s ready — serving MCP on stdio (engine bypassed)", aimuxServer.Version)
-			return srv.ServeStdio()
-		}
-
+		// Engine mode is the only path for stdio transport (AIMUX-6 / FR-5).
+		// Shim invocations are already short-circuited above; this branch is the
+		// daemon-side engine run. AIMUX_NO_ENGINE=1 is deprecated and ignored —
+		// detectMode emitted the deprecation notice before we got here (FR-5).
+		// MCP_MUX_SESSION_ID (proxy) is rejected by detectMode per FR-4.
 		// Engine name controls IPC socket discovery — different names = isolated
 		// daemons. Override via AIMUX_ENGINE_NAME to run dev/prod binaries side by
 		// side without version skew (e.g., aimux-dev binary in .mcp.json sets
