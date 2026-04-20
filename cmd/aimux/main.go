@@ -52,20 +52,36 @@ func run() error {
 		return fmt.Errorf("no CLI tools found — install at least one of: codex, gemini, claude, qwen, aider, droid, opencode")
 	}
 
-	// Run warmup probes to health-gate CLIs before serving requests.
-	// CLIs that do not respond to a minimal JSON prompt are removed from the
-	// routing pool for this daemon lifetime. Set AIMUX_WARMUP=false to skip.
-	log.Info("running CLI warmup probes (AIMUX_WARMUP=false to skip)")
-	if warmupErr := driver.RunWarmup(context.Background(), registry, cfg); warmupErr != nil {
-		log.Warn("warmup error (non-fatal): %v", warmupErr)
-	}
+	// Warmup runs in the background — it must NOT block startup. Every
+	// aimux.exe invocation enters this code path, including short-lived shim
+	// processes that just bridge stdio↔IPC to an existing daemon. Blocking
+	// 15s on warmup here meant every /mcp reconnect exceeded CC's 20s
+	// handshake timeout and failed. The router is initialized from the
+	// binary-only pool (all CLIs with a resolved binary, per Probe()) so
+	// MCP becomes ready immediately; warmup updates registry availability
+	// as probes complete in the background.
 	afterWarmup := registry.EnabledCLIs()
-	log.Info("CLI warmup complete: %d available: %v", len(afterWarmup), afterWarmup)
-	if len(afterWarmup) == 0 {
-		return fmt.Errorf("all CLI tools failed warmup — set AIMUX_WARMUP=false to skip probes and use binary-only detection")
-	}
+	go func() {
+		log.Info("running CLI warmup probes in background (AIMUX_WARMUP=false to skip)")
+		if warmupErr := driver.RunWarmup(context.Background(), registry, cfg); warmupErr != nil {
+			log.Warn("warmup error (non-fatal): %v", warmupErr)
+		}
+		after := registry.EnabledCLIs()
+		log.Info("CLI warmup complete (background): %d available: %v", len(after), after)
+		if len(after) == 0 {
+			// All probes failed — restore binary-only pool so calls still route.
+			// Root cause is usually an env issue (PATH, cold-start timeout) in
+			// the spawned daemon/shim context, not genuine CLI breakage.
+			log.Warn("all CLI probes failed — restoring binary-only pool (health-gate bypassed)")
+			for _, name := range registry.ProbeableCLIs() {
+				registry.SetAvailable(name, true)
+			}
+		}
+	}()
 
-	// Initialize role router with capability profiles and operator-configured priority.
+	// Initialize role router with the binary-only CLI pool. Warmup's
+	// availability updates propagate through the registry — the router
+	// reads live availability on each dispatch.
 	router := routing.NewRouterWithPriority(cfg.Roles, afterWarmup, cfg.CLIProfiles, cfg.Server.CLIPriority)
 
 	// Create MCP server
