@@ -44,10 +44,18 @@ func run() error {
 	// NEW: mode detection before any heavy init (T005, AIMUX-6).
 	// detectMode mirrors muxcore's own isDaemonMode logic so daemon/shim agree.
 	// Returns error on MCP_MUX_SESSION_ID (proxy rejection per FR-4).
+	// Note: main() already prints returned errors with "aimux: %v" prefix to stderr,
+	// so we do NOT print here — avoid double-stderr (G002 LOW-1).
 	mode, modeErr := detectMode(os.Args, os.Getenv)
 	if modeErr != nil {
-		fmt.Fprintln(os.Stderr, modeErr.Error())
 		return modeErr
+	}
+
+	// FR-5 postmortem complement to the stderr notice in detectMode: emit a
+	// single warning into aimux.log once the logger is available, so deprecated
+	// env-var usage is captured even when stderr is discarded (G002 LOW-2).
+	if os.Getenv("AIMUX_NO_ENGINE") == "1" {
+		log.Warn("aimux: AIMUX_NO_ENGINE=1 is deprecated and ignored; aimux always runs via muxcore engine (daemon or shim mode)")
 	}
 
 	// FR-8: emit audit log line naming the detected mode and signal before any
