@@ -218,7 +218,7 @@ func TestModelFallback_CooldownPreventsReuse(t *testing.T) {
 	srv := testServerWithFallback(t)
 
 	// Manually place model-a on cooldown.
-	srv.cooldownTracker.MarkCooledDown("codex", "model-a", 10*time.Second)
+	srv.cooldownTracker.MarkCooledDown("codex", "model-a", 10*time.Second, "")
 
 	usedModels := make([]string, 0)
 	srv.executor = &stubExecutor{run: func(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {

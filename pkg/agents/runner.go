@@ -93,7 +93,7 @@ func RunAgent(ctx context.Context, cfg RunConfig) (*RunResult, error) {
 		// T011: use model fallback chain when the config carries fallback models and a tracker.
 		var result *types.Result
 		currentModel := executor.DetectModelFromArgs(args.Args, cfg.ModelFlag)
-		models := executor.BuildModelChain(currentModel, cfg.ModelFallback, cfg.FallbackSuffixStrip)
+		models := executor.BuildModelChain(currentModel, cfg.ModelFallback, cfg.FallbackSuffixStrip, executor.ErrorClassNone)
 		if cfg.CooldownTracker != nil && len(models) > 0 && cfg.ModelFlag != "" {
 			result, err = runWithModelFallbackAgent(ctx, cfg.Executor, cfg.CooldownTracker, cfg.CLI, cfg.ModelFlag, models, cfg.CooldownSeconds, args)
 		} else {

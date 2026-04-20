@@ -192,6 +192,13 @@ type CLIProfile struct {
 	// injected via ProjectContext.Env at spawn time.
 	EnvPassthrough []string `yaml:"env_passthrough,omitempty"`
 
+	// RequiresTTY declares that this CLI requires a real TTY (pseudo-console)
+	// to operate correctly. When true and ConPTY is unavailable on the host,
+	// buildFallbackCandidates skips this CLI to prevent "No Windows console found"
+	// errors from prompt_toolkit-based tools (aider, gptme, qwen).
+	// YAML key: requires_tty — default false (absent = false).
+	RequiresTTY bool `yaml:"requires_tty,omitempty"`
+
 	// ResolvedPath is set at runtime by discovery — full path to the binary.
 	// Not serialized to YAML. Used by executor when binary is not in PATH.
 	ResolvedPath string `yaml:"-" json:"resolved_path,omitempty"`

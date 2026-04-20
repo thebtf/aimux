@@ -53,6 +53,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TECHNICAL_DEBT.md` moved from repo root to `.agent/TECHNICAL_DEBT.md` — aligns
   with the convention that all agent-managed artifacts live under `.agent/`.
 
+## [4.7.0] - Unreleased
+
+Patch/Minor release: **CR-3 (US3 + US4)** — structured error classifier per CLI (codex/gemini/claude-code) + real ConPTY probe on Windows.
+
+### Added
+
+- `ErrorClassifier` interface + per-CLI structured parsers: `codex.go`, `gemini.go`, `claude.go` in `pkg/executor/classify/`.
+- `classifier.Register(cli, c)` registry — dispatcher falls back to substring classifier for unregistered CLIs.
+- Real `ConPTY.ProbeConPTY()` via Win32 `CreatePseudoConsole` allocation (`pkg/executor/conpty/`).
+- `requires_tty: bool` field on CLI profiles (`config/cli.d/*/profile.yaml`); `true` for aider, gptme, qwen.
+
+### Changed
+
+- `ClassifyError` now delegates to registered per-CLI parser; substring classifier remains as fallback.
+- Daemon startup hard-fails with exit 1 when ConPTY probe returns non-nil AND an active TTY-dependent CLI is enabled.
+
+### Fixed
+
+- Phase 6 (US4) ConPTY probe: replaced `runtime.GOOS == "windows"` fake with real `CreatePseudoConsole` allocation.
+
+---
+
+## [4.6.0] - Unreleased
+
+Minor release: **CR-2 (US2)** — honest persisted record, live progress on async path, post-hoc audit tool.
+
+### Added
+
+- `actual_cli TEXT DEFAULT NULL` column in `jobs` table; reads prefer `COALESCE(actual_cli, cli)`.
+- `OnOutput func(cli, line string)` field on `loom.TaskRequest`; threaded through `subprocess_base.go` to executor.
+- `sessions(action="audit_secrets", since=<rfc3339>)` — scans `jobs.error_json` and `tasks.error` rows through `redact.SecretPatterns`, returns `{total_rows_scanned, suspected_leaks, sample, pattern_version}`.
+- `UpdateJobCLI(jobID, actualCLI string) error` on `JobManager`.
+
+### Changed
+
+- Async Loom jobs now populate `progress_lines` / `last_output_line` via `OnOutput` callback (previously sync-path only).
+
+---
+
+## [4.5.1] - Unreleased
+
+Patch release: **CR-1 (US1)** — reliable delegation, cooldown observability, secret scrubbing.
+
+### Fixed
+
+- `RunWithModelFallback` switch missing `default:` case: `ErrorClassUnknown` (exit=5) left `lastErr=nil`, producing `%!w(<nil>)` corruption in error messages. Now sets structured `"unknown error on {cli}:{model} (exit={N}): {excerpt}"` with redacted excerpt.
+- `BuildModelChain` appended suffix-stripped model variants on every call regardless of error class. Now only appends when `errClass ∈ {ErrorClassQuota, ErrorClassModelUnavailable}`.
+
+### Added
+
+- `pkg/executor/redact` package: `RedactSecrets(string) string` scrubs API keys (OpenAI legacy/project/svcacct, Anthropic sk-ant-api, Google AIza, Bearer tokens, Authorization headers) before persistence. `PatternVersion = "2026-04-20"`.
+- `sessions(action="cooldown_list")` — lists all active (non-expired) cooldown entries with `seconds_left` field.
+- `sessions(action="cooldown_flush", cli, model)` — removes a specific cooldown entry immediately without daemon restart.
+- `sessions(action="cooldown_set", cli, model, seconds)` — overrides the cooldown duration for a (cli, model) pair, effective on next `MarkCooledDown` call.
+- `AIMUX_COOLDOWN_SECONDS` env var — global cooldown duration override for all CLIs.
+- `AIMUX_COOLDOWN_OVERRIDES` env var — per-pair overrides (`cli:model:seconds` comma-separated).
+- INFO log on every `MarkCooledDown` call: `{cli, model, duration, trigger_stderr}` (trigger_stderr redacted).
+
+### Changed
+
+- `MarkCooledDown` now accepts `triggerStderr string` as 4th argument (stored in `CooldownEntry.TriggerStderr`).
+- `BuildModelChain` signature extended with `errClass ErrorClass` parameter.
+- `pkg/session/sqlite.go` `SnapshotJob` and `SnapshotAll` redact `error_json` before SQLite write (`redact.RedactSecrets`).
+- `loom/store.go` `SetResult` redacts `tasks.error` before SQLite write (inline patterns, loom is a standalone module).
+- `buildFallbackCandidates` replaces side-effecting `Allow()` call with three read-only filter branches (FR-1.4):
+  1. `BreakerOpen` state check (`reason=breaker_open`) — non-tripping, safe for observation-only callers.
+  2. Rolling failure rate ≥95% over ≥10 requests via `metrics.FailureRate()` (`reason=failure_rate`).
+  3. `CLIProfile.RequiresTTY && !conpty.Available()` on non-Windows platforms (`reason=no_tty`).
+  Each skipped candidate emits an INFO log line. Primary CLI is never filtered.
+- `metrics.Collector.FailureRate(cli, minRequests)` — new method; returns cumulative error rate when `reqs ≥ minRequests`, else 0.0 (fail-open; new CLIs never penalised without data).
+- `CLIProfile.RequiresTTY bool` — new field (`yaml:"requires_tty,omitempty"`); set to `true` for TTY-dependent CLIs (aider, gptme, qwen).
+- `conpty.Available()` — new package-level function using `sync.Once` to cache the ConPTY probe result for the process lifetime; avoids repeated `runtime.GOOS` checks in hot paths.
+
+### Tests
+
+- **T015b** `pkg/server/server_exec_fallback_test.go` — 5 unit tests covering all `buildFallbackCandidates` filter branches: no-role shortcut, healthy fallback included, breaker_open skip, failure_rate skip, no_tty skip (platform-conditional).
+- **SC-9 regression** `test/e2e/regression_cross_cli_test.go` — `TestRegression_SC9_NilErrorWrap` dispatches a quota-like failing exec and asserts the recorded error message does not contain `%!w(` (the nil-wrap sentinel from the pre-fix code path).
+
+---
+
 ## [4.4.0] - 2026-04-19
 
 Minor release: **hot-swap upgrade structural prep** (Phase 1 of engram #129).

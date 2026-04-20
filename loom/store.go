@@ -4,9 +4,37 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// storeSecretPatterns are compiled once at init and applied to error messages
+// before they reach the tasks.error column. The loom module is a standalone
+// Go module and cannot import pkg/executor/redact, so patterns are inlined here.
+// Pattern list MUST stay in sync with pkg/executor/redact/patterns.go (PatternVersion 2026-04-20).
+// Update both when API key formats change.
+var storeSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{90,}`),                   // openai-key-project
+	regexp.MustCompile(`sk-svcacct-[A-Za-z0-9_\-]{90,}`),               // openai-key-svcacct
+	regexp.MustCompile(`sk-[A-Za-z0-9]{48,}`),                           // openai-key-legacy
+	regexp.MustCompile(`sk-ant-api\d{2}-[A-Za-z0-9_\-]{90,}`),          // anthropic-key
+	regexp.MustCompile(`AIza[A-Za-z0-9_\-]{35}`),                        // google-ai-key
+	regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]{20,}`),         // bearer-token
+	regexp.MustCompile(`(?i)Authorization:\s*[^\s]{20,}`),               // auth-header
+}
+
+// redactErrorMsg scrubs known secret patterns from an error message before
+// persisting it to the tasks.error column. The result column is NOT redacted.
+func redactErrorMsg(s string) string {
+	if s == "" {
+		return s
+	}
+	for _, re := range storeSecretPatterns {
+		s = re.ReplaceAllString(s, "[REDACTED]")
+	}
+	return s
+}
 
 func init() {
 	// Safety: MarkCrashed bulk-updates rows to failed_crash via raw SQL (bypassing
@@ -244,11 +272,13 @@ func (s *TaskStore) UpdateStatus(id string, from, to TaskStatus) error {
 }
 
 // SetResult stores the execution result and marks completed_at.
+// errMsg is redacted before storage — secrets (API keys, Bearer tokens) are
+// replaced with [REDACTED]. result is stored verbatim (callers own its content).
 func (s *TaskStore) SetResult(id string, result string, errMsg string) error {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
 		`UPDATE tasks SET result = ?, error = ?, completed_at = ? WHERE id = ?`,
-		result, errMsg, now, id,
+		result, redactErrorMsg(errMsg), now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("loom store: set result: %w", err)

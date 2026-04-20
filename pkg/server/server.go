@@ -1378,6 +1378,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		})
 
 	default:
+		// Delegate cooldown sub-actions before returning an error for truly unknown actions.
+		if result, err := s.handleCooldown(ctx, request, action); result != nil || err != nil {
+			return result, err
+		}
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
 	}
 }

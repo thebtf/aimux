@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/executor/redact"
 	"github.com/thebtf/aimux/pkg/metrics"
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -47,6 +48,16 @@ func errorClassToResult(ec ErrorClass) string {
 	default:
 		return metrics.FallbackResultTransient
 	}
+}
+
+// truncateStr truncates s to at most n bytes for error excerpts.
+// Does not split multi-byte UTF-8 sequences gracefully; callers that need
+// clean truncation should use a rune-aware helper.
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // RunWithModelFallback is the canonical model-fallback state machine used by both
@@ -135,13 +146,13 @@ func RunWithModelFallback(
 			return result, err
 
 		case ErrorClassQuota:
-			cooldown.MarkCooledDown(cli, model, cooldownDuration)
+			cooldown.MarkCooledDown(cli, model, cooldownDuration, stderr)
 			recordAttempt(attemptIdx, model, errClass, latencyMs, int64(cooldownDuration.Seconds()))
 			lastErr = fmt.Errorf("%w for %s:%s", ErrQuotaExhausted, cli, model)
 			continue
 
 		case ErrorClassModelUnavailable:
-			cooldown.MarkCooledDown(cli, model, cooldownDuration)
+			cooldown.MarkCooledDown(cli, model, cooldownDuration, stderr)
 			recordAttempt(attemptIdx, model, errClass, latencyMs, int64(cooldownDuration.Seconds()))
 			lastErr = fmt.Errorf("%w for %s:%s", ErrModelUnavailable, cli, model)
 			continue
@@ -168,12 +179,12 @@ func RunWithModelFallback(
 				recordAttempt(attemptIdx, model, retryClass, retryLatencyMs, 0)
 				return result2, err2
 			case ErrorClassQuota:
-				cooldown.MarkCooledDown(cli, model, cooldownDuration)
+				cooldown.MarkCooledDown(cli, model, cooldownDuration, s2)
 				recordAttempt(attemptIdx, model, retryClass, retryLatencyMs, int64(cooldownDuration.Seconds()))
 				lastErr = fmt.Errorf("%w for %s:%s (on transient retry)", ErrQuotaExhausted, cli, model)
 				continue
 			case ErrorClassModelUnavailable:
-				cooldown.MarkCooledDown(cli, model, cooldownDuration)
+				cooldown.MarkCooledDown(cli, model, cooldownDuration, s2)
 				recordAttempt(attemptIdx, model, retryClass, retryLatencyMs, int64(cooldownDuration.Seconds()))
 				lastErr = fmt.Errorf("%w for %s:%s (on transient retry)", ErrModelUnavailable, cli, model)
 				continue
@@ -195,6 +206,16 @@ func RunWithModelFallback(
 				err = fmt.Errorf("fatal error detected in output")
 			}
 			return result, fmt.Errorf("fatal error on %s:%s: %w", cli, model, err)
+
+		default: // ErrorClassUnknown (5) — non-zero exit with unrecognised message
+			excerpt := truncateStr(stderr, 200)
+			if excerpt == "" && content != "" {
+				excerpt = truncateStr(content, 200)
+			}
+			lastErr = fmt.Errorf("unknown error on %s:%s (exit=%d): %s",
+				cli, model, exitCode, redact.RedactSecrets(excerpt))
+			recordAttempt(attemptIdx, model, ErrorClassUnknown, latencyMs, 0)
+			continue
 		}
 	}
 
@@ -227,13 +248,22 @@ func DetectModelFromArgs(args []string, modelFlag string) string {
 
 // BuildModelChain constructs the full fallback chain from explicit models and
 // suffix-strip rules. The current model (from args) is detected and suffix-stripped
-// variants are appended after the explicit list.
+// variants are appended after the explicit list, but ONLY when errClass indicates
+// a quota or model-unavailability error — wasted retries on a suffix-stripped base
+// model are pointless if the failure was a transient network blip or unknown error.
 //
-// Example: currentModel="gpt-5.3-codex-spark", explicit=[], suffixes=["-spark"]
-// → chain=["gpt-5.3-codex-spark", "gpt-5.3-codex"]
+// Example (errClass=ErrorClassQuota):
 //
-// This survives model version upgrades — no hardcoded model names needed.
-func BuildModelChain(currentModel string, explicitModels []string, suffixStrip []string) []string {
+//	currentModel="gpt-5.3-codex-spark", explicit=[], suffixes=["-spark"]
+//	→ chain=["gpt-5.3-codex-spark", "gpt-5.3-codex"]
+//
+// Example (errClass=ErrorClassUnknown):
+//
+//	currentModel="gpt-5.3-codex-spark", explicit=[], suffixes=["-spark"]
+//	→ chain=["gpt-5.3-codex-spark"]   (no suffix-stripped variant)
+//
+// Pass ErrorClassNone when building the initial chain before any error is known.
+func BuildModelChain(currentModel string, explicitModels []string, suffixStrip []string, errClass ErrorClass) []string {
 	seen := make(map[string]bool)
 	var chain []string
 
@@ -251,13 +281,17 @@ func BuildModelChain(currentModel string, explicitModels []string, suffixStrip [
 		seen[currentModel] = true
 	}
 
-	// Generate suffix-stripped variants from the current model.
-	for _, suffix := range suffixStrip {
-		if strings.HasSuffix(currentModel, suffix) {
-			stripped := strings.TrimSuffix(currentModel, suffix)
-			if stripped != "" && !seen[stripped] {
-				chain = append(chain, stripped)
-				seen[stripped] = true
+	// Generate suffix-stripped variants only when the prior error was quota or
+	// model-unavailability. For transient, fatal, or unknown errors the base model
+	// is unlikely to succeed either, so the extra attempt wastes a request slot.
+	if errClass == ErrorClassQuota || errClass == ErrorClassModelUnavailable {
+		for _, suffix := range suffixStrip {
+			if strings.HasSuffix(currentModel, suffix) {
+				stripped := strings.TrimSuffix(currentModel, suffix)
+				if stripped != "" && !seen[stripped] {
+					chain = append(chain, stripped)
+					seen[stripped] = true
+				}
 			}
 		}
 	}
