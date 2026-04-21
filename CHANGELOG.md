@@ -218,6 +218,7 @@ Minor release: **CR-2 (US2)** — honest persisted record, live progress on asyn
 
 ---
 
+[4.6.1]: https://github.com/thebtf/aimux/compare/v4.6.0...v4.6.1
 [4.5.2]: https://github.com/thebtf/aimux/compare/v4.5.1...v4.5.2
 [4.5.1]: https://github.com/thebtf/aimux/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/thebtf/aimux/compare/v4.4.0...v4.5.0

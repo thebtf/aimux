@@ -308,7 +308,7 @@ func TestE2E_Agent_AsyncProgressNotification(t *testing.T) {
 	// muxcore#153 resolved (v0.21.6 StdinEOFWaitForDisconnect), but async agent
 	// jobs don't reach terminal state in daemon+shim e2e mode — separate issue
 	// in testcli async job lifecycle. Re-enable once e2e async path is fixed.
-	t.Skip("async agent job hangs in daemon+shim e2e mode (testcli job lifecycle)")
+	t.Skip("async agent job hangs in daemon+shim e2e mode (testcli job lifecycle) — engram #158")
 
 	stdin, reader := initTestCLIServer(t)
 
