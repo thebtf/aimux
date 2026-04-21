@@ -47,6 +47,19 @@ func (p *temporalThinkingPattern) Validate(input map[string]any) (map[string]any
 	return out, nil
 }
 
+func (p *temporalThinkingPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"timeFrame":   {Type: "string", Required: true, Description: "The time frame or period being analyzed"},
+		"states":      {Type: "array", Required: false, Description: "States in the temporal model"},
+		"events":      {Type: "array", Required: false, Description: "Events with timestamps"},
+		"transitions": {Type: "array", Required: false, Description: "Transitions between states"},
+		"constraints": {Type: "array", Required: false, Description: "Temporal constraints"},
+		"analysis":    {Type: "string", Required: false, Description: "Narrative analysis of the temporal model"},
+	}
+}
+
+func (p *temporalThinkingPattern) Category() string { return "solo" }
+
 // defaultTemporalPhases returns generic project phases derived from common migration/project keywords.
 var defaultTemporalPhases = []string{"planning", "preparation", "execution", "validation", "cutover"}
 

@@ -40,6 +40,8 @@ func (m *mockSamplingHandler) Handle(validInput map[string]any, sessionID string
 func (m *mockSamplingHandler) SetSampling(provider SamplingProvider) {
 	m.provider = provider
 }
+func (m *mockSamplingHandler) SchemaFields() map[string]FieldSchema { return nil }
+func (m *mockSamplingHandler) Category() string                     { return "solo" }
 
 // mockProvider is a minimal SamplingProvider for test wiring.
 type mockProvider struct{}

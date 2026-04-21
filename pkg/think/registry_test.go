@@ -7,14 +7,16 @@ type stubPattern struct {
 	name string
 }
 
-func (s *stubPattern) Name() string                    { return s.name }
-func (s *stubPattern) Description() string             { return "stub" }
+func (s *stubPattern) Name() string        { return s.name }
+func (s *stubPattern) Description() string { return "stub" }
 func (s *stubPattern) Validate(map[string]any) (map[string]any, error) {
 	return nil, nil
 }
 func (s *stubPattern) Handle(map[string]any, string) (*ThinkResult, error) {
 	return nil, nil
 }
+func (s *stubPattern) SchemaFields() map[string]FieldSchema { return nil }
+func (s *stubPattern) Category() string                     { return "solo" }
 
 func TestRegisterAndGet(t *testing.T) {
 	ClearPatterns()

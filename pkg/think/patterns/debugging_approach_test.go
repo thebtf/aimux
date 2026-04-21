@@ -75,10 +75,10 @@ func TestDebugging_FlatHypothesis(t *testing.T) {
 	sid := "dbg-flat-hyp-1"
 
 	inp, err := p.Validate(map[string]any{
-		"issue":           "SQL injection in login endpoint",
-		"hypothesis_text": "SQL injection",
-		"confidence":      "medium",
-		"step_number":     float64(1),
+		"issue":            "SQL injection in login endpoint",
+		"hypothesis_text":  "SQL injection",
+		"confidence":       "medium",
+		"step_number":      float64(1),
 		"next_step_needed": true,
 	})
 	if err != nil {

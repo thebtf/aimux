@@ -55,6 +55,19 @@ func (p *problemDecompositionPattern) Validate(input map[string]any) (map[string
 	return out, nil
 }
 
+func (p *problemDecompositionPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"problem":      {Type: "string", Required: true, Description: "The problem to decompose"},
+		"methodology":  {Type: "string", Required: false, Description: "Decomposition methodology"},
+		"subProblems":  {Type: "array", Required: false, Description: "List of sub-problems"},
+		"dependencies": {Type: "array", Required: false, Description: "List of dependency objects with from/to fields"},
+		"risks":        {Type: "array", Required: false, Description: "List of risk items"},
+		"stakeholders": {Type: "array", Required: false, Description: "List of stakeholders"},
+	}
+}
+
+func (p *problemDecompositionPattern) Category() string { return "solo" }
+
 func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	problem := validInput["problem"].(string)
 

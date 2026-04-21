@@ -27,6 +27,16 @@ func (p *decisionFrameworkPattern) Description() string {
 	return "Weighted multi-criteria decision scoring and ranking"
 }
 
+func (p *decisionFrameworkPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"decision": {Type: "string", Required: true, Description: "The decision to evaluate"},
+		"criteria": {Type: "array", Required: false, Description: "List of criteria objects with name and weight"},
+		"options":  {Type: "array", Required: false, Description: "List of option objects with name and scores map"},
+	}
+}
+
+func (p *decisionFrameworkPattern) Category() string { return "solo" }
+
 func (p *decisionFrameworkPattern) Validate(input map[string]any) (map[string]any, error) {
 	// Parse JSON string params from MCP schema
 	if s, ok := input["criteria"].(string); ok && s != "" {

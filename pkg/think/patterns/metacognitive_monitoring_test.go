@@ -9,11 +9,11 @@ func TestMetacognitiveMonitoring_CalibratedConfidenceReducedByPenalties(t *testi
 
 	// 4 uncertainties → penalty 0.20; 2 biases → penalty 0.20; raw=0.9 → calibrated=0.50
 	input := map[string]any{
-		"task":        "evaluate architecture",
-		"confidence":  0.9,
+		"task":          "evaluate architecture",
+		"confidence":    0.9,
 		"uncertainties": []any{"u1", "u2", "u3", "u4"},
-		"biases":      []any{"b1", "b2"},
-		"claims":      []any{"c1", "c2", "c3"},
+		"biases":        []any{"b1", "b2"},
+		"claims":        []any{"c1", "c2", "c3"},
 	}
 	validated, err := p.Validate(input)
 	if err != nil {

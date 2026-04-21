@@ -20,6 +20,14 @@ func (p *architectureAnalysisPattern) Description() string {
 	return "ATAM-lite architecture analysis with coupling detection"
 }
 
+func (p *architectureAnalysisPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"components": {Type: "array", Required: true, Description: "List of system components (strings or objects with name/description/dependencies)"},
+	}
+}
+
+func (p *architectureAnalysisPattern) Category() string { return "solo" }
+
 func (p *architectureAnalysisPattern) Validate(input map[string]any) (map[string]any, error) {
 	// Parse JSON string params from MCP schema
 	if s, ok := input["components"].(string); ok && s != "" {

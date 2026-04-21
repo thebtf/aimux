@@ -284,6 +284,19 @@ func (p *scientificMethodPattern) Validate(input map[string]any) (map[string]any
 	return validated, nil
 }
 
+func (p *scientificMethodPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"stage":            {Type: "enum", Required: true, Description: "Current scientific method stage (or provide entry_type)", EnumValues: []string{"observation", "question", "hypothesis", "experiment", "analysis", "conclusion", "iteration"}},
+		"entry_type":       {Type: "enum", Required: false, Description: "Flat format: type of entry (infers stage)", EnumValues: []string{"observation", "question", "hypothesis", "prediction", "experiment", "analysis", "result", "conclusion"}},
+		"entry_text":       {Type: "string", Required: false, Description: "Flat format: text content of the entry"},
+		"link_to":          {Type: "string", Required: false, Description: "Flat format: entry ID to link to"},
+		"step_number":      {Type: "number", Required: false, Description: "External step tracking number"},
+		"next_step_needed": {Type: "boolean", Required: false, Description: "Whether another step is needed"},
+	}
+}
+
+func (p *scientificMethodPattern) Category() string { return "solo" }
+
 func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	sess := think.GetOrCreateSession(sessionID, "scientific_method", map[string]any{
 		"stageHistory":      []any{},

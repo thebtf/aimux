@@ -69,6 +69,18 @@ func (p *mentalModelPattern) Validate(input map[string]any) (map[string]any, err
 	return out, nil
 }
 
+func (p *mentalModelPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"modelName":  {Type: "string", Required: true, Description: "Name of the mental model to apply (e.g. first_principles, inversion, occams_razor)"},
+		"problem":    {Type: "string", Required: true, Description: "The problem to analyze with the mental model"},
+		"steps":      {Type: "array", Required: false, Description: "Application steps"},
+		"reasoning":  {Type: "string", Required: false, Description: "Reasoning text"},
+		"conclusion": {Type: "string", Required: false, Description: "Conclusion from applying the model"},
+	}
+}
+
+func (p *mentalModelPattern) Category() string { return "solo" }
+
 func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	modelName := validInput["modelName"].(string)
 	problem := validInput["problem"].(string)

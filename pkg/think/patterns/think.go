@@ -17,6 +17,14 @@ func (p *thinkPattern) Description() string {
 	return "Base thinking pattern — records and reflects on a thought"
 }
 
+func (p *thinkPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"thought": {Type: "string", Required: true, Description: "The thought to record and reflect on"},
+	}
+}
+
+func (p *thinkPattern) Category() string { return "solo" }
+
 func (p *thinkPattern) Validate(input map[string]any) (map[string]any, error) {
 	thought, ok := input["thought"]
 	if !ok {

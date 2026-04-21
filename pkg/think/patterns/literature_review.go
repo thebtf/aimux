@@ -43,6 +43,17 @@ func (p *literatureReviewPattern) Validate(input map[string]any) (map[string]any
 	return out, nil
 }
 
+func (p *literatureReviewPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"topic":     {Type: "string", Required: true, Description: "The research topic to review"},
+		"papers":    {Type: "array", Required: false, Description: "List of papers (strings or objects with title/abstract)"},
+		"criteria":  {Type: "array", Required: false, Description: "Inclusion/exclusion criteria"},
+		"timeFrame": {Type: "string", Required: false, Description: "Time frame for the review"},
+	}
+}
+
+func (p *literatureReviewPattern) Category() string { return "solo" }
+
 func (p *literatureReviewPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	topic := validInput["topic"].(string)
 

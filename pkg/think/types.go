@@ -21,12 +21,22 @@ type ThinkResult struct {
 	ComputedFields       []string       `json:"computed_fields,omitempty"`
 }
 
+// FieldSchema describes a single input field for a thinking pattern's MCP tool schema.
+type FieldSchema struct {
+	Type        string   `json:"type"` // "string", "array", "object", "number", "boolean", "enum"
+	Required    bool     `json:"required"`
+	Description string   `json:"description"`
+	EnumValues  []string `json:"enum_values,omitempty"` // for enum type
+}
+
 // PatternHandler is implemented by each thinking pattern.
 type PatternHandler interface {
 	Name() string
 	Description() string
 	Validate(input map[string]any) (map[string]any, error)
 	Handle(validInput map[string]any, sessionID string) (*ThinkResult, error)
+	SchemaFields() map[string]FieldSchema
+	Category() string
 }
 
 // ThinkSession holds per-session state for stateful patterns.

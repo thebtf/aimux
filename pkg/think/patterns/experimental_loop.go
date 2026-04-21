@@ -18,6 +18,17 @@ func (p *experimentalLoopPattern) Description() string {
 	return "Autonomous experiment tracking — hypothesize, test, measure, iterate"
 }
 
+func (p *experimentalLoopPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"hypothesis":  {Type: "string", Required: true, Description: "The hypothesis to test in this iteration"},
+		"observation": {Type: "string", Required: false, Description: "Observation from this iteration"},
+		"result":      {Type: "string", Required: false, Description: "Result of the experiment"},
+		"metric":      {Type: "number", Required: false, Description: "Numeric metric for this iteration"},
+	}
+}
+
+func (p *experimentalLoopPattern) Category() string { return "solo" }
+
 func (p *experimentalLoopPattern) Validate(input map[string]any) (map[string]any, error) {
 	hypothesisRaw, ok := input["hypothesis"]
 	if !ok {

@@ -51,6 +51,17 @@ func (p *peerReviewPattern) Validate(input map[string]any) (map[string]any, erro
 	return out, nil
 }
 
+func (p *peerReviewPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"artifact":    {Type: "string", Required: true, Description: "The artifact to peer review"},
+		"claims":      {Type: "array", Required: false, Description: "List of claims to evaluate"},
+		"methodology": {Type: "string", Required: false, Description: "Methodology description"},
+		"novelty":     {Type: "string", Required: false, Description: "Novelty claim description"},
+	}
+}
+
+func (p *peerReviewPattern) Category() string { return "solo" }
+
 func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	artifact := validInput["artifact"].(string)
 	claims, _ := validInput["claims"].([]any)
@@ -213,11 +224,11 @@ func (p *peerReviewPattern) requestSamplingReview(artifact string) ([]map[string
 	objections := make([]map[string]any, 0, len(resp.Objections))
 	for _, o := range resp.Objections {
 		objections = append(objections, map[string]any{
-			"objection": o.Description,
-			"severity":  o.Severity,
-			"category":  o.Category,
+			"objection":  o.Description,
+			"severity":   o.Severity,
+			"category":   o.Category,
 			"suggestion": o.Suggestion,
-			"source":    "sampling",
+			"source":     "sampling",
 		})
 	}
 	return objections, resp.Strengths, nil

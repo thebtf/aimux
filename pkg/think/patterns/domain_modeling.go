@@ -45,6 +45,19 @@ func (p *domainModelingPattern) Validate(input map[string]any) (map[string]any, 
 	return out, nil
 }
 
+func (p *domainModelingPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"domainName":    {Type: "string", Required: true, Description: "Name of the domain to model"},
+		"description":   {Type: "string", Required: false, Description: "Domain description"},
+		"entities":      {Type: "array", Required: false, Description: "List of domain entities"},
+		"relationships": {Type: "array", Required: false, Description: "List of entity relationships"},
+		"rules":         {Type: "array", Required: false, Description: "List of domain rules"},
+		"constraints":   {Type: "array", Required: false, Description: "List of domain constraints"},
+	}
+}
+
+func (p *domainModelingPattern) Category() string { return "solo" }
+
 func (p *domainModelingPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	domainName := validInput["domainName"].(string)
 

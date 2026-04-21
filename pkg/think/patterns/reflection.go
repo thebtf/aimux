@@ -62,4 +62,3 @@ func ValidateConfidence(confidence float64, evidenceCount int) *ReflectionDirect
 	}
 	return nil
 }
-

@@ -111,6 +111,21 @@ func (p *sequentialThinkingPattern) Validate(input map[string]any) (map[string]a
 	return validated, nil
 }
 
+func (p *sequentialThinkingPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"thought":           {Type: "string", Required: true, Description: "The thought content for this step"},
+		"thoughtNumber":     {Type: "number", Required: false, Description: "Current thought number (default 1)"},
+		"totalThoughts":     {Type: "number", Required: false, Description: "Total expected thoughts (default 1)"},
+		"isRevision":        {Type: "boolean", Required: false, Description: "Whether this thought revises a prior one"},
+		"revisesThought":    {Type: "number", Required: false, Description: "Thought number being revised"},
+		"branchFromThought": {Type: "number", Required: false, Description: "Thought number to branch from"},
+		"branchId":          {Type: "string", Required: false, Description: "Branch identifier"},
+		"step_number":       {Type: "number", Required: false, Description: "External step tracking number"},
+	}
+}
+
+func (p *sequentialThinkingPattern) Category() string { return "solo" }
+
 func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	sess := think.GetOrCreateSession(sessionID, "sequential_thinking", map[string]any{
 		"thoughts": []any{},
@@ -128,13 +143,13 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 	isRevision, _ := validInput["isRevision"].(bool)
 
 	entry := map[string]any{
-		"thoughtNumber":    thoughtNumber,
-		"thought":          validInput["thought"],
-		"isRevision":       isRevision,
-		"revisesThought":   validInput["revisesThought"],
+		"thoughtNumber":     thoughtNumber,
+		"thought":           validInput["thought"],
+		"isRevision":        isRevision,
+		"revisesThought":    validInput["revisesThought"],
 		"branchFromThought": validInput["branchFromThought"],
-		"branchId":         validInput["branchId"],
-		"timestamp":        time.Now().UTC().Format(time.RFC3339),
+		"branchId":          validInput["branchId"],
+		"timestamp":         time.Now().UTC().Format(time.RFC3339),
 	}
 
 	branchId, _ := validInput["branchId"].(string)

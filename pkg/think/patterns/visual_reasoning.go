@@ -110,6 +110,19 @@ func (p *visualReasoningPattern) Handle(validInput map[string]any, sessionID str
 	return think.MakeThinkResult("visual_reasoning", data, sessionID, nil, "", computed), nil
 }
 
+func (p *visualReasoningPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"operation":       {Type: "string", Required: true, Description: "The visual operation or analysis to perform"},
+		"diagramType":     {Type: "string", Required: false, Description: "Type of diagram (e.g. flowchart, sequence, class, network)"},
+		"description":     {Type: "string", Required: false, Description: "Textual description of the diagram"},
+		"elements":        {Type: "array", Required: false, Description: "Visual elements (nodes, shapes, components)"},
+		"relationships":   {Type: "array", Required: false, Description: "Relationships or edges between elements"},
+		"transformations": {Type: "array", Required: false, Description: "Transformations to apply to the diagram"},
+	}
+}
+
+func (p *visualReasoningPattern) Category() string { return "solo" }
+
 // suggestVisualElements returns starter elements based on operation type keywords.
 func suggestVisualElements(operation string, keywords []string) []string {
 	op := strings.ToLower(operation)
@@ -138,9 +151,9 @@ func suggestVisualElements(operation string, keywords []string) []string {
 }
 
 type visualElementStats struct {
-	elementsByType  map[string]int
+	elementsByType   map[string]int
 	isolatedElements []string
-	density         float64
+	density          float64
 }
 
 func computeVisualElementStats(elements []any, relationships []any) visualElementStats {
