@@ -6,4 +6,4 @@ package build
 // Version is the canonical aimux version string. Populated here at build time
 // and re-exported via pkg/server.Version for backward compatibility with
 // existing callers.
-const Version = "4.5.2"
+const Version = "4.6.0"

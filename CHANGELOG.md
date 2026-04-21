@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.6.0] - 2026-04-21
+
+Minor release bundling (1) AIMUX-6 mode-aware startup gate (shim vs daemon mode detection before heavy init — fixes the "aimux tools disappear / think hangs / reconnect fails" symptom class) and (2) the v4.5.3 codex-reliability hotfix (breaker reset on refresh-warmup, correct classification of `503 auth_unavailable`, and default codex model bumped to `gpt-5.4` per OpenAI's March-April 2026 deprecation of the `gpt-5.3-codex` family). The v4.5.3 PATCH release was consolidated into v4.6.0 rather than shipped separately.
+
 ### Added
 
 - **Mode-aware startup gate (AIMUX-6).** `aimux.exe` now detects daemon vs shim mode via `detectMode()` in `cmd/aimux/mode.go` **before** any heavy init. Shim processes skip `aimuxServer.New*`, `driver.NewRegistry/Probe`, `driver.RunWarmup`, LoomEngine boot, and SQLite open entirely — they construct only the minimum needed to serve as a stdio↔IPC bridge via muxcore. Typical shim startup target: <200ms p95 (NFR-1). Eliminates the shim-induced `sessions.db` reconcile that caused the observed "aimux tools disappear / think hangs / reconnect fails" symptom class (investigation `019dac5a-7cdf-79b3-9bfb-e73c6c7b2134`).
@@ -39,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Root cause of the "aimux tools disappear / think hangs / reconnect fails" symptom class. Prior to v4.6.0, every `aimux.exe` invocation (daemon OR shim) called `aimuxServer.New`, which opened `sessions.db` and ran `ReconcileOnStartup` with a fresh daemon UUID — flipping the daemon's active jobs to `aborted` in persistence and causing CC agents to lose visibility of `mcp__aimux__*` tools mid-session. v4.6.0 routes shim invocations past `aimuxServer.New`, eliminating the shim-induced reconcile corruption.
 - Shim startup no longer contends for SQLite WAL with the daemon (NFR-3). Prior multi-shim-startup restore timings of ~7.5s (vs v4.0.1's ~19ms) are gone.
+- **Circuit breaker reset on refresh-warmup** (consolidated from v4.5.3 hotfix PR #120). `BreakerRegistry.ResetAll()` added; `refresh-warmup` handler now clears stuck-Open breakers so a prior quota-triggered `BreakerOpen` state recovers on the next probe. Response gains `breakers_reset` + `binary_only_fallback_applied` fields.
+- **Classify `503 auth_unavailable` as `ModelUnavailable`** (consolidated from v4.5.3 hotfix PR #120). `modelUnavailablePatterns` in `pkg/executor/classify.go` now matches `auth_unavailable` and `no auth providers`. Previously the substring `authentication` matched `fatalPatterns` first, mis-routing these errors as Fatal and bypassing the suffix-strip fallback chain. Now correctly routes to `ErrorClassModelUnavailable` so `gpt-X-codex-spark → gpt-X-codex` fallback fires. Covered by `TestClassifyError_AuthUnavailableIsModelUnavailable` (3 cases).
+
+### Codex
+
+- **Default codex model bumped to `gpt-5.4`** (consolidated from v4.5.3 hotfix PR #120). OpenAI is phasing out the `gpt-5.3-codex` family (March-April 2026); coding capabilities are absorbed into `gpt-5.4`. Updated `config/cli.d/codex/profile.yaml` (`default_model`), `config/default.yaml` (role `coding`), `test/e2e/testdata/config/cli.d/codex/profile.yaml`, README role-routing examples, production-mirroring test fixtures, and the `cmd/testcli/codex` emulator default. Scenario tests and code comments illustrating the suffix-strip mechanism (`gpt-X-codex-spark → gpt-X-codex`) intentionally left on spark — the model name is a label documenting the behavior, not a production contract.
 
 ### Migration
 
