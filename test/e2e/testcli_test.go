@@ -305,12 +305,10 @@ func TestE2E_TestCLI_CodexAsync(t *testing.T) {
 }
 
 func TestE2E_Agent_AsyncProgressNotification(t *testing.T) {
-	// AIMUX-6 follow-up: async progress notifications ride a long-lived MCP
-	// session through the shim, which trips the muxcore resilient_client
-	// stdin-EOF race (engram mcp-mux#153) — the shim exits before the
-	// notifications/progress event is delivered. Re-enable once muxcore#153
-	// is resolved.
-	t.Skip("blocked by engram mcp-mux#153 (muxcore resilient_client stdin EOF races)")
+	// muxcore#153 resolved (v0.21.6 StdinEOFWaitForDisconnect), but async agent
+	// jobs don't reach terminal state in daemon+shim e2e mode — separate issue
+	// in testcli async job lifecycle. Re-enable once e2e async path is fixed.
+	t.Skip("async agent job hangs in daemon+shim e2e mode (testcli job lifecycle) — engram #158")
 
 	stdin, reader := initTestCLIServer(t)
 

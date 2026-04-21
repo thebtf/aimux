@@ -15,6 +15,7 @@ import (
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/mcp-mux/muxcore"
 	"github.com/thebtf/mcp-mux/muxcore/engine"
+	"github.com/thebtf/mcp-mux/muxcore/owner"
 )
 
 // shimErrMsg is the verbatim JSON-RPC error message returned by stubSessionHandler.
@@ -42,6 +43,7 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error 
 		DaemonFlag:     daemonFlagValue(),
 		Persistent:     true,
 		SessionHandler: &stubSessionHandler{log: log},
+		StdinEOFPolicy: owner.StdinEOFWaitForDisconnect,
 	})
 	if engErr != nil {
 		return fmt.Errorf("shim engine init: %w", engErr)

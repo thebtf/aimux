@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.6.1] - 2026-04-21
+
+Patch release fixing the shim stdin-EOF race that blocked `/mcp reconnect aimux-dev` on v4.6.0.
+
+### Fixed
+
+- **Shim stdin-EOF race (engram mcp-mux#153).** Bumped muxcore `v0.21.4 → v0.21.6` and wired `StdinEOFPolicy: owner.StdinEOFWaitForDisconnect` in `cmd/aimux/shim.go`. The shim no longer exits when CC closes its stdin pipe during lifecycle events (reconnect, session end). Root cause: MCP spec mandates stdin close as shutdown signal, but the shim's stdin is CC's internal pipe — not a user-initiated shutdown. muxcore v0.21.5 (PR #96) added the two-mode policy; v0.21.6 (PR #98, engram #157) exposed the passthrough via `engine.Config`.
+- Updated 2 e2e test skip reasons (`TestE2E_Agent_AsyncProgressNotification`, `TestRegression_SC9_NilErrorWrap`): no longer blocked by muxcore#153 (stdin-EOF race resolved), now skipped due to separate async job lifecycle issue in daemon+shim e2e mode. Unit-level regression guards in `pkg/executor/fallback_test.go` remain active.
+
 ## [4.6.0] - 2026-04-21
 
 Minor release bundling (1) AIMUX-6 mode-aware startup gate (shim vs daemon mode detection before heavy init — fixes the "aimux tools disappear / think hangs / reconnect fails" symptom class) and (2) the v4.5.3 codex-reliability hotfix (breaker reset on refresh-warmup, correct classification of `503 auth_unavailable`, and default codex model bumped to `gpt-5.4` per OpenAI's March-April 2026 deprecation of the `gpt-5.3-codex` family). The v4.5.3 PATCH release was consolidated into v4.6.0 rather than shipped separately.
@@ -209,6 +218,7 @@ Minor release: **CR-2 (US2)** — honest persisted record, live progress on asyn
 
 ---
 
+[4.6.1]: https://github.com/thebtf/aimux/compare/v4.6.0...v4.6.1
 [4.5.2]: https://github.com/thebtf/aimux/compare/v4.5.1...v4.5.2
 [4.5.1]: https://github.com/thebtf/aimux/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/thebtf/aimux/compare/v4.4.0...v4.5.0
