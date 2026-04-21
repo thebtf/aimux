@@ -27,6 +27,7 @@ Thumbs.db
 .engram-project
 .claude/
 aimux.exe~
+aimux.exe.*
 
 # Test artifacts
 coverage.out

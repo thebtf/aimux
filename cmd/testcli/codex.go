@@ -23,7 +23,7 @@ func runCodex() int {
 
 	jsonMode := fs.Bool("json", false, "output JSONL events to stdout")
 	fullAuto := fs.Bool("full-auto", false, "auto-approve all actions")
-	model := fs.String("m", "gpt-5.3-codex", "model name")
+	model := fs.String("m", "gpt-5.4", "model name")
 	sandbox := fs.String("sandbox", "", "sandbox mode (read-only)")
 	config := fs.String("c", "", "config key=value")
 

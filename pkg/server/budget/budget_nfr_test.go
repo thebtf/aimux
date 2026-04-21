@@ -211,7 +211,7 @@ func nfrBriefFixture(key string) map[string]any {
 		return map[string]any{
 			"agent":          "implementer",
 			"cli":            "codex",
-			"model":          "gpt-5.3-codex",
+			"model":          "gpt-5.4",
 			"effort":         "medium",
 			"status":         "completed",
 			"turns":          12,

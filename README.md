@@ -353,7 +353,7 @@ server:
 roles:
   coding:
     cli: codex
-    model: gpt-5.3-codex
+    model: gpt-5.4
   codereview:
     cli: codex
     model: gpt-5.4

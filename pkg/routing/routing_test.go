@@ -12,7 +12,7 @@ import (
 
 func TestRouter_Resolve_Defaults(t *testing.T) {
 	defaults := map[string]types.RolePreference{
-		"coding":     {CLI: "codex", Model: "gpt-5.3-codex"},
+		"coding":     {CLI: "codex", Model: "gpt-5.4"},
 		"codereview": {CLI: "codex", Model: "gpt-5.4", ReasoningEffort: "high"},
 		"analyze":    {CLI: "gemini"},
 	}

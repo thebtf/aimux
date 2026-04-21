@@ -67,7 +67,7 @@ func TestResolveCommand_Basic(t *testing.T) {
 
 	cmd, args := driver.ResolveCommand(profile, driver.TemplateParams{
 		Prompt:   "hello world",
-		Model:    "gpt-5.3-codex",
+		Model:    "gpt-5.4",
 		Headless: true,
 	})
 
@@ -87,7 +87,7 @@ func TestResolveCommand_Basic(t *testing.T) {
 	if !found["-m"] {
 		t.Error("missing -m flag")
 	}
-	if !found["gpt-5.3-codex"] {
+	if !found["gpt-5.4"] {
 		t.Error("missing model value")
 	}
 	if !found["-p"] {

@@ -19,7 +19,7 @@ command:
 
 prompt_flag: ""
 prompt_flag_type: positional
-default_model: "gpt-5.3-codex"
+default_model: "gpt-5.4"
 model_flag: "-m"
 timeout_seconds: 10
 stdin_threshold: 6000
