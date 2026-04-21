@@ -13,10 +13,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/agents"
 	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
+	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
@@ -51,9 +51,8 @@ import (
 // it without pulling in the full daemon dependency graph.
 const Version = build.Version
 
-// aimuxInstructions is delivered to every MCP client on connect via server.WithInstructions().
-// This replaces the need for an external SKILL.md file — the server documents itself.
-const aimuxInstructions = `aimux — AI CLI Multiplexer (13 MCP tools, 12 CLIs, 23 think patterns)
+// legacyInstructions is kept as fallback for proxy/shim mode where live state is unavailable.
+const legacyInstructions = `aimux — AI CLI Multiplexer (13 MCP tools, 12 CLIs, 23 think patterns)
 
 One MCP server that routes prompts to 12 AI coding CLIs with role-based routing,
 multi-model orchestration, structured reasoning, and deep investigation.
@@ -365,7 +364,13 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		server.WithPromptCapabilities(true),
 		server.WithLogging(),
 		server.WithRecovery(),
-		server.WithInstructions(aimuxInstructions),
+		server.WithInstructions(buildInstructions(
+			s.registry.EnabledCLIs(),
+			true, // warmup completes before NewDaemon returns in practice
+			s.registry.AllCLIs(),
+			len(s.agentReg.List()),
+			buildRoleMap(s.router),
+		)),
 	)
 
 	// Enable sampling capability — allows think patterns to request LLM calls from the client.
@@ -1415,10 +1420,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			}
 		}
 		return marshalToolResult(map[string]any{
-			"refreshed":         true,
-			"available":         enabled,
-			"excluded":          excluded,
-			"breakers_reset":    true,
+			"refreshed":                    true,
+			"available":                    enabled,
+			"excluded":                     excluded,
+			"breakers_reset":               true,
 			"binary_only_fallback_applied": len(enabled) > 0 && len(excluded) == 0,
 		})
 
@@ -1527,12 +1532,12 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		includeContent := request.GetBool("include_content", false)
 		releaseNotesLen := len(release.ReleaseNotes)
 		payload := map[string]any{
-			"status":                "update_available",
-			"current_version":       Version,
-			"latest_version":        release.Version,
-			"asset_name":            release.AssetName,
-			"published_at":          release.PublishedAt,
-			"release_notes_length":  releaseNotesLen,
+			"status":               "update_available",
+			"current_version":      Version,
+			"latest_version":       release.Version,
+			"asset_name":           release.AssetName,
+			"published_at":         release.PublishedAt,
+			"release_notes_length": releaseNotesLen,
 		}
 		if includeContent {
 			payload["release_notes"] = release.ReleaseNotes
@@ -1583,12 +1588,12 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 			})
 		case "hot_swap":
 			return marshalToolResult(map[string]any{
-				"status":                   "updated_hot_swap",
-				"previous_version":         result.PreviousVersion,
-				"new_version":              result.NewVersion,
-				"handoff_transferred_ids":  result.HandoffTransferred,
-				"handoff_duration_ms":      result.HandoffDurationMs,
-				"message":                  result.Message,
+				"status":                  "updated_hot_swap",
+				"previous_version":        result.PreviousVersion,
+				"new_version":             result.NewVersion,
+				"handoff_transferred_ids": result.HandoffTransferred,
+				"handoff_duration_ms":     result.HandoffDurationMs,
+				"message":                 result.Message,
 			})
 		case "deferred":
 			// Preserve v4.3.0 wire format: status="updated" for backwards compat.
