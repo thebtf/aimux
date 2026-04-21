@@ -139,39 +139,16 @@ func projectRoot() string {
 }
 
 // startServer launches aimux with test config and returns stdin/stdout pipes.
+//
+// AIMUX-6 removed the AIMUX_NO_ENGINE=1 stdio-direct bypass. Tests now use
+// the daemon+shim pair via startDaemonAndShim: aimux is spawned in daemon
+// mode (control socket + IPC), a shim client bridges stdio to that daemon,
+// and the test talks MCP over the shim's stdin/stdout just like a real
+// MCP client. Signature is kept stable for call-site compatibility.
 func startServer(t *testing.T, binPath string) (*exec.Cmd, io.WriteCloser, *bufio.Reader) {
 	t.Helper()
-
 	configDir := filepath.Join(testdataDir(), "config")
-	cmd := exec.Command(binPath)
-	cmd.Env = append(os.Environ(),
-		"AIMUX_CONFIG_DIR="+configDir,
-		"AIMUX_NO_ENGINE=1", // e2e tests use direct stdio, not engine/daemon mode
-	)
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatalf("stdin pipe: %v", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("stdout pipe: %v", err)
-	}
-
-	cmd.Stderr = os.Stderr // let server errors appear in test output
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start aimux: %v", err)
-	}
-
-	t.Cleanup(func() {
-		stdin.Close()
-		cmd.Process.Kill()
-		cmd.Wait()
-	})
-
-	return cmd, stdin, bufio.NewReader(stdout)
+	return startDaemonAndShim(t, binPath, "", configDir)
 }
 
 func TestE2E_Initialize(t *testing.T) {
