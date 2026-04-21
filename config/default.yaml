@@ -82,7 +82,7 @@ roles:
   # Standard: implementation, refactoring, test generation
   coding:
     cli: codex
-    model: gpt-5.3-codex
+    model: gpt-5.4
     reasoning_effort: medium
   refactor:
     cli: codex

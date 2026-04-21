@@ -62,6 +62,15 @@ var modelUnavailablePatterns = []string{
 	"you do not have access to this model",
 	"you don't have access to model",
 	"you don't have access to this model",
+	// Upstream provider responses that indicate "this model's endpoint has no auth
+	// providers available right now" — typically seen when a weekly model-specific
+	// quota is exhausted on the upstream account (OpenRouter / codex subscription
+	// spark weekly limits). These MUST be ModelUnavailable (not Fatal) so the
+	// suffix-strip fallback can try the non-spark base model on the same CLI.
+	// Observed verbatim 2026-04-21 on codex gpt-5.3-codex-spark exhaustion:
+	// "503 auth_unavailable" / "no auth providers for <model>".
+	"auth_unavailable",
+	"no auth providers",
 }
 
 // ClassifyError determines the retry strategy for a CLI error.

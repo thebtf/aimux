@@ -76,7 +76,7 @@ func testServer(t *testing.T) *Server {
 		},
 		Roles: map[string]types.RolePreference{
 			"default":    {CLI: "codex"},
-			"coding":     {CLI: "codex", Model: "gpt-5.3-codex", ReasoningEffort: "medium"},
+			"coding":     {CLI: "codex", Model: "gpt-5.4", ReasoningEffort: "medium"},
 			"codereview": {CLI: "codex"},
 			"thinkdeep":  {CLI: "codex"},
 			"analyze":    {CLI: "codex"},

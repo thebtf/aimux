@@ -135,7 +135,7 @@ func TestResolveCommand_DefaultModel(t *testing.T) {
 		Name:         "codex",
 		Command:      config.CommandConfig{Base: "codex"},
 		ModelFlag:    "-m",
-		DefaultModel: "gpt-5.3-codex",
+		DefaultModel: "gpt-5.4",
 		PromptFlag:   "-p",
 	}
 
@@ -148,7 +148,7 @@ func TestResolveCommand_DefaultModel(t *testing.T) {
 	for _, arg := range args {
 		found[arg] = true
 	}
-	if !found["-m"] || !found["gpt-5.3-codex"] {
+	if !found["-m"] || !found["gpt-5.4"] {
 		t.Errorf("expected default model, got %v", args)
 	}
 }

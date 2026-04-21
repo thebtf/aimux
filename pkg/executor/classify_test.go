@@ -15,6 +15,36 @@ func TestClassifyError_UsageLimitInContent(t *testing.T) {
 	}
 }
 
+// TestClassifyError_AuthUnavailableIsModelUnavailable verifies that upstream
+// "503 auth_unavailable" / "no auth providers" responses are classified as
+// ModelUnavailable (NOT Fatal). Fatal would skip the CLI entirely and prevent
+// suffix-strip fallback; ModelUnavailable triggers fallback to the base model
+// (e.g., gpt-5.3-codex-spark → gpt-5.3-codex) on the same CLI.
+// Regression guard for 2026-04-21 spark-exhaustion incident where the codex
+// subscription's weekly GPT-5.3-Codex-Spark quota was 0% remaining, causing
+// every `codex exec -m gpt-5.3-codex-spark` to return "503 auth_unavailable"
+// — which the prior classifier flagged Fatal (matched "authentication"),
+// blocking the configured fallback_suffix_strip chain.
+func TestClassifyError_AuthUnavailableIsModelUnavailable(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		stderr  string
+	}{
+		{"503 auth_unavailable in stderr", "", "OpenAI API error: 503 auth_unavailable"},
+		{"no auth providers in content", "openrouter: no auth providers for gpt-5.3-codex-spark", ""},
+		{"bare auth_unavailable in stderr", "", "auth_unavailable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := executor.ClassifyError(tc.content, tc.stderr, 1)
+			if got != executor.ErrorClassModelUnavailable {
+				t.Fatalf("expected ErrorClassModelUnavailable, got %v", got)
+			}
+		})
+	}
+}
+
 func TestClassifyError_RateLimitInContent(t *testing.T) {
 	got := executor.ClassifyError("rate limit exceeded, please wait", "", 1)
 	if got != executor.ErrorClassQuota {

@@ -31,17 +31,18 @@ command:
 prompt_flag: ""
 prompt_flag_type: "positional"
 
-# Default model: codex CLI does NOT handle spark/base fallback internally.
-# Without -m, codex picks spark by default and fails on 429 with no retry.
-# Set explicit model so our suffix-strip fallback can detect and strip "-spark".
+# Default model: gpt-5.4 is OpenAI's consolidated flagship (March-April 2026).
+# It absorbs the coding capabilities of the deprecated gpt-5.3-codex family and
+# is the primary coding+reasoning model in ChatGPT, API, and Codex CLI as of 2026-04.
 #
-# account_gating: -spark models require a ChatGPT subscription; they are NOT available
-# via a bare OPENAI_API_KEY on the standard API plan. Use OPENAI_API_KEY with the
-# standard API plan and the -codex (non-spark) model for API-key-only access.
+# version note: bump '5.4' when OpenAI releases a new flagship; verify via
+# `codex --version` or the OpenAI changelog before updating.
 #
-# version note: bump '5.3' when OpenAI releases a new Codex version; verify the new
-# version string via `codex --version` or the OpenAI changelog before updating.
-default_model: "gpt-5.3-codex-spark"
+# fallback behavior: suffix-strip below still handles explicitly-passed `-spark`
+# models (e.g. a caller that requests gpt-X-codex-spark and hits quota will fall
+# back to gpt-X-codex). For gpt-5.4 itself there is no built-in fallback; add
+# gpt-5.4-mini to model_fallback if cost-optimized degradation is desired.
+default_model: "gpt-5.4"
 
 # Model flag
 model_flag: "-m"
