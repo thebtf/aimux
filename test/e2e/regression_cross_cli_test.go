@@ -157,12 +157,11 @@ func TestRegression_SC9_NilErrorWrap(t *testing.T) {
 	if os.Getenv("CI") != "" {
 		t.Skip("SC-9 e2e hangs on CI race-detector runners; unit tests in pkg/executor/fallback_test.go carry the nil-wrap assertion")
 	}
-	// AIMUX-6 follow-up: async-exec flow relies on long-lived MCP session
-	// through the shim, which hits the muxcore resilient_client stdin-EOF
-	// race (engram mcp-mux#153). Unit coverage in pkg/executor/fallback_test.go
-	// still carries the SC-9 nil-wrap assertion; re-enable once muxcore#153
-	// is resolved.
-	t.Skip("blocked by engram mcp-mux#153 (muxcore resilient_client stdin EOF races); covered by pkg/executor/fallback_test.go unit assertions")
+	// muxcore#153 resolved (v0.21.6 StdinEOFWaitForDisconnect), but async exec
+	// job never reaches terminal state in daemon+shim e2e mode — separate issue
+	// in testcli exec path. Unit assertions in fallback_test.go carry the SC-9
+	// nil-wrap regression guard. Re-enable once e2e async job lifecycle is fixed.
+	t.Skip("async exec job hangs in daemon+shim e2e mode (testcli job lifecycle); covered by pkg/executor/fallback_test.go")
 	stdin, reader := initTestCLIServer(t)
 
 	// Dispatch an async exec with exit_code=1 (quota-like failure).
