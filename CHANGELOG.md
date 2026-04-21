@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.3] - 2026-04-21
+
+Patch release: codex reliability hotfix — three stacked fixes that restore transparent fallback after spark-quota exhaustion.
+
+### Fixed
+
+- **Circuit breaker reset on refresh-warmup.** `BreakerRegistry.ResetAll()` added; `refresh-warmup` handler now clears stuck-Open breakers so a prior quota-triggered `BreakerOpen` state recovers on the next probe. Previously, once a CLI's breaker tripped from repeated spark-quota failures, it stayed Open for the full cooldown window even after the operator manually ran refresh-warmup. Response gains `breakers_reset: bool` and `binary_only_fallback_applied: bool` fields for observability.
+- **"503 auth_unavailable" mis-classified as Fatal.** `modelUnavailablePatterns` in `pkg/executor/classify.go` now matches `auth_unavailable` and `no auth providers`. Previously the substring `authentication` matched `fatalPatterns` first, causing the upstream cliproxyapi `503 auth_unavailable` (emitted when a model is rate-limited to zero) to be classified as Fatal — which bypassed the suffix-strip fallback chain entirely. Now correctly routes to `ErrorClassModelUnavailable` so the `gpt-X-codex-spark → gpt-X-codex` fallback fires. Covered by `TestClassifyError_AuthUnavailableIsModelUnavailable` (3 cases).
+
+### Changed
+
+- **Default codex model bumped to `gpt-5.4`.** As of March-April 2026, OpenAI is phasing out the `gpt-5.3-codex` family; coding capabilities are absorbed into `gpt-5.4` (the consolidated flagship across ChatGPT, API, and Codex CLI). Updated `config/cli.d/codex/profile.yaml` (`default_model`), `config/default.yaml` (role `coding`), `test/e2e/testdata/config/cli.d/codex/profile.yaml`, README role-routing examples, production-mirroring test fixtures (`pkg/routing/routing_test.go`, `pkg/server/handler_test.go`, `pkg/driver/{driver_extra,loader}_test.go`, `pkg/server/budget/budget_nfr_test.go`), and the `cmd/testcli/codex` emulator default. Scenario tests and code comments illustrating the suffix-strip mechanism (`gpt-X-codex-spark → gpt-X-codex`) intentionally left on spark — the model name is a label documenting the behavior, not a production contract.
+
+### Added
+
+- `aimux.exe.*` to `.gitignore` (suffixed backup binaries from manual swap-deploy workflows).
+
+---
+
 ## [4.5.2] - 2026-04-21
 
 ### Fixed
