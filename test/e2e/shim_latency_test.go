@@ -197,13 +197,22 @@ func buildLatencyBinary(t *testing.T) string {
 	return binPath
 }
 
-// echoCliProfile is the CLI profile YAML for the "echo" system binary.
-// "echo" is universally available on Windows, Linux, and macOS, so Probe()
-// always succeeds and the daemon starts without real AI CLI tools.
-// This lets the latency test run in any CI/dev environment without prerequisites.
-const echoCliProfile = `name: echo-cli
-binary: echo
-display_name: "Echo (latency-test)"
+// echoCliProfile is the CLI profile YAML for a universally available system binary.
+// On Unix we use `echo`; on Windows we use `cmd`, matching driver probe tests.
+// This lets Probe() succeed without real AI CLI tools.
+func echoCliProfile() string {
+	binary := "echo"
+	displayName := "Echo (latency-test)"
+	base := "echo"
+	if runtime.GOOS == "windows" {
+		binary = "cmd"
+		displayName = "cmd (latency-test)"
+		base = "cmd"
+	}
+
+	return fmt.Sprintf(`name: echo-cli
+binary: %s
+display_name: %q
 
 features:
   streaming: false
@@ -217,7 +226,7 @@ features:
 output_format: text
 
 command:
-  base: "echo"
+  base: %q
 
 prompt_flag: ""
 prompt_flag_type: positional
@@ -225,7 +234,8 @@ model_flag: ""
 default_model: ""
 timeout_seconds: 5
 stdin_threshold: 0
-`
+`, binary, displayName, base)
+}
 
 // writeLatencyTestConfig writes a fully self-contained test config directory to tmpDir.
 // The config:
@@ -247,7 +257,7 @@ func writeLatencyTestConfig(t *testing.T, tmpDir, logFile string) string {
 
 	// Write the echo-cli profile so driver.NewRegistry + Probe() finds at least one CLI.
 	profilePath := filepath.Join(cliDir, "profile.yaml")
-	if err := os.WriteFile(profilePath, []byte(echoCliProfile), 0o644); err != nil {
+	if err := os.WriteFile(profilePath, []byte(echoCliProfile()), 0o644); err != nil {
 		t.Fatalf("write echo-cli profile: %v", err)
 	}
 
