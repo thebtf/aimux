@@ -51,10 +51,15 @@ func (p *literatureReviewPattern) SchemaFields() map[string]think.FieldSchema {
 			Required:    false,
 			Description: "List of papers (strings or objects with title/abstract)",
 			Items: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"title":    map[string]any{"type": "string"},
-					"abstract": map[string]any{"type": "string"},
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type": "object",
+						"properties": map[string]any{
+							"title":    map[string]any{"type": "string"},
+							"abstract": map[string]any{"type": "string"},
+						},
+					},
 				},
 			},
 		},

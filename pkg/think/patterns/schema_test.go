@@ -120,6 +120,18 @@ func TestSchemaFieldsRequiredFields(t *testing.T) {
 			}
 		}
 		if !hasRequired {
+			if name == "scientific_method" {
+				stage, hasStage := fields["stage"]
+				entryType, hasEntryType := fields["entry_type"]
+				if !hasStage || !hasEntryType {
+					t.Errorf("pattern %q must declare both stage and entry_type for conditional requiredness", name)
+					continue
+				}
+				if stage.Type != "enum" || entryType.Type != "enum" {
+					t.Errorf("pattern %q conditional fields must remain enum-typed", name)
+				}
+				continue
+			}
 			t.Errorf("pattern %q has no required fields", name)
 		}
 	}
