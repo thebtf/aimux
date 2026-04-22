@@ -1,0 +1,14 @@
+./doc.go
+./fields.go
+./guidance.go
+./pagination.go
+./pagination_dual.go
+./params.go
+./truncation.go
+./budget_nfr_test.go
+./fields_test.go
+./guidance_test.go
+./pagination_dual_test.go
+./pagination_test.go
+./params_test.go
+./truncation_test.go

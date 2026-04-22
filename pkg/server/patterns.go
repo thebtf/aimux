@@ -138,50 +138,19 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 		return mcp.NewToolResultError(fmt.Sprintf("unknown pattern %q; available: %v", patternName, think.GetAllPatterns())), nil
 	}
 
-	// Build input map from all MCP params
+	// Build input map from all fields declared in the handler's schema.
+	// This avoids maintaining a separate hardcoded allowlist that can diverge
+	// from SchemaFields() as patterns evolve.
 	input := make(map[string]any)
-	optionalStrings := []string{
-		"issue", "topic", "thought", "decision", "problem", "task",
-		"modelName", "approachName", "domainName", "timeFrame", "operation",
-		"observation", "question", "hypothesis", "experiment", "analysis",
-		"conclusion", "algorithmType", "problemDefinition", "baseCase",
-		"recursiveCase", "convergenceCheck", "diagramType", "description",
-		"methodology", "knowledgeAssessment", "result", "stage", "branchId",
-		"artifact", "claim",
-		"hypothesis_text", "confidence", "findings_text", "hypothesis_action",
-		"entry_type", "entry_text", "link_to",
-		"contribution_type", "contribution_text", "persona_id",
-		"argument_type", "argument_text", "supports_claim_id",
-	}
-	for _, key := range optionalStrings {
-		if v := request.GetString(key, ""); v != "" {
-			input[key] = v
+	if args, ok := request.Params.Arguments.(map[string]any); ok {
+		for fieldName := range handler.SchemaFields() {
+			if v, exists := args[fieldName]; exists {
+				input[fieldName] = v
+			}
 		}
 	}
 
 	sessionID := request.GetString("session_id", "")
-
-	// Pass through structured, numeric, and boolean params from raw arguments
-	if args, ok := request.Params.Arguments.(map[string]any); ok {
-		forwardKeys := []string{
-			"criteria", "options", "components", "sources", "findings",
-			"subProblems", "dependencies",
-			"risks", "stakeholders", "entities", "relationships", "rules",
-			"constraints", "states", "events", "transitions", "transformations",
-			"elements", "claims", "biases", "uncertainties", "cognitiveProcesses",
-			"parameters", "argument", "contribution", "entry", "hypothesisUpdate",
-			"confidence", "thoughtNumber", "totalThoughts", "currentDepth",
-			"maxDepth", "iterations", "revisesThought", "branchFromThought",
-			"step_number", "contribution_confidence",
-			"isRevision",
-			"next_step_needed",
-		}
-		for _, key := range forwardKeys {
-			if v, exists := args[key]; exists {
-				input[key] = v
-			}
-		}
-	}
 
 	// Validate input
 	validInput, err := handler.Validate(input)
@@ -205,8 +174,9 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 		"status":    thinkResult.Status,
 		"summary":   summary,
 		"timestamp": thinkResult.Timestamp,
-		"data":      thinkResult.Data,
-		"mode":      complexity.Recommendation,
+		"data":                   thinkResult.Data,
+		"mode":                   "solo",
+		"complexityRecommendation": complexity.Recommendation,
 		"complexity": map[string]any{
 			"total":     complexity.Total,
 			"threshold": complexity.Threshold,

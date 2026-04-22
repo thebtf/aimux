@@ -1,0 +1,11 @@
+./count.go
+./daemon.go
+./gc.go
+./jobs.go
+./live.go
+./reconcile.go
+./recovery.go
+./registry.go
+./schema.go
+./sqlite.go
+./wal.go

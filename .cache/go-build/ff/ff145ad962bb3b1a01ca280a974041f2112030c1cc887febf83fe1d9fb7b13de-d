@@ -1,0 +1,11 @@
+./busy_protocol.go
+./client.go
+./handoff.go
+./handoff_from.go
+./listchanged_inject.go
+./owner.go
+./peer_pid_windows.go
+./progress_reporter.go
+./rejection_logger.go
+./resilient_client.go
+./testsupport.go

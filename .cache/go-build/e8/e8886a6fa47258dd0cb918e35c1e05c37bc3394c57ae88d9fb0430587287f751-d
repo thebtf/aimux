@@ -1,0 +1,13 @@
+./aider.go
+./behaviors.go
+./claude.go
+./cline.go
+./codex.go
+./continue_.go
+./crush.go
+./gemini.go
+./goose.go
+./gptme.go
+./main.go
+./qwen.go
+./slowcodex.go
