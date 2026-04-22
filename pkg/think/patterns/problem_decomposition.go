@@ -57,12 +57,34 @@ func (p *problemDecompositionPattern) Validate(input map[string]any) (map[string
 
 func (p *problemDecompositionPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
-		"problem":      {Type: "string", Required: true, Description: "The problem to decompose"},
-		"methodology":  {Type: "string", Required: false, Description: "Decomposition methodology"},
-		"subProblems":  {Type: "array", Required: false, Description: "List of sub-problems"},
-		"dependencies": {Type: "array", Required: false, Description: "List of dependency objects with from/to fields"},
-		"risks":        {Type: "array", Required: false, Description: "List of risk items"},
-		"stakeholders": {Type: "array", Required: false, Description: "List of stakeholders"},
+		"problem":     {Type: "string", Required: true, Description: "The problem to decompose"},
+		"methodology": {Type: "string", Required: false, Description: "Decomposition methodology"},
+		"subProblems": {
+			Type:        "array",
+			Required:    false,
+			Description: "List of sub-problems",
+			Items: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":          map[string]any{"type": "string"},
+					"description": map[string]any{"type": "string"},
+				},
+			},
+		},
+		"dependencies": {
+			Type:        "array",
+			Required:    false,
+			Description: "List of dependency objects with from/to fields",
+			Items: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"from": map[string]any{"type": "string"},
+					"to":   map[string]any{"type": "string"},
+				},
+			},
+		},
+		"risks":        {Type: "array", Required: false, Description: "List of risk items", Items: map[string]any{"type": "string"}},
+		"stakeholders": {Type: "array", Required: false, Description: "List of stakeholders", Items: map[string]any{"type": "string"}},
 	}
 }
 

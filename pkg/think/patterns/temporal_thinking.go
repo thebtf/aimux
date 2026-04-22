@@ -49,11 +49,23 @@ func (p *temporalThinkingPattern) Validate(input map[string]any) (map[string]any
 
 func (p *temporalThinkingPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
-		"timeFrame":   {Type: "string", Required: true, Description: "The time frame or period being analyzed"},
-		"states":      {Type: "array", Required: false, Description: "States in the temporal model"},
-		"events":      {Type: "array", Required: false, Description: "Events with timestamps"},
-		"transitions": {Type: "array", Required: false, Description: "Transitions between states"},
-		"constraints": {Type: "array", Required: false, Description: "Temporal constraints"},
+		"timeFrame": {Type: "string", Required: true, Description: "The time frame or period being analyzed"},
+		"states":    {Type: "array", Required: false, Description: "States in the temporal model", Items: map[string]any{"type": "string"}},
+		"events": {
+			Type:        "array",
+			Required:    false,
+			Description: "Events with timestamps",
+			Items: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":      map[string]any{"type": "string"},
+					"timestamp": map[string]any{"type": "number"},
+					"time":      map[string]any{"type": "number"},
+				},
+			},
+		},
+		"transitions": {Type: "array", Required: false, Description: "Transitions between states", Items: map[string]any{"type": "string"}},
+		"constraints": {Type: "array", Required: false, Description: "Temporal constraints", Items: map[string]any{"type": "string"}},
 		"analysis":    {Type: "string", Required: false, Description: "Narrative analysis of the temporal model"},
 	}
 }

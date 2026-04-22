@@ -39,7 +39,7 @@ func (p *collaborativeReasoningPattern) SchemaFields() map[string]think.FieldSch
 		"contribution_type": {Type: "enum", Required: false, Description: "Flat format: type of contribution", EnumValues: []string{"observation", "question", "insight", "concern", "suggestion", "challenge", "synthesis"}},
 		"contribution_text": {Type: "string", Required: false, Description: "Flat format: text of the contribution"},
 		"persona_id":        {Type: "string", Required: false, Description: "Flat format: persona making the contribution"},
-		"personas":          {Type: "array", Required: false, Description: "List of participant personas for tracking"},
+		"personas":          {Type: "array", Required: false, Description: "List of participant personas for tracking", Items: map[string]any{"type": "string"}},
 	}
 }
 

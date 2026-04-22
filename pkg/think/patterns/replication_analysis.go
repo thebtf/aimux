@@ -21,8 +21,8 @@ func (p *replicationAnalysisPattern) SchemaFields() map[string]think.FieldSchema
 	return map[string]think.FieldSchema{
 		"claim":          {Type: "string", Required: true, Description: "The claim or experiment to replicate"},
 		"originalMethod": {Type: "string", Required: false, Description: "Original method description"},
-		"resources":      {Type: "array", Required: false, Description: "Available resources for replication"},
-		"constraints":    {Type: "array", Required: false, Description: "Constraints on the replication"},
+		"resources":      {Type: "array", Required: false, Description: "Available resources for replication", Items: map[string]any{"type": "string"}},
+		"constraints":    {Type: "array", Required: false, Description: "Constraints on the replication", Items: map[string]any{"type": "string"}},
 	}
 }
 

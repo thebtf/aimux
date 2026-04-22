@@ -20,8 +20,19 @@ func (p *sourceComparisonPattern) Description() string {
 
 func (p *sourceComparisonPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
-		"topic":   {Type: "string", Required: true, Description: "The topic being compared across sources"},
-		"sources": {Type: "array", Required: true, Description: "At least 2 sources (strings or objects with name/claim)"},
+		"topic": {Type: "string", Required: true, Description: "The topic being compared across sources"},
+		"sources": {
+			Type:        "array",
+			Required:    true,
+			Description: "At least 2 sources (strings or objects with name/claim)",
+			Items: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":  map[string]any{"type": "string"},
+					"claim": map[string]any{"type": "string"},
+				},
+			},
+		},
 	}
 }
 

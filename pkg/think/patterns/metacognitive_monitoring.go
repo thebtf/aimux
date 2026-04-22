@@ -60,10 +60,10 @@ func (p *metacognitiveMonitoringPattern) SchemaFields() map[string]think.FieldSc
 	return map[string]think.FieldSchema{
 		"task":                {Type: "string", Required: true, Description: "The task being monitored metacognitively"},
 		"knowledgeAssessment": {Type: "string", Required: false, Description: "Assessment of knowledge depth"},
-		"claims":              {Type: "array", Required: false, Description: "List of claims being made"},
-		"cognitiveProcesses":  {Type: "array", Required: false, Description: "List of cognitive processes involved"},
-		"biases":              {Type: "array", Required: false, Description: "List of identified biases"},
-		"uncertainties":       {Type: "array", Required: false, Description: "List of uncertainties"},
+		"claims":              {Type: "array", Required: false, Description: "List of claims being made", Items: map[string]any{"type": "string"}},
+		"cognitiveProcesses":  {Type: "array", Required: false, Description: "List of cognitive processes involved", Items: map[string]any{"type": "string"}},
+		"biases":              {Type: "array", Required: false, Description: "List of identified biases", Items: map[string]any{"type": "string"}},
+		"uncertainties":       {Type: "array", Required: false, Description: "List of uncertainties", Items: map[string]any{"type": "string"}},
 		"confidence":          {Type: "number", Required: false, Description: "Confidence level 0.0-1.0"},
 	}
 }

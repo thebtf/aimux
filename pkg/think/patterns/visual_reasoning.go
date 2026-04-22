@@ -112,12 +112,48 @@ func (p *visualReasoningPattern) Handle(validInput map[string]any, sessionID str
 
 func (p *visualReasoningPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
-		"operation":       {Type: "string", Required: true, Description: "The visual operation or analysis to perform"},
-		"diagramType":     {Type: "string", Required: false, Description: "Type of diagram (e.g. flowchart, sequence, class, network)"},
-		"description":     {Type: "string", Required: false, Description: "Textual description of the diagram"},
-		"elements":        {Type: "array", Required: false, Description: "Visual elements (nodes, shapes, components)"},
-		"relationships":   {Type: "array", Required: false, Description: "Relationships or edges between elements"},
-		"transformations": {Type: "array", Required: false, Description: "Transformations to apply to the diagram"},
+		"operation":   {Type: "string", Required: true, Description: "The visual operation or analysis to perform"},
+		"diagramType": {Type: "string", Required: false, Description: "Type of diagram (e.g. flowchart, sequence, class, network)"},
+		"description": {Type: "string", Required: false, Description: "Textual description of the diagram"},
+		"elements": {
+			Type:        "array",
+			Required:    false,
+			Description: "Visual elements (nodes, shapes, components)",
+			Items: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":   map[string]any{"type": "string"},
+					"name": map[string]any{"type": "string"},
+					"type": map[string]any{"type": "string"},
+				},
+			},
+		},
+		"relationships": {
+			Type:        "array",
+			Required:    false,
+			Description: "Relationships or edges between elements",
+			Items: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"from":   map[string]any{"type": "string"},
+					"to":     map[string]any{"type": "string"},
+					"source": map[string]any{"type": "string"},
+					"target": map[string]any{"type": "string"},
+				},
+			},
+		},
+		"transformations": {
+			Type:        "array",
+			Required:    false,
+			Description: "Transformations to apply to the diagram",
+			Items: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"type":        map[string]any{"type": "string"},
+					"description": map[string]any{"type": "string"},
+				},
+			},
+		},
 	}
 }
 
