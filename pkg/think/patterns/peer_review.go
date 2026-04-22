@@ -57,11 +57,16 @@ func (p *peerReviewPattern) SchemaFields() map[string]think.FieldSchema {
 		"claims": {
 			Type:        "array",
 			Required:    false,
-			Description: "List of claims to evaluate",
+			Description: "List of claims to evaluate as strings or objects with text",
 			Items: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"text": map[string]any{"type": "string"},
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type": "object",
+						"properties": map[string]any{
+							"text": map[string]any{"type": "string"},
+						},
+					},
 				},
 			},
 		},

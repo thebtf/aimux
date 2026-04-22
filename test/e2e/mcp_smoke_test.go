@@ -235,6 +235,34 @@ func TestE2E_ToolsList(t *testing.T) {
 	if len(items) == 0 {
 		t.Fatal("architecture_analysis components.items schema is empty")
 	}
+	if got := items["type"]; got == "object" {
+		itemProps, ok := items["properties"].(map[string]any)
+		if !ok || len(itemProps) == 0 {
+			t.Fatalf("architecture_analysis components.items.properties missing/empty: %v", items["properties"])
+		}
+	} else {
+		oneOf, ok := items["oneOf"].([]any)
+		if !ok || len(oneOf) == 0 {
+			t.Fatalf("architecture_analysis components.items must be object schema or oneOf, got: %v", items)
+		}
+		foundObject := false
+		for _, candidate := range oneOf {
+			obj, ok := candidate.(map[string]any)
+			if !ok {
+				continue
+			}
+			if obj["type"] == "object" {
+				props, ok := obj["properties"].(map[string]any)
+				if ok && len(props) > 0 {
+					foundObject = true
+					break
+				}
+			}
+		}
+		if !foundObject {
+			t.Fatalf("architecture_analysis components.items.oneOf missing object schema with properties: %v", oneOf)
+		}
+	}
 }
 
 func TestE2E_ExecSync(t *testing.T) {

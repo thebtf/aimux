@@ -25,20 +25,26 @@ func (p *architectureAnalysisPattern) SchemaFields() map[string]think.FieldSchem
 		"components": {
 			Type:        "array",
 			Required:    true,
-			Description: "List of system components (strings or objects with name/description/dependencies)",
+			Description: "List of system components as strings or objects with name, description, and dependencies",
 			Items: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"name": map[string]any{
-						"type": "string",
-					},
-					"description": map[string]any{
-						"type": "string",
-					},
-					"dependencies": map[string]any{
-						"type": "array",
-						"items": map[string]any{
-							"type": "string",
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type":     "object",
+						"required": []string{"name"},
+						"properties": map[string]any{
+							"name": map[string]any{
+								"type": "string",
+							},
+							"description": map[string]any{
+								"type": "string",
+							},
+							"dependencies": map[string]any{
+								"type": "array",
+								"items": map[string]any{
+									"type": "string",
+								},
+							},
 						},
 					},
 				},

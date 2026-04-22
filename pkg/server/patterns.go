@@ -58,6 +58,14 @@ func validatePatternFieldSchema(patternName, fieldName string, schema think.Fiel
 		if len(schema.Properties) == 0 {
 			panic(fmt.Sprintf("server: pattern %q field %q declares object schema without properties", patternName, fieldName))
 		}
+	case "enum":
+		if len(schema.EnumValues) == 0 {
+			panic(fmt.Sprintf("server: pattern %q field %q declares enum schema without values", patternName, fieldName))
+		}
+	case "string", "number", "integer", "boolean":
+		// supported scalar types
+	default:
+		panic(fmt.Sprintf("server: pattern %q field %q declares unsupported schema type %q", patternName, fieldName, schema.Type))
 	}
 }
 

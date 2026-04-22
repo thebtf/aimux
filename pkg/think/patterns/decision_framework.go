@@ -35,7 +35,8 @@ func (p *decisionFrameworkPattern) SchemaFields() map[string]think.FieldSchema {
 			Required:    false,
 			Description: "List of criteria objects with name and weight",
 			Items: map[string]any{
-				"type": "object",
+				"type":     "object",
+				"required": []string{"name", "weight"},
 				"properties": map[string]any{
 					"name":   map[string]any{"type": "string"},
 					"weight": map[string]any{"type": "number"},
@@ -47,7 +48,8 @@ func (p *decisionFrameworkPattern) SchemaFields() map[string]think.FieldSchema {
 			Required:    false,
 			Description: "List of option objects with name and scores map",
 			Items: map[string]any{
-				"type": "object",
+				"type":     "object",
+				"required": []string{"name", "scores"},
 				"properties": map[string]any{
 					"name": map[string]any{"type": "string"},
 					"scores": map[string]any{

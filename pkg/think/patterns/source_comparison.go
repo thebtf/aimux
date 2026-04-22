@@ -26,10 +26,15 @@ func (p *sourceComparisonPattern) SchemaFields() map[string]think.FieldSchema {
 			Required:    true,
 			Description: "At least 2 sources (strings or objects with name/claim)",
 			Items: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"name":  map[string]any{"type": "string"},
-					"claim": map[string]any{"type": "string"},
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type": "object",
+						"properties": map[string]any{
+							"name":  map[string]any{"type": "string"},
+							"claim": map[string]any{"type": "string"},
+						},
+					},
 				},
 			},
 		},

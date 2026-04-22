@@ -58,9 +58,13 @@ func (p *temporalThinkingPattern) SchemaFields() map[string]think.FieldSchema {
 			Items: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name":      map[string]any{"type": "string"},
-					"timestamp": map[string]any{"type": "number"},
-					"time":      map[string]any{"type": "number"},
+					"name": map[string]any{"type": "string"},
+					"timestamp": map[string]any{
+						"oneOf": []map[string]any{{"type": "number"}, {"type": "string"}},
+					},
+					"time": map[string]any{
+						"oneOf": []map[string]any{{"type": "number"}, {"type": "string"}},
+					},
 				},
 			},
 		},

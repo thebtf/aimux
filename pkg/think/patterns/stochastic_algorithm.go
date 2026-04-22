@@ -38,7 +38,8 @@ func (p *stochasticAlgorithmPattern) SchemaFields() map[string]think.FieldSchema
 				"outcomes": map[string]any{
 					"type": "array",
 					"items": map[string]any{
-						"type": "object",
+						"type":     "object",
+						"required": []string{"probability", "value"},
 						"properties": map[string]any{
 							"name":        map[string]any{"type": "string"},
 							"probability": map[string]any{"type": "number"},
