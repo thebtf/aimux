@@ -365,9 +365,13 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		server.WithLogging(),
 		server.WithRecovery(),
 		// Build live instructions at daemon construction time after agent and CLI discovery.
+		// warmupComplete is false here because RunWarmup executes in a background goroutine
+		// (see cmd/aimux/main.go) and has not finished by the time NewDaemon returns.
+		// Clients will see "warmup in progress" for all profiles until a refresh-warmup
+		// action is triggered, which is the accurate initial state.
 		server.WithInstructions(buildInstructions(
 			s.registry.EnabledCLIs(),
-			true, // warmup completes before NewDaemon returns in practice
+			false, // warmup runs in background — not yet complete at construction time
 			s.registry.AllCLIs(),
 			len(s.agentReg.List()),
 			buildRoleMap(s.router),
