@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Patch/Minor release: **CR-3 (US3 + US4)** — structured error classifier per CLI (codex/gemini/claude-code) + real ConPTY probe on Windows.
+
+### Added
+
+- `ErrorClassifier` interface + per-CLI structured parsers: `codex.go`, `gemini.go`, `claude.go` in `pkg/executor/classify/`.
+- `classifier.Register(cli, c)` registry — dispatcher falls back to substring classifier for unregistered CLIs.
+- Real `ConPTY.ProbeConPTY()` via Win32 `CreatePseudoConsole` allocation (`pkg/executor/conpty/`).
+- `requires_tty: bool` field on CLI profiles (`config/cli.d/*/profile.yaml`); `true` for aider, gptme, qwen.
+
+### Changed
+
+- `ClassifyError` now delegates to registered per-CLI parser; substring classifier remains as fallback.
+- Daemon startup hard-fails with exit 1 when ConPTY probe returns non-nil AND an active TTY-dependent CLI is enabled.
+
+### Fixed
+
+- Phase 6 (US4) ConPTY probe: replaced `runtime.GOOS == "windows"` fake with real `CreatePseudoConsole` allocation.
+
 ## [4.7.0] - 2026-04-22
 
 Minor release: DX Self-Documentation (AIMUX-7) — agent-first discovery experience.
@@ -191,28 +209,6 @@ Silent-failure classes closed:
 
 - `TECHNICAL_DEBT.md` moved from repo root to `.agent/TECHNICAL_DEBT.md` — aligns
   with the convention that all agent-managed artifacts live under `.agent/`.
-
-## [4.7.0] - Unreleased
-
-Patch/Minor release: **CR-3 (US3 + US4)** — structured error classifier per CLI (codex/gemini/claude-code) + real ConPTY probe on Windows.
-
-### Added
-
-- `ErrorClassifier` interface + per-CLI structured parsers: `codex.go`, `gemini.go`, `claude.go` in `pkg/executor/classify/`.
-- `classifier.Register(cli, c)` registry — dispatcher falls back to substring classifier for unregistered CLIs.
-- Real `ConPTY.ProbeConPTY()` via Win32 `CreatePseudoConsole` allocation (`pkg/executor/conpty/`).
-- `requires_tty: bool` field on CLI profiles (`config/cli.d/*/profile.yaml`); `true` for aider, gptme, qwen.
-
-### Changed
-
-- `ClassifyError` now delegates to registered per-CLI parser; substring classifier remains as fallback.
-- Daemon startup hard-fails with exit 1 when ConPTY probe returns non-nil AND an active TTY-dependent CLI is enabled.
-
-### Fixed
-
-- Phase 6 (US4) ConPTY probe: replaced `runtime.GOOS == "windows"` fake with real `CreatePseudoConsole` allocation.
-
----
 
 ## [4.6.0] - Unreleased
 
