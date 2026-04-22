@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -151,4 +152,138 @@ func TestRegisterPatternTools_TotalCount(t *testing.T) {
 	if len(allPatterns) != expected {
 		t.Errorf("expected %d patterns, got %d", expected, len(allPatterns))
 	}
+}
+
+type testPatternHandler struct {
+	name   string
+	fields map[string]think.FieldSchema
+}
+
+func (h testPatternHandler) Name() string { return h.name }
+
+func (h testPatternHandler) Description() string { return "test pattern" }
+
+func (h testPatternHandler) Validate(input map[string]any) (map[string]any, error) { return input, nil }
+
+func (h testPatternHandler) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
+	return think.MakeThinkResult(h.name, map[string]any{"ok": true}, sessionID, nil, "", nil), nil
+}
+
+func (h testPatternHandler) SchemaFields() map[string]think.FieldSchema { return h.fields }
+
+func (h testPatternHandler) Category() string { return "solo" }
+
+func withIsolatedPatternRegistry(t *testing.T, custom think.PatternHandler) string {
+	t.Helper()
+	patterns.RegisterAll()
+
+	originalNames := think.GetAllPatterns()
+	originalHandlers := make([]think.PatternHandler, 0, len(originalNames))
+	originalMeta := make(map[string]think.PatternMeta, len(originalNames))
+	for _, name := range originalNames {
+		handler := think.GetPattern(name)
+		if handler == nil {
+			t.Fatalf("pattern %q: GetPattern returned nil while snapshotting registry", name)
+		}
+		originalHandlers = append(originalHandlers, handler)
+		if meta, ok := think.GetPatternMeta(name); ok {
+			originalMeta[name] = meta
+		}
+	}
+
+	think.ClearPatterns()
+	for _, handler := range originalHandlers {
+		think.RegisterPattern(handler)
+		if meta, ok := originalMeta[handler.Name()]; ok {
+			think.RegisterPatternMeta(handler.Name(), meta)
+		}
+	}
+	think.RegisterPattern(custom)
+
+	t.Cleanup(func() {
+		think.ClearPatterns()
+		for _, handler := range originalHandlers {
+			think.RegisterPattern(handler)
+			if meta, ok := originalMeta[handler.Name()]; ok {
+				think.RegisterPatternMeta(handler.Name(), meta)
+			}
+		}
+	})
+
+	return custom.Name()
+}
+
+func registerTestPattern(t *testing.T, fields map[string]think.FieldSchema) string {
+	t.Helper()
+
+	name := fmt.Sprintf("test_pattern_%s", strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_")))
+	return withIsolatedPatternRegistry(t, testPatternHandler{name: name, fields: fields})
+}
+
+func TestRegisterPatternTools_AllowsCompleteCompositeSchemas(t *testing.T) {
+	registerTestPattern(t, map[string]think.FieldSchema{
+		"items": {
+			Type:        "array",
+			Description: "Array field with item schema",
+			Items: map[string]any{
+				"type": "string",
+			},
+		},
+		"metadata": {
+			Type:        "object",
+			Description: "Object field with property schema",
+			Properties: map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+		},
+	})
+
+	srv := newTestServer(t)
+	if srv == nil {
+		t.Fatal("server should not be nil")
+	}
+}
+
+func TestRegisterPatternTools_PanicsOnIncompleteArraySchema(t *testing.T) {
+	patternName := registerTestPattern(t, map[string]think.FieldSchema{
+		"items": {
+			Type:        "array",
+			Description: "Array field missing item schema",
+		},
+	})
+
+	panicText := fmt.Sprintf("server: pattern %q field %q declares array schema without items", patternName, "items")
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("expected panic for incomplete array schema")
+		}
+		if recovered != panicText {
+			t.Fatalf("expected panic %q, got %v", panicText, recovered)
+		}
+	}()
+
+	_ = newTestServer(t)
+}
+
+func TestRegisterPatternTools_PanicsOnIncompleteObjectSchema(t *testing.T) {
+	patternName := registerTestPattern(t, map[string]think.FieldSchema{
+		"metadata": {
+			Type:        "object",
+			Description: "Object field missing properties schema",
+		},
+	})
+
+	panicText := fmt.Sprintf("server: pattern %q field %q declares object schema without properties", patternName, "metadata")
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("expected panic for incomplete object schema")
+		}
+		if recovered != panicText {
+			t.Fatalf("expected panic %q, got %v", panicText, recovered)
+		}
+	}()
+
+	_ = newTestServer(t)
 }
