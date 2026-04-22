@@ -84,17 +84,23 @@ func (s *Server) registerPatternTools() {
 				}
 				opts = append(opts, mcp.WithBoolean(fieldName, fieldOpts...))
 			case "array":
-				fieldOpts := []mcp.PropertyOption{mcp.Description(schema.Description)}
-				if schema.Required {
-					fieldOpts = append(fieldOpts, mcp.Required())
-				}
-				opts = append(opts, mcp.WithArray(fieldName, fieldOpts...))
-			case "object":
-				fieldOpts := []mcp.PropertyOption{mcp.Description(schema.Description)}
-				if schema.Required {
-					fieldOpts = append(fieldOpts, mcp.Required())
-				}
-				opts = append(opts, mcp.WithObject(fieldName, fieldOpts...))
+					fieldOpts := []mcp.PropertyOption{
+						mcp.Description(schema.Description),
+						mcp.Items(schema.Items),
+					}
+					if schema.Required {
+						fieldOpts = append(fieldOpts, mcp.Required())
+					}
+					opts = append(opts, mcp.WithArray(fieldName, fieldOpts...))
+				case "object":
+					fieldOpts := []mcp.PropertyOption{
+						mcp.Description(schema.Description),
+						mcp.Properties(schema.Properties),
+					}
+					if schema.Required {
+						fieldOpts = append(fieldOpts, mcp.Required())
+					}
+					opts = append(opts, mcp.WithObject(fieldName, fieldOpts...))
 			case "enum":
 				fieldOpts := []mcp.PropertyOption{
 					mcp.Description(schema.Description),
