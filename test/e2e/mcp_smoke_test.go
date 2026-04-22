@@ -318,12 +318,11 @@ func TestE2E_SessionsList(t *testing.T) {
 func TestE2E_ThinkTool(t *testing.T) {
 	stdin, reader := initTestCLIServer(t)
 
-	// Think tool — in-process, no CLI needed
+	// critical_thinking is now a per-pattern tool — call by name directly.
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
-		"name": "think",
+		"name": "critical_thinking",
 		"arguments": map[string]any{
-			"pattern": "critical_thinking",
-			"issue":   "is this e2e test working?",
+			"issue": "is this e2e test working?",
 		},
 	}))
 

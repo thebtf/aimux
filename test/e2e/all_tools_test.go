@@ -219,36 +219,35 @@ func TestE2E_Agents_MissingAction(t *testing.T) {
 // --- Think Tool ---
 
 func TestE2E_Think_BasicPatterns(t *testing.T) {
-	patterns := []struct {
+	// Each pattern is now its own MCP tool — call by name, not via a "think" dispatcher.
+	patternCases := []struct {
 		pattern string
 		params  map[string]any
 	}{
 		{
 			pattern: "think",
 			params: map[string]any{
-				"pattern": "think",
 				"thought": "test thought",
 			},
 		},
 		{
 			pattern: "critical_thinking",
 			params: map[string]any{
-				"pattern": "critical_thinking",
-				"issue":   "test issue",
+				"issue": "test issue",
 			},
 		},
 		{
 			pattern: "decision_framework",
 			params: map[string]any{
-				"pattern":  "decision_framework",
 				"decision": "choose architecture",
 			},
 		},
 	}
 
-	for _, tc := range patterns {
+	for _, tc := range patternCases {
 		t.Run(tc.pattern, func(t *testing.T) {
-			resp := initAndCall(t, "think", tc.params)
+			// Call the per-pattern tool directly (tool name == pattern name).
+			resp := initAndCall(t, tc.pattern, tc.params)
 			data := extractToolJSON(t, resp)
 			// think responses are wrapped in the guidance envelope; domain fields are
 			// nested under the "result" key.
@@ -878,12 +877,6 @@ func TestE2E_StatefulToolDescriptions_ContainExamples(t *testing.T) {
 			callPatterns: []string{"start", "finding", "assess", "report"},
 		},
 		{
-			tool: "think",
-			// HOW: "Provide pattern plus pattern-specific fields; pass session_id …"
-			// CHOOSE: "Choose think for deep single-thread …"
-			callPatterns: []string{"pattern", "session_id"},
-		},
-		{
 			tool: "consensus",
 			// HOW: "Provide topic; optionally set blinded/max_turns and synthesize …"
 			// CHOOSE: "Choose consensus to measure agreement …"
@@ -975,10 +968,10 @@ func TestE2E_GuidedToolMatrix(t *testing.T) {
 			resultField: "session_id",
 		},
 		{
-			tool: "think",
+			// critical_thinking is now a per-pattern MCP tool — call by name directly.
+			tool: "critical_thinking",
 			args: map[string]any{
-				"pattern": "critical_thinking",
-				"issue":   "matrix sweep think test",
+				"issue": "matrix sweep think test",
 			},
 			wantState:   "complete",
 			resultField: "pattern",

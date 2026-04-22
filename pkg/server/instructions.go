@@ -8,11 +8,8 @@ import (
 	"github.com/thebtf/aimux/pkg/routing"
 )
 
-const (
-	instructionToolCount    = 36
-	instructionPatternCount = 23
-)
-
+// buildInstructions generates the MCP server instructions string at connect time
+// using live server state. This replaces the static const aimuxInstructions.
 func buildInstructions(
 	warmCLIs []string,
 	warmupComplete bool,
@@ -22,46 +19,21 @@ func buildInstructions(
 ) string {
 	_ = agentCount
 
-	cliCount := len(allProfiles)
-	if warmupComplete {
-		cliCount = len(warmCLIs)
+	cliCount := len(warmCLIs)
+	if !warmupComplete {
+		cliCount = len(allProfiles)
 	}
 
 	lines := []string{
-		fmt.Sprintf(
-			"aimux — AI CLI Multiplexer (%d tools, %d CLIs, %d think patterns)",
-			instructionToolCount,
-			cliCount,
-			instructionPatternCount,
-		),
+		fmt.Sprintf("aimux — AI CLI Multiplexer (%d tools, %d CLIs, 23 think patterns)", 36, cliCount),
 		"",
 		"aimux delegates work to external AI CLIs — free for you, no token cost from your context. Use aimux for implementation, review, debugging, and multi-model consensus instead of native subagents.",
 		"",
+		"## Available CLIs",
 	}
 
-	switch {
-	case warmupComplete && len(warmCLIs) > 0:
-		lines = append(lines, "## Available CLIs")
-		for _, cli := range sortedStrings(warmCLIs) {
-			role := displayRoleForCLI(cli, roleMap)
-			if role == "" {
-				lines = append(lines, fmt.Sprintf("- %s", cli))
-				continue
-			}
-			lines = append(lines, fmt.Sprintf("- %s: %s", cli, role))
-		}
-	case warmupComplete:
-		lines = append(lines, `No CLIs available — check warmup status with sessions(action="health")`)
-	default:
-		lines = append(lines, "## Available CLIs")
-		for _, cli := range sortedStrings(allProfiles) {
-			lines = append(lines, fmt.Sprintf("- %s", cli))
-		}
-		lines = append(lines, "(warmup in progress — some CLIs may be unavailable)")
-	}
-
-	lines = append(
-		lines,
+	lines = append(lines, renderAvailableCLIs(warmCLIs, warmupComplete, allProfiles, roleMap)...)
+	lines = append(lines,
 		"",
 		"## First Actions",
 		`1. sessions(action="health") — discover server state and available CLIs`,
@@ -86,42 +58,71 @@ func buildInstructions(
 	return strings.Join(lines, "\n")
 }
 
+func renderAvailableCLIs(
+	warmCLIs []string,
+	warmupComplete bool,
+	allProfiles []string,
+	roleMap map[string]string,
+) []string {
+	if warmupComplete {
+		if len(warmCLIs) == 0 {
+			return []string{`No CLIs available — check warmup status with sessions(action="health")`}
+		}
+
+		sortedCLIs := append([]string(nil), warmCLIs...)
+		sort.Strings(sortedCLIs)
+		rolesByCLI := invertRoleMap(roleMap)
+
+		lines := make([]string, 0, len(sortedCLIs))
+		for _, cli := range sortedCLIs {
+			roles := rolesByCLI[cli]
+			if len(roles) == 0 {
+				lines = append(lines, fmt.Sprintf("- %s", cli))
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("- %s: %s", cli, strings.Join(roles, ", ")))
+		}
+		return lines
+	}
+
+	sortedProfiles := append([]string(nil), allProfiles...)
+	sort.Strings(sortedProfiles)
+
+	lines := make([]string, 0, len(sortedProfiles))
+	for _, profile := range sortedProfiles {
+		lines = append(lines, fmt.Sprintf("- %s (warmup in progress — some CLIs may be unavailable)", profile))
+	}
+	return lines
+}
+
+func invertRoleMap(roleMap map[string]string) map[string][]string {
+	result := make(map[string][]string)
+	for role, cli := range roleMap {
+		if role == "" || cli == "" {
+			continue
+		}
+		result[cli] = append(result[cli], role)
+	}
+	for cli := range result {
+		sort.Strings(result[cli])
+	}
+	return result
+}
+
 // buildRoleMap extracts a role→CLI mapping from the router for display in instructions.
 // Returns nil if r is nil.
 func buildRoleMap(r *routing.Router) map[string]string {
 	if r == nil {
 		return nil
 	}
+
 	result := make(map[string]string)
 	for _, role := range r.KnownRoles() {
-		if pref, err := r.Resolve(role); err == nil && pref.CLI != "" {
-			result[role] = pref.CLI
+		pref, err := r.Resolve(role)
+		if err != nil || pref.CLI == "" {
+			continue
 		}
+		result[role] = pref.CLI
 	}
-	return result
-}
-
-func displayRoleForCLI(cli string, roleMap map[string]string) string {
-	if len(roleMap) == 0 {
-		return ""
-	}
-
-	roles := make([]string, 0, len(roleMap))
-	for role, mappedCLI := range roleMap {
-		if mappedCLI == cli && strings.TrimSpace(role) != "" {
-			roles = append(roles, role)
-		}
-	}
-	if len(roles) == 0 {
-		return ""
-	}
-
-	sort.Strings(roles)
-	return roles[0]
-}
-
-func sortedStrings(values []string) []string {
-	result := append([]string(nil), values...)
-	sort.Strings(result)
 	return result
 }
