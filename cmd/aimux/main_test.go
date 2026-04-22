@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/hex"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -162,5 +165,113 @@ func TestDetectMode_DaemonFlagExactMatch(t *testing.T) {
 	}
 	if gotExact != ModeDaemon {
 		t.Errorf("exact flag: mode = %d, want ModeDaemon (%d)", gotExact, ModeDaemon)
+	}
+}
+
+func TestParseHandoffFlags(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	if err := os.WriteFile(socketPath, []byte("socket"), 0o600); err != nil {
+		t.Fatalf("write socket path fixture: %v", err)
+	}
+
+	token := strings.Repeat("ab", 32)
+	got, err := parseHandoffFlags([]string{"--handoff-from", socketPath, "--handoff-token", token, "--muxcore-daemon"})
+	if err != nil {
+		t.Fatalf("parseHandoffFlags() unexpected error: %v", err)
+	}
+	if got.From != socketPath {
+		t.Fatalf("From = %q, want %q", got.From, socketPath)
+	}
+	if got.Token != token {
+		t.Fatalf("Token = %q, want %q", got.Token, token)
+	}
+}
+
+func TestParseHandoffFlags_ValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	if err := os.WriteFile(socketPath, []byte("socket"), 0o600); err != nil {
+		t.Fatalf("write socket path fixture: %v", err)
+	}
+
+	validToken := strings.Repeat("cd", 32)
+	missingPath := filepath.Join(t.TempDir(), "missing.sock")
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "requires_both_flags_when_only_from_is_set",
+			args:    []string{"--handoff-from", socketPath},
+			wantErr: "--handoff-from and --handoff-token must both be set",
+		},
+		{
+			name:    "requires_both_flags_when_only_token_is_set",
+			args:    []string{"--handoff-token", validToken},
+			wantErr: "--handoff-from and --handoff-token must both be set",
+		},
+		{
+			name:    "rejects_short_token",
+			args:    []string{"--handoff-from", socketPath, "--handoff-token", strings.Repeat("a", 63)},
+			wantErr: "--handoff-token must be 64 hex characters",
+		},
+		{
+			name:    "rejects_non_hex_token",
+			args:    []string{"--handoff-from", socketPath, "--handoff-token", strings.Repeat("z1", 32)},
+			wantErr: "--handoff-token must be 64 hex characters",
+		},
+		{
+			name:    "rejects_missing_socket_path",
+			args:    []string{"--handoff-from", missingPath, "--handoff-token", validToken},
+			wantErr: "--handoff-from path must exist",
+		},
+		{
+			name:    "rejects_directory_path",
+			args:    []string{"--handoff-from", t.TempDir(), "--handoff-token", validToken},
+			wantErr: "--handoff-from path must not be a directory",
+		},
+		{
+			name:    "rejects_missing_token_value",
+			args:    []string{"--handoff-from", socketPath, "--handoff-token"},
+			wantErr: "parse handoff flags",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := parseHandoffFlags(tt.args)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateHandoffFlags_AcceptsUppercaseHex(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	if err := os.WriteFile(socketPath, []byte("socket"), 0o600); err != nil {
+		t.Fatalf("write socket path fixture: %v", err)
+	}
+
+	tokenBytes := make([]byte, 32)
+	for i := range tokenBytes {
+		tokenBytes[i] = 0xAB
+	}
+	uppercaseToken := strings.ToUpper(hex.EncodeToString(tokenBytes))
+
+	if err := validateHandoffFlags(handoffFlags{From: socketPath, Token: uppercaseToken}); err != nil {
+		t.Fatalf("validateHandoffFlags() unexpected error for uppercase hex: %v", err)
 	}
 }

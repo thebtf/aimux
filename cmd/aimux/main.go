@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,6 +28,11 @@ func main() {
 }
 
 func run() error {
+	_, err := parseHandoffFlags(os.Args[1:])
+	if err != nil {
+		return err
+	}
+
 	configDir := findConfigDir()
 
 	cfg, err := config.Load(configDir)
@@ -198,4 +206,82 @@ func findConfigDir() string {
 	}
 
 	return "config"
+}
+
+type handoffFlags struct {
+	From  string
+	Token string
+}
+
+func parseHandoffFlags(args []string) (handoffFlags, error) {
+	filteredArgs, err := extractHandoffFlagArgs(args)
+	if err != nil {
+		return handoffFlags{}, err
+	}
+
+	fs := flag.NewFlagSet("aimux", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var handoff handoffFlags
+	fs.StringVar(&handoff.From, "handoff-from", "", "existing muxcore socket path to hand off from")
+	fs.StringVar(&handoff.Token, "handoff-token", "", "64-character hex token authorizing successor handoff")
+
+	if err := fs.Parse(filteredArgs); err != nil {
+		return handoffFlags{}, fmt.Errorf("parse handoff flags: %w", err)
+	}
+	if err := validateHandoffFlags(handoff); err != nil {
+		return handoffFlags{}, err
+	}
+
+	return handoff, nil
+}
+
+func extractHandoffFlagArgs(args []string) ([]string, error) {
+	filtered := make([]string, 0, 4)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--handoff-from", "--handoff-token":
+			filtered = append(filtered, args[i])
+			if i+1 >= len(args) {
+				continue
+			}
+			filtered = append(filtered, args[i+1])
+			i++
+		default:
+			if len(args[i]) >= len("--handoff-from=") && args[i][:len("--handoff-from=")] == "--handoff-from=" {
+				filtered = append(filtered, args[i])
+				continue
+			}
+			if len(args[i]) >= len("--handoff-token=") && args[i][:len("--handoff-token=")] == "--handoff-token=" {
+				filtered = append(filtered, args[i])
+			}
+		}
+	}
+	return filtered, nil
+}
+
+func validateHandoffFlags(handoff handoffFlags) error {
+	if (handoff.From == "") != (handoff.Token == "") {
+		return fmt.Errorf("--handoff-from and --handoff-token must both be set")
+	}
+	if handoff.From == "" {
+		return nil
+	}
+
+	if len(handoff.Token) != 64 {
+		return fmt.Errorf("--handoff-token must be 64 hex characters")
+	}
+	if _, err := hex.DecodeString(handoff.Token); err != nil {
+		return fmt.Errorf("--handoff-token must be 64 hex characters: %w", err)
+	}
+
+	info, err := os.Stat(handoff.From)
+	if err != nil {
+		return fmt.Errorf("--handoff-from path must exist: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("--handoff-from path must not be a directory")
+	}
+
+	return nil
 }
