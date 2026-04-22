@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -51,8 +52,15 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 
 	// Resolve participants from role preferences
 	enabled := s.registry.EnabledCLIs()
+	sort.Strings(enabled)
 	if len(enabled) < 2 {
-		return mcp.NewToolResultError("consensus requires at least 2 CLIs"), nil
+		availableMsg := "none"
+		if len(enabled) == 1 {
+			availableMsg = enabled[0]
+		}
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"Requires 2+ CLIs; currently %d available (%s). Cannot run multi-CLI operation.",
+			len(enabled), availableMsg)), nil
 	}
 
 	async := request.GetBool("async", true)
@@ -154,8 +162,15 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 	synthesize := request.GetBool("synthesize", true)
 
 	enabled := s.registry.EnabledCLIs()
+	sort.Strings(enabled)
 	if len(enabled) < 2 {
-		return mcp.NewToolResultError("debate requires at least 2 CLIs"), nil
+		availableMsg := "none"
+		if len(enabled) == 1 {
+			availableMsg = enabled[0]
+		}
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"Requires 2+ CLIs; currently %d available (%s). Cannot run multi-CLI operation.",
+			len(enabled), availableMsg)), nil
 	}
 
 	async := request.GetBool("async", true)
@@ -269,8 +284,15 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 	}
 
 	enabled := s.registry.EnabledCLIs()
+	sort.Strings(enabled)
 	if len(enabled) < 2 {
-		return mcp.NewToolResultError("dialog requires at least 2 CLIs"), nil
+		availableMsg := "none"
+		if len(enabled) == 1 {
+			availableMsg = enabled[0]
+		}
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"Requires 2+ CLIs; currently %d available (%s). Cannot run multi-CLI operation.",
+			len(enabled), availableMsg)), nil
 	}
 
 	sessionID := request.GetString("session_id", "")
