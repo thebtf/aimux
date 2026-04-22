@@ -418,18 +418,29 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 	}
 }
 
+// Tool returns the registered MCP tool definition for the named tool.
+// Returns nil if the tool is not found.
+// Used by tests to verify schema wiring on registered tools.
+func (s *Server) Tool(name string) *mcp.Tool {
+	if s == nil || s.mcp == nil {
+		return nil
+	}
+	st := s.mcp.GetTool(name)
+	if st == nil {
+		return nil
+	}
+	return &st.Tool
+}
+
 // ToolDescription returns the description string that was registered for the named MCP tool.
 // Returns an empty string if the tool is not found.
 // Used by tests to verify that registered descriptions contain required structured sections.
 func (s *Server) ToolDescription(name string) string {
-	if s == nil || s.mcp == nil {
+	tool := s.Tool(name)
+	if tool == nil {
 		return ""
 	}
-	st := s.mcp.GetTool(name)
-	if st == nil {
-		return ""
-	}
-	return st.Tool.Description
+	return tool.Description
 }
 
 // Shutdown stops background services (GC reaper, snapshot) and closes persistence.
@@ -978,6 +989,11 @@ func (s *Server) registerTools() {
 				mcp.Required(),
 				mcp.Description("Action: check (detect latest version) or apply (download and replace binary)"),
 				mcp.Enum("check", "apply"),
+			),
+			mcp.WithString("mode",
+				mcp.Description("action=apply: upgrade mode (default auto). auto tries hot-swap then falls back to deferred, hot_swap requires live handoff, deferred skips hot-swap."),
+				mcp.Enum(string(upgrade.ModeAuto), string(upgrade.ModeHotSwap), string(upgrade.ModeDeferred)),
+				mcp.DefaultString(string(upgrade.ModeAuto)),
 			),
 			mcp.WithBoolean("include_content",
 				mcp.Description("action=check: return full release_notes body (default false)"),
@@ -1533,6 +1549,11 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		return marshalToolResult(payload)
 
 	case "apply":
+		mode := upgrade.Mode(request.GetString("mode", string(upgrade.ModeAuto)))
+		if mode != upgrade.ModeAuto && mode != upgrade.ModeHotSwap && mode != upgrade.ModeDeferred {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid upgrade mode %q (use auto, hot_swap, or deferred)", mode)), nil
+		}
+
 		binaryPath, exeErr := os.Executable()
 		if exeErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("locate executable: %v", exeErr)), nil
@@ -1557,7 +1578,17 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 			Logger:         s.log,
 		}
 
-		result, applyErr := coord.Apply(ctx, upgrade.ModeAuto)
+		var (
+			result   *upgrade.Result
+			applyErr error
+		)
+		if applier, ok := s.sessionHandler.(interface {
+			Apply(context.Context, *upgrade.Coordinator, upgrade.Mode) (*upgrade.Result, error)
+		}); ok {
+			result, applyErr = applier.Apply(ctx, coord, mode)
+		} else {
+			result, applyErr = coord.Apply(ctx, mode)
+		}
 		if applyErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("update failed: %v", applyErr)), nil
 		}
