@@ -1,6 +1,8 @@
 package upgrade_test
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/upgrade"
@@ -59,6 +61,39 @@ func TestResult_Fields(t *testing.T) {
 	}
 	if r.HandoffDurationMs != 0 {
 		t.Error("HandoffDurationMs should default to 0")
+	}
+}
+
+func TestCoordinator_TryHotSwap_BlockedWithoutEngineMode(t *testing.T) {
+	coord := &upgrade.Coordinator{}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
+	if err == nil {
+		t.Fatal("expected ModeHotSwap to fail without real daemon-side handoff access")
+	}
+	if !strings.Contains(err.Error(), "daemon-side muxcore owner handoff") {
+		t.Fatalf("error = %q, want daemon-side handoff blocker", err)
+	}
+	if !strings.Contains(err.Error(), "engine mode disabled") {
+		t.Fatalf("error = %q, want engine mode blocker detail", err)
+	}
+}
+
+func TestCoordinator_TryHotSwap_BlockedWithSessionOnlyAdapter(t *testing.T) {
+	coord := &upgrade.Coordinator{
+		EngineMode:     true,
+		SessionHandler: &mockSessionHandler{},
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
+	if err == nil {
+		t.Fatal("expected ModeHotSwap to fail when only session-side adapter is available")
+	}
+	if !strings.Contains(err.Error(), "ShutdownForHandoff") {
+		t.Fatalf("error = %q, want ShutdownForHandoff evidence", err)
+	}
+	if !strings.Contains(err.Error(), "ReceiveHandoff") {
+		t.Fatalf("error = %q, want ReceiveHandoff evidence", err)
 	}
 }
 

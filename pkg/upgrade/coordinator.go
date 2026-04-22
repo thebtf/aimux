@@ -8,6 +8,7 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/thebtf/aimux/pkg/logger"
@@ -91,20 +92,59 @@ type Result struct {
 	Message string
 }
 
+var errHotSwapUnsupported = errors.New("hot-swap requires daemon-side muxcore owner handoff; current coordinator only has session-side update adapter")
+
 // Apply downloads and applies the upgrade according to mode.
 //
-// Phase 1 behavior: all modes route to the deferred path via updater.ApplyUpdate,
-// preserving v4.3.0 semantics exactly. Hot-swap (Phase 3) is not yet implemented
-// because muxcore handoff primitives are still package-private (see engram #130).
+// T007 boundary in the current codebase shape:
+//   - real muxcore hot-swap requires daemon-side access to Owner.ShutdownForHandoff()
+//     so the predecessor can transfer FD-bearing HandoffUpstream payloads to the
+//     successor daemon's ReceiveHandoff()/NewOwnerFromHandoff() path.
+//   - Coordinator currently receives only the session-side SetUpdatePending adapter,
+//     so it cannot enumerate owners or produce real handoff payloads.
 //
-// Returns a non-nil Result on all code paths except catastrophic failure
-// (e.g., network unreachable, checksum mismatch before any binary change).
-// HandoffError is populated when a hot-swap attempt failed and deferred was used.
+// Therefore ModeAuto attempts hot-swap, records the concrete blocker, and falls back
+// to deferred. ModeHotSwap returns an error instead of faking a handoff.
 func (c *Coordinator) Apply(ctx context.Context, mode Mode) (*Result, error) {
-	// Phase 1: all modes route to the deferred path.
-	// Phase 3 will introduce tryHotSwap and mode-based routing.
-	_ = mode
-	return c.applyDeferred(ctx)
+	switch mode {
+	case ModeDeferred:
+		return c.applyDeferred(ctx)
+	case ModeHotSwap:
+		_, err := c.tryHotSwap(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("tryHotSwap returned success without result")
+	case ModeAuto, "":
+		hotSwapResult, err := c.tryHotSwap(ctx)
+		if err == nil {
+			return hotSwapResult, nil
+		}
+		result, deferredErr := c.applyDeferred(ctx)
+		if deferredErr != nil {
+			return nil, deferredErr
+		}
+		result.HandoffError = err.Error()
+		if result.Message != "" {
+			result.Message += " Hot-swap unavailable: " + err.Error()
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unknown upgrade mode %q", mode)
+	}
+}
+
+func (c *Coordinator) tryHotSwap(ctx context.Context) (*Result, error) {
+	_ = ctx
+
+	if !c.EngineMode {
+		return nil, fmt.Errorf("%w: engine mode disabled", errHotSwapUnsupported)
+	}
+	if c.SessionHandler == nil {
+		return nil, fmt.Errorf("%w: session handler unavailable", errHotSwapUnsupported)
+	}
+
+	return nil, fmt.Errorf("%w: coordinator cannot call daemon owner ShutdownForHandoff or successor ReceiveHandoff/NewOwnerFromHandoff", errHotSwapUnsupported)
 }
 
 // applyDeferred executes the legacy v4.3.0 upgrade path: download + install
