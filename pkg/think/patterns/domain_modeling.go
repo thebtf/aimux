@@ -54,9 +54,14 @@ func (p *domainModelingPattern) SchemaFields() map[string]think.FieldSchema {
 			Required:    false,
 			Description: "List of domain entities",
 			Items: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"name": map[string]any{"type": "string"},
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type": "object",
+						"properties": map[string]any{
+							"name": map[string]any{"type": "string"},
+						},
+					},
 				},
 			},
 		},

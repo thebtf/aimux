@@ -120,11 +120,16 @@ func (p *visualReasoningPattern) SchemaFields() map[string]think.FieldSchema {
 			Required:    false,
 			Description: "Visual elements (nodes, shapes, components)",
 			Items: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"id":   map[string]any{"type": "string"},
-					"name": map[string]any{"type": "string"},
-					"type": map[string]any{"type": "string"},
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type": "object",
+						"properties": map[string]any{
+							"id":   map[string]any{"type": "string"},
+							"name": map[string]any{"type": "string"},
+							"type": map[string]any{"type": "string"},
+						},
+					},
 				},
 			},
 		},

@@ -64,10 +64,15 @@ func (p *problemDecompositionPattern) SchemaFields() map[string]think.FieldSchem
 			Required:    false,
 			Description: "List of sub-problems",
 			Items: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"id":          map[string]any{"type": "string"},
-					"description": map[string]any{"type": "string"},
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type": "object",
+						"properties": map[string]any{
+							"id":          map[string]any{"type": "string"},
+							"description": map[string]any{"type": "string"},
+						},
+					},
 				},
 			},
 		},
