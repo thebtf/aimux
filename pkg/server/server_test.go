@@ -97,7 +97,7 @@ func TestNewServer_AllToolsRegistered(t *testing.T) {
 // 3. Strategy-level tests in pkg/orchestrator/ verify each strategy works
 // 4. Stress tests verify concurrent session/job operations
 
-// TestRegisteredToolDescriptions_ContainStructuredSections verifies that all six
+// TestRegisteredToolDescriptions_ContainStructuredSections verifies that all five
 // stateful tools have their structured guidance descriptions actually wired into
 // the MCP tool registry — not just defined in the data map.
 //
@@ -106,7 +106,7 @@ func TestNewServer_AllToolsRegistered(t *testing.T) {
 func TestRegisteredToolDescriptions_ContainStructuredSections(t *testing.T) {
 	srv := newTestServer(t)
 
-	// All six stateful tools must carry structured descriptions when registered.
+	// All five stateful tools must carry structured descriptions when registered.
 	statefulTools := []string{"investigate", "consensus", "debate", "dialog", "workflow"}
 
 	// Required section headers produced by renderStatefulToolDescription.
