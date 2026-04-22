@@ -26,6 +26,18 @@ func (p *stochasticAlgorithmPattern) Description() string {
 	return "Analyze stochastic algorithms: MDP, MCTS, bandit, Bayesian, HMM"
 }
 
+func (p *stochasticAlgorithmPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"algorithmType":     {Type: "enum", Required: true, Description: "Type of stochastic algorithm", EnumValues: []string{"mdp", "mcts", "bandit", "bayesian", "hmm"}},
+		"problemDefinition": {Type: "string", Required: true, Description: "Definition of the problem to solve"},
+		"parameters":        {Type: "object", Required: false, Description: "Algorithm-specific parameters (e.g. parameters.outcomes for bandit/bayesian)"},
+		"iterations":        {Type: "number", Required: false, Description: "Number of iterations to simulate"},
+		"result":            {Type: "string", Required: false, Description: "Result from the algorithm run"},
+	}
+}
+
+func (p *stochasticAlgorithmPattern) Category() string { return "solo" }
+
 func (p *stochasticAlgorithmPattern) Validate(input map[string]any) (map[string]any, error) {
 	algType, ok := input["algorithmType"]
 	if !ok {
@@ -130,10 +142,10 @@ type outcome struct {
 }
 
 type expectedValueResult struct {
-	expectedValue    float64
-	variance         float64
+	expectedValue     float64
+	variance          float64
 	standardDeviation float64
-	dominantOutcome  map[string]any
+	dominantOutcome   map[string]any
 }
 
 // computeExpectedValue parses parameters.outcomes and computes EV, variance, stddev, and dominant outcome.
@@ -187,8 +199,8 @@ func computeExpectedValue(parameters map[string]any) *expectedValueResult {
 	}
 
 	return &expectedValueResult{
-		expectedValue:    ev,
-		variance:         variance,
+		expectedValue:     ev,
+		variance:          variance,
 		standardDeviation: math.Sqrt(variance),
 		dominantOutcome: map[string]any{
 			"probability": dominant.probability,

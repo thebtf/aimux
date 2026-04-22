@@ -9,7 +9,6 @@ func makeEvent(ts float64, name string) map[string]any {
 	return map[string]any{"timestamp": ts, "name": name}
 }
 
-
 func TestTemporal_Timeline(t *testing.T) {
 	p := NewTemporalThinkingPattern()
 

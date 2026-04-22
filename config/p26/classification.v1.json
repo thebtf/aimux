@@ -60,9 +60,6 @@
     "status": {
       "classification": "sync_ok"
     },
-    "think": {
-      "classification": "sync_ok"
-    },
     "upgrade": {
       "actions": {
         "check": "sync_ok",

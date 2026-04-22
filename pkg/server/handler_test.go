@@ -4123,3 +4123,111 @@ func TestNotifier_NilNotifier(t *testing.T) {
 	// Must not panic.
 	lifecycle.OnProjectConnect(project)
 }
+
+
+// --- T019/T020/T021: CLI Unavailability Error Tests ---
+
+// TestHandleExec_NonexistentCLI_EnrichedError verifies that exec with an unconfigured
+// CLI name returns an enriched error listing available alternatives.
+func TestHandleExec_NonexistentCLI_EnrichedError(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("exec", map[string]any{
+		"prompt": "test",
+		"cli":    "nonexistent-cli-xyz",
+	})
+
+	result, err := srv.handleExec(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleExec: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for nonexistent CLI")
+	}
+
+	text := result.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(text, "not available") {
+		t.Errorf("error should contain 'not available', got: %q", text)
+	}
+	if !strings.Contains(text, "Available CLIs:") {
+		t.Errorf("error should contain 'Available CLIs:', got: %q", text)
+	}
+	// Should list at least one available CLI (codex or gemini)
+	if !strings.Contains(text, "codex") && !strings.Contains(text, "gemini") {
+		t.Errorf("error should list available CLIs (codex/gemini), got: %q", text)
+	}
+}
+
+// TestHandleExec_NonexistentCLI_SuggestionIncluded verifies the error includes
+// a suggestion for automatic routing.
+func TestHandleExec_NonexistentCLI_SuggestionIncluded(t *testing.T) {
+	srv := testServer(t)
+	req := makeRequest("exec", map[string]any{
+		"prompt": "test",
+		"cli":    "totally-missing",
+	})
+
+	result, err := srv.handleExec(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleExec: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for missing CLI")
+	}
+
+	text := result.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(text, "role=") {
+		t.Errorf("error should suggest using role= for routing, got: %q", text)
+	}
+}
+
+// TestHandleConsensus_SingleCLI_Requires2Plus verifies that consensus with only
+// 1 available CLI returns an error mentioning "Requires 2+".
+func TestHandleConsensus_SingleCLI_Requires2Plus(t *testing.T) {
+	srv := testServerSingleCLI(t)
+	req := makeRequest("consensus", map[string]any{
+		"topic": "test topic",
+		"async": false,
+	})
+
+	result, err := srv.handleConsensus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleConsensus: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for single-CLI consensus")
+	}
+
+	text := result.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(text, "Requires 2+") {
+		t.Errorf("error should contain 'Requires 2+', got: %q", text)
+	}
+	if !strings.Contains(text, "codex") {
+		t.Errorf("error should mention available CLI (codex), got: %q", text)
+	}
+}
+
+// TestHandleDebate_SingleCLI_Requires2Plus verifies that debate with only
+// 1 available CLI returns an error mentioning "Requires 2+".
+func TestHandleDebate_SingleCLI_Requires2Plus(t *testing.T) {
+	srv := testServerSingleCLI(t)
+	req := makeRequest("debate", map[string]any{
+		"topic": "test topic",
+		"async": false,
+	})
+
+	result, err := srv.handleDebate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleDebate: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for single-CLI debate")
+	}
+
+	text := result.Content[0].(mcp.TextContent).Text
+	if !strings.Contains(text, "Requires 2+") {
+		t.Errorf("error should contain 'Requires 2+', got: %q", text)
+	}
+	if !strings.Contains(text, "codex") {
+		t.Errorf("error should mention available CLI (codex), got: %q", text)
+	}
+}

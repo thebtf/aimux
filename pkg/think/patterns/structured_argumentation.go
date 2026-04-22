@@ -74,6 +74,17 @@ func (p *structuredArgumentationPattern) Validate(input map[string]any) (map[str
 	return validated, nil
 }
 
+func (p *structuredArgumentationPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"topic":             {Type: "string", Required: true, Description: "The topic being argued"},
+		"argument_type":     {Type: "enum", Required: false, Description: "Type of argument being added", EnumValues: []string{"claim", "evidence", "rebuttal"}},
+		"argument_text":     {Type: "string", Required: false, Description: "Text of the argument (required when argument_type is set)"},
+		"supports_claim_id": {Type: "string", Required: false, Description: "ID of the claim this evidence or rebuttal supports"},
+	}
+}
+
+func (p *structuredArgumentationPattern) Category() string { return "solo" }
+
 func (p *structuredArgumentationPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	sess := think.GetOrCreateSession(sessionID, "structured_argumentation", map[string]any{
 		"arguments": []any{},

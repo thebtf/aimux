@@ -8,7 +8,7 @@ import (
 
 // TextAnalysis holds structured information extracted from a free-form text prompt.
 type TextAnalysis struct {
-	Entities      []string        // proper nouns, tech terms, quoted strings
+	Entities      []string         // proper nouns, tech terms, quoted strings
 	Relationships []EntityRelation // inferred subject-verb-object triples
 	Gaps          []Gap            // expected domain entities not mentioned
 	Negations     []string         // things explicitly excluded

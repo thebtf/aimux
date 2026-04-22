@@ -13,10 +13,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/agents"
 	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
+	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
@@ -51,9 +51,8 @@ import (
 // it without pulling in the full daemon dependency graph.
 const Version = build.Version
 
-// aimuxInstructions is delivered to every MCP client on connect via server.WithInstructions().
-// This replaces the need for an external SKILL.md file — the server documents itself.
-const aimuxInstructions = `aimux — AI CLI Multiplexer (13 MCP tools, 12 CLIs, 23 think patterns)
+// legacyInstructions is kept as fallback for proxy/shim mode where live state is unavailable.
+const legacyInstructions = `aimux — AI CLI Multiplexer (13 MCP tools, 12 CLIs, 23 think patterns)
 
 One MCP server that routes prompts to 12 AI coding CLIs with role-based routing,
 multi-model orchestration, structured reasoning, and deep investigation.
@@ -365,7 +364,18 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		server.WithPromptCapabilities(true),
 		server.WithLogging(),
 		server.WithRecovery(),
-		server.WithInstructions(aimuxInstructions),
+		// Build live instructions at daemon construction time after agent and CLI discovery.
+		// warmupComplete is false here because RunWarmup executes in a background goroutine
+		// (see cmd/aimux/main.go) and has not finished by the time NewDaemon returns.
+		// Clients will see "warmup in progress" for all profiles until a refresh-warmup
+		// action is triggered, which is the accurate initial state.
+		server.WithInstructions(buildInstructions(
+			s.registry.EnabledCLIs(),
+			false, // warmup runs in background — not yet complete at construction time
+			s.registry.AllCLIs(),
+			len(s.agentReg.List()),
+			buildRoleMap(s.router),
+		)),
 	)
 
 	// Enable sampling capability — allows think patterns to request LLM calls from the client.
@@ -462,7 +472,7 @@ func (s *Server) registerTools() {
 	// exec tool
 	s.mcp.AddTool(
 		mcp.NewTool("exec",
-			mcp.WithDescription("Execute a raw prompt on a specific CLI. "+
+			mcp.WithDescription("[delegate — external CLI, free for you] Execute a raw prompt on a specific CLI. "+
 				"Use agent tool instead for task-based work — it auto-selects the best agent. "+
 				"Use exec only when you need a specific CLI or low-level control. "+
 				"Use role= for task routing — CLI selection is driven by config (default.yaml roles section), not hardcoded mappings. "+
@@ -505,6 +515,12 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("include_content",
 				mcp.Description("Sync mode: return full CLI output instead of brief metadata (default false)"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(false),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
 		),
 		s.handleExec,
 	)
@@ -512,7 +528,7 @@ func (s *Server) registerTools() {
 	// status tool
 	s.mcp.AddTool(
 		mcp.NewTool("status",
-			mcp.WithDescription("Check async job status. "+
+			mcp.WithDescription("[manage — server state, no cost] Check async job status. "+
 				"Returns a result map with status field set to one of: queued, running, completing, completed, failed, aborted. "+
 				"status=aborted means the job was running when the daemon restarted (SIGKILL/crash); the job did not complete. "+
 				"last_seen_at: timestamp of the last SnapshotJob write for this job; useful for determining when the daemon last observed it alive. "+
@@ -533,6 +549,12 @@ func (s *Server) registerTools() {
 			mcp.WithNumber("tail",
 				mcp.Description("Return last N chars of job output without fetching full content"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(true),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(true),
+				OpenWorldHint:   mcp.ToBoolPtr(false),
+			}),
 		),
 		s.handleStatus,
 	)
@@ -540,7 +562,7 @@ func (s *Server) registerTools() {
 	// sessions tool
 	s.mcp.AddTool(
 		mcp.NewTool("sessions",
-			mcp.WithDescription("Manage sessions and jobs: list, info, health, cancel, gc, refresh-warmup. "+
+			mcp.WithDescription("[manage — server state, no cost] Manage sessions and jobs: list, info, health, cancel, gc, refresh-warmup. "+
 				"action=list returns dual-source brief rows (sessions + loom_tasks) — default fits ~4k chars. "+
 				"Use sessions_limit/sessions_offset and loom_limit/loom_offset for independent pagination per source; "+
 				"legacy limit/offset applies to both sources as a fallback. "+
@@ -584,6 +606,12 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("include_content",
 				mcp.Description("Return full job content in info action (default false)"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(false),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(false),
+			}),
 		),
 		s.handleSessions,
 	)
@@ -591,7 +619,7 @@ func (s *Server) registerTools() {
 	// audit tool
 	s.mcp.AddTool(
 		mcp.NewTool("audit",
-			mcp.WithDescription("Run multi-agent codebase audit: scan→validate→investigate. "+
+			mcp.WithDescription("[delegate — external CLI, free for you] Run multi-agent codebase audit: scan→validate→investigate. "+
 				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full audit output."),
 			mcp.WithString("cwd",
 				mcp.Description("Working directory to audit"),
@@ -610,116 +638,24 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("include_content",
 				mcp.Description("Sync mode: return full audit output instead of brief metadata (default false)"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(true),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
 		),
 		s.handleAudit,
 	)
 
-	// think tool
-	s.mcp.AddTool(
-		mcp.NewTool("think",
-			mcp.WithDescription(mustStatefulToolDescription("think")+" "+
-				"Returns structured reasoning metadata (fits ~4k chars); all fields are compact by design."),
-			mcp.WithString("pattern",
-				mcp.Required(),
-				mcp.Description("Pattern name"),
-				mcp.Enum("think", "critical_thinking", "sequential_thinking", "scientific_method",
-					"decision_framework", "problem_decomposition", "debugging_approach", "mental_model",
-					"metacognitive_monitoring", "structured_argumentation", "collaborative_reasoning",
-					"recursive_thinking", "domain_modeling", "architecture_analysis", "stochastic_algorithm",
-					"temporal_thinking", "visual_reasoning",
-					"source_comparison", "literature_review", "peer_review",
-					"replication_analysis", "experimental_loop", "research_synthesis"),
-			),
-			mcp.WithString("issue", mcp.Description("Issue to analyze. Describe: the problem, symptoms observed, what you've already tried, and your current understanding. Be specific — vague descriptions produce vague analysis. (Used by: critical_thinking, debugging_approach)")),
-			mcp.WithString("topic", mcp.Description("Central question or area to explore. Include context and what you already know. (Used by: structured_argumentation, collaborative_reasoning)")),
-			mcp.WithString("thought", mcp.Description("Your current thinking. Be specific — the tool will analyze structure and suggest next steps. (Used by: think, sequential_thinking)")),
-			mcp.WithString("session_id", mcp.Description("Session ID for stateful patterns")),
-			mcp.WithString("decision", mcp.Description("Frame as a choice: 'Choose between X and Y given constraints Z'. (Used by: decision_framework)")),
-			mcp.WithString("problem", mcp.Description("State the problem clearly. Include: scope, constraints, what success looks like. (Used by: problem_decomposition, mental_model, recursive_thinking)")),
-			mcp.WithString("task", mcp.Description("Task for metacognitive monitoring")),
-			mcp.WithString("modelName", mcp.Description("Mental model name (mental_model)")),
-			mcp.WithString("approachName", mcp.Description("Debugging method name (debugging_approach)")),
-			mcp.WithString("domainName", mcp.Description("Domain name (domain_modeling)")),
-			mcp.WithString("timeFrame", mcp.Description("Time frame (temporal_thinking)")),
-			mcp.WithString("operation", mcp.Description("Visual operation (visual_reasoning)")),
-			mcp.WithString("algorithmType", mcp.Description("Algorithm type: mdp, mcts, bandit, bayesian, hmm")),
-			mcp.WithString("problemDefinition", mcp.Description("Problem definition (stochastic_algorithm)")),
-			mcp.WithString("stage", mcp.Description("Stage (scientific_method, collaborative_reasoning)")),
-			mcp.WithString("artifact", mcp.Description("The code, design, or document to review. Include relevant context. (Used by: peer_review)")),
-			mcp.WithString("claim", mcp.Description("Claim to analyze (replication_analysis)")),
-			mcp.WithString("hypothesis", mcp.Description("Concrete root cause theory based on evidence. Rate confidence 0-1. (Used by: experimental_loop)")),
-			mcp.WithString("criteria",
-				mcp.Description("JSON array of criteria objects [{\"name\":\"x\",\"weight\":0.3}] for decision_framework pattern"),
-			),
-			mcp.WithString("options",
-				mcp.Description("JSON array of option objects [{\"name\":\"x\",\"scores\":{...}}] for decision_framework pattern"),
-			),
-			mcp.WithString("components",
-				mcp.Description("JSON array of component objects [{\"name\":\"x\",\"dependencies\":[...]}] for architecture_analysis pattern"),
-			),
-			mcp.WithString("sources",
-				mcp.Description("JSON array of source strings for source_comparison pattern"),
-			),
-			mcp.WithString("findings",
-				mcp.Description("JSON array of finding strings for research_synthesis pattern"),
-			),
-			// Flat params for stateful patterns (step progression, pal-mcp-server style)
-			mcp.WithString("hypothesis_text",
-				mcp.Description("Your root cause theory. Be specific: what exactly is broken and why. Base on evidence, not assumptions. (Used by: debugging_approach)"),
-			),
-			mcp.WithString("confidence",
-				mcp.Description("Your confidence: exploring (just started), low (early idea), medium (some evidence), high (strong evidence), very_high (very strong), certain (confirmed). (Used by: debugging_approach, experimental_loop)"),
-			),
-			mcp.WithString("findings_text",
-				mcp.Description("What you discovered this step. Include: file paths, line numbers, error messages, observations. (Used by: debugging_approach)"),
-			),
-			mcp.WithString("hypothesis_action",
-				mcp.Description("Action on hypothesis: propose (new theory), confirm (verified), refute (disproven). (Used by: debugging_approach)"),
-			),
-			mcp.WithString("entry_type",
-				mcp.Description("Scientific method entry type: observation, hypothesis, prediction, experiment, analysis, conclusion. (Used by: scientific_method)"),
-			),
-			mcp.WithString("entry_text",
-				mcp.Description("Content of the scientific method entry. (Used by: scientific_method)"),
-			),
-			mcp.WithString("link_to",
-				mcp.Description("ID of entry to link to. Optional — auto-links by type sequence if omitted. (Used by: scientific_method)"),
-			),
-			mcp.WithString("contribution_type",
-				mcp.Description("Contribution type: observation, question, insight, concern, suggestion, challenge, synthesis. (Used by: collaborative_reasoning)"),
-			),
-			mcp.WithString("contribution_text",
-				mcp.Description("Content of the contribution. (Used by: collaborative_reasoning)"),
-			),
-			mcp.WithString("persona_id",
-				mcp.Description("ID of the persona making this contribution. (Used by: collaborative_reasoning)"),
-			),
-			mcp.WithString("argument_type",
-				mcp.Description("Argument type: claim, evidence, rebuttal. (Used by: structured_argumentation)"),
-			),
-			mcp.WithString("argument_text",
-				mcp.Description("Content of the argument. (Used by: structured_argumentation)"),
-			),
-			mcp.WithString("supports_claim_id",
-				mcp.Description("ID of claim this evidence or rebuttal targets. (Used by: structured_argumentation)"),
-			),
-			mcp.WithNumber("step_number",
-				mcp.Description("Current investigation step (1, 2, 3...). Tracks progression. (Used by: debugging_approach, scientific_method)"),
-			),
-			mcp.WithNumber("contribution_confidence",
-				mcp.Description("Confidence in contribution (0-1). (Used by: collaborative_reasoning)"),
-			),
-			mcp.WithBoolean("next_step_needed",
-				mcp.Description("True if you plan to continue with another step. (Used by: debugging_approach, scientific_method)"),
-			),
-		),
-		s.handleThink,
-	)
+	// Pattern tools: 23 individual MCP tools, one per think pattern.
+	// Replaces the single "think" tool with per-pattern tools.
+	s.registerPatternTools()
 
 	// investigate tool
 	s.mcp.AddTool(
 		mcp.NewTool("investigate",
-			mcp.WithDescription(mustStatefulToolDescription("investigate")+" "+
+			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("investigate")+" "+
 				"action=list: returns brief rows (fits ~4k chars); supports limit (default 20, max 100) and offset. "+
 				"action=status: returns brief metadata (fits ~4k chars). "+
 				"action=recall: default omits full report; add include_content=true to retrieve it."),
@@ -775,6 +711,12 @@ func (s *Server) registerTools() {
 			mcp.WithNumber("offset",
 				mcp.Description("action=list: zero-based pagination offset"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(false),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
 		),
 		s.handleInvestigate,
 	)
@@ -782,7 +724,7 @@ func (s *Server) registerTools() {
 	// consensus tool
 	s.mcp.AddTool(
 		mcp.NewTool("consensus",
-			mcp.WithDescription(mustStatefulToolDescription("consensus")+" "+
+			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("consensus")+" "+
 				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full transcript."),
 			mcp.WithString("topic",
 				mcp.Required(),
@@ -803,6 +745,12 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("include_content",
 				mcp.Description("Sync mode: return full consensus transcript instead of brief metadata (default false)"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(true),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
 		),
 		s.handleConsensus,
 	)
@@ -810,7 +758,7 @@ func (s *Server) registerTools() {
 	// debate tool
 	s.mcp.AddTool(
 		mcp.NewTool("debate",
-			mcp.WithDescription(mustStatefulToolDescription("debate")+" "+
+			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("debate")+" "+
 				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full transcript."),
 			mcp.WithString("topic",
 				mcp.Required(),
@@ -828,6 +776,12 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("include_content",
 				mcp.Description("Sync mode: return full debate transcript instead of brief metadata (default false)"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(true),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
 		),
 		s.handleDebate,
 	)
@@ -835,7 +789,7 @@ func (s *Server) registerTools() {
 	// dialog tool
 	s.mcp.AddTool(
 		mcp.NewTool("dialog",
-			mcp.WithDescription(mustStatefulToolDescription("dialog")+" "+
+			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("dialog")+" "+
 				"Default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full transcript."),
 			mcp.WithString("prompt",
 				mcp.Required(),
@@ -850,6 +804,12 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("include_content",
 				mcp.Description("Sync mode: return full dialog transcript instead of brief metadata (default false)"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(false),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
 		),
 		s.handleDialog,
 	)
@@ -857,7 +817,7 @@ func (s *Server) registerTools() {
 	// agents tool
 	s.mcp.AddTool(
 		mcp.NewTool("agents",
-			mcp.WithDescription("PRIMARY tool for task execution. "+
+			mcp.WithDescription("[manage — server state, no cost] PRIMARY tool for task execution. "+
 				"Actions: run (execute task with agent=<name>), list (show agents), find (search agents), info (agent details). "+
 				"For run: specify agent=<name> to select the agent. If omitted, returns a candidate list for you to choose from. "+
 				"Use find(prompt=<query>) to search agents by keyword, or list to see all available agents with descriptions. "+
@@ -890,6 +850,12 @@ func (s *Server) registerTools() {
 			mcp.WithNumber("offset",
 				mcp.Description("action=list/find: zero-based pagination offset"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(true),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(true),
+				OpenWorldHint:   mcp.ToBoolPtr(false),
+			}),
 		),
 		s.handleAgents,
 	)
@@ -897,7 +863,7 @@ func (s *Server) registerTools() {
 	// agent tool — runs a discovered agent through any CLI
 	s.mcp.AddTool(
 		mcp.NewTool("agent",
-			mcp.WithDescription("Run a project agent through any CLI. Loads agent definition, "+
+			mcp.WithDescription("[delegate — external CLI, free for you] Run a project agent through any CLI. Loads agent definition, "+
 				"injects system prompt, delegates to CLI in autonomous mode. "+
 				"The CLI IS the agent — it reads files, runs commands, edits code. "+
 				"When async=true: returns job_id immediately; use the status tool to poll for completion. "+
@@ -928,6 +894,12 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("include_content",
 				mcp.Description("Sync mode: return full agent output instead of brief metadata (default false)"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(false),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
 		),
 		s.handleAgentRun,
 	)
@@ -935,7 +907,7 @@ func (s *Server) registerTools() {
 	// deepresearch tool
 	s.mcp.AddTool(
 		mcp.NewTool("deepresearch",
-			mcp.WithDescription("Deep research via Google Gemini API with file attachments and caching. "+
+			mcp.WithDescription("[delegate — external CLI, free for you] Deep research via Google Gemini API with file attachments and caching. "+
 				"Returns full synthesized report; not subject to the 4k default budget. "+
 				"This tool is synchronous — it blocks until research is complete and returns content directly (no job_id). "+
 				"Results are cached by topic; use force=true to bypass the cache and trigger a fresh Gemini call. "+
@@ -953,6 +925,12 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("force",
 				mcp.Description("Bypass cache"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(false),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
 		),
 		s.handleDeepresearch,
 	)
@@ -960,7 +938,7 @@ func (s *Server) registerTools() {
 	// workflow tool
 	s.mcp.AddTool(
 		mcp.NewTool("workflow",
-			mcp.WithDescription(mustStatefulToolDescription("workflow")+" "+
+			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("workflow")+" "+
 				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full output."),
 			mcp.WithString("name",
 				mcp.Description("Workflow name (for logging)"),
@@ -978,6 +956,12 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("include_content",
 				mcp.Description("Sync mode: return full workflow output instead of brief metadata (default false)"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(false),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
 		),
 		s.handleWorkflow,
 	)
@@ -985,7 +969,7 @@ func (s *Server) registerTools() {
 	// upgrade tool — binary self-update from GitHub releases
 	s.mcp.AddTool(
 		mcp.NewTool("upgrade",
-			mcp.WithDescription("Check for and apply aimux binary updates from GitHub releases. "+
+			mcp.WithDescription("[manage — server state, no cost] Check for and apply aimux binary updates from GitHub releases. "+
 				"action=check: detect latest version. action=apply: download, verify checksum, replace binary. "+
 				"After apply, daemon will exit when all CC sessions disconnect (deferred restart). "+
 				"action=check returns compact status fields (fits ~4k chars); release_notes are omitted by default (release_notes_length is reported). "+
@@ -998,6 +982,12 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("include_content",
 				mcp.Description("action=check: return full release_notes body (default false)"),
 			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(false),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(false),
+			}),
 		),
 		s.handleUpgrade,
 	)
@@ -1415,10 +1405,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			}
 		}
 		return marshalToolResult(map[string]any{
-			"refreshed":         true,
-			"available":         enabled,
-			"excluded":          excluded,
-			"breakers_reset":    true,
+			"refreshed":                    true,
+			"available":                    enabled,
+			"excluded":                     excluded,
+			"breakers_reset":               true,
 			"binary_only_fallback_applied": len(enabled) > 0 && len(excluded) == 0,
 		})
 
@@ -1527,12 +1517,12 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		includeContent := request.GetBool("include_content", false)
 		releaseNotesLen := len(release.ReleaseNotes)
 		payload := map[string]any{
-			"status":                "update_available",
-			"current_version":       Version,
-			"latest_version":        release.Version,
-			"asset_name":            release.AssetName,
-			"published_at":          release.PublishedAt,
-			"release_notes_length":  releaseNotesLen,
+			"status":               "update_available",
+			"current_version":      Version,
+			"latest_version":       release.Version,
+			"asset_name":           release.AssetName,
+			"published_at":         release.PublishedAt,
+			"release_notes_length": releaseNotesLen,
 		}
 		if includeContent {
 			payload["release_notes"] = release.ReleaseNotes
@@ -1583,12 +1573,12 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 			})
 		case "hot_swap":
 			return marshalToolResult(map[string]any{
-				"status":                   "updated_hot_swap",
-				"previous_version":         result.PreviousVersion,
-				"new_version":              result.NewVersion,
-				"handoff_transferred_ids":  result.HandoffTransferred,
-				"handoff_duration_ms":      result.HandoffDurationMs,
-				"message":                  result.Message,
+				"status":                  "updated_hot_swap",
+				"previous_version":        result.PreviousVersion,
+				"new_version":             result.NewVersion,
+				"handoff_transferred_ids": result.HandoffTransferred,
+				"handoff_duration_ms":     result.HandoffDurationMs,
+				"message":                 result.Message,
 			})
 		case "deferred":
 			// Preserve v4.3.0 wire format: status="updated" for backwards compat.

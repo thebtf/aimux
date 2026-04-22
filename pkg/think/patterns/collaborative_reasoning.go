@@ -32,6 +32,19 @@ func (p *collaborativeReasoningPattern) Description() string {
 	return "Multi-persona collaborative reasoning with stage tracking"
 }
 
+func (p *collaborativeReasoningPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"topic":             {Type: "string", Required: true, Description: "The topic to reason about collaboratively"},
+		"stage":             {Type: "enum", Required: false, Description: "Current collaboration stage", EnumValues: []string{"problem-definition", "ideation", "critique", "integration", "decision", "reflection"}},
+		"contribution_type": {Type: "enum", Required: false, Description: "Flat format: type of contribution", EnumValues: []string{"observation", "question", "insight", "concern", "suggestion", "challenge", "synthesis"}},
+		"contribution_text": {Type: "string", Required: false, Description: "Flat format: text of the contribution"},
+		"persona_id":        {Type: "string", Required: false, Description: "Flat format: persona making the contribution"},
+		"personas":          {Type: "array", Required: false, Description: "List of participant personas for tracking"},
+	}
+}
+
+func (p *collaborativeReasoningPattern) Category() string { return "solo" }
+
 func (p *collaborativeReasoningPattern) Validate(input map[string]any) (map[string]any, error) {
 	topicRaw, ok := input["topic"]
 	if !ok {

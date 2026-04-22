@@ -39,6 +39,14 @@ func (p *criticalThinkingPattern) Description() string {
 	return "Scan text for cognitive biases using trigger-phrase detection"
 }
 
+func (p *criticalThinkingPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"issue": {Type: "string", Required: true, Description: "Text to scan for cognitive biases"},
+	}
+}
+
+func (p *criticalThinkingPattern) Category() string { return "solo" }
+
 func (p *criticalThinkingPattern) Validate(input map[string]any) (map[string]any, error) {
 	issue, ok := input["issue"]
 	if !ok {
@@ -136,7 +144,7 @@ type samplingBiasResponse struct {
 		Evidence string `json:"evidence"`
 		Severity string `json:"severity"`
 	} `json:"biases"`
-	Fallacies            []string `json:"fallacies"`
+	Fallacies              []string `json:"fallacies"`
 	UnsupportedAssumptions []string `json:"unsupportedAssumptions"`
 }
 

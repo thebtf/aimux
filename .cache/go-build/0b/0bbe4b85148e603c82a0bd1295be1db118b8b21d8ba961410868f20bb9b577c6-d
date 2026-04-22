@@ -1,0 +1,11 @@
+./daemon.go
+./handoff.go
+./handoff_proto.go
+./handoff_public.go
+./handoff_public_windows.go
+./handoff_socket_windows.go
+./handoff_windows.go
+./peer_pid_windows.go
+./reaper.go
+./snapshot.go
+./termination.go

@@ -443,4 +443,3 @@ func TestCollaborativeReasoning_ContributionAndStage(t *testing.T) {
 		t.Fatalf("expected 1 contribution in ideation, got %d", progress["ideation"])
 	}
 }
-

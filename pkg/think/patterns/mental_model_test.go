@@ -25,9 +25,9 @@ func TestMentalModel_CompletenessScalesByTextLength(t *testing.T) {
 		longProblem[i] = 'x'
 	}
 	longInput := map[string]any{
-		"modelName": "inversion",
-		"problem":   string(longProblem),
-		"reasoning": "detailed reasoning about the problem covering all angles",
+		"modelName":  "inversion",
+		"problem":    string(longProblem),
+		"reasoning":  "detailed reasoning about the problem covering all angles",
 		"conclusion": "a well-reasoned conclusion",
 	}
 	validatedLong, _ := p.Validate(longInput)

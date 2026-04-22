@@ -1,0 +1,13 @@
+./audit.go
+./consensus.go
+./context.go
+./debate.go
+./dialog.go
+./diff.go
+./helpers.go
+./holdout.go
+./orchestrator.go
+./pair.go
+./pheromones.go
+./quality_gate.go
+./workflow.go

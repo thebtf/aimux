@@ -17,6 +17,17 @@ func (p *replicationAnalysisPattern) Description() string {
 	return "Plan replication of a claim, experiment, or benchmark — identify requirements and risks"
 }
 
+func (p *replicationAnalysisPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"claim":          {Type: "string", Required: true, Description: "The claim or experiment to replicate"},
+		"originalMethod": {Type: "string", Required: false, Description: "Original method description"},
+		"resources":      {Type: "array", Required: false, Description: "Available resources for replication"},
+		"constraints":    {Type: "array", Required: false, Description: "Constraints on the replication"},
+	}
+}
+
+func (p *replicationAnalysisPattern) Category() string { return "solo" }
+
 func (p *replicationAnalysisPattern) Validate(input map[string]any) (map[string]any, error) {
 	claimRaw, ok := input["claim"]
 	if !ok {

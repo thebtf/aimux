@@ -18,6 +18,15 @@ func (p *sourceComparisonPattern) Description() string {
 	return "Compare multiple sources on a topic — agreements, disagreements, confidence matrix"
 }
 
+func (p *sourceComparisonPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"topic":   {Type: "string", Required: true, Description: "The topic being compared across sources"},
+		"sources": {Type: "array", Required: true, Description: "At least 2 sources (strings or objects with name/claim)"},
+	}
+}
+
+func (p *sourceComparisonPattern) Category() string { return "solo" }
+
 func (p *sourceComparisonPattern) Validate(input map[string]any) (map[string]any, error) {
 	// Parse JSON string params from MCP schema
 	if s, ok := input["sources"].(string); ok && s != "" {

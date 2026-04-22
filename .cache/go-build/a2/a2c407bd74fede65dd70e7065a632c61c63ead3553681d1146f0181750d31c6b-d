@@ -1,0 +1,8 @@
+./consensus.go
+./debate.go
+./dialog.go
+./extract.go
+./investigate.go
+./policy.go
+./think.go
+./workflow.go

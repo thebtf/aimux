@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -110,7 +111,18 @@ func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*
 	// Get CLI profile
 	profile, profileErr := s.registry.Get(cli)
 	if profileErr != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("CLI %q not configured", cli)), nil
+		availableCLIs := s.registry.EnabledCLIs()
+		sort.Strings(availableCLIs)
+		availableMsg := "none"
+		if len(availableCLIs) > 0 {
+			availableMsg = strings.Join(availableCLIs, ", ")
+		}
+		suggestion := ""
+		if len(availableCLIs) > 0 {
+			suggestion = fmt.Sprintf(" Try: exec(role=\"coding\") for automatic routing, or cli=%s.", availableCLIs[0])
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("CLI %s not available: %v. Available CLIs: %s.%s",
+			cli, profileErr, availableMsg, suggestion)), nil
 	}
 
 	// Resolve read_only from role

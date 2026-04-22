@@ -58,6 +58,15 @@ func (p *researchSynthesisPattern) Validate(input map[string]any) (map[string]an
 	}, nil
 }
 
+func (p *researchSynthesisPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"topic":    {Type: "string", Required: true, Description: "The research topic to synthesize"},
+		"findings": {Type: "array", Required: true, Description: "List of research findings (strings)"},
+	}
+}
+
+func (p *researchSynthesisPattern) Category() string { return "solo" }
+
 func (p *researchSynthesisPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	topic := validInput["topic"].(string)
 	findings := validInput["findings"].([]any)

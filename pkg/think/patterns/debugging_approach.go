@@ -14,7 +14,7 @@ var knownMethods = map[string]string{
 	"binary_search":   "Narrow the problem space by testing the midpoint",
 	"bisect":          "Find the commit that introduced the bug",
 	"trace":           "Follow execution path step by step",
-	"delta_debugging":  "Minimize the failure-inducing input",
+	"delta_debugging": "Minimize the failure-inducing input",
 	"wolf_fence":      "Divide the search space in half repeatedly",
 	"rubber_duck":     "Explain the problem aloud to identify assumptions",
 	"printf":          "Add output statements to track variable values",
@@ -141,7 +141,12 @@ func (p *debuggingApproachPattern) Validate(input map[string]any) (map[string]an
 				if !ok {
 					return nil, fmt.Errorf("field 'confidence' must be a string enum")
 				}
-				conf = confidenceEnumToFloat(cs)
+				switch cs {
+				case "exploring", "low", "medium", "high", "very_high", "certain":
+					conf = confidenceEnumToFloat(cs)
+				default:
+					return nil, fmt.Errorf("field 'confidence' must be one of: exploring, low, medium, high, very_high, certain")
+				}
 			}
 			validated["hypothesis"] = map[string]any{
 				"id":         generateHypothesisID(),
@@ -217,6 +222,21 @@ func (p *debuggingApproachPattern) Validate(input map[string]any) (map[string]an
 
 	return validated, nil
 }
+
+func (p *debuggingApproachPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"issue":             {Type: "string", Required: true, Description: "The issue or bug being debugged"},
+		"approachName":      {Type: "string", Required: false, Description: "Debugging method name (e.g. binary_search, trace, rubber_duck)"},
+		"hypothesis_text":   {Type: "string", Required: false, Description: "Flat format: text of a new hypothesis to add"},
+		"confidence":        {Type: "enum", Required: false, Description: "Confidence level for the hypothesis", EnumValues: []string{"exploring", "low", "medium", "high", "very_high", "certain"}},
+		"hypothesis_action": {Type: "enum", Required: false, Description: "Flat format: action on last hypothesis", EnumValues: []string{"propose", "confirm", "refute"}},
+		"step_number":       {Type: "number", Required: false, Description: "External step tracking number"},
+		"next_step_needed":  {Type: "boolean", Required: false, Description: "Whether another step is needed"},
+		"findings_text":     {Type: "string", Required: false, Description: "Findings from this debugging step"},
+	}
+}
+
+func (p *debuggingApproachPattern) Category() string { return "solo" }
 
 func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	sess := think.GetOrCreateSession(sessionID, "debugging_approach", map[string]any{

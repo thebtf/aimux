@@ -31,13 +31,13 @@ func (p *recursiveThinkingPattern) Validate(input map[string]any) (map[string]an
 	}
 	out := map[string]any{"problem": ps}
 
-	if v, ok := input["baseCase"].(string); ok {
+	if v, ok := input["baseCase"].(string); ok && v != "" {
 		out["baseCase"] = v
 	}
-	if v, ok := input["recursiveCase"].(string); ok {
+	if v, ok := input["recursiveCase"].(string); ok && v != "" {
 		out["recursiveCase"] = v
 	}
-	if v, ok := input["convergenceCheck"].(string); ok {
+	if v, ok := input["convergenceCheck"].(string); ok && v != "" {
 		out["convergenceCheck"] = v
 	}
 	if v, err := toFloat64(input["currentDepth"]); err == nil && v >= 0 {
@@ -48,6 +48,19 @@ func (p *recursiveThinkingPattern) Validate(input map[string]any) (map[string]an
 	}
 	return out, nil
 }
+
+func (p *recursiveThinkingPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"problem":          {Type: "string", Required: true, Description: "The problem to decompose recursively"},
+		"baseCase":         {Type: "string", Required: false, Description: "The base case condition"},
+		"recursiveCase":    {Type: "string", Required: false, Description: "The recursive case description"},
+		"convergenceCheck": {Type: "string", Required: false, Description: "How to verify convergence"},
+		"currentDepth":     {Type: "number", Required: false, Description: "Current recursion depth"},
+		"maxDepth":         {Type: "number", Required: false, Description: "Maximum allowed recursion depth"},
+	}
+}
+
+func (p *recursiveThinkingPattern) Category() string { return "solo" }
 
 func (p *recursiveThinkingPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	problem := validInput["problem"].(string)
@@ -86,19 +99,19 @@ func (p *recursiveThinkingPattern) Handle(validInput map[string]any, sessionID s
 	recursiveStructureDetected := detectRecursiveStructure(keywords)
 
 	data := map[string]any{
-		"problem":                   problem,
-		"currentDepth":              currentDepth,
-		"maxDepth":                  maxDepth,
-		"depthWarning":              depthWarning,
-		"convergenceWarning":        convergenceWarning,
-		"hasBaseCase":               validInput["baseCase"] != nil,
-		"hasRecursiveCase":          validInput["recursiveCase"] != nil,
-		"depthRemaining":            depthRemaining,
-		"depthPercentage":           depthPercentage,
-		"isBaseCase":                isBaseCase,
-		"keywords":                  keywords,
+		"problem":                    problem,
+		"currentDepth":               currentDepth,
+		"maxDepth":                   maxDepth,
+		"depthWarning":               depthWarning,
+		"convergenceWarning":         convergenceWarning,
+		"hasBaseCase":                validInput["baseCase"] != nil,
+		"hasRecursiveCase":           validInput["recursiveCase"] != nil,
+		"depthRemaining":             depthRemaining,
+		"depthPercentage":            depthPercentage,
+		"isBaseCase":                 isBaseCase,
+		"keywords":                   keywords,
 		"recursiveStructureDetected": recursiveStructureDetected,
-		"guidance":                  BuildGuidance("recursive_thinking", "basic", []string{"baseCase", "recursiveCase", "convergenceCheck", "maxDepth"}),
+		"guidance":                   BuildGuidance("recursive_thinking", "basic", []string{"baseCase", "recursiveCase", "convergenceCheck", "maxDepth"}),
 	}
 	// Tier 2A: text analysis
 	primaryText := validInput["problem"].(string)

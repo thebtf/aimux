@@ -1,0 +1,7 @@
+./benchmark_test.go
+./error_e2e_test.go
+./error_propagation_test.go
+./mux_compat_test.go
+./patterns_test.go
+./server_test.go
+./stress_test.go

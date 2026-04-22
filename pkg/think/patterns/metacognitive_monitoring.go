@@ -56,6 +56,20 @@ func (p *metacognitiveMonitoringPattern) Validate(input map[string]any) (map[str
 	return out, nil
 }
 
+func (p *metacognitiveMonitoringPattern) SchemaFields() map[string]think.FieldSchema {
+	return map[string]think.FieldSchema{
+		"task":                {Type: "string", Required: true, Description: "The task being monitored metacognitively"},
+		"knowledgeAssessment": {Type: "string", Required: false, Description: "Assessment of knowledge depth"},
+		"claims":              {Type: "array", Required: false, Description: "List of claims being made"},
+		"cognitiveProcesses":  {Type: "array", Required: false, Description: "List of cognitive processes involved"},
+		"biases":              {Type: "array", Required: false, Description: "List of identified biases"},
+		"uncertainties":       {Type: "array", Required: false, Description: "List of uncertainties"},
+		"confidence":          {Type: "number", Required: false, Description: "Confidence level 0.0-1.0"},
+	}
+}
+
+func (p *metacognitiveMonitoringPattern) Category() string { return "solo" }
+
 func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	task := validInput["task"].(string)
 
@@ -166,4 +180,3 @@ func computeMetacogCalibration(rawConfidence float64, uncertaintyCount, biasCoun
 		adjustmentReason:     reason,
 	}
 }
-

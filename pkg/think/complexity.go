@@ -12,13 +12,13 @@ const (
 	structuralDepthWeight = 0.2
 	patternBiasWeight     = 0.2
 
-	textLengthDivisor     = 500.0  // Characters before score reaches 100
-	subItemMultiplier     = 10     // Score per array item
-	structuralDepthFactor = 25     // Score per nesting level
-	maxMeasureRecursion   = 5      // Max depth for measuring nesting
-	maxItemsPerLevel      = 10     // Max items scanned per nesting level
-	defaultThreshold      = 60     // Default solo/consensus threshold
-	soloOnlyBias          = -50    // Bias for patterns without dialog config
+	textLengthDivisor     = 500.0 // Characters before score reaches 100
+	subItemMultiplier     = 10    // Score per array item
+	structuralDepthFactor = 25    // Score per nesting level
+	maxMeasureRecursion   = 5     // Max depth for measuring nesting
+	maxItemsPerLevel      = 10    // Max items scanned per nesting level
+	defaultThreshold      = 60    // Default solo/consensus threshold
+	soloOnlyBias          = -50   // Bias for patterns without dialog config
 )
 
 // Text fields scanned for length scoring.
