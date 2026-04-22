@@ -7,28 +7,35 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/routing"
 	aimuxServer "github.com/thebtf/aimux/pkg/server"
+	muxdaemon "github.com/thebtf/mcp-mux/muxcore/daemon"
 	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "aimux: %v\n", err)
+		var exitErr *exitCodeError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	_, err := parseHandoffFlags(os.Args[1:])
+	handoff, err := parseHandoffFlags(os.Args[1:])
 	if err != nil {
 		return err
 	}
@@ -66,11 +73,23 @@ func run() error {
 		log.Warn("aimux: AIMUX_NO_ENGINE=1 is deprecated and ignored; aimux always runs via muxcore engine (daemon or shim mode)")
 	}
 
+	// NEW: hoist ctx creation so both branches share it.
+	// Shim branch passes ctx to runShim; daemon branch passes ctx to engine.Run.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if handoff.From != "" {
+		mode = ModeDaemon
+	}
+
 	// FR-8: emit audit log line naming the detected mode and signal before any
 	// mode-specific branch executes. Enables postmortem correlation with the
 	// "aimux v<version> starting" line — first two log lines identify the path taken.
 	modeSignal := "default"
-	if mode == ModeDaemon {
+	switch {
+	case handoff.From != "":
+		modeSignal = "handoff"
+	case mode == ModeDaemon:
 		modeSignal = "arg"
 	}
 	modeName := "shim"
@@ -79,10 +98,13 @@ func run() error {
 	}
 	log.Info("aimux v%s mode=%s signal=%s", aimuxServer.Version, modeName, modeSignal)
 
-	// NEW: hoist ctx creation so both branches share it.
-	// Shim branch passes ctx to runShim; daemon branch passes ctx to engine.Run.
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	if handoff.From != "" {
+		cleanupHandoff, handoffErr := bootstrapSuccessorHandoff(ctx, log, handoff)
+		if handoffErr != nil {
+			return handoffErr
+		}
+		defer cleanupHandoff()
+	}
 
 	// NEW: shim branch — return directly without any heavy init.
 	if mode == ModeShim {
@@ -284,4 +306,163 @@ func validateHandoffFlags(handoff handoffFlags) error {
 	}
 
 	return nil
+}
+
+type exitCodeError struct {
+	Code int
+	Err  error
+}
+
+func (e *exitCodeError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *exitCodeError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type handoffRelay struct {
+	tokenPath string
+	socketPath string
+	listener  net.Listener
+	done      chan error
+}
+
+func bootstrapSuccessorHandoff(ctx context.Context, log *logger.Logger, handoff handoffFlags) (func(), error) {
+	upstreams, err := receivePredecessorHandoff(ctx, handoff)
+	if err != nil {
+		log.Error("handoff bootstrap failed: %v", err)
+		return nil, &exitCodeError{Code: 2, Err: err}
+	}
+
+	relay, err := startLocalHandoffRelay(ctx, handoff.Token, upstreams)
+	if err != nil {
+		closeHandoffUpstreams(upstreams)
+		return nil, fmt.Errorf("start local handoff relay: %w", err)
+	}
+
+	if err := os.Setenv("MCPMUX_HANDOFF_TOKEN_PATH", relay.tokenPath); err != nil {
+		relay.cleanup(log)
+		closeHandoffUpstreams(upstreams)
+		return nil, fmt.Errorf("set MCPMUX_HANDOFF_TOKEN_PATH: %w", err)
+	}
+	if err := os.Setenv("MCPMUX_HANDOFF_SOCKET", relay.socketPath); err != nil {
+		relay.cleanup(log)
+		closeHandoffUpstreams(upstreams)
+		return nil, fmt.Errorf("set MCPMUX_HANDOFF_SOCKET: %w", err)
+	}
+
+	log.Info("handoff bootstrap ready: predecessor=%s relay=%s upstreams=%d", handoff.From, relay.socketPath, len(upstreams))
+	return func() {
+		relay.cleanup(log)
+		closeHandoffUpstreams(upstreams)
+	}, nil
+}
+
+func receivePredecessorHandoff(ctx context.Context, handoff handoffFlags) ([]muxdaemon.HandoffUpstream, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	conn, err := dialPlatformHandoffConn(dialCtx, handoff.From)
+	if err != nil {
+		return nil, fmt.Errorf("connect to predecessor %q: %w", handoff.From, err)
+	}
+	defer conn.Close()
+
+	upstreams, err := muxdaemon.ReceiveHandoff(dialCtx, conn, handoff.Token)
+	if err != nil {
+		if errors.Is(err, muxdaemon.ErrTokenMismatch) || errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("handoff token mismatch or authentication rejected by predecessor")
+		}
+		return nil, fmt.Errorf("receive handoff from predecessor: %w", err)
+	}
+	return upstreams, nil
+}
+
+func startLocalHandoffRelay(ctx context.Context, token string, upstreams []muxdaemon.HandoffUpstream) (*handoffRelay, error) {
+	tokenPath, err := writeSuccessorHandoffTokenFile(token)
+	if err != nil {
+		return nil, fmt.Errorf("prepare handoff token: %w", err)
+	}
+
+	listener, socketPath, err := listenPlatformHandoffRelay()
+	if err != nil {
+		_ = muxdaemon.DeleteHandoffToken(tokenPath)
+		return nil, err
+	}
+
+	relay := &handoffRelay{
+		tokenPath:  tokenPath,
+		socketPath: socketPath,
+		listener:   listener,
+		done:       make(chan error, 1),
+	}
+
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			relay.done <- fmt.Errorf("accept local handoff relay: %w", acceptErr)
+			return
+		}
+		defer conn.Close()
+
+		_, performErr := muxdaemon.PerformHandoff(ctx, conn, token, upstreams)
+		relay.done <- performErr
+	}()
+
+	return relay, nil
+}
+
+func writeSuccessorHandoffTokenFile(token string) (string, error) {
+	file, err := os.CreateTemp("", "aimux-handoff-*.tok")
+	if err != nil {
+		return "", fmt.Errorf("create temp token file: %w", err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close temp token file: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write temp token file: %w", err)
+	}
+	return path, nil
+}
+
+func closeHandoffUpstreams(upstreams []muxdaemon.HandoffUpstream) {
+	for _, upstream := range upstreams {
+		if upstream.StdinFD > 0 {
+			_ = os.NewFile(upstream.StdinFD, "").Close()
+		}
+		if upstream.StdoutFD > 0 {
+			_ = os.NewFile(upstream.StdoutFD, "").Close()
+		}
+	}
+}
+
+func (r *handoffRelay) cleanup(log *logger.Logger) {
+	if r == nil {
+		return
+	}
+	if r.listener != nil {
+		_ = r.listener.Close()
+	}
+	select {
+	case err := <-r.done:
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Warn("handoff relay finished with error: %v", err)
+		}
+	default:
+	}
+	if err := muxdaemon.DeleteHandoffToken(r.tokenPath); err != nil {
+		log.Warn("handoff token cleanup failed: %v", err)
+	}
+	_ = removePlatformHandoffRelay(r.socketPath)
 }
