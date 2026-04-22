@@ -42,6 +42,21 @@ func validateCWD(cwd string) error {
 	return nil
 }
 
+// checkMinTwoCLIs returns a ToolResultError when fewer than 2 CLIs are enabled.
+// Returns nil when len(enabled) >= 2 so callers can use a single-line guard.
+func checkMinTwoCLIs(enabled []string) *mcp.CallToolResult {
+	if len(enabled) >= 2 {
+		return nil
+	}
+	availableMsg := "none"
+	if len(enabled) == 1 {
+		availableMsg = enabled[0]
+	}
+	return mcp.NewToolResultError(fmt.Sprintf(
+		"Requires 2+ CLIs; currently %d available (%s). Cannot run multi-CLI operation.",
+		len(enabled), availableMsg))
+}
+
 func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	topic, err := request.RequireString("topic")
 	if err != nil {
@@ -53,14 +68,8 @@ func (s *Server) handleConsensus(ctx context.Context, request mcp.CallToolReques
 	// Resolve participants from role preferences
 	enabled := s.registry.EnabledCLIs()
 	sort.Strings(enabled)
-	if len(enabled) < 2 {
-		availableMsg := "none"
-		if len(enabled) == 1 {
-			availableMsg = enabled[0]
-		}
-		return mcp.NewToolResultError(fmt.Sprintf(
-			"Requires 2+ CLIs; currently %d available (%s). Cannot run multi-CLI operation.",
-			len(enabled), availableMsg)), nil
+	if result := checkMinTwoCLIs(enabled); result != nil {
+		return result, nil
 	}
 
 	async := request.GetBool("async", true)
@@ -163,14 +172,8 @@ func (s *Server) handleDebate(ctx context.Context, request mcp.CallToolRequest) 
 
 	enabled := s.registry.EnabledCLIs()
 	sort.Strings(enabled)
-	if len(enabled) < 2 {
-		availableMsg := "none"
-		if len(enabled) == 1 {
-			availableMsg = enabled[0]
-		}
-		return mcp.NewToolResultError(fmt.Sprintf(
-			"Requires 2+ CLIs; currently %d available (%s). Cannot run multi-CLI operation.",
-			len(enabled), availableMsg)), nil
+	if result := checkMinTwoCLIs(enabled); result != nil {
+		return result, nil
 	}
 
 	async := request.GetBool("async", true)
@@ -285,14 +288,8 @@ func (s *Server) handleDialog(ctx context.Context, request mcp.CallToolRequest) 
 
 	enabled := s.registry.EnabledCLIs()
 	sort.Strings(enabled)
-	if len(enabled) < 2 {
-		availableMsg := "none"
-		if len(enabled) == 1 {
-			availableMsg = enabled[0]
-		}
-		return mcp.NewToolResultError(fmt.Sprintf(
-			"Requires 2+ CLIs; currently %d available (%s). Cannot run multi-CLI operation.",
-			len(enabled), availableMsg)), nil
+	if result := checkMinTwoCLIs(enabled); result != nil {
+		return result, nil
 	}
 
 	sessionID := request.GetString("session_id", "")

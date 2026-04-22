@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/think"
 )
 
 // buildInstructions generates the MCP server instructions string at connect time
@@ -24,8 +25,10 @@ func buildInstructions(
 		cliCount = len(allProfiles)
 	}
 
+	patternCount := len(think.GetAllPatterns())
+
 	lines := []string{
-		fmt.Sprintf("aimux — AI CLI Multiplexer (%d tools, %d CLIs, 23 think patterns)", 36, cliCount),
+		fmt.Sprintf("aimux — AI CLI Multiplexer (%d tools, %d CLIs, %d think patterns)", 36, cliCount, patternCount),
 		"",
 		"aimux delegates work to external AI CLIs — free for you, no token cost from your context. Use aimux for implementation, review, debugging, and multi-model consensus instead of native subagents.",
 		"",

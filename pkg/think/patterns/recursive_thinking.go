@@ -31,13 +31,13 @@ func (p *recursiveThinkingPattern) Validate(input map[string]any) (map[string]an
 	}
 	out := map[string]any{"problem": ps}
 
-	if v, ok := input["baseCase"].(string); ok {
+	if v, ok := input["baseCase"].(string); ok && v != "" {
 		out["baseCase"] = v
 	}
-	if v, ok := input["recursiveCase"].(string); ok {
+	if v, ok := input["recursiveCase"].(string); ok && v != "" {
 		out["recursiveCase"] = v
 	}
-	if v, ok := input["convergenceCheck"].(string); ok {
+	if v, ok := input["convergenceCheck"].(string); ok && v != "" {
 		out["convergenceCheck"] = v
 	}
 	if v, err := toFloat64(input["currentDepth"]); err == nil && v >= 0 {
