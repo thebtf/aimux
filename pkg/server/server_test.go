@@ -21,8 +21,8 @@ func newTestServer(t *testing.T) *aimuxServer.Server {
 			LogFile:               t.TempDir() + "/test.log",
 			DefaultTimeoutSeconds: 30,
 			Audit: config.AuditConfig{
-				ScannerRole:   "codereview",
-				ValidatorRole: "analyze",
+				ScannerRole:      "codereview",
+				ValidatorRole:    "analyze",
 				ParallelScanners: 1,
 			},
 		},
@@ -107,7 +107,7 @@ func TestRegisteredToolDescriptions_ContainStructuredSections(t *testing.T) {
 	srv := newTestServer(t)
 
 	// All six stateful tools must carry structured descriptions when registered.
-	statefulTools := []string{"investigate", "think", "consensus", "debate", "dialog", "workflow"}
+	statefulTools := []string{"investigate", "consensus", "debate", "dialog", "workflow"}
 
 	// Required section headers produced by renderStatefulToolDescription.
 	requiredHeaders := []string{"WHAT:", "WHEN:", "WHY:", "HOW:", "NOT:", "CHOOSE:"}
@@ -146,7 +146,7 @@ func TestRegisteredToolDescriptions_ContainStructuredSections(t *testing.T) {
 			t.Errorf("tool %q: NOT: section appears after or without CHOOSE: section", toolName)
 			continue
 		}
-		notSection := strings.ToLower(desc[notIdx+len("NOT:"):chooseIdx])
+		notSection := strings.ToLower(desc[notIdx+len("NOT:") : chooseIdx])
 		if !strings.Contains(notSection, "not") {
 			t.Errorf("tool %q: NOT: section does not contain a negative statement", toolName)
 		}
