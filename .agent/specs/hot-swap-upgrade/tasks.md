@@ -42,10 +42,11 @@ Filed engram cross-project issue #130 targeting mcp-mux for `PerformHandoff` + `
   AC: flags parsed via standard `flag` package · validation: token is 64-char hex, socket path exists · if either flag set, both must be set · unit test for flag parsing + validation errors · swap body→return nil ⇒ tests fail
   Artifacts: [cmd/aimux/main.go](cmd/aimux/main.go), [cmd/aimux/main_test.go](cmd/aimux/main_test.go)
 
-- [ ] T005 [EXECUTOR: sonnet] Implement successor bootstrap in `cmd/aimux/main.go`: when `--handoff-from` set, connect to that socket, present token, receive FDs via `muxcore/daemon.performHandoff` (successor side), then start engine serving on received FDs
+- [x] T005 [EXECUTOR: sonnet] Implement successor bootstrap in `cmd/aimux/main.go`: when `--handoff-from` set, connect to that socket, present token, receive FDs via `muxcore/daemon.performHandoff` (successor side), then start engine serving on received FDs
   AC: connection to predecessor succeeds · token mismatch → exit 2 with clear error log · successful handoff transitions to normal engine serve loop · e2e: spawn mock predecessor, verify successor inherits FDs · swap body→return nil ⇒ tests fail
+  Artifacts: [cmd/aimux/main.go](cmd/aimux/main.go), [cmd/aimux/main_test.go](cmd/aimux/main_test.go), [cmd/aimux/handoff_unix.go](cmd/aimux/handoff_unix.go), [cmd/aimux/handoff_windows.go](cmd/aimux/handoff_windows.go)
 
-- [ ] G002 [EXECUTOR: MAIN] VERIFY Phase 2 — BLOCKED until T004-T005 all [x]
+- [x] G002 [EXECUTOR: MAIN] VERIFY Phase 2 — BLOCKED until T004-T005 all [x]
   RUN: `go build ./cmd/aimux/ && go test ./cmd/... -count=1 -timeout 60s`. Integration test spawning successor.
   CHECK: successor mode activated only by flags · non-handoff start path unchanged · token validation enforced
   ENFORCE: NFR-5 socket perms 0600 on Unix.
@@ -56,16 +57,17 @@ Filed engram cross-project issue #130 targeting mcp-mux for `PerformHandoff` + `
 
 ## Phase 3: Predecessor handoff flow
 
-- [ ] T006 [EXECUTOR: sonnet] Implement `pkg/upgrade/handoff.go` — thin wrapper around `muxcore/daemon.performHandoff` with aimux-specific upstream-enumeration (engine socket + per-project owner sockets from session handler)
+- [x] T006 [EXECUTOR: sonnet] Implement `pkg/upgrade/handoff.go` — thin wrapper around `muxcore/daemon.performHandoff` with aimux-specific upstream-enumeration (engine socket + per-project owner sockets from session handler)
   AC: `PerformHandoff(ctx, successorAddr, token, upstreams) (*HandoffResult, error)` · collects list of upstreams from SessionHandler · isolated enough to mock in tests · swap body→return nil ⇒ tests fail
+  Artifacts: [pkg/upgrade/handoff.go](pkg/upgrade/handoff.go), [pkg/upgrade/handoff_test.go](pkg/upgrade/handoff_test.go), [pkg/server/server_session.go](pkg/server/server_session.go), [pkg/server/server_session_test.go](pkg/server/server_session_test.go)
 
-- [ ] T007 [EXECUTOR: sonnet] Implement `Coordinator.tryHotSwap(ctx)` in `pkg/upgrade/coordinator.go`: (1) engine-mode detection, (2) Download via updater to temp path, (3) VerifyChecksum, (4) crypto/rand 32-byte token, (5) muxcore.upgrade.Swap(binaryPath, tempPath), (6) os/exec.Command spawn successor with env inherited, (7) PerformHandoff wrapper with 15s timeout, (8) on success: SetDraining → drain 30s → os.Exit(0) deferred; on failure: return error for caller to fall back
+- [x] T007 [EXECUTOR: sonnet] Implement `Coordinator.tryHotSwap(ctx)` in `pkg/upgrade/coordinator.go`: (1) engine-mode detection, (2) Download via updater to temp path, (3) VerifyChecksum, (4) crypto/rand 32-byte token, (5) muxcore.upgrade.Swap(binaryPath, tempPath), (6) os/exec.Command spawn successor with env inherited, (7) PerformHandoff wrapper with 15s timeout, (8) on success: SetDraining → drain 30s → os.Exit(0) deferred; on failure: return error for caller to fall back
   AC: each step has distinct error class (quota → deferred fallback, token mismatch → hard fail in ModeHotSwap) · structured log emit per US3 · integration test on fake release source · swap body→return nil ⇒ tests fail
 
-- [ ] T008 [EXECUTOR: sonnet] Implement `Coordinator.Apply` mode routing: ModeDeferred → direct fallback, ModeHotSwap → tryHotSwap only (no fallback, return error), ModeAuto → tryHotSwap then fallback on any error
+- [x] T008 [EXECUTOR: sonnet] Implement `Coordinator.Apply` mode routing: ModeDeferred → direct fallback, ModeHotSwap → tryHotSwap only (no fallback, return error), ModeAuto → tryHotSwap then fallback on any error
   AC: three modes produce three distinct paths · fallback preserves v4.3.0 deferred behavior byte-for-byte · response envelope shape matches FR-7 · unit test for each mode branch · swap body→return nil ⇒ tests fail
 
-- [ ] T009 [EXECUTOR: sonnet] Add `mode` parameter to `upgrade` MCP tool schema in `pkg/server/server.go`: optional string, enum `auto|hot_swap|deferred`, default `auto`
+- [x] T009 [EXECUTOR: sonnet] Add `mode` parameter to `upgrade` MCP tool schema in `pkg/server/server.go`: optional string, enum `auto|hot_swap|deferred`, default `auto`
   AC: schema validates via mcp-go library · handleUpgrade passes parsed mode to Coordinator.Apply · backwards compat: missing param defaults to auto · unit tests for all three modes via MCP contract tests · swap body→return nil ⇒ tests fail
 
 - [ ] T010 [EXECUTOR: sonnet] E2E integration test `test/e2e/upgrade_hot_swap_test.go`: spin up daemon on v1.0.0 binary, serve mock release for v1.0.1, start async `agent` job, call upgrade apply, verify (a) response has status=updated_hot_swap, (b) async job remains queryable across handoff, (c) mcp__aimux__status shows new version within 1s of response

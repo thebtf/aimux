@@ -63,6 +63,10 @@ type Coordinator struct {
 	// Logger receives structured log output for upgrade lifecycle events.
 	// May be nil; logging is skipped when nil.
 	Logger *logger.Logger
+
+	// applyUpdateFn is a narrow test seam for ModeDeferred/ModeAuto routing tests.
+	// Production code leaves it nil and uses updater.ApplyUpdate directly.
+	applyUpdateFn func(ctx context.Context, currentVersion string) (*updater.Release, error)
 }
 
 // Result describes the outcome of an Apply call.
@@ -110,14 +114,20 @@ func (c *Coordinator) Apply(ctx context.Context, mode Mode) (*Result, error) {
 	case ModeDeferred:
 		return c.applyDeferred(ctx)
 	case ModeHotSwap:
-		_, err := c.tryHotSwap(ctx)
+		result, err := c.tryHotSwap(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("tryHotSwap returned success without result")
+		if result == nil {
+			return nil, fmt.Errorf("tryHotSwap returned nil result")
+		}
+		return result, nil
 	case ModeAuto, "":
 		hotSwapResult, err := c.tryHotSwap(ctx)
 		if err == nil {
+			if hotSwapResult == nil {
+				return nil, fmt.Errorf("tryHotSwap returned nil result")
+			}
 			return hotSwapResult, nil
 		}
 		result, deferredErr := c.applyDeferred(ctx)
@@ -147,11 +157,18 @@ func (c *Coordinator) tryHotSwap(ctx context.Context) (*Result, error) {
 	return nil, fmt.Errorf("%w: coordinator cannot call daemon owner ShutdownForHandoff or successor ReceiveHandoff/NewOwnerFromHandoff", errHotSwapUnsupported)
 }
 
+func (c *Coordinator) applyUpdate(ctx context.Context) (*updater.Release, error) {
+	if c.applyUpdateFn != nil {
+		return c.applyUpdateFn(ctx, c.Version)
+	}
+	return updater.ApplyUpdate(ctx, c.Version)
+}
+
 // applyDeferred executes the legacy v4.3.0 upgrade path: download + install
 // the new binary via updater.ApplyUpdate, then signal SetUpdatePending on the
 // session handler. The daemon will exit and restart when all CC sessions disconnect.
 func (c *Coordinator) applyDeferred(ctx context.Context) (*Result, error) {
-	release, err := updater.ApplyUpdate(ctx, c.Version)
+	release, err := c.applyUpdate(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("apply update: %w", err)
 	}
