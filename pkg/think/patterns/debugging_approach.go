@@ -141,7 +141,12 @@ func (p *debuggingApproachPattern) Validate(input map[string]any) (map[string]an
 				if !ok {
 					return nil, fmt.Errorf("field 'confidence' must be a string enum")
 				}
-				conf = confidenceEnumToFloat(cs)
+				switch cs {
+				case "exploring", "low", "medium", "high", "very_high", "certain":
+					conf = confidenceEnumToFloat(cs)
+				default:
+					return nil, fmt.Errorf("field 'confidence' must be one of: exploring, low, medium, high, very_high, certain")
+				}
 			}
 			validated["hypothesis"] = map[string]any{
 				"id":         generateHypothesisID(),
