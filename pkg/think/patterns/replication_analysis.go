@@ -43,11 +43,45 @@ func (p *replicationAnalysisPattern) Validate(input map[string]any) (map[string]
 	if v, ok := input["originalMethod"].(string); ok && v != "" {
 		out["originalMethod"] = v
 	}
-	if v, ok := input["resources"].([]any); ok {
-		out["resources"] = v
+	if rawResources, exists := input["resources"]; exists {
+		var resources []any
+		switch v := rawResources.(type) {
+		case []any:
+			resources = v
+		case []string:
+			resources = make([]any, len(v))
+			for i, item := range v {
+				resources[i] = item
+			}
+		default:
+			return nil, fmt.Errorf("field 'resources' must be an array of strings")
+		}
+		for i, item := range resources {
+			if _, ok := item.(string); !ok {
+				return nil, fmt.Errorf("field 'resources[%d]' must be a string", i)
+			}
+		}
+		out["resources"] = resources
 	}
-	if v, ok := input["constraints"].([]any); ok {
-		out["constraints"] = v
+	if rawConstraints, exists := input["constraints"]; exists {
+		var constraints []any
+		switch v := rawConstraints.(type) {
+		case []any:
+			constraints = v
+		case []string:
+			constraints = make([]any, len(v))
+			for i, item := range v {
+				constraints[i] = item
+			}
+		default:
+			return nil, fmt.Errorf("field 'constraints' must be an array of strings")
+		}
+		for i, item := range constraints {
+			if _, ok := item.(string); !ok {
+				return nil, fmt.Errorf("field 'constraints[%d]' must be a string", i)
+			}
+		}
+		out["constraints"] = constraints
 	}
 
 	return out, nil

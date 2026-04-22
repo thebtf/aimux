@@ -99,6 +99,14 @@ func (s *Server) registerPatternTools() {
 					fieldOpts = append(fieldOpts, mcp.Required())
 				}
 				opts = append(opts, mcp.WithNumber(fieldName, fieldOpts...))
+			case "integer":
+				fieldOpts := []mcp.PropertyOption{mcp.Description(schema.Description)}
+				if schema.Required {
+					fieldOpts = append(fieldOpts, mcp.Required())
+				}
+				// mcp-go v0.47.0 has no WithInteger helper; publish integer fields via number registration
+				// so they remain visible in inputSchema instead of being dropped silently.
+				opts = append(opts, mcp.WithNumber(fieldName, fieldOpts...))
 			case "boolean":
 				fieldOpts := []mcp.PropertyOption{mcp.Description(schema.Description)}
 				if schema.Required {

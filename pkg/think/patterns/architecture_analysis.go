@@ -90,9 +90,24 @@ func (p *architectureAnalysisPattern) Validate(input map[string]any) (map[string
 				return nil, fmt.Errorf("components[%d].name must be a non-empty string", i)
 			}
 			desc, _ := v["description"].(string)
-			deps, _ := v["dependencies"].([]any)
-			if deps == nil {
-				deps = []any{}
+			deps := []any{}
+			switch rawDeps := v["dependencies"].(type) {
+			case nil:
+				// keep empty
+			case []any:
+				deps = rawDeps
+			case []string:
+				deps = make([]any, len(rawDeps))
+				for j, dep := range rawDeps {
+					deps[j] = dep
+				}
+			default:
+				return nil, fmt.Errorf("components[%d].dependencies must be an array of strings", i)
+			}
+			for j, dep := range deps {
+				if _, ok := dep.(string); !ok {
+					return nil, fmt.Errorf("components[%d].dependencies[%d] must be a string", i, j)
+				}
 			}
 			normalized = append(normalized, map[string]any{
 				"name":         name,

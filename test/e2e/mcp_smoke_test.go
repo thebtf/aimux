@@ -196,6 +196,8 @@ func TestE2E_ToolsList(t *testing.T) {
 		t.Fatal("expected tools/list to return at least one tool")
 	}
 
+	requiredTools := []string{"exec", "status", "sessions", "think", "investigate", "consensus", "debate", "dialog", "agents", "agent", "audit", "deepresearch", "workflow"}
+	toolNames := make(map[string]bool, len(tools))
 	var architectureAnalysis map[string]any
 	for _, tool := range tools {
 		tm, ok := tool.(map[string]any)
@@ -203,9 +205,16 @@ func TestE2E_ToolsList(t *testing.T) {
 			continue
 		}
 		name, _ := tm["name"].(string)
+		if name != "" {
+			toolNames[name] = true
+		}
 		if name == "architecture_analysis" {
 			architectureAnalysis = tm
-			break
+		}
+	}
+	for _, name := range requiredTools {
+		if !toolNames[name] {
+			t.Fatalf("tools/list missing required tool: %s", name)
 		}
 	}
 
