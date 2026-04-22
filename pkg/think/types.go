@@ -23,10 +23,12 @@ type ThinkResult struct {
 
 // FieldSchema describes a single input field for a thinking pattern's MCP tool schema.
 type FieldSchema struct {
-	Type        string   `json:"type"` // "string", "array", "object", "number", "boolean", "enum"
-	Required    bool     `json:"required"`
-	Description string   `json:"description"`
-	EnumValues  []string `json:"enum_values,omitempty"` // for enum type
+	Type        string         `json:"type"` // "string", "array", "object", "number", "boolean", "enum"
+	Required    bool           `json:"required"`
+	Description string         `json:"description"`
+	EnumValues  []string       `json:"enum_values,omitempty"` // for enum type
+	Items       map[string]any `json:"items,omitempty"`
+	Properties  map[string]any `json:"properties,omitempty"`
 }
 
 // PatternHandler is implemented by each thinking pattern.
