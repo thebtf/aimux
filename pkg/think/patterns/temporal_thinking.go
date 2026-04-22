@@ -115,6 +115,10 @@ func (p *temporalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		"constraintCount": constraintCount,
 		"totalComponents": stateCount + eventCount + transitionCount + constraintCount,
 	}
+	// Include narrative analysis in output when provided by the caller.
+	if analysis, ok := validInput["analysis"].(string); ok && analysis != "" {
+		data["analysis"] = analysis
+	}
 
 	// Auto-analysis: when events are empty, derive suggested phases from timeFrame keywords.
 	if eventCount == 0 {
