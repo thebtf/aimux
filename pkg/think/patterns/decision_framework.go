@@ -30,8 +30,35 @@ func (p *decisionFrameworkPattern) Description() string {
 func (p *decisionFrameworkPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
 		"decision": {Type: "string", Required: true, Description: "The decision to evaluate"},
-		"criteria": {Type: "array", Required: false, Description: "List of criteria objects with name and weight"},
-		"options":  {Type: "array", Required: false, Description: "List of option objects with name and scores map"},
+		"criteria": {
+			Type:        "array",
+			Required:    false,
+			Description: "List of criteria objects with name and weight",
+			Items: map[string]any{
+				"type":     "object",
+				"required": []string{"name", "weight"},
+				"properties": map[string]any{
+					"name":   map[string]any{"type": "string"},
+					"weight": map[string]any{"type": "number"},
+				},
+			},
+		},
+		"options": {
+			Type:        "array",
+			Required:    false,
+			Description: "List of option objects with name and scores map",
+			Items: map[string]any{
+				"type":     "object",
+				"required": []string{"name", "scores"},
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+					"scores": map[string]any{
+						"type":                 "object",
+						"additionalProperties": map[string]any{"type": "number"},
+					},
+				},
+			},
+		},
 	}
 }
 

@@ -38,8 +38,9 @@ Filed engram cross-project issue #130 targeting mcp-mux for `PerformHandoff` + `
 
 ## Phase 2: Successor daemon mode (BLOCKED on engram #130)
 
-- [ ] T004 [EXECUTOR: sonnet] Add `--handoff-from <socket>` and `--handoff-token <hex>` flag parsing to `cmd/aimux/main.go`
+- [x] T004 [EXECUTOR: sonnet] Add `--handoff-from <socket>` and `--handoff-token <hex>` flag parsing to `cmd/aimux/main.go`
   AC: flags parsed via standard `flag` package · validation: token is 64-char hex, socket path exists · if either flag set, both must be set · unit test for flag parsing + validation errors · swap body→return nil ⇒ tests fail
+  Artifacts: [cmd/aimux/main.go](cmd/aimux/main.go), [cmd/aimux/main_test.go](cmd/aimux/main_test.go)
 
 - [ ] T005 [EXECUTOR: sonnet] Implement successor bootstrap in `cmd/aimux/main.go`: when `--handoff-from` set, connect to that socket, present token, receive FDs via `muxcore/daemon.performHandoff` (successor side), then start engine serving on received FDs
   AC: connection to predecessor succeeds · token mismatch → exit 2 with clear error log · successful handoff transitions to normal engine serve loop · e2e: spawn mock predecessor, verify successor inherits FDs · swap body→return nil ⇒ tests fail

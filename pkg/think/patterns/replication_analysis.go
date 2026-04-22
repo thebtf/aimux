@@ -21,12 +21,32 @@ func (p *replicationAnalysisPattern) SchemaFields() map[string]think.FieldSchema
 	return map[string]think.FieldSchema{
 		"claim":          {Type: "string", Required: true, Description: "The claim or experiment to replicate"},
 		"originalMethod": {Type: "string", Required: false, Description: "Original method description"},
-		"resources":      {Type: "array", Required: false, Description: "Available resources for replication"},
-		"constraints":    {Type: "array", Required: false, Description: "Constraints on the replication"},
+		"resources":      {Type: "array", Required: false, Description: "Available resources for replication", Items: map[string]any{"type": "string"}},
+		"constraints":    {Type: "array", Required: false, Description: "Constraints on the replication", Items: map[string]any{"type": "string"}},
 	}
 }
 
 func (p *replicationAnalysisPattern) Category() string { return "solo" }
+
+func normalizeStringArrayField(field string, raw any) ([]any, error) {
+	switch v := raw.(type) {
+	case []any:
+		for i, item := range v {
+			if _, ok := item.(string); !ok {
+				return nil, fmt.Errorf("field '%s[%d]' must be a string", field, i)
+			}
+		}
+		return v, nil
+	case []string:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = item
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("field '%s' must be an array of strings", field)
+	}
+}
 
 func (p *replicationAnalysisPattern) Validate(input map[string]any) (map[string]any, error) {
 	claimRaw, ok := input["claim"]
@@ -43,11 +63,19 @@ func (p *replicationAnalysisPattern) Validate(input map[string]any) (map[string]
 	if v, ok := input["originalMethod"].(string); ok && v != "" {
 		out["originalMethod"] = v
 	}
-	if v, ok := input["resources"].([]any); ok {
-		out["resources"] = v
+	if rawResources, exists := input["resources"]; exists {
+		resources, err := normalizeStringArrayField("resources", rawResources)
+		if err != nil {
+			return nil, err
+		}
+		out["resources"] = resources
 	}
-	if v, ok := input["constraints"].([]any); ok {
-		out["constraints"] = v
+	if rawConstraints, exists := input["constraints"]; exists {
+		constraints, err := normalizeStringArrayField("constraints", rawConstraints)
+		if err != nil {
+			return nil, err
+		}
+		out["constraints"] = constraints
 	}
 
 	return out, nil

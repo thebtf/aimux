@@ -45,9 +45,25 @@ func (p *literatureReviewPattern) Validate(input map[string]any) (map[string]any
 
 func (p *literatureReviewPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
-		"topic":     {Type: "string", Required: true, Description: "The research topic to review"},
-		"papers":    {Type: "array", Required: false, Description: "List of papers (strings or objects with title/abstract)"},
-		"criteria":  {Type: "array", Required: false, Description: "Inclusion/exclusion criteria"},
+		"topic": {Type: "string", Required: true, Description: "The research topic to review"},
+		"papers": {
+			Type:        "array",
+			Required:    false,
+			Description: "List of papers (strings or objects with title/abstract)",
+			Items: map[string]any{
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type": "object",
+						"properties": map[string]any{
+							"title":    map[string]any{"type": "string"},
+							"abstract": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+		},
+		"criteria":  {Type: "array", Required: false, Description: "Inclusion/exclusion criteria", Items: map[string]any{"type": "string"}},
 		"timeFrame": {Type: "string", Required: false, Description: "Time frame for the review"},
 	}
 }

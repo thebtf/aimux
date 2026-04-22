@@ -61,7 +61,7 @@ func (p *researchSynthesisPattern) Validate(input map[string]any) (map[string]an
 func (p *researchSynthesisPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
 		"topic":    {Type: "string", Required: true, Description: "The research topic to synthesize"},
-		"findings": {Type: "array", Required: true, Description: "List of research findings (strings)"},
+		"findings": {Type: "array", Required: true, Description: "List of research findings (strings)", Items: map[string]any{"type": "string"}},
 	}
 }
 

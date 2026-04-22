@@ -47,12 +47,40 @@ func (p *domainModelingPattern) Validate(input map[string]any) (map[string]any, 
 
 func (p *domainModelingPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
-		"domainName":    {Type: "string", Required: true, Description: "Name of the domain to model"},
-		"description":   {Type: "string", Required: false, Description: "Domain description"},
-		"entities":      {Type: "array", Required: false, Description: "List of domain entities"},
-		"relationships": {Type: "array", Required: false, Description: "List of entity relationships"},
-		"rules":         {Type: "array", Required: false, Description: "List of domain rules"},
-		"constraints":   {Type: "array", Required: false, Description: "List of domain constraints"},
+		"domainName":  {Type: "string", Required: true, Description: "Name of the domain to model"},
+		"description": {Type: "string", Required: false, Description: "Domain description"},
+		"entities": {
+			Type:        "array",
+			Required:    false,
+			Description: "List of domain entities",
+			Items: map[string]any{
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type": "object",
+						"properties": map[string]any{
+							"name": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+		},
+		"relationships": {
+			Type:        "array",
+			Required:    false,
+			Description: "List of entity relationships",
+			Items: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"from":   map[string]any{"type": "string"},
+					"to":     map[string]any{"type": "string"},
+					"source": map[string]any{"type": "string"},
+					"target": map[string]any{"type": "string"},
+				},
+			},
+		},
+		"rules":       {Type: "array", Required: false, Description: "List of domain rules", Items: map[string]any{"type": "string"}},
+		"constraints": {Type: "array", Required: false, Description: "List of domain constraints", Items: map[string]any{"type": "string"}},
 	}
 }
 

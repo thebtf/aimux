@@ -175,7 +175,7 @@ func TestE2E_Initialize(t *testing.T) {
 func TestE2E_ToolsList(t *testing.T) {
 	stdin, reader := initTestCLIServer(t)
 
-	// Send tools/list
+	// Send tools/list on a fresh initialized server.
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/list", nil))
 
 	resp, err := readResponse(reader, 5*time.Second)
@@ -192,25 +192,84 @@ func TestE2E_ToolsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected tools array, got %v", result["tools"])
 	}
-
-	// Should have 11 tools
-	if len(tools) < 10 {
-		t.Errorf("expected at least 10 tools, got %d", len(tools))
+	if len(tools) == 0 {
+		t.Fatal("expected tools/list to return at least one tool")
 	}
 
-	// Verify key tools exist
-	toolNames := make(map[string]bool)
+	requiredTools := []string{"exec", "status", "sessions", "think", "investigate", "consensus", "debate", "dialog", "agents", "agent", "audit", "deepresearch", "workflow"}
+	toolNames := make(map[string]bool, len(tools))
+	var architectureAnalysis map[string]any
 	for _, tool := range tools {
-		tm, _ := tool.(map[string]any)
-		if name, ok := tm["name"].(string); ok {
+		tm, ok := tool.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := tm["name"].(string)
+		if name != "" {
 			toolNames[name] = true
+		}
+		if name == "architecture_analysis" {
+			architectureAnalysis = tm
+		}
+	}
+	for _, name := range requiredTools {
+		if !toolNames[name] {
+			t.Fatalf("tools/list missing required tool: %s", name)
 		}
 	}
 
-	required := []string{"exec", "status", "sessions", "dialog", "agents", "audit", "think", "consensus", "debate", "deepresearch"}
-	for _, name := range required {
-		if !toolNames[name] {
-			t.Errorf("missing required tool: %s", name)
+	if architectureAnalysis == nil {
+		t.Fatal("tools/list missing architecture_analysis")
+	}
+
+	inputSchema, ok := architectureAnalysis["inputSchema"].(map[string]any)
+	if !ok {
+		t.Fatalf("architecture_analysis missing inputSchema object: %v", architectureAnalysis["inputSchema"])
+	}
+	properties, ok := inputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("architecture_analysis inputSchema missing properties object: %v", inputSchema["properties"])
+	}
+	components, ok := properties["components"].(map[string]any)
+	if !ok {
+		t.Fatalf("architecture_analysis missing components schema: %v", properties["components"])
+	}
+	if got := components["type"]; got != "array" {
+		t.Fatalf("architecture_analysis components.type = %v, want array", got)
+	}
+	items, ok := components["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("architecture_analysis components.items missing object schema: %v", components["items"])
+	}
+	if len(items) == 0 {
+		t.Fatal("architecture_analysis components.items schema is empty")
+	}
+	if got := items["type"]; got == "object" {
+		itemProps, ok := items["properties"].(map[string]any)
+		if !ok || len(itemProps) == 0 {
+			t.Fatalf("architecture_analysis components.items.properties missing/empty: %v", items["properties"])
+		}
+	} else {
+		oneOf, ok := items["oneOf"].([]any)
+		if !ok || len(oneOf) == 0 {
+			t.Fatalf("architecture_analysis components.items must be object schema or oneOf, got: %v", items)
+		}
+		foundObject := false
+		for _, candidate := range oneOf {
+			obj, ok := candidate.(map[string]any)
+			if !ok {
+				continue
+			}
+			if obj["type"] == "object" {
+				props, ok := obj["properties"].(map[string]any)
+				if ok && len(props) > 0 {
+					foundObject = true
+					break
+				}
+			}
+		}
+		if !foundObject {
+			t.Fatalf("architecture_analysis components.items.oneOf missing object schema with properties: %v", oneOf)
 		}
 	}
 }

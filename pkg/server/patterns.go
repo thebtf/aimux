@@ -48,6 +48,27 @@ func patternDescription(handler think.PatternHandler) string {
 	return handler.Description()
 }
 
+func validatePatternFieldSchema(patternName, fieldName string, schema think.FieldSchema) {
+	switch schema.Type {
+	case "array":
+		if len(schema.Items) == 0 {
+			panic(fmt.Sprintf("server: pattern %q field %q declares array schema without items", patternName, fieldName))
+		}
+	case "object":
+		if len(schema.Properties) == 0 {
+			panic(fmt.Sprintf("server: pattern %q field %q declares object schema without properties", patternName, fieldName))
+		}
+	case "enum":
+		if len(schema.EnumValues) == 0 {
+			panic(fmt.Sprintf("server: pattern %q field %q declares enum schema without values", patternName, fieldName))
+		}
+	case "string", "number", "integer", "boolean":
+		// supported scalar types
+	default:
+		panic(fmt.Sprintf("server: pattern %q field %q declares unsupported schema type %q", patternName, fieldName, schema.Type))
+	}
+}
+
 // registerPatternTools registers all 23 think patterns as individual MCP tools.
 // Called from registerTools() replacing the single "think" tool.
 func (s *Server) registerPatternTools() {
@@ -64,6 +85,7 @@ func (s *Server) registerPatternTools() {
 
 		// Add inputSchema fields from handler.SchemaFields()
 		for fieldName, schema := range handler.SchemaFields() {
+			validatePatternFieldSchema(name, fieldName, schema)
 			switch schema.Type {
 			case "string":
 				fieldOpts := []mcp.PropertyOption{mcp.Description(schema.Description)}
@@ -77,6 +99,14 @@ func (s *Server) registerPatternTools() {
 					fieldOpts = append(fieldOpts, mcp.Required())
 				}
 				opts = append(opts, mcp.WithNumber(fieldName, fieldOpts...))
+			case "integer":
+				fieldOpts := []mcp.PropertyOption{mcp.Description(schema.Description)}
+				if schema.Required {
+					fieldOpts = append(fieldOpts, mcp.Required())
+				}
+				// mcp-go v0.47.0 has no WithInteger helper; publish integer fields via number registration
+				// so they remain visible in inputSchema instead of being dropped silently.
+				opts = append(opts, mcp.WithNumber(fieldName, fieldOpts...))
 			case "boolean":
 				fieldOpts := []mcp.PropertyOption{mcp.Description(schema.Description)}
 				if schema.Required {
@@ -84,13 +114,19 @@ func (s *Server) registerPatternTools() {
 				}
 				opts = append(opts, mcp.WithBoolean(fieldName, fieldOpts...))
 			case "array":
-				fieldOpts := []mcp.PropertyOption{mcp.Description(schema.Description)}
+				fieldOpts := []mcp.PropertyOption{
+					mcp.Description(schema.Description),
+					mcp.Items(schema.Items),
+				}
 				if schema.Required {
 					fieldOpts = append(fieldOpts, mcp.Required())
 				}
 				opts = append(opts, mcp.WithArray(fieldName, fieldOpts...))
 			case "object":
-				fieldOpts := []mcp.PropertyOption{mcp.Description(schema.Description)}
+				fieldOpts := []mcp.PropertyOption{
+					mcp.Description(schema.Description),
+					mcp.Properties(schema.Properties),
+				}
 				if schema.Required {
 					fieldOpts = append(fieldOpts, mcp.Required())
 				}

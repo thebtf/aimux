@@ -53,8 +53,23 @@ func (p *peerReviewPattern) Validate(input map[string]any) (map[string]any, erro
 
 func (p *peerReviewPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
-		"artifact":    {Type: "string", Required: true, Description: "The artifact to peer review"},
-		"claims":      {Type: "array", Required: false, Description: "List of claims to evaluate"},
+		"artifact": {Type: "string", Required: true, Description: "The artifact to peer review"},
+		"claims": {
+			Type:        "array",
+			Required:    false,
+			Description: "List of claims to evaluate as strings or objects with text",
+			Items: map[string]any{
+				"oneOf": []map[string]any{
+					{"type": "string"},
+					{
+						"type": "object",
+						"properties": map[string]any{
+							"text": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+		},
 		"methodology": {Type: "string", Required: false, Description: "Methodology description"},
 		"novelty":     {Type: "string", Required: false, Description: "Novelty claim description"},
 	}

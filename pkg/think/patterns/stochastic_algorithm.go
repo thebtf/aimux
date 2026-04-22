@@ -30,7 +30,25 @@ func (p *stochasticAlgorithmPattern) SchemaFields() map[string]think.FieldSchema
 	return map[string]think.FieldSchema{
 		"algorithmType":     {Type: "enum", Required: true, Description: "Type of stochastic algorithm", EnumValues: []string{"mdp", "mcts", "bandit", "bayesian", "hmm"}},
 		"problemDefinition": {Type: "string", Required: true, Description: "Definition of the problem to solve"},
-		"parameters":        {Type: "object", Required: false, Description: "Algorithm-specific parameters (e.g. parameters.outcomes for bandit/bayesian)"},
+		"parameters": {
+			Type:        "object",
+			Required:    false,
+			Description: "Algorithm-specific parameters (e.g. parameters.outcomes for bandit/bayesian)",
+			Properties: map[string]any{
+				"outcomes": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type":     "object",
+						"required": []string{"probability", "value"},
+						"properties": map[string]any{
+							"name":        map[string]any{"type": "string"},
+							"probability": map[string]any{"type": "number"},
+							"value":       map[string]any{"type": "number"},
+						},
+					},
+				},
+			},
+		},
 		"iterations":        {Type: "number", Required: false, Description: "Number of iterations to simulate"},
 		"result":            {Type: "string", Required: false, Description: "Result from the algorithm run"},
 	}
