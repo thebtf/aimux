@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0] - 2026-04-22
+
+Minor release: DX Self-Documentation (AIMUX-7) — agent-first discovery experience.
+
+### Added
+
+- **Dynamic instructions (FR-1..FR-4).** Replaced static `const aimuxInstructions` with `buildInstructions()` that generates MCP instructions at connect time using live server state. Instructions include live CLI list with roles, value proposition ("free for you"), start-here directive (`sessions(action=health)` + `agents(action=find)`), guide prompt reference, and tool category explanations. Warmup-incomplete fallback shows configured profiles with "(warmup in progress)" suffix.
+- **23 separate MCP tools per think pattern (FR-5).** Split single `think` tool into 23 individual tools (`debugging_approach`, `decision_framework`, `sequential_thinking`, etc.), each with typed `inputSchema` derived from `PatternHandler.SchemaFields()`. Agents discover required/optional fields from `tools/list` — zero trial-and-error. Total tool count: 36.
+- **Situation-based tool descriptions (FR-8).** Every tool description follows the pattern: `[category tag] agent situation + function + trigger`. Categories: `[solo — free]`, `[delegate — external CLI, free for you]`, `[manage — server state, no cost]`. Descriptions address agent STATE ("When you're stuck..."), not just tool function — unique approach not found in reference projects.
+- **MCP ToolAnnotations on all 36 tools (FR-6).** `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` set per tool. Solo patterns: readOnly + idempotent. Delegate tools: openWorld. Uses mcp-go v0.47.0 `WithToolAnnotation()`.
+- **`SchemaFields()` and `Category()` on PatternHandler interface.** All 23 patterns export their field schemas (type, required, description, enum values) and category ("solo"). Enables dynamic tool registration without hardcoded schemas.
+- **Actionable CLI unavailability errors (FR-7).** When exec/consensus/debate/dialog routes to an unavailable CLI, error now includes: requested CLI name, reason, list of available alternatives, and suggested action. Multi-CLI tools (consensus, debate) report "Requires 2+ CLIs" when only 1 available.
+
 ## [4.6.1] - 2026-04-21
 
 Patch release fixing the shim stdin-EOF race that blocked `/mcp reconnect aimux-dev` on v4.6.0.
