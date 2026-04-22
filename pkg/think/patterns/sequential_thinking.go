@@ -98,14 +98,11 @@ func (p *sequentialThinkingPattern) Validate(input map[string]any) (map[string]a
 
 	// step_number: optional flat param for external step tracking (forwarded to output).
 	if v, ok := input["step_number"]; ok {
-		switch n := v.(type) {
-		case float64:
-			validated["step_number"] = int(n)
-		case int:
-			validated["step_number"] = n
-		default:
-			return nil, fmt.Errorf("field 'step_number' must be a number")
+		n, ok := toInt(v)
+		if !ok {
+			return nil, fmt.Errorf("field 'step_number' must be an integer")
 		}
+		validated["step_number"] = n
 	}
 
 	return validated, nil
@@ -114,13 +111,13 @@ func (p *sequentialThinkingPattern) Validate(input map[string]any) (map[string]a
 func (p *sequentialThinkingPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
 		"thought":           {Type: "string", Required: true, Description: "The thought content for this step"},
-		"thoughtNumber":     {Type: "number", Required: false, Description: "Current thought number (default 1)"},
-		"totalThoughts":     {Type: "number", Required: false, Description: "Total expected thoughts (default 1)"},
+		"thoughtNumber":     {Type: "integer", Required: false, Description: "Current thought number (default 1)"},
+		"totalThoughts":     {Type: "integer", Required: false, Description: "Total expected thoughts (default 1)"},
 		"isRevision":        {Type: "boolean", Required: false, Description: "Whether this thought revises a prior one"},
-		"revisesThought":    {Type: "number", Required: false, Description: "Thought number being revised"},
-		"branchFromThought": {Type: "number", Required: false, Description: "Thought number to branch from"},
+		"revisesThought":    {Type: "integer", Required: false, Description: "Thought number being revised"},
+		"branchFromThought": {Type: "integer", Required: false, Description: "Thought number to branch from"},
 		"branchId":          {Type: "string", Required: false, Description: "Branch identifier"},
-		"step_number":       {Type: "number", Required: false, Description: "External step tracking number"},
+		"step_number":       {Type: "integer", Required: false, Description: "External step tracking number"},
 	}
 }
 
@@ -271,6 +268,11 @@ func toInt(v any) (int, bool) {
 	case int:
 		return n, true
 	case float64:
+		// Reject fractional values — silently truncating 1.9 → 1 would corrupt
+		// ordinal fields like thoughtNumber, totalThoughts, revisesThought, etc.
+		if n != float64(int(n)) {
+			return 0, false
+		}
 		return int(n), true
 	case int64:
 		return int(n), true
