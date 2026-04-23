@@ -17,6 +17,10 @@ const (
 	// ModeDaemon is the long-lived daemon that serves MCP requests and manages
 	// LoomEngine, SQLite, skills, and the orchestrator.
 	ModeDaemon
+	// ModeDirect serves MCP directly on stdio without muxcore engine ownership.
+	// Used only for daemon-spawned child upstreams so the owner has a real process
+	// that can be detached during graceful-restart handoff.
+	ModeDirect
 )
 
 // detectMode returns the runtime mode of this aimux.exe invocation, mirroring
@@ -35,6 +39,13 @@ func detectMode(args []string, env func(string) string) (Mode, error) {
 		fmt.Fprintf(os.Stderr,
 			"aimux: AIMUX_NO_ENGINE=1 is deprecated and ignored; aimux always runs via muxcore engine (daemon or shim mode).\n",
 		)
+	}
+
+	// Direct-child mode is an internal daemon→upstream execution path.
+	// It bypasses muxcore entirely and serves MCP on stdio so the daemon owner
+	// manages a real child process that supports ShutdownForHandoff().
+	if env("AIMUX_DIRECT_UPSTREAM") == "1" {
+		return ModeDirect, nil
 	}
 
 	// FR-4: Reject proxy-mode invocations (MCP_MUX_SESSION_ID set).

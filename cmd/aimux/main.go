@@ -56,64 +56,46 @@ func run() error {
 
 	log.Info("aimux v%s starting", aimuxServer.Version)
 
-	// NEW: mode detection before any heavy init (T005, AIMUX-6).
-	// detectMode mirrors muxcore's own isDaemonMode logic so daemon/shim agree.
-	// Returns error on MCP_MUX_SESSION_ID (proxy rejection per FR-4).
-	// Note: main() already prints returned errors with "aimux: %v" prefix to stderr,
-	// so we do NOT print here — avoid double-stderr (G002 LOW-1).
 	mode, modeErr := detectMode(os.Args, os.Getenv)
 	if modeErr != nil {
 		return modeErr
 	}
 
-	// FR-5 postmortem complement to the stderr notice in detectMode: emit a
-	// single warning into aimux.log once the logger is available, so deprecated
-	// env-var usage is captured even when stderr is discarded (G002 LOW-2).
 	if os.Getenv("AIMUX_NO_ENGINE") == "1" {
 		log.Warn("aimux: AIMUX_NO_ENGINE=1 is deprecated and ignored; aimux always runs via muxcore engine (daemon or shim mode)")
 	}
 
-	// NEW: hoist ctx creation so both branches share it.
-	// Shim branch passes ctx to runShim; daemon branch passes ctx to engine.Run.
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	if handoff.From != "" {
-		mode = ModeDaemon
-	}
-
-	// FR-8: emit audit log line naming the detected mode and signal before any
-	// mode-specific branch executes. Enables postmortem correlation with the
-	// "aimux v<version> starting" line — first two log lines identify the path taken.
 	modeSignal := "default"
-	switch {
-	case handoff.From != "":
-		modeSignal = "handoff"
-	case mode == ModeDaemon:
+	if mode == ModeDaemon {
 		modeSignal = "arg"
 	}
 	modeName := "shim"
 	if mode == ModeDaemon {
 		modeName = "daemon"
 	}
+	if mode == ModeDirect {
+		modeName = "direct"
+	}
 	log.Info("aimux v%s mode=%s signal=%s", aimuxServer.Version, modeName, modeSignal)
 
-	if handoff.From != "" {
-		cleanupHandoff, handoffErr := bootstrapSuccessorHandoff(ctx, log, handoff)
-		if handoffErr != nil {
-			return handoffErr
-		}
-		defer cleanupHandoff()
-	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
-	// NEW: shim branch — return directly without any heavy init.
 	if mode == ModeShim {
 		return runShim(ctx, cfg, log)
 	}
 
-	// DAEMON BRANCH (existing code below stays; T006-T009 edit it)
+	if mode == ModeDirect {
+		registry := driver.NewRegistry(cfg.CLIProfiles)
+		registry.Probe()
+		afterWarmup := registry.EnabledCLIs()
+		router := routing.NewRouterWithPriority(cfg.Roles, afterWarmup, cfg.CLIProfiles, cfg.Server.CLIPriority)
+		srv := aimuxServer.NewDaemon(cfg, log, registry, router)
+		defer srv.Shutdown()
+		log.Info("aimux v%s ready — serving MCP on direct stdio upstream", aimuxServer.Version)
+		return srv.ServeStdio()
+	}
 
-	// Discover CLIs
 	registry := driver.NewRegistry(cfg.CLIProfiles)
 	registry.Probe()
 
@@ -124,14 +106,6 @@ func run() error {
 		return fmt.Errorf("no CLI tools found — install at least one of: codex, gemini, claude, qwen, aider, droid, opencode")
 	}
 
-	// Warmup runs in the background — it must NOT block startup. Every
-	// aimux.exe invocation enters this code path, including short-lived shim
-	// processes that just bridge stdio↔IPC to an existing daemon. Blocking
-	// 15s on warmup here meant every /mcp reconnect exceeded CC's 20s
-	// handshake timeout and failed. The router is initialized from the
-	// binary-only pool (all CLIs with a resolved binary, per Probe()) so
-	// MCP becomes ready immediately; warmup updates registry availability
-	// as probes complete in the background.
 	afterWarmup := registry.EnabledCLIs()
 	go func() {
 		log.Info("running CLI warmup probes in background (AIMUX_WARMUP=false to skip)")
@@ -141,9 +115,6 @@ func run() error {
 		after := registry.EnabledCLIs()
 		log.Info("CLI warmup complete (background): %d available: %v", len(after), after)
 		if len(after) == 0 {
-			// All probes failed — restore binary-only pool so calls still route.
-			// Root cause is usually an env issue (PATH, cold-start timeout) in
-			// the spawned daemon/shim context, not genuine CLI breakage.
 			log.Warn("all CLI probes failed — restoring binary-only pool (health-gate bypassed)")
 			for _, name := range registry.ProbeableCLIs() {
 				registry.SetAvailable(name, true)
@@ -151,16 +122,11 @@ func run() error {
 		}
 	}()
 
-	// Initialize role router with the binary-only CLI pool. Warmup's
-	// availability updates propagate through the registry — the router
-	// reads live availability on each dispatch.
 	router := routing.NewRouterWithPriority(cfg.Roles, afterWarmup, cfg.CLIProfiles, cfg.Server.CLIPriority)
 
-	// Create MCP server
 	srv := aimuxServer.NewDaemon(cfg, log, registry, router)
 	defer srv.Shutdown()
 
-	// Select transport: env var MCP_TRANSPORT overrides config
 	transport := cfg.Server.Transport.Type
 	if envTransport := os.Getenv("MCP_TRANSPORT"); envTransport != "" {
 		transport = envTransport
@@ -179,26 +145,27 @@ func run() error {
 		log.Info("aimux v%s ready — serving MCP on HTTP at %s", aimuxServer.Version, port)
 		return srv.ServeHTTP(port)
 	default:
-		// Engine mode is the only path for stdio transport (AIMUX-6 / FR-5).
-		// Shim invocations are already short-circuited above; this branch is the
-		// daemon-side engine run. AIMUX_NO_ENGINE=1 is deprecated and ignored —
-		// detectMode emitted the deprecation notice before we got here (FR-5).
-		// MCP_MUX_SESSION_ID (proxy) is rejected by detectMode per FR-4.
-		// Engine name controls IPC socket discovery — different names = isolated
-		// daemons. Override via AIMUX_ENGINE_NAME to run dev/prod binaries side by
-		// side without version skew (e.g., aimux-dev binary in .mcp.json sets
-		// AIMUX_ENGINE_NAME=aimux-dev to avoid colliding with stable aimux daemon).
 		engineName := os.Getenv("AIMUX_ENGINE_NAME")
 		if engineName == "" {
 			engineName = "aimux"
 		}
 
+		exePath, exeErr := os.Executable()
+		if exeErr != nil {
+			return fmt.Errorf("locate executable for direct upstream: %w", exeErr)
+		}
+
+		if setErr := os.Setenv("AIMUX_DIRECT_UPSTREAM", "1"); setErr != nil {
+			return fmt.Errorf("set AIMUX_DIRECT_UPSTREAM: %w", setErr)
+		}
+		defer os.Unsetenv("AIMUX_DIRECT_UPSTREAM")
+
 		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
 		eng, engErr := engine.New(engine.Config{
-			Name:           engineName,
-			SessionHandler: srv.SessionHandler(),
-			Handler:        srv.StdioHandler(), // kept for proxy mode compatibility
-			Persistent:     true,
+			Name:       engineName,
+			Command:    exePath,
+			Args:       nil,
+			Persistent: true,
 		})
 		if engErr != nil {
 			return fmt.Errorf("engine init: %w", engErr)
@@ -329,10 +296,10 @@ func (e *exitCodeError) Unwrap() error {
 }
 
 type handoffRelay struct {
-	tokenPath string
+	tokenPath  string
 	socketPath string
-	listener  net.Listener
-	done      chan error
+	listener   net.Listener
+	done       chan error
 }
 
 func bootstrapSuccessorHandoff(ctx context.Context, log *logger.Logger, handoff handoffFlags) (func(), error) {

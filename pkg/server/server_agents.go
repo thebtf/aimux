@@ -26,6 +26,7 @@ const agentsListHint = "Flat catalog — no relevance ranking. For task dispatch
 	"contains experimental/test/probe are NOT for production work."
 
 func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ctx = context.WithValue(ctx, callToolRequestKey{}, request)
 	action, err := request.RequireString("action")
 	if err != nil {
 		return mcp.NewToolResultError("action is required"), nil
@@ -263,6 +264,7 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 }
 
 func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ctx = context.WithValue(ctx, callToolRequestKey{}, request)
 	bp, budgetErr := budget.ParseBudgetParams(request)
 	if budgetErr != nil {
 		return mcp.NewToolResultError(budgetErr.Error()), nil
