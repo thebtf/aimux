@@ -20,7 +20,7 @@ import (
 const (
 	defaultApplyModeMessage            = "Binary updated. Restart aimux to load the new version."
 	defaultGracefulRestartDrainTimeout = 10000
-	defaultControlRequestTimeout       = 15 * time.Second
+	defaultControlRequestTimeout       = 45 * time.Second
 )
 
 // ApplyUpdateFunc installs the latest binary release for the current version.
@@ -114,10 +114,10 @@ var errHotSwapUnsupported = errors.New("hot-swap requires daemon-side muxcore gr
 
 // Apply downloads and applies the upgrade according to mode.
 //
-// T008 semantics remain truthful:
-//   - ModeDeferred uses the safe non-live path
-//   - ModeHotSwap uses only the daemon-side graceful-restart seam and never falls back
-//   - ModeAuto tries the daemon-side seam first, then falls back to deferred/manual behavior
+// ModeDeferred always uses the legacy non-live path.
+// ModeHotSwap requires a daemon-side graceful restart seam and fails if unavailable.
+// ModeAuto tries the daemon-side seam first and falls back to deferred with
+// HandoffError populated when live restart cannot be completed.
 func (c *Coordinator) Apply(ctx context.Context, mode Mode) (*Result, error) {
 	applyUpdate := c.applyUpdateFunc()
 
@@ -163,29 +163,31 @@ func (c *Coordinator) applyUpdateFunc() ApplyUpdateFunc {
 }
 
 func (c *Coordinator) afterDeferredInstall(release *updater.Release) *Result {
-	if c.SessionHandler != nil {
-		c.SessionHandler.SetUpdatePending()
+	if !c.EngineMode {
 		if c.Logger != nil {
-			c.Logger.Info("upgrade: deferred restart staged prev_version=%s new_version=%s",
+			c.Logger.Info("upgrade: non-engine manual restart required prev_version=%s new_version=%s",
 				c.Version, release.Version)
 		}
 		return &Result{
 			Method:          "deferred",
 			PreviousVersion: c.Version,
 			NewVersion:      release.Version,
-			Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+			Message:         defaultApplyModeMessage,
 		}
 	}
 
+	if c.SessionHandler != nil {
+		c.SessionHandler.SetUpdatePending()
+	}
 	if c.Logger != nil {
-		c.Logger.Info("upgrade: non-engine manual restart required prev_version=%s new_version=%s",
+		c.Logger.Info("upgrade: deferred restart staged prev_version=%s new_version=%s",
 			c.Version, release.Version)
 	}
 	return &Result{
 		Method:          "deferred",
 		PreviousVersion: c.Version,
 		NewVersion:      release.Version,
-		Message:         defaultApplyModeMessage,
+		Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
 	}
 }
 
