@@ -163,31 +163,29 @@ func (c *Coordinator) applyUpdateFunc() ApplyUpdateFunc {
 }
 
 func (c *Coordinator) afterDeferredInstall(release *updater.Release) *Result {
-	if !c.EngineMode {
+	if c.SessionHandler != nil {
+		c.SessionHandler.SetUpdatePending()
 		if c.Logger != nil {
-			c.Logger.Info("upgrade: non-engine manual restart required prev_version=%s new_version=%s",
+			c.Logger.Info("upgrade: deferred restart staged prev_version=%s new_version=%s",
 				c.Version, release.Version)
 		}
 		return &Result{
 			Method:          "deferred",
 			PreviousVersion: c.Version,
 			NewVersion:      release.Version,
-			Message:         defaultApplyModeMessage,
+			Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
 		}
 	}
 
-	if c.SessionHandler != nil {
-		c.SessionHandler.SetUpdatePending()
-	}
 	if c.Logger != nil {
-		c.Logger.Info("upgrade: deferred restart staged prev_version=%s new_version=%s",
+		c.Logger.Info("upgrade: non-engine manual restart required prev_version=%s new_version=%s",
 			c.Version, release.Version)
 	}
 	return &Result{
 		Method:          "deferred",
 		PreviousVersion: c.Version,
 		NewVersion:      release.Version,
-		Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+		Message:         defaultApplyModeMessage,
 	}
 }
 

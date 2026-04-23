@@ -35,8 +35,7 @@ func main() {
 }
 
 func run() error {
-	handoff, err := parseHandoffFlags(os.Args[1:])
-	if err != nil {
+	if _, err := parseHandoffFlags(os.Args[1:]); err != nil {
 		return err
 	}
 

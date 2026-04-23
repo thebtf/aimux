@@ -70,6 +70,12 @@ Filed engram cross-project issue #130 targeting mcp-mux for `PerformHandoff` + `
 - [x] T009 [EXECUTOR: sonnet] Add `mode` parameter to `upgrade` MCP tool schema in `pkg/server/server.go`: optional string, enum `auto|hot_swap|deferred`, default `auto`
   AC: schema validates via mcp-go library · handleUpgrade passes parsed mode to Coordinator.Apply · backwards compat: missing param defaults to auto · unit tests for all three modes via MCP contract tests · swap body→return nil ⇒ tests fail
 
+- [x] T009a [EXECUTOR: sonnet] Add daemon-side graceful-restart seam to `upgrade apply`: plumb the production upgrade flow to muxcore's existing daemon control `graceful-restart` path (Windows-first, all-platform completion gate)
+  AC: production code can request daemon-side graceful restart from upgrade flow via explicit internal seam · no fake session-side hot-swap success path remains · unit/integration tests prove the seam is reachable in engine mode and bypassed in non-engine mode · swap body→return nil ⇒ tests fail
+
+- [x] T009b [EXECUTOR: sonnet] Rework aimux engine owner mode to be handoff-compatible for real live upgrade: replace SessionHandler-only owner path with an upstream-backed mode that allows `Owner.ShutdownForHandoff()` to produce real payloads on Windows/Linux/macOS
+  AC: hot-swap path no longer depends on SessionHandler-only owners · owner handoff produces real payloads instead of `ErrNoUpstream`/`ErrDetachUnsupported` · Windows is first-class in design and verification, not a later polish step · swap body→return nil ⇒ tests fail
+
 - [ ] T010 [EXECUTOR: sonnet] E2E integration test `test/e2e/upgrade_hot_swap_test.go`: spin up daemon on v1.0.0 binary, serve mock release for v1.0.1, start async `agent` job, call upgrade apply, verify (a) response has status=updated_hot_swap, (b) async job remains queryable across handoff, (c) mcp__aimux__status shows new version within 1s of response
   AC: test runs on ubuntu-latest + macos-latest in CI · timeout 60s per test · swap body→return nil ⇒ test fails
 
