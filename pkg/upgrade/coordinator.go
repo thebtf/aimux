@@ -1,19 +1,33 @@
 // Package upgrade orchestrates the aimux binary upgrade flow.
 //
 // The Coordinator type manages the full upgrade lifecycle: detection, download,
-// checksum verification, and application. In Phase 1, it delegates to the
+// checksum verification, and application. In Phase 1, it delegated to the
 // existing updater.ApplyUpdate path (deferred restart behavior). Phase 3 adds
-// the hot-swap flow via muxcore handoff primitives.
+// the daemon-control seam for muxcore-backed graceful restart.
 package upgrade
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/updater"
+	"github.com/thebtf/mcp-mux/muxcore/control"
 )
+
+const (
+	defaultApplyModeMessage            = "Binary updated. Restart aimux to load the new version."
+	defaultGracefulRestartDrainTimeout = 10000
+	defaultControlRequestTimeout       = 15 * time.Second
+)
+
+// ApplyUpdateFunc installs the latest binary release for the current version.
+type ApplyUpdateFunc func(ctx context.Context, currentVersion string) (*updater.Release, error)
+
+// GracefulRestartFunc requests a daemon-side graceful restart after an upgrade.
+type GracefulRestartFunc func(ctx context.Context, drainTimeoutMs int) error
 
 // Mode controls how the upgrade is applied.
 type Mode string
@@ -34,7 +48,6 @@ const (
 
 // SessionHandler is the minimal interface Coordinator requires from the
 // muxcore session handler for deferred upgrade signalling.
-// SetDraining will be added in Phase 3 for hot-swap graceful drain.
 type SessionHandler interface {
 	// SetUpdatePending signals that a binary update has been staged.
 	// The daemon will exit when all CC sessions disconnect.
@@ -42,8 +55,6 @@ type SessionHandler interface {
 }
 
 // Coordinator orchestrates the full upgrade lifecycle.
-// It owns the decision of whether to perform a hot-swap (Phase 3) or fall
-// back to the deferred restart path (current v4.3.0 behavior).
 type Coordinator struct {
 	// Version is the currently running binary version string (e.g. "4.3.0").
 	Version string
@@ -57,16 +68,19 @@ type Coordinator struct {
 	SessionHandler SessionHandler
 
 	// EngineMode indicates the daemon is running under the muxcore engine.
-	// When false, hot-swap is disabled — handoff requires engine IPC sockets.
+	// When false, daemon-side graceful restart is unavailable.
 	EngineMode bool
+
+	// GracefulRestart requests daemon-side graceful restart over the control socket.
+	// Nil means the seam is unavailable.
+	GracefulRestart GracefulRestartFunc
+
+	// ApplyUpdate installs the latest release. Defaults to updater.ApplyUpdate.
+	ApplyUpdate ApplyUpdateFunc
 
 	// Logger receives structured log output for upgrade lifecycle events.
 	// May be nil; logging is skipped when nil.
 	Logger *logger.Logger
-
-	// applyUpdateFn is a narrow test seam for ModeDeferred/ModeAuto routing tests.
-	// Production code leaves it nil and uses updater.ApplyUpdate directly.
-	applyUpdateFn func(ctx context.Context, currentVersion string) (*updater.Release, error)
 }
 
 // Result describes the outcome of an Apply call.
@@ -96,79 +110,18 @@ type Result struct {
 	Message string
 }
 
-var errHotSwapUnsupported = errors.New("hot-swap requires daemon-side muxcore owner handoff; current coordinator only has session-side update adapter")
+var errHotSwapUnsupported = errors.New("hot-swap requires daemon-side muxcore graceful-restart seam")
 
 // Apply downloads and applies the upgrade according to mode.
 //
-// T007 boundary in the current codebase shape:
-//   - real muxcore hot-swap requires daemon-side access to Owner.ShutdownForHandoff()
-//     so the predecessor can transfer FD-bearing HandoffUpstream payloads to the
-//     successor daemon's ReceiveHandoff()/NewOwnerFromHandoff() path.
-//   - Coordinator currently receives only the session-side SetUpdatePending adapter,
-//     so it cannot enumerate owners or produce real handoff payloads.
-//
-// Therefore ModeAuto attempts hot-swap, records the concrete blocker, and falls back
-// to deferred. ModeHotSwap returns an error instead of faking a handoff.
+// T008 semantics remain truthful:
+//   - ModeDeferred uses the safe non-live path
+//   - ModeHotSwap uses only the daemon-side graceful-restart seam and never falls back
+//   - ModeAuto tries the daemon-side seam first, then falls back to deferred/manual behavior
 func (c *Coordinator) Apply(ctx context.Context, mode Mode) (*Result, error) {
-	switch mode {
-	case ModeDeferred:
-		return c.applyDeferred(ctx)
-	case ModeHotSwap:
-		result, err := c.tryHotSwap(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if result == nil {
-			return nil, fmt.Errorf("tryHotSwap returned nil result")
-		}
-		return result, nil
-	case ModeAuto, "":
-		hotSwapResult, err := c.tryHotSwap(ctx)
-		if err == nil {
-			if hotSwapResult == nil {
-				return nil, fmt.Errorf("tryHotSwap returned nil result")
-			}
-			return hotSwapResult, nil
-		}
-		result, deferredErr := c.applyDeferred(ctx)
-		if deferredErr != nil {
-			return nil, deferredErr
-		}
-		result.HandoffError = err.Error()
-		if result.Message != "" {
-			result.Message += " Hot-swap unavailable: " + err.Error()
-		}
-		return result, nil
-	default:
-		return nil, fmt.Errorf("unknown upgrade mode %q", mode)
-	}
-}
+	applyUpdate := c.applyUpdateFunc()
 
-func (c *Coordinator) tryHotSwap(ctx context.Context) (*Result, error) {
-	_ = ctx
-
-	if !c.EngineMode {
-		return nil, fmt.Errorf("%w: engine mode disabled", errHotSwapUnsupported)
-	}
-	if c.SessionHandler == nil {
-		return nil, fmt.Errorf("%w: session handler unavailable", errHotSwapUnsupported)
-	}
-
-	return nil, fmt.Errorf("%w: coordinator cannot call daemon owner ShutdownForHandoff or successor ReceiveHandoff/NewOwnerFromHandoff", errHotSwapUnsupported)
-}
-
-func (c *Coordinator) applyUpdate(ctx context.Context) (*updater.Release, error) {
-	if c.applyUpdateFn != nil {
-		return c.applyUpdateFn(ctx, c.Version)
-	}
-	return updater.ApplyUpdate(ctx, c.Version)
-}
-
-// applyDeferred executes the legacy v4.3.0 upgrade path: download + install
-// the new binary via updater.ApplyUpdate, then signal SetUpdatePending on the
-// session handler. The daemon will exit and restart when all CC sessions disconnect.
-func (c *Coordinator) applyDeferred(ctx context.Context) (*Result, error) {
-	release, err := c.applyUpdate(ctx)
+	release, err := applyUpdate(ctx, c.Version)
 	if err != nil {
 		return nil, fmt.Errorf("apply update: %w", err)
 	}
@@ -181,20 +134,113 @@ func (c *Coordinator) applyDeferred(ctx context.Context) (*Result, error) {
 		}, nil
 	}
 
-	// Signal deferred restart — daemon exits when all CC sessions disconnect.
+	switch mode {
+	case ModeDeferred:
+		return c.afterDeferredInstall(release), nil
+	case ModeHotSwap:
+		return c.afterHotSwapInstall(ctx, release)
+	case ModeAuto, "":
+		result, hotSwapErr := c.afterHotSwapInstall(ctx, release)
+		if hotSwapErr == nil {
+			return result, nil
+		}
+		fallback := c.afterDeferredInstall(release)
+		fallback.HandoffError = hotSwapErr.Error()
+		if fallback.Message != "" {
+			fallback.Message += " Hot-swap unavailable: " + hotSwapErr.Error()
+		}
+		return fallback, nil
+	default:
+		return nil, fmt.Errorf("unknown upgrade mode %q", mode)
+	}
+}
+
+func (c *Coordinator) applyUpdateFunc() ApplyUpdateFunc {
+	if c.ApplyUpdate != nil {
+		return c.ApplyUpdate
+	}
+	return updater.ApplyUpdate
+}
+
+func (c *Coordinator) afterDeferredInstall(release *updater.Release) *Result {
+	if !c.EngineMode {
+		if c.Logger != nil {
+			c.Logger.Info("upgrade: non-engine manual restart required prev_version=%s new_version=%s",
+				c.Version, release.Version)
+		}
+		return &Result{
+			Method:          "deferred",
+			PreviousVersion: c.Version,
+			NewVersion:      release.Version,
+			Message:         defaultApplyModeMessage,
+		}
+	}
+
 	if c.SessionHandler != nil {
 		c.SessionHandler.SetUpdatePending()
 	}
-
 	if c.Logger != nil {
 		c.Logger.Info("upgrade: deferred restart staged prev_version=%s new_version=%s",
 			c.Version, release.Version)
 	}
-
 	return &Result{
 		Method:          "deferred",
 		PreviousVersion: c.Version,
 		NewVersion:      release.Version,
 		Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+	}
+}
+
+func (c *Coordinator) afterHotSwapInstall(ctx context.Context, release *updater.Release) (*Result, error) {
+	if !c.EngineMode {
+		return nil, fmt.Errorf("%w: outside engine mode", errHotSwapUnsupported)
+	}
+	if c.GracefulRestart == nil {
+		return nil, fmt.Errorf("%w: control seam not configured", errHotSwapUnsupported)
+	}
+	if err := c.GracefulRestart(ctx, defaultGracefulRestartDrainTimeout); err != nil {
+		return nil, fmt.Errorf("daemon graceful restart: %w", err)
+	}
+	if c.Logger != nil {
+		c.Logger.Info("upgrade: daemon graceful restart requested prev_version=%s new_version=%s",
+			c.Version, release.Version)
+	}
+	return &Result{
+		Method:          "hot_swap",
+		PreviousVersion: c.Version,
+		NewVersion:      release.Version,
+		Message:         "Binary updated. Daemon graceful restart requested.",
 	}, nil
+}
+
+// NewControlSocketGracefulRestartFunc builds the production daemon-control seam.
+func NewControlSocketGracefulRestartFunc(socketPath string) GracefulRestartFunc {
+	if socketPath == "" {
+		return nil
+	}
+	return func(ctx context.Context, drainTimeoutMs int) error {
+		timeout := defaultControlRequestTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > 0 && remaining < timeout {
+				timeout = remaining
+			}
+		}
+		resp, err := control.SendWithTimeout(socketPath, control.Request{
+			Cmd:            "graceful-restart",
+			DrainTimeoutMs: drainTimeoutMs,
+		}, timeout)
+		if err != nil {
+			return err
+		}
+		if resp == nil {
+			return fmt.Errorf("empty control response")
+		}
+		if !resp.OK {
+			if resp.Message != "" {
+				return errors.New(resp.Message)
+			}
+			return fmt.Errorf("graceful restart rejected")
+		}
+		return nil
+	}
 }

@@ -203,6 +203,7 @@ func run() error {
 		if engErr != nil {
 			return fmt.Errorf("engine init: %w", engErr)
 		}
+		srv.SetDaemonControlSocketPath(eng.ControlSocketPath())
 		if runErr := eng.Run(ctx); runErr != nil && !errors.Is(runErr, context.Canceled) {
 			return fmt.Errorf("engine: %w", runErr)
 		}

@@ -28,6 +28,12 @@ func (s *Server) SessionHandler() muxcore.SessionHandler {
 	return h
 }
 
+// SetDaemonControlSocketPath stores the live muxcore daemon control socket path.
+// Engine-mode upgrade uses this explicit seam to request daemon-side graceful restart.
+func (s *Server) SetDaemonControlSocketPath(socketPath string) {
+	s.daemonControlSocketPath = socketPath
+}
+
 // StdioHandler returns a handler function compatible with muxcore engine.Handler.
 // The handler wraps the MCP server's stdio transport, accepting custom stdin/stdout
 // from the engine's IPC layer instead of hardcoded os.Stdin/os.Stdout.

@@ -113,30 +113,31 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 
 // Server holds all dependencies for the MCP server.
 type Server struct {
-	cfg             *config.Config
-	log             *logger.Logger
-	registry        *driver.Registry
-	router          *routing.Router
-	sessions        *session.Registry
-	jobs            *session.JobManager
-	breakers        *executor.BreakerRegistry
-	executor        types.Executor
-	mcp             *server.MCPServer
-	orchestrator    *orch.Orchestrator
-	agentReg        *agents.Registry
-	promptEng       *prompt.Engine
-	hooks           *hooks.Registry
-	metrics         *metrics.Collector
-	store           *session.Store
-	gcCancel        context.CancelFunc
-	skillEngine     *skills.Engine
-	rateLimiter     *ratelimit.Limiter
-	authToken       string
-	projectDir      string // directory used for initial agent discovery
-	guidanceReg     *guidance.Registry
-	cooldownTracker *executor.ModelCooldownTracker
-	sessionHandler  muxcore.SessionHandler // stored for upgrade tool deferred restart
-	loom            *loom.LoomEngine       // central task mediator (LoomEngine v3)
+	cfg                     *config.Config
+	log                     *logger.Logger
+	registry                *driver.Registry
+	router                  *routing.Router
+	sessions                *session.Registry
+	jobs                    *session.JobManager
+	breakers                *executor.BreakerRegistry
+	executor                types.Executor
+	mcp                     *server.MCPServer
+	orchestrator            *orch.Orchestrator
+	agentReg                *agents.Registry
+	promptEng               *prompt.Engine
+	hooks                   *hooks.Registry
+	metrics                 *metrics.Collector
+	store                   *session.Store
+	gcCancel                context.CancelFunc
+	skillEngine             *skills.Engine
+	rateLimiter             *ratelimit.Limiter
+	authToken               string
+	projectDir              string // directory used for initial agent discovery
+	guidanceReg             *guidance.Registry
+	cooldownTracker         *executor.ModelCooldownTracker
+	sessionHandler          muxcore.SessionHandler // stored for upgrade tool routing
+	daemonControlSocketPath string                 // live engine daemon control socket path for upgrade restart seam
+	loom                    *loom.LoomEngine       // central task mediator (LoomEngine v3)
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -1571,11 +1572,12 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		}
 
 		coord := &upgrade.Coordinator{
-			Version:        Version,
-			BinaryPath:     binaryPath,
-			SessionHandler: sh,
-			EngineMode:     engineMode,
-			Logger:         s.log,
+			Version:         Version,
+			BinaryPath:      binaryPath,
+			SessionHandler:  sh,
+			EngineMode:      engineMode,
+			GracefulRestart: upgrade.NewControlSocketGracefulRestartFunc(s.daemonControlSocketPath),
+			Logger:          s.log,
 		}
 
 		var (

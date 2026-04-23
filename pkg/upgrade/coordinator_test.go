@@ -1,12 +1,18 @@
-package upgrade
+package upgrade_test
 
 import (
 	"context"
 	"errors"
+	"log"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/updater"
+	"github.com/thebtf/aimux/pkg/upgrade"
+	"github.com/thebtf/mcp-mux/muxcore/control"
 )
 
 type mockSessionHandler struct {
@@ -19,7 +25,7 @@ func (m *mockSessionHandler) SetUpdatePending() {
 
 func TestCoordinator_Compile(t *testing.T) {
 	mock := &mockSessionHandler{}
-	coord := &Coordinator{
+	coord := &upgrade.Coordinator{
 		Version:        "4.3.0",
 		BinaryPath:     "/usr/local/bin/aimux",
 		SessionHandler: mock,
@@ -36,12 +42,12 @@ func TestCoordinator_Compile(t *testing.T) {
 
 func TestMode_Values(t *testing.T) {
 	tests := []struct {
-		mode Mode
+		mode upgrade.Mode
 		want string
 	}{
-		{ModeAuto, "auto"},
-		{ModeHotSwap, "hot_swap"},
-		{ModeDeferred, "deferred"},
+		{upgrade.ModeAuto, "auto"},
+		{upgrade.ModeHotSwap, "hot_swap"},
+		{upgrade.ModeDeferred, "deferred"},
 	}
 	for _, tc := range tests {
 		if string(tc.mode) != tc.want {
@@ -51,7 +57,7 @@ func TestMode_Values(t *testing.T) {
 }
 
 func TestResult_Fields(t *testing.T) {
-	r := &Result{}
+	r := &upgrade.Result{}
 	if r.Method != "" {
 		t.Error("Method should default to empty string")
 	}
@@ -63,143 +69,234 @@ func TestResult_Fields(t *testing.T) {
 	}
 }
 
-func TestCoordinator_Apply_ModeDeferred_UsesDeferredPath(t *testing.T) {
+func TestCoordinatorApply_DeferredSignalsSessionHandler(t *testing.T) {
 	mock := &mockSessionHandler{}
-	coord := &Coordinator{
+	coord := &upgrade.Coordinator{
 		Version:        "4.3.0",
 		SessionHandler: mock,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
 	}
-	setCoordinatorApplyUpdateFn(t, coord, func(ctx context.Context, currentVersion string) (*updater.Release, error) {
-		return &updater.Release{Version: "4.4.0"}, nil
-	})
 
-	result, err := coord.Apply(context.Background(), ModeDeferred)
+	result, err := coord.Apply(context.Background(), upgrade.ModeDeferred)
 	if err != nil {
-		t.Fatalf("Apply(ModeDeferred): %v", err)
+		t.Fatalf("Apply: %v", err)
+	}
+	if !mock.pendingCalled {
+		t.Fatal("expected SetUpdatePending to be called for deferred mode")
 	}
 	if result.Method != "deferred" {
 		t.Fatalf("Method = %q, want deferred", result.Method)
 	}
-	if result.HandoffError != "" {
-		t.Fatalf("HandoffError = %q, want empty", result.HandoffError)
-	}
-	if !mock.pendingCalled {
-		t.Fatal("SetUpdatePending was not called for ModeDeferred")
-	}
 }
 
-func TestCoordinator_Apply_ModeHotSwap_FailsWithoutFallback(t *testing.T) {
-	mock := &mockSessionHandler{}
-	coord := &Coordinator{
-		EngineMode:     true,
-		SessionHandler: mock,
+func TestCoordinatorApply_AutoUsesGracefulRestartInEngineMode(t *testing.T) {
+	var called bool
+	var gotDrain int
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		EngineMode: true,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
+		GracefulRestart: func(ctx context.Context, drainTimeoutMs int) error {
+			called = true
+			gotDrain = drainTimeoutMs
+			return nil
+		},
 	}
-	setCoordinatorApplyUpdateFn(t, coord, func(ctx context.Context, currentVersion string) (*updater.Release, error) {
-		return &updater.Release{Version: "4.4.0"}, nil
-	})
 
-	_, err := coord.Apply(context.Background(), ModeHotSwap)
-	if err == nil {
-		t.Fatal("expected ModeHotSwap to fail")
-	}
-	if mock.pendingCalled {
-		t.Fatal("ModeHotSwap must not fall back to deferred path")
-	}
-	if !strings.Contains(err.Error(), "ShutdownForHandoff") {
-		t.Fatalf("error = %q, want ShutdownForHandoff evidence", err)
-	}
-}
-
-func TestCoordinator_Apply_ModeAuto_FallsBackWithHandoffError(t *testing.T) {
-	mock := &mockSessionHandler{}
-	coord := &Coordinator{
-		EngineMode:     true,
-		SessionHandler: mock,
-		Version:        "4.3.0",
-	}
-	setCoordinatorApplyUpdateFn(t, coord, func(ctx context.Context, currentVersion string) (*updater.Release, error) {
-		return &updater.Release{Version: "4.4.0"}, nil
-	})
-
-	result, err := coord.Apply(context.Background(), ModeAuto)
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
 	if err != nil {
-		t.Fatalf("Apply(ModeAuto): %v", err)
+		t.Fatalf("Apply: %v", err)
+	}
+	if !called {
+		t.Fatal("expected graceful restart seam to be invoked")
+	}
+	if gotDrain != 10000 {
+		t.Fatalf("drain timeout = %d, want 10000", gotDrain)
+	}
+	if result.Method != "hot_swap" {
+		t.Fatalf("Method = %q, want hot_swap", result.Method)
+	}
+	if result.Message == "" {
+		t.Fatal("expected non-empty message")
+	}
+}
+
+func TestCoordinatorApply_AutoFallsBackWhenEngineModeSeamUnavailable(t *testing.T) {
+	mock := &mockSessionHandler{}
+	coord := &upgrade.Coordinator{
+		Version:        "4.3.0",
+		EngineMode:     true,
+		SessionHandler: mock,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
+	}
+
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
 	}
 	if result.Method != "deferred" {
 		t.Fatalf("Method = %q, want deferred fallback", result.Method)
 	}
 	if result.HandoffError == "" {
-		t.Fatal("ModeAuto must populate HandoffError on fallback")
+		t.Fatal("expected HandoffError on fallback")
 	}
-	if !strings.Contains(result.HandoffError, "ShutdownForHandoff") {
-		t.Fatalf("HandoffError = %q, want ShutdownForHandoff evidence", result.HandoffError)
-	}
-	if !strings.Contains(result.Message, "Hot-swap unavailable") {
-		t.Fatalf("Message = %q, want hot-swap unavailable suffix", result.Message)
+	if !strings.Contains(result.HandoffError, "control seam") {
+		t.Fatalf("HandoffError = %q, want control seam detail", result.HandoffError)
 	}
 	if !mock.pendingCalled {
-		t.Fatal("ModeAuto fallback must call deferred path")
+		t.Fatal("expected deferred fallback to call SetUpdatePending")
 	}
 }
 
-func TestCoordinator_Apply_ModeAuto_PropagatesDeferredFailure(t *testing.T) {
-	coord := &Coordinator{
-		EngineMode:     true,
-		SessionHandler: &mockSessionHandler{},
+func TestCoordinatorApply_AutoBypassesGracefulRestartOutsideEngineMode(t *testing.T) {
+	var called bool
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		EngineMode: false,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
+		GracefulRestart: func(ctx context.Context, drainTimeoutMs int) error {
+			called = true
+			return nil
+		},
 	}
-	setCoordinatorApplyUpdateFn(t, coord, func(ctx context.Context, currentVersion string) (*updater.Release, error) {
-		return nil, errors.New("apply update boom")
-	})
 
-	_, err := coord.Apply(context.Background(), ModeAuto)
-	if err == nil {
-		t.Fatal("expected ModeAuto to surface deferred failure")
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
 	}
-	if !strings.Contains(err.Error(), "apply update boom") {
-		t.Fatalf("error = %q, want deferred failure cause", err)
+	if called {
+		t.Fatal("graceful restart seam should not be called outside engine mode")
+	}
+	if result.Method != "deferred" {
+		t.Fatalf("Method = %q, want deferred", result.Method)
+	}
+	if !strings.Contains(result.Message, "Restart aimux") {
+		t.Fatalf("message = %q, want manual restart guidance", result.Message)
 	}
 }
 
-func TestCoordinator_TryHotSwap_BlockedWithoutEngineMode(t *testing.T) {
-	coord := &Coordinator{}
+func TestCoordinatorApply_PropagatesGracefulRestartFailureInHotSwapMode(t *testing.T) {
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		EngineMode: true,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
+		GracefulRestart: func(ctx context.Context, drainTimeoutMs int) error {
+			return errors.New("dial failed")
+		},
+	}
 
-	_, err := coord.Apply(context.Background(), ModeHotSwap)
+	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
 	if err == nil {
-		t.Fatal("expected ModeHotSwap to fail without real daemon-side handoff access")
+		t.Fatal("expected graceful restart error")
 	}
-	if !strings.Contains(err.Error(), "daemon-side muxcore owner handoff") {
-		t.Fatalf("error = %q, want daemon-side handoff blocker", err)
-	}
-	if !strings.Contains(err.Error(), "engine mode disabled") {
-		t.Fatalf("error = %q, want engine mode blocker detail", err)
+	if !strings.Contains(err.Error(), "dial failed") {
+		t.Fatalf("error = %q, want propagated seam failure", err)
 	}
 }
 
-func TestCoordinator_TryHotSwap_BlockedWithSessionOnlyAdapter(t *testing.T) {
-	coord := &Coordinator{
-		EngineMode:     true,
-		SessionHandler: &mockSessionHandler{},
+func TestCoordinatorApply_HotSwapFailsOutsideEngineMode(t *testing.T) {
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		EngineMode: false,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
 	}
 
-	_, err := coord.Apply(context.Background(), ModeHotSwap)
+	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
 	if err == nil {
-		t.Fatal("expected ModeHotSwap to fail when only session-side adapter is available")
+		t.Fatal("expected ModeHotSwap to fail outside engine mode")
 	}
-	if !strings.Contains(err.Error(), "ShutdownForHandoff") {
-		t.Fatalf("error = %q, want ShutdownForHandoff evidence", err)
+	if !strings.Contains(err.Error(), "outside engine mode") {
+		t.Fatalf("error = %q, want outside engine mode message", err)
 	}
-	if !strings.Contains(err.Error(), "ReceiveHandoff") {
-		t.Fatalf("error = %q, want ReceiveHandoff evidence", err)
+}
+
+func TestNewControlSocketGracefulRestartFunc_SendsGracefulRestart(t *testing.T) {
+	socketPath := controlSocketTestPath(t)
+	handler := &mockControlHandler{}
+	server, err := control.NewServer(socketPath, handler, log.Default())
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer server.Close()
+
+	restart := upgrade.NewControlSocketGracefulRestartFunc(server.SocketPath())
+	if restart == nil {
+		t.Fatal("expected non-nil graceful restart func")
+	}
+	if err := restart(context.Background(), 4321); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if handler.lastDrainTimeoutMs != 4321 {
+		t.Fatalf("drain timeout = %d, want 4321", handler.lastDrainTimeoutMs)
+	}
+	if handler.gracefulRestartCalls != 1 {
+		t.Fatalf("graceful restart calls = %d, want 1", handler.gracefulRestartCalls)
+	}
+	if handler.shutdownCalls != 0 {
+		t.Fatalf("shutdown calls = %d, want 0", handler.shutdownCalls)
 	}
 }
 
 // SessionHandler interface conformance check — aimuxHandler (from pkg/server)
 // satisfies upgrade.SessionHandler via SetUpdatePending method.
 func TestSessionHandler_InterfaceShape(t *testing.T) {
-	var _ SessionHandler = (*mockSessionHandler)(nil)
+	var _ upgrade.SessionHandler = (*mockSessionHandler)(nil)
 }
 
-func setCoordinatorApplyUpdateFn(t *testing.T, coord *Coordinator, fn func(context.Context, string) (*updater.Release, error)) {
+func controlSocketTestPath(t *testing.T) string {
 	t.Helper()
-	coord.applyUpdateFn = fn
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.TempDir(), "aimux-gr.sock")
+	}
+	return filepath.Join(t.TempDir(), "aimux-gr.sock")
+}
+
+type mockControlHandler struct {
+	shutdownCalls        int
+	lastDrainTimeoutMs   int
+	gracefulRestartCalls int
+}
+
+func (m *mockControlHandler) HandleShutdown(drainTimeoutMs int) string {
+	m.shutdownCalls++
+	m.lastDrainTimeoutMs = drainTimeoutMs
+	return "ok"
+}
+
+func (m *mockControlHandler) HandleStatus() map[string]interface{} {
+	return map[string]interface{}{"status": "ok"}
+}
+
+func (m *mockControlHandler) HandleSpawn(req control.Request) (ipcPath, serverID, token string, err error) {
+	return "", "", "", nil
+}
+
+func (m *mockControlHandler) HandleRemove(serverID string) error {
+	return nil
+}
+
+func (m *mockControlHandler) HandleGracefulRestart(drainTimeoutMs int) (snapshotPath string, err error) {
+	m.gracefulRestartCalls++
+	m.lastDrainTimeoutMs = drainTimeoutMs
+	return "", nil
+}
+
+func (m *mockControlHandler) HandleRefreshSessionToken(prevToken string) (newToken string, err error) {
+	return "", nil
+}
+
+func (m *mockControlHandler) HandleReconnectGiveUp(reason string) error {
+	return nil
 }
