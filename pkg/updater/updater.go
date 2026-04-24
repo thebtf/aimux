@@ -250,19 +250,18 @@ func ApplyUpdate(ctx context.Context, currentVersion string) (*Release, error) {
 // This variant exists so the upgrade coordinator can hot-swap a known binary path
 // without relying on selfupdate.ExecutablePath().
 func ApplyUpdateAt(ctx context.Context, currentVersion string, currentExePath string) (*Release, error) {
-	// Download to a unique temp file in the same directory as the executable.
-	// Placing the temp file on the same filesystem as the target ensures that
-	// Install's atomic rename (via go-selfupdate/update.Apply) avoids a
-	// cross-device copy. os.CreateTemp gives a unique name, preventing collisions
-	// if ApplyUpdate is ever called concurrently (T013 adds an explicit guard in
-	// Phase 3; this makes the interim behavior safe regardless).
-	tmpFile, err := os.CreateTemp(filepath.Dir(currentExePath), "aimux-update-*.tmp")
+	// Download to a temp directory with the binary name matching the expected
+	// filename inside the release zip. go-selfupdate's UpdateTo extracts the
+	// archive entry whose name matches filepath.Base(targetPath). If the target
+	// has a random temp suffix, extraction fails with "executable not found in
+	// zip file". Using a temp DIR with the real binary name inside it avoids
+	// this while still placing the temp on the same filesystem for atomic rename.
+	tmpDir, err := os.MkdirTemp(filepath.Dir(currentExePath), "aimux-update-*")
 	if err != nil {
-		return nil, fmt.Errorf("create temp file: %w", err)
+		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
-	tmpPath := tmpFile.Name()
-	tmpFile.Close()          // Download reopens by path; close the placeholder handle now
-	defer os.Remove(tmpPath) // clean up temp regardless of outcome
+	defer os.RemoveAll(tmpDir)
+	tmpPath := filepath.Join(tmpDir, filepath.Base(currentExePath))
 
 	release, err := Download(ctx, currentVersion, tmpPath)
 	if err != nil {
