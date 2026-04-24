@@ -3,6 +3,8 @@ package agents
 import (
 	"sort"
 	"strings"
+
+	"github.com/thebtf/aimux/pkg/routing"
 )
 
 // stopWords are common English words that carry no task-relevant signal.
@@ -138,80 +140,276 @@ type AgentCandidate struct {
 // ListCandidates returns a compact list of agents for the calling LLM to choose from.
 // Each entry has name + a "when to use" summary derived from the description.
 //
-// When prompt is non-empty the list is ranked by relevance score descending
-// (using the same keyword scoring as AutoSelectAgent), so the most relevant
+// When prompt is non-empty the list is ranked by BM25 relevance score descending
+// (with feedback adjustment when history is provided), so the most relevant
 // agents appear first even if maxResults would otherwise hide them.
 // When prompt is empty the list is sorted alphabetically for stable output.
 // Limited to maxResults entries (0 = no limit).
 func ListCandidates(registry *Registry, prompt string, maxResults int) []AgentCandidate {
+	return listCandidatesWithFeedback(registry, prompt, maxResults, nil)
+}
+
+// listCandidatesWithFeedback is the internal implementation that accepts optional feedback.
+func listCandidatesWithFeedback(registry *Registry, prompt string, maxResults int, feedback *FeedbackTracker) []AgentCandidate {
 	// Use Registry.List() so stale filesystem-backed agents are purged at read
 	// time (consistent with Get/Find behaviour). Without this, ListCandidates
 	// would surface ghost entries whose source files were deleted after startup.
 	liveAgents := registry.List()
 
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
-
-	keywords := ExtractKeywords(prompt)
-
-	type scoredCandidate struct {
-		AgentCandidate
-		score int
+	if prompt == "" {
+		// Alphabetical sort — no scoring needed.
+		candidates := make([]AgentCandidate, 0, len(liveAgents))
+		for _, a := range liveAgents {
+			candidates = append(candidates, AgentCandidate{
+				Name: a.Name,
+				When: agentWhenText(a),
+				Role: a.Role,
+			})
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].Name < candidates[j].Name
+		})
+		if maxResults > 0 && len(candidates) > maxResults {
+			candidates = candidates[:maxResults]
+		}
+		return candidates
 	}
 
-	scored := make([]scoredCandidate, 0, len(liveAgents))
-	for _, a := range liveAgents {
-		// Prefer the explicit When field (set in frontmatter or builtin definition).
-		// Fall back to Description, then Domain for agents that pre-date the When field.
-		when := a.When
-		if when == "" {
-			when = a.Description
+	// BM25 ranking via pkg/routing.
+	scorer := routing.NewBM25Scorer()
+	scorables := make([]routing.Scorable, len(liveAgents))
+	for i, a := range liveAgents {
+		scorables[i] = agentScoreText{a: a}
+	}
+	ranked := scorer.Rank(prompt, scorables)
+
+	// Build a score map: agent index → BM25 score.
+	bm25Score := make(map[int]float64, len(ranked))
+	for _, r := range ranked {
+		bm25Score[r.Index] = r.Score
+	}
+
+	type scored struct {
+		AgentCandidate
+		score float64
+	}
+
+	all := make([]scored, len(liveAgents))
+	for i, a := range liveAgents {
+		base := bm25Score[i] // 0.0 if not in ranked results
+		adj := base
+		if feedback != nil {
+			adj = feedback.AdjustScore(base, a.Name, inferTaskCategory(prompt))
 		}
-		if when == "" {
-			when = a.Domain
-		}
-		// Truncate long descriptions (rune-safe)
-		runes := []rune(when)
-		if len(runes) > 120 {
-			when = string(runes[:117]) + "..."
-		}
-		total := 0
-		for _, kw := range keywords {
-			total += scoreMatch(a, kw)
-		}
-		scored = append(scored, scoredCandidate{
+		all[i] = scored{
 			AgentCandidate: AgentCandidate{
 				Name: a.Name,
-				When: when,
+				When: agentWhenText(a),
 				Role: a.Role,
 			},
-			score: total,
-		})
+			score: adj,
+		}
 	}
 
-	if len(keywords) > 0 {
-		// Sort by score descending; tiebreak alphabetically.
-		sort.Slice(scored, func(i, j int) bool {
-			if scored[i].score != scored[j].score {
-				return scored[i].score > scored[j].score
-			}
-			return scored[i].Name < scored[j].Name
-		})
-	} else {
-		sort.Slice(scored, func(i, j int) bool {
-			return scored[i].Name < scored[j].Name
-		})
+	// Sort by adjusted score descending; tiebreak alphabetically.
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].score != all[j].score {
+			return all[i].score > all[j].score
+		}
+		return all[i].Name < all[j].Name
+	})
+
+	if maxResults > 0 && len(all) > maxResults {
+		all = all[:maxResults]
 	}
 
-	if maxResults > 0 && len(scored) > maxResults {
-		scored = scored[:maxResults]
-	}
-
-	candidates := make([]AgentCandidate, len(scored))
-	for i, s := range scored {
+	candidates := make([]AgentCandidate, len(all))
+	for i, s := range all {
 		candidates[i] = s.AgentCandidate
 	}
 	return candidates
+}
+
+// SelectionRationale holds the scoring details for a SemanticSelect decision.
+type SelectionRationale struct {
+	AgentName     string  `json:"agent_name"`
+	SemanticScore float64 `json:"semantic_score"`
+	SuccessRate   float64 `json:"success_rate"`
+	AdjustedScore float64 `json:"adjusted_score"`
+	Reason        string  `json:"reason"`
+}
+
+// SemanticSelect picks the best agent for a prompt using BM25 scoring with
+// feedback-adjusted scores. Returns the selected agent and a rationale struct
+// with scoring details. Falls back to the generic/implementer agent when no
+// agent scores above 0 after adjustment.
+func SemanticSelect(registry *Registry, prompt string, history *DispatchHistory) (*Agent, SelectionRationale) {
+	liveAgents := registry.List()
+	if len(liveAgents) == 0 {
+		fb := fallbackAgent(registry)
+		return fb, SelectionRationale{
+			AgentName: agentName(fb),
+			Reason:    "no agents registered",
+		}
+	}
+
+	scorer := routing.NewBM25Scorer()
+	scorables := make([]routing.Scorable, len(liveAgents))
+	for i, a := range liveAgents {
+		scorables[i] = agentScoreText{a: a}
+	}
+
+	ranked := scorer.Rank(prompt, scorables)
+
+	taskCategory := inferTaskCategory(prompt)
+
+	type candidate struct {
+		agent         *Agent
+		semanticScore float64
+		successRate   float64
+		adjustedScore float64
+	}
+
+	var best candidate
+	for _, r := range ranked {
+		a := liveAgents[r.Index]
+		var successRate float64
+		if history != nil {
+			successRate = history.GetSuccessRate(a.Name, taskCategory)
+		} else {
+			successRate = 0.5 // neutral prior
+		}
+		adjusted := 0.7*r.Score + 0.3*successRate
+		if adjusted < 0.1 {
+			adjusted = 0.1
+		}
+		if adjusted > best.adjustedScore {
+			best = candidate{
+				agent:         a,
+				semanticScore: r.Score,
+				successRate:   successRate,
+				adjustedScore: adjusted,
+			}
+		}
+	}
+
+	if best.agent == nil {
+		// No BM25 matches — fall back to generic agent.
+		fb := fallbackAgent(registry)
+		return fb, SelectionRationale{
+			AgentName:     agentName(fb),
+			SemanticScore: 0,
+			SuccessRate:   0.5,
+			AdjustedScore: 0.1,
+			Reason:        "no BM25 matches; using fallback agent",
+		}
+	}
+
+	reason := "BM25 semantic match"
+	if history != nil {
+		reason = "BM25 semantic match with feedback adjustment"
+	}
+
+	return best.agent, SelectionRationale{
+		AgentName:     best.agent.Name,
+		SemanticScore: best.semanticScore,
+		SuccessRate:   best.successRate,
+		AdjustedScore: best.adjustedScore,
+		Reason:        reason,
+	}
+}
+
+// --- helpers ---
+
+// agentScoreText wraps *Agent to implement routing.Scorable.
+type agentScoreText struct {
+	a *Agent
+}
+
+func (s agentScoreText) ScoreText() string {
+	// Compose a document from the agent's most descriptive fields.
+	// Name carries the highest signal; When/Description provide topical depth.
+	parts := []string{s.a.Name, s.a.Name} // double name weight
+	if s.a.When != "" {
+		parts = append(parts, s.a.When)
+	}
+	if s.a.Description != "" {
+		parts = append(parts, s.a.Description)
+	}
+	if s.a.Domain != "" {
+		parts = append(parts, s.a.Domain)
+	}
+	if s.a.Role != "" {
+		parts = append(parts, s.a.Role)
+	}
+	if s.a.ContentPrefix != "" {
+		parts = append(parts, s.a.ContentPrefix)
+	}
+	return strings.Join(parts, " ")
+}
+
+// agentWhenText returns the best available "when to use" text for an agent,
+// truncated to 120 runes for compact candidate listings.
+func agentWhenText(a *Agent) string {
+	when := a.When
+	if when == "" {
+		when = a.Description
+	}
+	if when == "" {
+		when = a.Domain
+	}
+	runes := []rune(when)
+	if len(runes) > 120 {
+		when = string(runes[:117]) + "..."
+	}
+	return when
+}
+
+// inferTaskCategory returns a short category label inferred from the prompt keywords.
+// Used to namespace dispatch history records so feedback is task-type-specific.
+func inferTaskCategory(prompt string) string {
+	lower := strings.ToLower(prompt)
+	switch {
+	case containsAny(lower, "review", "audit", "check"):
+		return "review"
+	case containsAny(lower, "debug", "fix", "crash", "error", "bug"):
+		return "debugging"
+	case containsAny(lower, "research", "investigate", "analyze", "analyse"):
+		return "research"
+	case containsAny(lower, "implement", "build", "create", "write", "add"):
+		return "coding"
+	case containsAny(lower, "test", "spec", "tdd"):
+		return "testing"
+	case containsAny(lower, "refactor", "clean", "simplify"):
+		return "refactor"
+	default:
+		return "general"
+	}
+}
+
+// containsAny reports whether s contains any of the given substrings.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// fallbackAgent returns the best available fallback agent (generic → implementer → nil).
+func fallbackAgent(registry *Registry) *Agent {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	return fallbackLocked(registry)
+}
+
+// agentName returns the agent name or "<nil>" for safe nil handling.
+func agentName(a *Agent) string {
+	if a == nil {
+		return "<nil>"
+	}
+	return a.Name
 }
 
 // fallbackLocked returns the best available default agent.
@@ -223,3 +421,6 @@ func fallbackLocked(registry *Registry) *Agent {
 	}
 	return registry.agents["implementer"]
 }
+
+// compile-time assertion that agentScoreText satisfies routing.Scorable.
+var _ routing.Scorable = agentScoreText{}
