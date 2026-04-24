@@ -14,7 +14,7 @@ import (
 // patternDescriptions maps pattern names to FR-8 formatted descriptions.
 // Format: "[solo — free] {situation}. {function}."
 var patternDescriptions = map[string]string{
-	"think":                    "[solo — free] Record and reflect on a thought. Use as a scratchpad when reasoning through a problem.",
+	"think":                    "[solo — free] STRUCTURAL analysis only — no LLM inference. Record and reflect on a thought. Use as a scratchpad when reasoning through a problem. For semantic critique, use critique/consensus/debate.",
 	"critical_thinking":        "[solo — free] When you suspect bias in your reasoning. Scans text for cognitive biases using trigger-phrase detection.",
 	"sequential_thinking":      "[solo — free] When a problem needs step-by-step reasoning with possible revision. Chains thoughts with branching support.",
 	"debugging_approach":       "[solo — free] When you're stuck on a bug and need to narrow down the cause systematically. Tracks hypotheses, suggests 18 known methods. Use before asking the user for help.",

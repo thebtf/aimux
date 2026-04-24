@@ -111,6 +111,33 @@ Quick picks:
 
 ---
 
+## Reasoning Tool Decision Table
+
+Choose the right tool before committing to an approach:
+
+| Need | Tool | Why |
+|------|------|-----|
+| Scratchpad / chain-of-thought | `think` | Structural, local, zero tokens spent on LLM calls |
+| Find cognitive bias in your own reasoning | `think(pattern="critical_thinking")` | Structural trigger-phrase scan |
+| Security / design / spec review of an artifact | `critique(lens="security"\|"api-design"\|"spec-compliance"\|"adversarial")` | Calls a real LLM; produces structured findings |
+| Devil's advocate stress-test | `critique(lens="adversarial")` | Single LLM pass; cheaper than full debate |
+| Get ground truth from multiple models | `consensus` | Parallel quorum; use when you need corroboration |
+| Explore two opposing positions | `debate` | Multi-turn adversarial dialogue |
+| Multi-turn collaborative dialogue | `dialog` | Sequential back-and-forth; lower overhead than debate |
+| Deep investigation with finding chain | `investigate` | Session-based; tracks findings, drives to convergence |
+| Single prompt → one model | `exec` | Lightweight; no orchestration overhead |
+
+**Rule of thumb:**
+- No LLM call needed → `think` (any of 23 structural patterns)
+- LLM call, single artifact → `critique`
+- LLM call, factual quorum → `consensus`
+- LLM call, adversarial → `debate`
+- LLM call, multi-turn → `dialog`
+- LLM call, deep session → `investigate`
+- LLM call, ad-hoc → `exec`
+
+---
+
 ## Investigation Flow
 
 The `investigate` tool tracks findings across a session and drives toward convergence:
