@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.8.1] — 2026-04-24
+
+### Fixed
+
+- Updater zip extraction: `go-selfupdate` `UpdateTo` searched for binary by temp file
+  name (`aimux-update-*.tmp`) instead of the real name (`aimux.exe`). Fix uses a temp
+  directory with the correct binary basename so archive extraction succeeds.
+
 ## [4.8.0] — 2026-04-24
 
 Minor release: **hot-swap upgrade activation** (AIMUX-7 follow-up) + **intelligent work routing** (AIMUX-8) — BM25 semantic agent discovery, think pattern advisor + enforcement gates, `critique` MCP tool.
