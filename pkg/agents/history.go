@@ -79,6 +79,10 @@ func (h *DispatchHistory) GetSuccessRate(agentName, taskCategory string) float64
 		}
 	}
 
+	if err := rows.Err(); err != nil {
+		return 0.5
+	}
+
 	if weightedTotal == 0 {
 		return 0.5 // neutral prior — no data
 	}

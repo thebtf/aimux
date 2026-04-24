@@ -23,11 +23,18 @@ var builtinLenses = map[string]string{
 // critiqueResponsePrompt is appended to every lens prompt to enforce structured output.
 const critiqueResponsePrompt = "\n\nRespond with JSON: {findings: [{severity, location, issue, suggested_fix}], summary: string}"
 
+// maxArtifactBytes is the maximum allowed size for a critique artifact.
+const maxArtifactBytes = 100 * 1024
+
 // handleCritique runs an artifact through a critique lens using the configured CLI.
 func (s *Server) handleCritique(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	artifact, err := request.RequireString("artifact")
 	if err != nil {
 		return mcp.NewToolResultError("artifact is required"), nil
+	}
+
+	if len(artifact) > maxArtifactBytes {
+		return mcp.NewToolResultError(fmt.Sprintf("artifact too large (%d bytes, max %d)", len(artifact), maxArtifactBytes)), nil
 	}
 
 	lens := request.GetString("lens", "")
@@ -58,7 +65,7 @@ func (s *Server) handleCritique(ctx context.Context, request mcp.CallToolRequest
 	}
 
 	prompt := lensTemplate +
-		"\n\nArtifact:\n" + artifact +
+		"\n\n<artifact>\n" + artifact + "\n</artifact>" +
 		critiqueResponsePrompt
 
 	// Resolve CLI: explicit override takes precedence; otherwise route via "critic" role,

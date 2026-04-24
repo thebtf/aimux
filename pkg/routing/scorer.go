@@ -85,6 +85,8 @@ func (s *BM25Scorer) Score(query, document string) float64 {
 
 		df := 1.0 // term appears in the document
 		idf := math.Log((float64(N)-df+0.5)/(df+0.5) + 1)
+		// b normalisation is identity in single-document mode (dl == avgDL by definition).
+		// For multi-document ranking with length normalisation, use Rank() instead.
 		score += idf * (tf * (s.k1 + 1)) / (tf + s.k1*(1-s.b+s.b*dl/dl))
 	}
 	return score

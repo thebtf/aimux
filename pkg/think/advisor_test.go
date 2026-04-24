@@ -80,6 +80,10 @@ func TestAdvisor_ConvergenceTriggersSwitch(t *testing.T) {
 			Data:    map[string]any{"thought": repeatedSummary},
 		}
 		rec := a.Evaluate(sess, result)
+		// Apply the state patch so history accumulates across iterations.
+		if rec.StatePatch != nil {
+			UpdateSessionState("s1", rec.StatePatch)
+		}
 		if i < 2 {
 			// First two calls: history not yet 3 long → can't conclude switch
 			_ = rec
@@ -113,6 +117,10 @@ func TestAdvisor_NoConvergence_WithDifferentResults(t *testing.T) {
 			Data:    map[string]any{"thought": summary},
 		}
 		rec := a.Evaluate(sess, result)
+		// Apply the state patch so history accumulates across iterations.
+		if rec.StatePatch != nil {
+			UpdateSessionState("s1", rec.StatePatch)
+		}
 		if i == 2 && rec.Action == "switch" {
 			// Unlikely with diverse summaries — verify reason is NOT convergence
 			if rec.Reason == "last 3 results are too similar (convergence stall); try a different approach" {

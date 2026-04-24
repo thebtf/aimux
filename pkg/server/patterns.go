@@ -216,6 +216,9 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 	if sessionID != "" {
 		sess := think.GetSession(sessionID)
 		advisorRec = advisor.Evaluate(sess, thinkResult)
+		if advisorRec.StatePatch != nil {
+			think.UpdateSessionState(sess.ID, advisorRec.StatePatch)
+		}
 	} else {
 		advisorRec = think.Recommendation{Action: "continue", Reason: "stateless invocation"}
 	}

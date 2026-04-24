@@ -8,9 +8,10 @@ import (
 
 // Recommendation is the output of PatternAdvisor.Evaluate.
 type Recommendation struct {
-	Action string // "continue" or "switch"
-	Target string // target pattern name when Action == "switch"
-	Reason string
+	Action     string         // "continue" or "switch"
+	Target     string         // target pattern name when Action == "switch"
+	Reason     string
+	StatePatch map[string]any // caller must apply this to session state via UpdateSessionState
 }
 
 // advisorStateKey is the session state key used to track advisor history.
@@ -64,11 +65,10 @@ func (a *PatternAdvisor) Evaluate(session *ThinkSession, result *ThinkResult) Re
 		history = history[len(history)-3:]
 	}
 
-	// Persist updated history back to session state.
+	// Build the state patch; the caller is responsible for applying it via UpdateSessionState.
 	patch := map[string]any{
 		advisorStateKey: history,
 	}
-	UpdateSessionState(session.ID, patch)
 
 	// --- convergence detection ---
 	if len(history) >= 3 {
@@ -76,15 +76,16 @@ func (a *PatternAdvisor) Evaluate(session *ThinkSession, result *ThinkResult) Re
 			target := a.suggestAlternative(result.Pattern, summary)
 			if target != "" && target != result.Pattern {
 				return Recommendation{
-					Action: "switch",
-					Target: target,
-					Reason: "last 3 results are too similar (convergence stall); try a different approach",
+					Action:     "switch",
+					Target:     target,
+					Reason:     "last 3 results are too similar (convergence stall); try a different approach",
+					StatePatch: patch,
 				}
 			}
 		}
 	}
 
-	return Recommendation{Action: "continue", Reason: "current pattern is effective"}
+	return Recommendation{Action: "continue", Reason: "current pattern is effective", StatePatch: patch}
 }
 
 // RecordSwitch increments the switch counter in the session state.

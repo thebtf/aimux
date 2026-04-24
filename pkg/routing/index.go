@@ -211,7 +211,7 @@ func tokenizeText(s string) []string {
 	fields := strings.FieldsFunc(s, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
-	result := fields[:0]
+	result := make([]string, 0, len(fields))
 	for _, f := range fields {
 		if len(f) > 1 {
 			result = append(result, f)
