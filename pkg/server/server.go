@@ -886,11 +886,15 @@ func (s *Server) registerTools() {
 		s.handleAgents,
 	)
 
-	// agent tool — runs a discovered agent through any CLI
+	// agent tool — deprecated in favour of agents(action=run).
+	// Kept for backwards compatibility; routes internally through agents(action=run).
 	s.mcp.AddTool(
 		mcp.NewTool("agent",
-			mcp.WithDescription("[delegate — external CLI, free for you] Run a project agent through any CLI. Loads agent definition, "+
-				"injects system prompt, delegates to CLI in autonomous mode. "+
+			mcp.WithDescription("[DEPRECATED — use agents(action=run) instead] Run a named project agent through any CLI. "+
+				"Prefer agents(action=run) which uses BM25 semantic selection, feedback-adjusted scoring, "+
+				"and selection_rationale transparency. "+
+				"This tool is preserved for backwards compatibility only. "+
+				"Loads agent definition, injects system prompt, delegates to CLI in autonomous mode. "+
 				"The CLI IS the agent — it reads files, runs commands, edits code. "+
 				"When async=true: returns job_id immediately; use the status tool to poll for completion. "+
 				"For long-running agents, spawn a Sonnet subagent wrapper rather than polling in the main context — "+

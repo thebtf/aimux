@@ -312,6 +312,8 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 
 func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ctx = context.WithValue(ctx, callToolRequestKey{}, request)
+	// T007: Deprecation warning — callers should migrate to agents(action="run").
+	s.log.Warn("agent tool is deprecated; use agents(action=run) for BM25 semantic selection and selection_rationale")
 	bp, budgetErr := budget.ParseBudgetParams(request)
 	if budgetErr != nil {
 		return mcp.NewToolResultError(budgetErr.Error()), nil
@@ -449,10 +451,11 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 			return mcp.NewToolResultError(fmt.Sprintf("loom submit: %v", loomErr)), nil
 		}
 		return marshalToolResult(map[string]any{
-			"agent":  agentName,
-			"cli":    cli,
-			"job_id": taskID,
-			"status": "running",
+			"agent":      agentName,
+			"cli":        cli,
+			"job_id":     taskID,
+			"status":     "running",
+			"deprecated": "use agents(action=run) instead",
 		})
 	}
 
@@ -498,6 +501,7 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 			"job_id":     job.ID,
 			"session_id": sess.ID,
 			"status":     "running",
+			"deprecated": "use agents(action=run) instead",
 		})
 	}
 
@@ -514,6 +518,7 @@ func (s *Server) handleAgentRun(ctx context.Context, request mcp.CallToolRequest
 		"status":      result.Status,
 		"turns":       result.Turns,
 		"duration_ms": result.DurationMS,
+		"deprecated":  "use agents(action=run) instead",
 	}
 	contentLen := len(result.Content)
 	if bp.Tail > 0 {
