@@ -157,11 +157,10 @@ func TestRegression_SC9_NilErrorWrap(t *testing.T) {
 	if os.Getenv("CI") != "" {
 		t.Skip("SC-9 e2e hangs on CI race-detector runners; unit tests in pkg/executor/fallback_test.go carry the nil-wrap assertion")
 	}
-	// muxcore#153 resolved (v0.21.6 StdinEOFWaitForDisconnect), but async exec
-	// job never reaches terminal state in daemon+shim e2e mode — separate issue
-	// in testcli exec path. Unit assertions in fallback_test.go carry the SC-9
-	// nil-wrap regression guard. Re-enable once e2e async job lifecycle is fixed.
-	t.Skip("async exec job hangs in daemon+shim e2e mode (testcli job lifecycle); covered by pkg/executor/fallback_test.go")
+	// Executor hangs on testcli I/O in daemon process context (ConPTY/pipe).
+	// Default subprocess timeout (10m) is a safety net but too slow for test.
+	// Root cause: executor process management in daemon mode needs investigation.
+	t.Skip("executor hangs on testcli in daemon+shim mode — engram #158 root cause is executor I/O, not timeout")
 	stdin, reader := initTestCLIServer(t)
 
 	// Dispatch an async exec with exit_code=1 (quota-like failure).

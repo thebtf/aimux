@@ -41,6 +41,11 @@ type SubprocessRunner interface {
 	Run(ctx context.Context, spawn SubprocessSpawn) (stdout string, exitCode int, err error)
 }
 
+// defaultSubprocessTimeout is applied when the caller does not specify a timeout
+// (task.Timeout == 0). It prevents dispatch goroutines from hanging indefinitely
+// when the spawned process never exits (e.g. ConPTY in daemon+shim e2e mode).
+const defaultSubprocessTimeout = 10 * time.Minute
+
 // SubprocessBase is a composable base for workers that execute a subprocess.
 // Workers embed or hold a SubprocessBase and provide a SpawnResolver + loom.WorkerType.
 //
@@ -60,16 +65,21 @@ func (b *SubprocessBase) Run(ctx context.Context, task *loom.Task) (*loom.Worker
 		return nil, fmt.Errorf("subprocess: resolve: %w", err)
 	}
 
-	// Derive timeout context if task.Timeout > 0. context.WithTimeout always
-	// picks the more restrictive of the new deadline and the parent's existing
-	// deadline, so applying it is safe even when the parent already has a
-	// deadline — the task-specific timeout is honoured if it is shorter.
+	// Derive timeout context. context.WithTimeout always picks the more
+	// restrictive of the new deadline and the parent's existing deadline, so
+	// applying it is safe even when the parent already has a deadline — the
+	// task-specific timeout is honoured if it is shorter.
+	// When the caller does not specify a timeout (task.Timeout == 0) we still
+	// apply a safety ceiling to prevent dispatch goroutines from hanging
+	// indefinitely (e.g. ConPTY in daemon+shim mode).
 	runCtx := ctx
-	if task.Timeout > 0 {
-		var cancel context.CancelFunc
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(task.Timeout)*time.Second)
-		defer cancel()
+	timeout := time.Duration(task.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = defaultSubprocessTimeout
 	}
+	var cancel context.CancelFunc
+	runCtx, cancel = context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	runner := b.Runner
 	if runner == nil {

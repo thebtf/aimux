@@ -305,11 +305,10 @@ func TestE2E_TestCLI_CodexAsync(t *testing.T) {
 }
 
 func TestE2E_Agent_AsyncProgressNotification(t *testing.T) {
-	// muxcore#153 resolved (v0.21.6 StdinEOFWaitForDisconnect), but async agent
-	// jobs don't reach terminal state in daemon+shim e2e mode — separate issue
-	// in testcli async job lifecycle. Re-enable once e2e async path is fixed.
-	t.Skip("async agent job hangs in daemon+shim e2e mode (testcli job lifecycle) — engram #158")
-
+	// Executor hangs on testcli I/O in daemon process context (ConPTY/pipe).
+	// Default subprocess timeout (10m) is a safety net but too slow for test.
+	// Root cause: executor process management in daemon mode needs investigation.
+	t.Skip("executor hangs on testcli in daemon+shim mode — engram #158 root cause is executor I/O, not timeout")
 	stdin, reader := initTestCLIServer(t)
 
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
