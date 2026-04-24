@@ -22,6 +22,9 @@
     "consensus": {
       "classification": "async_mandatory"
     },
+    "critique": {
+      "classification": "sync_ok"
+    },
     "debate": {
       "classification": "async_mandatory"
     },

@@ -981,6 +981,38 @@ func (s *Server) registerTools() {
 		s.handleWorkflow,
 	)
 
+	// critique tool — semantic artifact review via a named lens
+	s.mcp.AddTool(
+		mcp.NewTool("critique",
+			mcp.WithDescription("[delegate — external CLI, free for you] Review an artifact (code, spec, plan, API design) through a named lens. "+
+				"Produces structured findings with severity, location, issue, and suggested_fix. "+
+				"Use for semantic critique (security, API design, spec compliance, adversarial stress-test). "+
+				"For structural analysis without LLM inference, use think patterns instead. "+
+				"Returns findings array + summary; CLI is auto-selected via critic role (falls back to default)."),
+			mcp.WithString("artifact",
+				mcp.Required(),
+				mcp.Description("The artifact to critique (code, spec text, plan, API definition, etc.)"),
+			),
+			mcp.WithString("lens",
+				mcp.Description("Review lens: security, api-design, spec-compliance, adversarial"),
+				mcp.Enum("security", "api-design", "spec-compliance", "adversarial"),
+			),
+			mcp.WithString("cli",
+				mcp.Description("CLI override (default: auto-resolved via critic role)"),
+			),
+			mcp.WithNumber("max_findings",
+				mcp.Description("Maximum number of findings to return (default 10)"),
+			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(true),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
+		),
+		s.handleCritique,
+	)
+
 	// upgrade tool — binary self-update from GitHub releases
 	s.mcp.AddTool(
 		mcp.NewTool("upgrade",
