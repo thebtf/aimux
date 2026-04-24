@@ -115,20 +115,24 @@ func run() error {
 	}
 
 	afterWarmup := registry.EnabledCLIs()
-	go func() {
-		log.Info("running CLI warmup probes in background (AIMUX_WARMUP=false to skip)")
-		if warmupErr := driver.RunWarmup(context.Background(), registry, cfg); warmupErr != nil {
-			log.Warn("warmup error (non-fatal): %v", warmupErr)
+	log.Info("CLI warmup complete: %d available: %v", len(afterWarmup), afterWarmup)
+	if len(afterWarmup) == 0 {
+		// All probes failed — this almost always indicates an environment
+		// issue (PATH not inherited by spawned daemon, probe-exec cold-start
+		// timeout) rather than every CLI being genuinely broken. CLI binaries
+		// have already resolved via registry.Probe() — fall back to
+		// binary-only detection so the daemon can still serve requests; the
+		// router will surface per-call errors if a CLI really is unhealthy.
+		log.Warn("all CLI probes failed — falling back to binary-only detection (health-gate bypassed)")
+		for _, name := range registry.ProbeableCLIs() {
+			registry.SetAvailable(name, true)
 		}
-		after := registry.EnabledCLIs()
-		log.Info("CLI warmup complete (background): %d available: %v", len(after), after)
-		if len(after) == 0 {
-			log.Warn("all CLI probes failed — restoring binary-only pool (health-gate bypassed)")
-			for _, name := range registry.ProbeableCLIs() {
-				registry.SetAvailable(name, true)
-			}
+		afterWarmup = registry.EnabledCLIs()
+		if len(afterWarmup) == 0 {
+			return fmt.Errorf("no CLI tools available after binary-only fallback — configuration error")
 		}
-	}()
+		log.Info("binary-only fallback: %d CLI available: %v", len(afterWarmup), afterWarmup)
+	}
 
 	router := routing.NewRouterWithPriority(cfg.Roles, afterWarmup, cfg.CLIProfiles, cfg.Server.CLIPriority)
 
