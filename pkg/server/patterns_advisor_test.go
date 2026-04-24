@@ -111,8 +111,8 @@ func TestHandlePattern_EnrichedResponse_AdvisorFields(t *testing.T) {
 	srv := testServer(t)
 
 	req := makeRequest("mental_model", map[string]any{
-		"model":   "first_principles",
-		"problem": "design a fast distributed cache",
+		"modelName": "first_principles",
+		"problem":   "design a fast distributed cache",
 	})
 
 	result, err := srv.handlePattern(context.Background(), req)
