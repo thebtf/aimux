@@ -35,7 +35,8 @@ func main() {
 }
 
 func run() error {
-	if _, err := parseHandoffFlags(os.Args[1:]); err != nil {
+	handoff, err := parseHandoffFlags(os.Args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -79,6 +80,14 @@ func run() error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if handoff.From != "" {
+		cleanup, handoffErr := bootstrapSuccessorHandoff(ctx, log, handoff)
+		if handoffErr != nil {
+			return handoffErr
+		}
+		defer cleanup()
+	}
 
 	if mode == ModeShim {
 		return runShim(ctx, cfg, log)

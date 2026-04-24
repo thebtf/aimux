@@ -92,15 +92,20 @@ func readDaemonHandoffStatus(d *muxdaemon.Daemon) (upgrade.HandoffStatus, error)
 	if !ok {
 		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff counters missing fallback")
 	}
-	fallback, ok := fallbackValue.(uint64)
-	if ok {
-		return upgrade.HandoffStatus{Fallback: fallback}, nil
+	var fallback uint64
+	switch v := fallbackValue.(type) {
+	case uint64:
+		fallback = v
+	case float64:
+		fallback = uint64(v)
+	case int:
+		fallback = uint64(v)
+	case int64:
+		fallback = uint64(v)
+	default:
+		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff fallback counter has unexpected type %T", fallbackValue)
 	}
-	fallbackFloat, ok := fallbackValue.(float64)
-	if !ok {
-		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff fallback counter has type %T", fallbackValue)
-	}
-	return upgrade.HandoffStatus{Fallback: uint64(fallbackFloat)}, nil
+	return upgrade.HandoffStatus{Fallback: fallback}, nil
 }
 
 func (s *Server) configureMuxCompatibility() {
