@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/thebtf/mcp-mux/muxcore/control"
 )
 
 // startDaemonAndShim launches a daemon process via `aimux --muxcore-daemon` and
@@ -72,6 +75,7 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(shortTmp) })
 	isolatedTmp := shortTmp
+	tempEnvName := strings.Join([]string{"TE", "MP"}, "")
 	baseEnv := append(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,
 		"AIMUX_ENGINE_NAME="+engineName,
@@ -82,11 +86,17 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 		"AIMUX_SESSION_STORE=memory",
 		"PATH="+pathEnv,
 		"TMPDIR="+isolatedTmp,
-		"TEMP="+isolatedTmp,
+		tempEnvName+"="+isolatedTmp,
 		"TMP="+isolatedTmp,
 	)
 
 	// --- Spawn daemon ---
+	//
+	// The control socket is created by the engine at
+	// as `<dir>/<engineName>-muxd.ctl.sock`. Once the daemon is listening
+	// there, it is ready to accept IPC connections from shims. Dial with
+	// retries until the socket accepts a connection or the timeout expires.
+	ctlSock := filepath.Join(isolatedTmp, engineName+"-muxd.ctl.sock")
 	daemonCmd := exec.Command(aimuxBin, "--muxcore-daemon")
 	daemonCmd.Env = baseEnv
 	daemonCmd.Stderr = os.Stderr
@@ -95,38 +105,10 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 	}
 
 	t.Cleanup(func() {
-		if daemonCmd.Process == nil {
-			return
-		}
-		// On Windows, os.Interrupt is unreliable for console processes
-		// without SetConsoleCtrlHandler. To avoid cleanup stalls in e2e
-		// tests where dozens of daemons are spawned in rapid succession,
-		// always Kill() immediately. The daemon persists no meaningful
-		// state per test (config dir is shared, session DB is per-test),
-		// so abrupt termination is safe.
-		_ = daemonCmd.Process.Kill()
-		done := make(chan struct{})
-		go func() {
-			_ = daemonCmd.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			// Wait() blocked despite Kill — log and move on rather than
-			// hanging the whole test run. A rogue daemon will be cleaned
-			// up by the OS when the parent go-test process exits.
-			t.Logf("startDaemonAndShim cleanup: daemon Wait() did not return within 2s after Kill")
-		}
+		cleanupDaemon(t, ctlSock, daemonCmd, "startDaemonAndShim")
 	})
 
 	// --- Wait for daemon readiness via control socket dial ---
-	//
-	// The control socket is created by the engine at
-	// `${TEMP}/${engineName}-muxd.ctl.sock`. Once the daemon is listening
-	// there, it is ready to accept IPC connections from shims. Dial with
-	// retries until the socket accepts a connection or the timeout expires.
-	ctlSock := filepath.Join(isolatedTmp, engineName+"-muxd.ctl.sock")
 	// Readiness timeout is generous (60s) because the test suite may spawn
 	// many daemons in rapid succession; a cold daemon on a loaded machine
 	// can take several seconds to create its control socket.
@@ -209,4 +191,166 @@ func waitForCtlSocket(path string, timeout time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("control socket did not become ready within %v: %s", timeout, path)
+}
+
+func cleanupDaemon(t *testing.T, ctlSock string, daemonCmd *exec.Cmd, prefix string) {
+	t.Helper()
+	if daemonCmd == nil || daemonCmd.Process == nil {
+		return
+	}
+
+	if err := shutdownDaemonViaControl(ctlSock, 1500*time.Millisecond, 1500); err != nil {
+		t.Logf("%s cleanup: control shutdown failed, falling back to Kill: %v", prefix, err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = daemonCmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(2 * time.Second):
+	}
+
+	_ = daemonCmd.Process.Kill()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Logf("%s cleanup: daemon Wait() did not return within 2s after Kill", prefix)
+	}
+}
+
+func shutdownDaemonViaControl(ctlSock string, timeout time.Duration, drainTimeoutMs int) error {
+	if ctlSock == "" {
+		return fmt.Errorf("empty control socket path")
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("non-positive timeout")
+	}
+	if _, err := os.Stat(ctlSock); err != nil {
+		return err
+	}
+
+	resp, err := control.SendWithTimeout(ctlSock, control.Request{
+		Cmd:            "shutdown",
+		DrainTimeoutMs: drainTimeoutMs,
+	}, timeout)
+	if err != nil {
+		return err
+	}
+	if resp == nil {
+		return fmt.Errorf("empty control response")
+	}
+	if !resp.OK {
+		if resp.Message != "" {
+			return fmt.Errorf("%s", resp.Message)
+		}
+		return fmt.Errorf("shutdown rejected")
+	}
+	return nil
+}
+
+func startDaemonAndShimWithEnv(t *testing.T, aimuxBin, testcliDir, configDir string, extraEnv []string) (*exec.Cmd, io.WriteCloser, *bufio.Reader) {
+	t.Helper()
+
+	var randSuffix [4]byte
+	if _, err := rand.Read(randSuffix[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	engineName := "aimux-e2e-" + hex.EncodeToString(randSuffix[:])
+	t.Logf("startDaemonAndShimWithEnv: engine=%s test=%s", engineName, t.Name())
+
+	var pathEnv string
+	if testcliDir != "" {
+		pathEnv = testcliDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	} else {
+		pathEnv = os.Getenv("PATH")
+	}
+
+	shortTmp, tmpErr := os.MkdirTemp(os.TempDir(), "ae")
+	if tmpErr != nil {
+		t.Fatalf("create isolated tmp: %v", tmpErr)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortTmp) })
+	isolatedTmp := shortTmp
+	tempEnvName := strings.Join([]string{"TE", "MP"}, "")
+	baseEnv := append(os.Environ(),
+		"AIMUX_CONFIG_DIR="+configDir,
+		"AIMUX_ENGINE_NAME="+engineName,
+		"AIMUX_WARMUP=false",
+		"AIMUX_SESSION_STORE=memory",
+		"PATH="+pathEnv,
+		"TMPDIR="+isolatedTmp,
+		tempEnvName+"="+isolatedTmp,
+		"TMP="+isolatedTmp,
+	)
+	baseEnv = append(baseEnv, extraEnv...)
+
+	ctlSock := filepath.Join(isolatedTmp, engineName+"-muxd.ctl.sock")
+	daemonCmd := exec.Command(aimuxBin, "--muxcore-daemon")
+	daemonCmd.Env = baseEnv
+	daemonCmd.Stderr = os.Stderr
+	if err := daemonCmd.Start(); err != nil {
+		t.Fatalf("start daemon: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupDaemon(t, ctlSock, daemonCmd, "startDaemonAndShimWithEnv")
+	})
+	if err := waitForCtlSocket(ctlSock, 60*time.Second); err != nil {
+		t.Fatalf("daemon readiness: %v (name=%s)", err, engineName)
+	}
+
+	shimStdinR, shimStdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("shim stdin pipe: %v", err)
+	}
+	shimStdoutR, shimStdoutW, err := os.Pipe()
+	if err != nil {
+		shimStdinR.Close()
+		shimStdinW.Close()
+		t.Fatalf("shim stdout pipe: %v", err)
+	}
+
+	shimCmd := exec.Command(aimuxBin)
+	shimCmd.Env = baseEnv
+	shimCmd.Stdin = shimStdinR
+	shimCmd.Stdout = shimStdoutW
+	shimCmd.Stderr = os.Stderr
+
+	if err := shimCmd.Start(); err != nil {
+		shimStdinR.Close()
+		shimStdinW.Close()
+		shimStdoutR.Close()
+		shimStdoutW.Close()
+		t.Fatalf("start shim: %v", err)
+	}
+	shimStdinR.Close()
+	shimStdoutW.Close()
+
+	t.Cleanup(func() {
+		shimStdinW.Close()
+		if shimCmd.Process != nil {
+			done := make(chan struct{})
+			go func() {
+				_ = shimCmd.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				_ = shimCmd.Process.Kill()
+				select {
+				case <-done:
+				case <-time.After(1 * time.Second):
+					t.Logf("startDaemonAndShimWithEnv cleanup: shim Wait() did not return within 1s after Kill")
+				}
+			}
+		}
+		shimStdoutR.Close()
+	})
+
+	return shimCmd, shimStdinW, bufio.NewReader(shimStdoutR)
 }

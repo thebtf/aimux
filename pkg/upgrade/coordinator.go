@@ -8,8 +8,10 @@ package upgrade
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/logger"
@@ -28,6 +30,15 @@ type ApplyUpdateFunc func(ctx context.Context, currentVersion string) (*updater.
 
 // GracefulRestartFunc requests a daemon-side graceful restart after an upgrade.
 type GracefulRestartFunc func(ctx context.Context, drainTimeoutMs int) error
+
+// HandoffStatus describes the daemon handoff counters relevant to truthful
+// hot-swap reporting.
+type HandoffStatus struct {
+	Fallback uint64
+}
+
+// HandoffStatusFunc reads the current daemon handoff counters.
+type HandoffStatusFunc func(ctx context.Context) (HandoffStatus, error)
 
 // Mode controls how the upgrade is applied.
 type Mode string
@@ -75,12 +86,19 @@ type Coordinator struct {
 	// Nil means the seam is unavailable.
 	GracefulRestart GracefulRestartFunc
 
+	// HandoffStatus reads the daemon's handoff counters before and after the
+	// graceful restart request so the coordinator can distinguish real hot-swap
+	// success from FR-8 fallback.
+	HandoffStatus HandoffStatusFunc
+
 	// ApplyUpdate installs the latest release. Defaults to updater.ApplyUpdate.
 	ApplyUpdate ApplyUpdateFunc
 
 	// Logger receives structured log output for upgrade lifecycle events.
 	// May be nil; logging is skipped when nil.
 	Logger *logger.Logger
+
+	applyInProgress atomic.Bool
 }
 
 // Result describes the outcome of an Apply call.
@@ -110,7 +128,10 @@ type Result struct {
 	Message string
 }
 
-var errHotSwapUnsupported = errors.New("hot-swap requires daemon-side muxcore graceful-restart seam")
+var (
+	errHotSwapUnsupported = errors.New("hot-swap requires daemon-side muxcore graceful-restart seam")
+	errAlreadyInProgress  = errors.New("already_in_progress")
+)
 
 // Apply downloads and applies the upgrade according to mode.
 //
@@ -118,11 +139,43 @@ var errHotSwapUnsupported = errors.New("hot-swap requires daemon-side muxcore gr
 // ModeHotSwap requires a daemon-side graceful restart seam and fails if unavailable.
 // ModeAuto tries the daemon-side seam first and falls back to deferred with
 // HandoffError populated when live restart cannot be completed.
-func (c *Coordinator) Apply(ctx context.Context, mode Mode) (*Result, error) {
+func (c *Coordinator) Apply(ctx context.Context, mode Mode) (result *Result, err error) {
+	startedAt := time.Now()
+	var release *updater.Release
+	defer func() {
+		c.logApplyOutcome(startedAt, mode, release, result, err)
+	}()
+
+	if !c.applyInProgress.CompareAndSwap(false, true) {
+		return nil, fmt.Errorf("apply update: %w", errAlreadyInProgress)
+	}
+	defer c.applyInProgress.Store(false)
+
 	applyUpdate := c.applyUpdateFunc()
 
-	release, err := applyUpdate(ctx, c.Version)
+	release, err = applyUpdate(ctx, c.Version)
 	if err != nil {
+		if errors.Is(err, updater.ErrChecksumVerification) {
+			return nil, fmt.Errorf("apply update: %w", err)
+		}
+		if errors.Is(err, updater.ErrDiskFull) {
+			failedRelease, ok := updater.ReleaseFromError(err)
+			if !ok || failedRelease == nil {
+				return nil, fmt.Errorf("apply update: %w", err)
+			}
+			release = failedRelease
+			switch mode {
+			case ModeAuto, "":
+				fallback := c.afterDeferredInstall(failedRelease)
+				fallback.HandoffError = "disk_full"
+				if fallback.Message != "" {
+					fallback.Message += " Hot-swap unavailable: disk_full"
+				}
+				return fallback, nil
+			default:
+				return nil, fmt.Errorf("apply update: %w", err)
+			}
+		}
 		return nil, fmt.Errorf("apply update: %w", err)
 	}
 	if release == nil {
@@ -144,6 +197,17 @@ func (c *Coordinator) Apply(ctx context.Context, mode Mode) (*Result, error) {
 		if hotSwapErr == nil {
 			return result, nil
 		}
+		if errors.Is(hotSwapErr, updater.ErrChecksumVerification) {
+			return nil, hotSwapErr
+		}
+		if errors.Is(hotSwapErr, updater.ErrDiskFull) {
+			fallback := c.afterDeferredInstall(release)
+			fallback.HandoffError = "disk_full"
+			if fallback.Message != "" {
+				fallback.Message += " Hot-swap unavailable: disk_full"
+			}
+			return fallback, nil
+		}
 		fallback := c.afterDeferredInstall(release)
 		fallback.HandoffError = hotSwapErr.Error()
 		if fallback.Message != "" {
@@ -155,19 +219,76 @@ func (c *Coordinator) Apply(ctx context.Context, mode Mode) (*Result, error) {
 	}
 }
 
+func (c *Coordinator) logApplyOutcome(startedAt time.Time, requestedMode Mode, release *updater.Release, result *Result, applyErr error) {
+	if c.Logger == nil {
+		return
+	}
+
+	prevVersion := c.Version
+	newVersion := c.Version
+	method := normalizeApplyMode(requestedMode)
+	transferredIDs := []string{}
+	var durationMs int64
+
+	if result != nil {
+		if result.PreviousVersion != "" {
+			prevVersion = result.PreviousVersion
+		}
+		if result.NewVersion != "" {
+			newVersion = result.NewVersion
+		}
+		if result.Method != "" {
+			method = result.Method
+		}
+		if result.HandoffTransferred != nil {
+			transferredIDs = result.HandoffTransferred
+		}
+		durationMs = result.HandoffDurationMs
+	}
+	if durationMs == 0 {
+		durationMs = time.Since(startedAt).Milliseconds()
+	}
+	if applyErr != nil && release != nil && release.Version != "" {
+		newVersion = release.Version
+	}
+
+	message := fmt.Sprintf(
+		"module=server.upgrade event=upgrade_complete prev_version=%s new_version=%s method=%s duration_ms=%d transferred_ids=%v",
+		prevVersion,
+		newVersion,
+		method,
+		durationMs,
+		transferredIDs,
+	)
+
+	switch {
+	case applyErr != nil:
+		c.Logger.Error("%s error=%q", message, applyErr.Error())
+	case result != nil && result.HandoffError != "":
+		c.Logger.Warn("%s handoff_error=%q", message, result.HandoffError)
+	default:
+		c.Logger.Info("%s", message)
+	}
+}
+
+func normalizeApplyMode(mode Mode) string {
+	if mode == "" {
+		return string(ModeAuto)
+	}
+	return string(mode)
+}
+
 func (c *Coordinator) applyUpdateFunc() ApplyUpdateFunc {
 	if c.ApplyUpdate != nil {
 		return c.ApplyUpdate
 	}
-	return updater.ApplyUpdate
+	return func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+		return updater.ApplyUpdateAt(ctx, currentVersion, c.BinaryPath)
+	}
 }
 
 func (c *Coordinator) afterDeferredInstall(release *updater.Release) *Result {
 	if !c.EngineMode {
-		if c.Logger != nil {
-			c.Logger.Info("upgrade: non-engine manual restart required prev_version=%s new_version=%s",
-				c.Version, release.Version)
-		}
 		return &Result{
 			Method:          "deferred",
 			PreviousVersion: c.Version,
@@ -178,10 +299,6 @@ func (c *Coordinator) afterDeferredInstall(release *updater.Release) *Result {
 
 	if c.SessionHandler != nil {
 		c.SessionHandler.SetUpdatePending()
-	}
-	if c.Logger != nil {
-		c.Logger.Info("upgrade: deferred restart staged prev_version=%s new_version=%s",
-			c.Version, release.Version)
 	}
 	return &Result{
 		Method:          "deferred",
@@ -198,18 +315,29 @@ func (c *Coordinator) afterHotSwapInstall(ctx context.Context, release *updater.
 	if c.GracefulRestart == nil {
 		return nil, fmt.Errorf("%w: control seam not configured", errHotSwapUnsupported)
 	}
+	if c.HandoffStatus == nil {
+		return nil, fmt.Errorf("%w: handoff status seam not configured", errHotSwapUnsupported)
+	}
+
+	before, err := c.HandoffStatus(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("daemon handoff status before graceful restart: %w", err)
+	}
 	if err := c.GracefulRestart(ctx, defaultGracefulRestartDrainTimeout); err != nil {
 		return nil, fmt.Errorf("daemon graceful restart: %w", err)
 	}
-	if c.Logger != nil {
-		c.Logger.Info("upgrade: daemon graceful restart requested prev_version=%s new_version=%s",
-			c.Version, release.Version)
+	after, err := c.HandoffStatus(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("daemon handoff status after graceful restart: %w", err)
+	}
+	if after.Fallback > before.Fallback {
+		return nil, fmt.Errorf("daemon graceful restart fell back to deferred restart")
 	}
 	return &Result{
 		Method:          "hot_swap",
 		PreviousVersion: c.Version,
 		NewVersion:      release.Version,
-		Message:         "Binary updated. Daemon graceful restart requested.",
+		Message:         "Binary updated. Daemon handoff completed successfully.",
 	}, nil
 }
 
@@ -242,5 +370,43 @@ func NewControlSocketGracefulRestartFunc(socketPath string) GracefulRestartFunc 
 			return fmt.Errorf("graceful restart rejected")
 		}
 		return nil
+	}
+}
+
+// NewControlSocketHandoffStatusFunc builds a production status seam that reads
+// daemon handoff counters over the control socket.
+func NewControlSocketHandoffStatusFunc(socketPath string) HandoffStatusFunc {
+	if socketPath == "" {
+		return nil
+	}
+	return func(ctx context.Context) (HandoffStatus, error) {
+		timeout := defaultControlRequestTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > 0 && remaining < timeout {
+				timeout = remaining
+			}
+		}
+		resp, err := control.SendWithTimeout(socketPath, control.Request{Cmd: "status"}, timeout)
+		if err != nil {
+			return HandoffStatus{}, err
+		}
+		if resp == nil {
+			return HandoffStatus{}, fmt.Errorf("empty control response")
+		}
+		if !resp.OK {
+			if resp.Message != "" {
+				return HandoffStatus{}, errors.New(resp.Message)
+			}
+			return HandoffStatus{}, fmt.Errorf("status rejected")
+		}
+		var payload struct {
+			Handoff struct {
+				Fallback uint64 `json:"fallback"`
+			} `json:"handoff"`
+		}
+		if err := json.Unmarshal(resp.Data, &payload); err != nil {
+			return HandoffStatus{}, fmt.Errorf("decode status response: %w", err)
+		}
+		return HandoffStatus{Fallback: payload.Handoff.Fallback}, nil
 	}
 }

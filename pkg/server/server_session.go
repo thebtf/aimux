@@ -62,13 +62,6 @@ func ProjectAgentsFromContext(ctx context.Context) []*agents.Agent {
 	if v, ok := ctx.Value(projectAgentsKey{}).([]*agents.Agent); ok {
 		return v
 	}
-	if req, ok := ctx.Value(callToolRequestKey{}).(mcp.CallToolRequest); ok {
-		if req.Params.Meta != nil {
-			if rawAgents, ok := req.Params.Meta.AdditionalFields["muxProjectAgents"].([]any); ok && len(rawAgents) > 0 {
-				_ = rawAgents
-			}
-		}
-	}
 	return nil
 }
 

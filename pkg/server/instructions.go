@@ -18,8 +18,6 @@ func buildInstructions(
 	agentCount int,
 	roleMap map[string]string,
 ) string {
-	_ = agentCount
-
 	cliCount := len(warmCLIs)
 	if !warmupComplete {
 		cliCount = len(allProfiles)
@@ -37,6 +35,8 @@ func buildInstructions(
 
 	lines = append(lines, renderAvailableCLIs(warmCLIs, warmupComplete, allProfiles, roleMap)...)
 	lines = append(lines,
+		"",
+		fmt.Sprintf("## Agent Discovery\n%d named agents currently registered for delegation.", agentCount),
 		"",
 		"## First Actions",
 		`1. sessions(action="health") — discover server state and available CLIs`,

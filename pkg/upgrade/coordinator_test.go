@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/updater"
 	"github.com/thebtf/aimux/pkg/upgrade"
 	"github.com/thebtf/mcp-mux/muxcore/control"
@@ -74,6 +77,7 @@ func TestCoordinatorApply_DeferredSignalsSessionHandler(t *testing.T) {
 	coord := &upgrade.Coordinator{
 		Version:        "4.3.0",
 		SessionHandler: mock,
+		EngineMode:     true,
 		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
 			return &updater.Release{Version: "4.4.0"}, nil
 		},
@@ -104,6 +108,9 @@ func TestCoordinatorApply_AutoUsesGracefulRestartInEngineMode(t *testing.T) {
 			called = true
 			gotDrain = drainTimeoutMs
 			return nil
+		},
+		HandoffStatus: func(ctx context.Context) (upgrade.HandoffStatus, error) {
+			return upgrade.HandoffStatus{Fallback: 7}, nil
 		},
 	}
 
@@ -193,6 +200,9 @@ func TestCoordinatorApply_PropagatesGracefulRestartFailureInHotSwapMode(t *testi
 		GracefulRestart: func(ctx context.Context, drainTimeoutMs int) error {
 			return errors.New("dial failed")
 		},
+		HandoffStatus: func(ctx context.Context) (upgrade.HandoffStatus, error) {
+			return upgrade.HandoffStatus{}, nil
+		},
 	}
 
 	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
@@ -222,6 +232,245 @@ func TestCoordinatorApply_HotSwapFailsOutsideEngineMode(t *testing.T) {
 	}
 }
 
+func TestCoordinatorApply_ConcurrentCallsReturnAlreadyInProgress(t *testing.T) {
+	started := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	coord := &upgrade.Coordinator{
+		Version: "4.3.0",
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			close(started)
+			<-releaseFirst
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var firstErr error
+	go func() {
+		defer wg.Done()
+		_, firstErr = coord.Apply(context.Background(), upgrade.ModeDeferred)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first apply to start")
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeDeferred)
+	if err == nil {
+		t.Fatal("expected already_in_progress error")
+	}
+	if !strings.Contains(err.Error(), "already_in_progress") {
+		t.Fatalf("error = %q, want already_in_progress", err)
+	}
+
+	close(releaseFirst)
+	wg.Wait()
+	if firstErr != nil {
+		t.Fatalf("first apply error = %v, want nil", firstErr)
+	}
+}
+
+func TestCoordinatorApply_AutoFallsBackWithDiskFullClass(t *testing.T) {
+	exeDir := t.TempDir()
+	exePath := filepath.Join(exeDir, "aimux-test.exe")
+	if err := os.WriteFile(exePath, []byte("current"), 0o755); err != nil {
+		t.Fatalf("write exe: %v", err)
+	}
+
+	updater.SetTestHooks(
+		nil,
+		func(ctx context.Context, currentVersion string, targetPath string) (*updater.Release, error) {
+			if err := os.WriteFile(targetPath, []byte("new"), 0o755); err != nil {
+				return nil, err
+			}
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
+		nil,
+		func(newBinaryPath string, currentExePath string) error {
+			return errors.New("no space left on device")
+		},
+	)
+	defer updater.SetTestHooks(nil, nil, nil, nil)
+
+	mock := &mockSessionHandler{}
+	coord := &upgrade.Coordinator{
+		Version:        "4.3.0",
+		BinaryPath:     exePath,
+		EngineMode:     true,
+		SessionHandler: mock,
+	}
+
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Method != "deferred" {
+		t.Fatalf("Method = %q, want deferred", result.Method)
+	}
+	if result.HandoffError != "disk_full" {
+		t.Fatalf("HandoffError = %q, want disk_full", result.HandoffError)
+	}
+	if !strings.Contains(result.Message, "disk_full") {
+		t.Fatalf("message = %q, want disk_full detail", result.Message)
+	}
+	if !mock.pendingCalled {
+		t.Fatal("expected deferred fallback to call SetUpdatePending")
+	}
+}
+
+func TestCoordinatorApply_ChecksumFailureIsHardErrorInAuto(t *testing.T) {
+	exeDir := t.TempDir()
+	exePath := filepath.Join(exeDir, "aimux-test.exe")
+	if err := os.WriteFile(exePath, []byte("current"), 0o755); err != nil {
+		t.Fatalf("write exe: %v", err)
+	}
+
+	updater.SetTestHooks(
+		nil,
+		func(ctx context.Context, currentVersion string, targetPath string) (*updater.Release, error) {
+			if err := os.WriteFile(targetPath, []byte("new"), 0o755); err != nil {
+				return nil, err
+			}
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
+		func(binaryPath string, release *updater.Release) error {
+			return updater.ErrChecksumVerification
+		},
+		nil,
+	)
+	defer updater.SetTestHooks(nil, nil, nil, nil)
+
+	mock := &mockSessionHandler{}
+	coord := &upgrade.Coordinator{
+		Version:        "4.3.0",
+		BinaryPath:     exePath,
+		EngineMode:     true,
+		SessionHandler: mock,
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	if err == nil {
+		t.Fatal("expected checksum failure to be a hard error")
+	}
+	if !errors.Is(err, updater.ErrChecksumVerification) {
+		t.Fatalf("error = %v, want checksum verification classification", err)
+	}
+	if mock.pendingCalled {
+		t.Fatal("did not expect deferred fallback on checksum failure")
+	}
+}
+
+func TestCoordinatorApply_LogsInfoOnHotSwapSuccess(t *testing.T) {
+	line := runApplyAndReadSingleLogLine(t, func(log *logger.Logger) *upgrade.Coordinator {
+		return &upgrade.Coordinator{
+			Version:    "4.3.0",
+			EngineMode: true,
+			Logger:     log,
+			ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+				return &updater.Release{Version: "4.4.0"}, nil
+			},
+			GracefulRestart: func(ctx context.Context, drainTimeoutMs int) error {
+				return nil
+			},
+			HandoffStatus: func(ctx context.Context) (upgrade.HandoffStatus, error) {
+				return upgrade.HandoffStatus{Fallback: 3}, nil
+			},
+		}
+	}, func(coord *upgrade.Coordinator) {
+		result, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
+		if err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		if result.Method != "hot_swap" {
+			t.Fatalf("Method = %q, want hot_swap", result.Method)
+		}
+	})
+
+	assertLogContainsAll(t, line,
+		"[INFO]",
+		"module=server.upgrade",
+		"event=upgrade_complete",
+		"prev_version=4.3.0",
+		"new_version=4.4.0",
+		"method=hot_swap",
+		"duration_ms=",
+		"transferred_ids=[]",
+	)
+	assertLogNotContains(t, line, "handoff_error=")
+	assertLogNotContains(t, line, "error=")
+}
+
+func TestCoordinatorApply_LogsWarnOnDeferredFallback(t *testing.T) {
+	line := runApplyAndReadSingleLogLine(t, func(log *logger.Logger) *upgrade.Coordinator {
+		return &upgrade.Coordinator{
+			Version:    "4.3.0",
+			EngineMode: true,
+			Logger:     log,
+			ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+				return &updater.Release{Version: "4.4.0"}, nil
+			},
+		}
+	}, func(coord *upgrade.Coordinator) {
+		result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+		if err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		if result.Method != "deferred" {
+			t.Fatalf("Method = %q, want deferred", result.Method)
+		}
+		if result.HandoffError == "" {
+			t.Fatal("expected handoff error")
+		}
+	})
+
+	assertLogContainsAll(t, line,
+		"[WARN]",
+		"module=server.upgrade",
+		"event=upgrade_complete",
+		"prev_version=4.3.0",
+		"new_version=4.4.0",
+		"method=deferred",
+		"duration_ms=",
+		"transferred_ids=[]",
+		"handoff_error=",
+	)
+	assertLogNotContains(t, line, "[INFO]")
+	assertLogNotContains(t, line, " error=")
+}
+
+func TestCoordinatorApply_LogsErrorOnHardFailure(t *testing.T) {
+	line := runApplyAndReadSingleLogLine(t, func(log *logger.Logger) *upgrade.Coordinator {
+		return &upgrade.Coordinator{
+			Version: "4.3.0",
+			Logger:  log,
+			ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+				return nil, errors.New("network unavailable")
+			},
+		}
+	}, func(coord *upgrade.Coordinator) {
+		_, err := coord.Apply(context.Background(), "")
+		if err == nil {
+			t.Fatal("expected hard error")
+		}
+	})
+
+	assertLogContainsAll(t, line,
+		"[ERROR]",
+		"module=server.upgrade",
+		"event=upgrade_complete",
+		"prev_version=4.3.0",
+		"new_version=4.3.0",
+		"method=auto",
+		"duration_ms=",
+		"transferred_ids=[]",
+		"error=",
+	)
+	assertLogNotContains(t, line, "handoff_error=")
+}
+
 func TestNewControlSocketGracefulRestartFunc_SendsGracefulRestart(t *testing.T) {
 	socketPath := controlSocketTestPath(t)
 	handler := &mockControlHandler{}
@@ -249,10 +498,145 @@ func TestNewControlSocketGracefulRestartFunc_SendsGracefulRestart(t *testing.T) 
 	}
 }
 
+func TestCoordinatorApply_AutoFallsBackWhenDaemonReportsFallback(t *testing.T) {
+	mock := &mockSessionHandler{}
+	statusCalls := 0
+	coord := &upgrade.Coordinator{
+		Version:        "4.3.0",
+		EngineMode:     true,
+		SessionHandler: mock,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
+		GracefulRestart: func(ctx context.Context, drainTimeoutMs int) error {
+			return nil
+		},
+		HandoffStatus: func(ctx context.Context) (upgrade.HandoffStatus, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				return upgrade.HandoffStatus{Fallback: 10}, nil
+			}
+			return upgrade.HandoffStatus{Fallback: 11}, nil
+		},
+	}
+
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Method != "deferred" {
+		t.Fatalf("Method = %q, want deferred fallback", result.Method)
+	}
+	if result.HandoffError == "" {
+		t.Fatal("expected HandoffError on daemon-reported fallback")
+	}
+	if !strings.Contains(result.HandoffError, "fell back to deferred restart") {
+		t.Fatalf("HandoffError = %q, want daemon fallback detail", result.HandoffError)
+	}
+	if !mock.pendingCalled {
+		t.Fatal("expected deferred fallback to call SetUpdatePending")
+	}
+}
+
+func TestCoordinatorApply_HotSwapFailsWhenDaemonReportsFallback(t *testing.T) {
+	statusCalls := 0
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		EngineMode: true,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return &updater.Release{Version: "4.4.0"}, nil
+		},
+		GracefulRestart: func(ctx context.Context, drainTimeoutMs int) error {
+			return nil
+		},
+		HandoffStatus: func(ctx context.Context) (upgrade.HandoffStatus, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				return upgrade.HandoffStatus{Fallback: 2}, nil
+			}
+			return upgrade.HandoffStatus{Fallback: 3}, nil
+		},
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
+	if err == nil {
+		t.Fatal("expected hot_swap mode to fail when daemon reports fallback")
+	}
+	if !strings.Contains(err.Error(), "fell back to deferred restart") {
+		t.Fatalf("error = %q, want daemon fallback detail", err)
+	}
+}
+
+func TestNewControlSocketHandoffStatusFunc_ReadsFallbackCounter(t *testing.T) {
+	socketPath := controlSocketTestPath(t)
+	handler := &mockControlHandler{statusHandoffFallback: 12}
+	server, err := control.NewServer(socketPath, handler, log.Default())
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer server.Close()
+
+	statusFn := upgrade.NewControlSocketHandoffStatusFunc(server.SocketPath())
+	if statusFn == nil {
+		t.Fatal("expected non-nil handoff status func")
+	}
+	status, err := statusFn(context.Background())
+	if err != nil {
+		t.Fatalf("statusFn: %v", err)
+	}
+	if status.Fallback != 12 {
+		t.Fatalf("Fallback = %d, want 12", status.Fallback)
+	}
+}
+
 // SessionHandler interface conformance check — aimuxHandler (from pkg/server)
 // satisfies upgrade.SessionHandler via SetUpdatePending method.
 func TestSessionHandler_InterfaceShape(t *testing.T) {
 	var _ upgrade.SessionHandler = (*mockSessionHandler)(nil)
+}
+
+func runApplyAndReadSingleLogLine(t *testing.T, buildCoordinator func(*logger.Logger) *upgrade.Coordinator, runApply func(*upgrade.Coordinator)) string {
+	t.Helper()
+
+	logPath := filepath.Join(t.TempDir(), "upgrade.log")
+	upgradeLogger, err := logger.New(logPath, logger.LevelDebug)
+	if err != nil {
+		t.Fatalf("logger.New: %v", err)
+	}
+
+	coord := buildCoordinator(upgradeLogger)
+	runApply(coord)
+
+	if err := upgradeLogger.Close(); err != nil {
+		t.Fatalf("logger.Close: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("log lines = %d, want 1; content=%q", len(lines), string(data))
+	}
+	return lines[0]
+}
+
+func assertLogContainsAll(t *testing.T, line string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(line, want) {
+			t.Fatalf("log line = %q, missing %q", line, want)
+		}
+	}
+}
+
+func assertLogNotContains(t *testing.T, line string, notWant string) {
+	t.Helper()
+	if strings.Contains(line, notWant) {
+		t.Fatalf("log line = %q, must not contain %q", line, notWant)
+	}
 }
 
 func controlSocketTestPath(t *testing.T) string {
@@ -264,9 +648,10 @@ func controlSocketTestPath(t *testing.T) string {
 }
 
 type mockControlHandler struct {
-	shutdownCalls        int
-	lastDrainTimeoutMs   int
-	gracefulRestartCalls int
+	shutdownCalls         int
+	lastDrainTimeoutMs    int
+	gracefulRestartCalls  int
+	statusHandoffFallback uint64
 }
 
 func (m *mockControlHandler) HandleShutdown(drainTimeoutMs int) string {
@@ -276,7 +661,12 @@ func (m *mockControlHandler) HandleShutdown(drainTimeoutMs int) string {
 }
 
 func (m *mockControlHandler) HandleStatus() map[string]interface{} {
-	return map[string]interface{}{"status": "ok"}
+	return map[string]interface{}{
+		"status": "ok",
+		"handoff": map[string]any{
+			"fallback": m.statusHandoffFallback,
+		},
+	}
 }
 
 func (m *mockControlHandler) HandleSpawn(req control.Request) (ipcPath, serverID, token string, err error) {

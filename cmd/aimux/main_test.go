@@ -175,6 +175,16 @@ func TestDetectMode_DaemonFlagExactMatch(t *testing.T) {
 	if gotExact != ModeDaemon {
 		t.Errorf("exact flag: mode = %d, want ModeDaemon (%d)", gotExact, ModeDaemon)
 	}
+
+	// Muxcore graceful-restart successor currently re-execs with "--daemon".
+	gotLegacy, errLegacy := detectMode([]string{"aimux", "--daemon"}, envFn)
+	if errLegacy != nil {
+		t.Errorf("unexpected error for legacy daemon flag: %v", errLegacy)
+	}
+	if gotLegacy != ModeDaemon {
+		t.Errorf("legacy daemon flag: mode = %d, want ModeDaemon (%d)", gotLegacy, ModeDaemon)
+	}
+
 }
 
 func TestParseHandoffFlags(t *testing.T) {

@@ -149,26 +149,16 @@ func run() error {
 			engineName = "aimux"
 		}
 
-		exePath, exeErr := os.Executable()
-		if exeErr != nil {
-			return fmt.Errorf("locate executable for direct upstream: %w", exeErr)
-		}
-
-		if setErr := os.Setenv("AIMUX_DIRECT_UPSTREAM", "1"); setErr != nil {
-			return fmt.Errorf("set AIMUX_DIRECT_UPSTREAM: %w", setErr)
-		}
-		defer os.Unsetenv("AIMUX_DIRECT_UPSTREAM")
-
 		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
 		eng, engErr := engine.New(engine.Config{
-			Name:       engineName,
-			Command:    exePath,
-			Args:       nil,
-			Persistent: true,
+			Name:           engineName,
+			Persistent:     true,
+			SessionHandler: srv.SessionHandler(),
 		})
 		if engErr != nil {
 			return fmt.Errorf("engine init: %w", engErr)
 		}
+		srv.SetMuxEngine(eng)
 		srv.SetDaemonControlSocketPath(eng.ControlSocketPath())
 		if runErr := eng.Run(ctx); runErr != nil && !errors.Is(runErr, context.Canceled) {
 			return fmt.Errorf("engine: %w", runErr)

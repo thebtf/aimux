@@ -42,3 +42,12 @@ and spawns the appropriate CLI subprocess.
 - testcli emulators replicate real CLI process behavior
 - Test profiles in `test/e2e/testdata/config/`
 - `initTestCLIServer(t)` sets up aimux with testcli on PATH
+
+### Upgrade Behavior
+- `upgrade(action="apply")` supports `mode="auto|hot_swap|deferred"`.
+- `mode="auto"` is the default: in engine mode it tries daemon-side graceful restart first and falls back safely if live handoff cannot complete.
+- `mode="hot_swap"` requires live handoff and returns an error instead of silently falling back.
+- `mode="deferred"` skips live handoff and preserves the legacy staged-restart path.
+- Response semantics are intentional: `updated_hot_swap` means live daemon handoff succeeded, `updated_deferred` means auto mode fell back after a live-path failure, and `updated` is reserved for explicit deferred mode.
+- Inspect `handoff_error` when `status="updated_deferred"`; this is the truthful fallback signal rather than a live-upgrade success.
+- Hot-swap activation work supersedes the earlier structural-prep-only scope from engram #129; do not document the feature as "inactive pending upstream" in current project docs.

@@ -262,17 +262,13 @@ func textResult(t *testing.T, result *mcp.CallToolResult) string {
 	return text.Text
 }
 
-type recordingSessionHandler struct {
+type recordingUpgradeApply struct {
 	lastMode upgrade.Mode
 	applyErr error
 	result   *upgrade.Result
 }
 
-func (r *recordingSessionHandler) HandleRequest(ctx context.Context, project muxcore.ProjectContext, request []byte) ([]byte, error) {
-	return nil, nil
-}
-
-func (r *recordingSessionHandler) Apply(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode) (*upgrade.Result, error) {
+func (r *recordingUpgradeApply) apply(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode) (*upgrade.Result, error) {
 	r.lastMode = mode
 	if r.applyErr != nil {
 		return nil, r.applyErr
@@ -290,8 +286,8 @@ func (r *recordingSessionHandler) Apply(ctx context.Context, coord *upgrade.Coor
 
 func TestHandleUpgradeApply_DefaultMode(t *testing.T) {
 	srv := testServer(t)
-	handler := &recordingSessionHandler{}
-	srv.sessionHandler = handler
+	apply := &recordingUpgradeApply{}
+	srv.applyUpgrade = apply.apply
 
 	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
 		"action": "apply",
@@ -302,8 +298,8 @@ func TestHandleUpgradeApply_DefaultMode(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("handleUpgrade default mode returned error: %s", textResult(t, result))
 	}
-	if handler.lastMode != upgrade.ModeAuto {
-		t.Fatalf("default mode = %q, want %q", handler.lastMode, upgrade.ModeAuto)
+	if apply.lastMode != upgrade.ModeAuto {
+		t.Fatalf("default mode = %q, want %q", apply.lastMode, upgrade.ModeAuto)
 	}
 	data := parseResult(t, result)
 	if data["status"] != "updated" {
@@ -313,8 +309,14 @@ func TestHandleUpgradeApply_DefaultMode(t *testing.T) {
 
 func TestHandleUpgradeApply_HotSwapMode(t *testing.T) {
 	srv := testServer(t)
-	handler := &recordingSessionHandler{}
-	srv.sessionHandler = handler
+	apply := &recordingUpgradeApply{}
+	srv.applyUpgrade = apply.apply
+	apply.result = &upgrade.Result{
+		Method:          "hot_swap",
+		PreviousVersion: Version,
+		NewVersion:      Version,
+		Message:         "Binary hot-swapped successfully.",
+	}
 
 	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
 		"action": "apply",
@@ -326,15 +328,19 @@ func TestHandleUpgradeApply_HotSwapMode(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("handleUpgrade hot_swap mode returned error: %s", textResult(t, result))
 	}
-	if handler.lastMode != upgrade.ModeHotSwap {
-		t.Fatalf("hot_swap mode = %q, want %q", handler.lastMode, upgrade.ModeHotSwap)
+	if apply.lastMode != upgrade.ModeHotSwap {
+		t.Fatalf("hot_swap mode = %q, want %q", apply.lastMode, upgrade.ModeHotSwap)
+	}
+	data := parseResult(t, result)
+	if data["status"] != "updated_hot_swap" {
+		t.Fatalf("hot_swap mode status = %v, want updated_hot_swap", data["status"])
 	}
 }
 
 func TestHandleUpgradeApply_DeferredMode(t *testing.T) {
 	srv := testServer(t)
-	handler := &recordingSessionHandler{}
-	srv.sessionHandler = handler
+	apply := &recordingUpgradeApply{}
+	srv.applyUpgrade = apply.apply
 
 	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
 		"action": "apply",
@@ -346,8 +352,48 @@ func TestHandleUpgradeApply_DeferredMode(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("handleUpgrade deferred mode returned error: %s", textResult(t, result))
 	}
-	if handler.lastMode != upgrade.ModeDeferred {
-		t.Fatalf("deferred mode = %q, want %q", handler.lastMode, upgrade.ModeDeferred)
+	if apply.lastMode != upgrade.ModeDeferred {
+		t.Fatalf("deferred mode = %q, want %q", apply.lastMode, upgrade.ModeDeferred)
+	}
+	data := parseResult(t, result)
+	if data["status"] != "updated" {
+		t.Fatalf("deferred mode status = %v, want updated", data["status"])
+	}
+	if _, ok := data["handoff_error"]; ok {
+		t.Fatalf("deferred mode handoff_error present unexpectedly: %v", data["handoff_error"])
+	}
+}
+
+func TestHandleUpgradeApply_DeferredFallbackEnvelope(t *testing.T) {
+	srv := testServer(t)
+	apply := &recordingUpgradeApply{}
+	apply.result = &upgrade.Result{
+		Method:          "deferred",
+		PreviousVersion: "4.3.0",
+		NewVersion:      "4.4.0",
+		HandoffError:    "hot-swap control seam unavailable",
+		Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+	}
+	srv.applyUpgrade = apply.apply
+
+	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
+		"action": "apply",
+	}))
+	if err != nil {
+		t.Fatalf("handleUpgrade deferred fallback envelope: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleUpgrade deferred fallback envelope returned error: %s", textResult(t, result))
+	}
+	if apply.lastMode != upgrade.ModeAuto {
+		t.Fatalf("fallback mode = %q, want %q", apply.lastMode, upgrade.ModeAuto)
+	}
+	data := parseResult(t, result)
+	if data["status"] != "updated_deferred" {
+		t.Fatalf("fallback status = %v, want updated_deferred", data["status"])
+	}
+	if data["handoff_error"] != apply.result.HandoffError {
+		t.Fatalf("fallback handoff_error = %v, want %q", data["handoff_error"], apply.result.HandoffError)
 	}
 }
 

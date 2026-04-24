@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -11,7 +12,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/thebtf/aimux/pkg/logger"
+	"github.com/thebtf/aimux/pkg/upgrade"
 	"github.com/thebtf/mcp-mux/muxcore"
+	muxdaemon "github.com/thebtf/mcp-mux/muxcore/daemon"
+	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
 // ServeStdio starts the MCP server on stdio transport using os.Stdin/os.Stdout.
@@ -34,6 +38,69 @@ func (s *Server) SessionHandler() muxcore.SessionHandler {
 // Engine-mode upgrade uses this explicit seam to request daemon-side graceful restart.
 func (s *Server) SetDaemonControlSocketPath(socketPath string) {
 	s.daemonControlSocketPath = socketPath
+}
+
+// SetMuxEngine stores the live muxcore engine so daemon-mode paths can access
+// the in-process daemon directly instead of routing through the control socket.
+func (s *Server) SetMuxEngine(eng *engine.MuxEngine) {
+	s.muxEngine = eng
+}
+
+func (s *Server) gracefulRestartFunc() upgrade.GracefulRestartFunc {
+	if d := s.liveDaemon(); d != nil {
+		return func(ctx context.Context, drainTimeoutMs int) error {
+			_, err := d.HandleGracefulRestart(drainTimeoutMs)
+			return err
+		}
+	}
+	return upgrade.NewControlSocketGracefulRestartFunc(s.daemonControlSocketPath)
+}
+
+func (s *Server) handoffStatusFunc() upgrade.HandoffStatusFunc {
+	if d := s.liveDaemon(); d != nil {
+		return func(ctx context.Context) (upgrade.HandoffStatus, error) {
+			return readDaemonHandoffStatus(d)
+		}
+	}
+	return upgrade.NewControlSocketHandoffStatusFunc(s.daemonControlSocketPath)
+}
+
+func (s *Server) liveDaemon() *muxdaemon.Daemon {
+	if s == nil || s.muxEngine == nil {
+		return nil
+	}
+	if s.muxEngine.Mode() != engine.ModeDaemon {
+		return nil
+	}
+	return s.muxEngine.Daemon()
+}
+
+func readDaemonHandoffStatus(d *muxdaemon.Daemon) (upgrade.HandoffStatus, error) {
+	if d == nil {
+		return upgrade.HandoffStatus{}, fmt.Errorf("nil daemon")
+	}
+	status := d.HandleStatus()
+	handoffRaw, ok := status["handoff"]
+	if !ok {
+		return upgrade.HandoffStatus{}, fmt.Errorf("daemon status missing handoff counters")
+	}
+	handoffMap, ok := handoffRaw.(map[string]any)
+	if !ok {
+		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff counters malformed")
+	}
+	fallbackValue, ok := handoffMap["fallback"]
+	if !ok {
+		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff counters missing fallback")
+	}
+	fallback, ok := fallbackValue.(uint64)
+	if ok {
+		return upgrade.HandoffStatus{Fallback: fallback}, nil
+	}
+	fallbackFloat, ok := fallbackValue.(float64)
+	if !ok {
+		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff fallback counter has type %T", fallbackValue)
+	}
+	return upgrade.HandoffStatus{Fallback: uint64(fallbackFloat)}, nil
 }
 
 func (s *Server) configureMuxCompatibility() {

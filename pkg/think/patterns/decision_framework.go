@@ -157,6 +157,7 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 		tmpl := MatchDomainTemplate(decision)
 
 		var suggestedCriteria []string
+		var suggestedOptions []string
 		autoSource := "keyword-analysis"
 
 		if tmpl != nil && len(tmpl.Criteria) > 0 {
@@ -166,12 +167,8 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 			// No domain template: try sampling for context-aware criteria.
 			if sampledCriteria, sampledOptions, err := p.requestSamplingCriteria(decision); err == nil {
 				suggestedCriteria = sampledCriteria
+				suggestedOptions = append([]string(nil), sampledOptions...)
 				autoSource = "sampling"
-				// Store suggested options in data if the LLM returned any.
-				if len(sampledOptions) > 0 {
-					// passed to data below via closure; store in local for use after data is built
-					_ = sampledOptions // incorporated into optionTemplate below
-				}
 			}
 		}
 
@@ -200,6 +197,16 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 			"guidance": BuildGuidance("decision_framework", "basic",
 				[]string{"criteria", "options"},
 			),
+		}
+		if len(suggestedOptions) > 0 {
+			optionExamples := make([]any, 0, len(suggestedOptions))
+			for _, name := range suggestedOptions {
+				optionExamples = append(optionExamples, map[string]any{
+					"name":   name,
+					"scores": scoreTemplate,
+				})
+			}
+			data["suggestedOptions"] = optionExamples
 		}
 
 		// Tier 2A: text analysis

@@ -3,7 +3,8 @@
 // info without pulling in the full daemon dependency graph via pkg/server.
 package build
 
-// Version is the canonical aimux version string. Populated here at build time
-// and re-exported via pkg/server.Version for backward compatibility with
+// Version is the canonical aimux version string. It remains immutable at runtime
+// but is a var so tests and release builds can override it via -ldflags -X.
+// It is re-exported via pkg/server.Version for backward compatibility with
 // existing callers.
-const Version = "4.7.0"
+var Version = "4.7.0"

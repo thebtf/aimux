@@ -1,6 +1,7 @@
 package updater_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,6 +44,31 @@ func TestVerifyChecksum_ValidFile(t *testing.T) {
 	err := updater.VerifyChecksum(tmpFile, r)
 	if err != nil {
 		t.Fatalf("VerifyChecksum with valid file and release: got error %v, want nil", err)
+	}
+}
+
+func TestVerifyChecksum_ClassifiesFailure(t *testing.T) {
+	err := updater.VerifyChecksum("/nonexistent/path/that/does/not/exist", &updater.Release{Version: "1.0.0"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, updater.ErrChecksumVerification) {
+		t.Fatalf("error = %v, want ErrChecksumVerification", err)
+	}
+}
+
+func TestInstall_ClassifiesDiskFull(t *testing.T) {
+	updater.SetTestHooks(nil, nil, nil, func(newBinaryPath string, currentExePath string) error {
+		return errors.New("no space left on device")
+	})
+	defer updater.SetTestHooks(nil, nil, nil, nil)
+
+	err := updater.Install("ignored-new-binary", "ignored-current-exe")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, updater.ErrDiskFull) {
+		t.Fatalf("error = %v, want ErrDiskFull", err)
 	}
 }
 
