@@ -199,7 +199,7 @@ func listCandidatesWithFeedback(registry *Registry, prompt string, maxResults in
 		base := bm25Score[i] // 0.0 if not in ranked results
 		adj := base
 		if feedback != nil {
-			adj = feedback.AdjustScore(base, a.Name, inferTaskCategory(prompt))
+			adj = feedback.AdjustScore(base, a.Name, InferTaskCategory(prompt))
 		}
 		all[i] = scored{
 			AgentCandidate: AgentCandidate{
@@ -261,7 +261,7 @@ func SemanticSelect(registry *Registry, prompt string, history *DispatchHistory)
 
 	ranked := scorer.Rank(prompt, scorables)
 
-	taskCategory := inferTaskCategory(prompt)
+	taskCategory := InferTaskCategory(prompt)
 
 	type candidate struct {
 		agent         *Agent
@@ -365,9 +365,9 @@ func agentWhenText(a *Agent) string {
 	return when
 }
 
-// inferTaskCategory returns a short category label inferred from the prompt keywords.
+// InferTaskCategory returns a short category label inferred from the prompt keywords.
 // Used to namespace dispatch history records so feedback is task-type-specific.
-func inferTaskCategory(prompt string) string {
+func InferTaskCategory(prompt string) string {
 	lower := strings.ToLower(prompt)
 	switch {
 	case containsAny(lower, "review", "audit", "check"):

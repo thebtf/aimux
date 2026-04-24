@@ -140,7 +140,9 @@ type Server struct {
 	applyUpgrade            func(context.Context, *upgrade.Coordinator, upgrade.Mode) (*upgrade.Result, error)
 	muxEngine               *engine.MuxEngine
 	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
-	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
+	loom                    *loom.LoomEngine         // central task mediator (LoomEngine v3)
+	dispatchHistory         *agents.DispatchHistory  // agent dispatch feedback history (T003)
+	feedbackTracker         *agents.FeedbackTracker  // BM25 score adjustment from outcomes (T004)
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -229,6 +231,15 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 			} else {
 				s.loom = loom.New(taskStore)
 				log.Info("LoomEngine initialized (shared SQLite)")
+			}
+
+			// Initialize DispatchHistory + FeedbackTracker on shared SQLite (T003/T004).
+			if dh, dhErr := agents.NewDispatchHistory(store.DB()); dhErr != nil {
+				log.Warn("DispatchHistory unavailable: %v", dhErr)
+			} else {
+				s.dispatchHistory = dh
+				s.feedbackTracker = agents.NewFeedbackTracker(dh)
+				log.Info("DispatchHistory initialized (shared SQLite)")
 			}
 		}
 	}

@@ -158,16 +158,31 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 
 		agentName := request.GetString("agent", "")
 		var agent *agents.Agent
+		var selectionRationale *agents.SelectionRationale
 		if agentName == "" {
-			// Return candidate list instead of auto-selecting.
-			// The calling LLM knows the task context better than keyword matching.
-			candidates := agents.ListCandidates(s.agentReg, prompt, 20)
-			return marshalToolResult(map[string]any{
-				"action":     "choose_agent",
-				"message":    "No agent specified. Review the candidates below and call again with agent=<name>.",
-				"candidates": candidates,
-				"hint":       "Pick the agent whose 'when' description best matches your task. Use the 'agent' tool directly with agent=<name> for fastest execution.",
-			})
+			// SemanticSelect: BM25 + feedback-adjusted ranking picks the best agent.
+			// Returns a candidate list as a hint alongside the auto-selected agent
+			// so the calling LLM can verify or override the selection.
+			selectedAgent, rationale := agents.SemanticSelect(s.agentReg, prompt, s.dispatchHistory)
+			if selectedAgent == nil {
+				// No agents at all — return candidates for LLM to choose.
+				candidates := agents.ListCandidates(s.agentReg, prompt, 20)
+				return marshalToolResult(map[string]any{
+					"action":     "choose_agent",
+					"message":    "No agent specified and no agents registered. Review candidates below and call again with agent=<name>.",
+					"candidates": candidates,
+					"hint":       "Pick the agent whose 'when' description best matches your task.",
+				})
+			}
+			agent = selectedAgent
+			agentName = selectedAgent.Name
+			selectionRationale = &agents.SelectionRationale{
+				AgentName:     rationale.AgentName,
+				SemanticScore: rationale.SemanticScore,
+				SuccessRate:   rationale.SuccessRate,
+				AdjustedScore: rationale.AdjustedScore,
+				Reason:        rationale.Reason,
+			}
 		} else {
 			// Check overlay first (project-specific agents), then shared registry.
 			agent = findAgentInOverlay(overlay, agentName)
@@ -229,13 +244,30 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 			s.log.Info("agents: run agent=%s cli=%s role=%s job=%s", agentName, cli, role, job.ID)
 			jobCtx, jobCancel := context.WithCancel(context.Background())
 			s.jobs.RegisterCancel(job.ID, jobCancel)
-			go s.executeJob(jobCtx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
-			return marshalToolResult(map[string]any{
+			taskCategory := agents.InferTaskCategory(prompt)
+			go func() {
+				s.executeJob(jobCtx, job.ID, sess.ID, role, args, cb, profile.OutputFormat)
+				// Record feedback after async job completes.
+				if snap := s.jobs.GetSnapshot(job.ID); snap != nil {
+					outcome := "success"
+					if snap.Status == types.JobStatusFailed {
+						outcome = "failure"
+					}
+					if s.feedbackTracker != nil {
+						s.feedbackTracker.OnDispatchComplete(agentName, taskCategory, outcome)
+					}
+				}
+			}()
+			resp := map[string]any{
 				"agent":      agentName,
 				"job_id":     job.ID,
 				"session_id": sess.ID,
 				"status":     "running",
-			})
+			}
+			if selectionRationale != nil {
+				resp["selection_rationale"] = selectionRationale
+			}
+			return marshalToolResult(resp)
 		}
 
 		sess := s.sessions.Create(cli, types.SessionModeOnceStateful, cwd)
@@ -247,16 +279,31 @@ func (s *Server) handleAgents(ctx context.Context, request mcp.CallToolRequest) 
 		if j == nil {
 			return mcp.NewToolResultError("agent job disappeared"), nil
 		}
+
+		// Record feedback for sync execution path.
+		taskCategory := agents.InferTaskCategory(prompt)
+		outcome := "success"
+		if j.Status == types.JobStatusFailed {
+			outcome = "failure"
+		}
+		if s.feedbackTracker != nil {
+			s.feedbackTracker.OnDispatchComplete(agentName, taskCategory, outcome)
+		}
+
 		if j.Status == types.JobStatusFailed && j.Error != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("agent %q failed: %v", agentName, j.Error)), nil
 		}
 
-		return marshalToolResult(map[string]any{
+		resp := map[string]any{
 			"agent":      agentName,
 			"session_id": sess.ID,
 			"status":     string(j.Status),
 			"content":    j.Content,
-		})
+		}
+		if selectionRationale != nil {
+			resp["selection_rationale"] = selectionRationale
+		}
+		return marshalToolResult(resp)
 
 	default:
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
