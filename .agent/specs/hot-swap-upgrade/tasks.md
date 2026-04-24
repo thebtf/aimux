@@ -111,7 +111,7 @@ Filed engram cross-project issue #130 targeting mcp-mux for `PerformHandoff` + `
 - [x] T017 [EXECUTOR: MAIN] Update AGENTS.md or project docs: new upgrade behavior, `mode` param, fallback semantics
   AC: docs mention hot-swap vs deferred · link to engram #129 resolution · swap body→return nil ⇒ grep test fails
 
-- [ ] G004 [EXECUTOR: MAIN] VERIFY Phase 4 — BLOCKED until T012-T017 all [x]
+- [x] G004 [EXECUTOR: MAIN] VERIFY Phase 4 — BLOCKED until T012-T017 all [x]
   RUN: Full test suite + e2e + lint + stub-detection. Skill("code-review") full review.
   CHECK: FR-1..FR-10 all verified · NFR-1..NFR-6 all verified · CHANGELOG accurate · version bumped
   ENFORCE: zero stubs · zero TODOs · Windows CI green · no regressions
