@@ -57,5 +57,6 @@ func (r *ProfileResolver) ResolveSpawnArgsWithOpts(cli string, prompt string, mo
 		Args:              args,
 		Stdin:             prompt,
 		CompletionPattern: profile.CompletionPattern,
+		TimeoutSeconds:    profile.TimeoutSeconds,
 	}, nil
 }

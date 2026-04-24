@@ -21,6 +21,7 @@ func testProfiles() map[string]*config.CLIProfile {
 			StdinThreshold:    6000,
 			StdinSentinel:     "-",
 			CompletionPattern: `turn\.completed`,
+			TimeoutSeconds:    10,
 		},
 		"gemini": {
 			Name: "gemini",
@@ -166,6 +167,27 @@ func TestProfileResolver_CompletionPattern(t *testing.T) {
 
 	if sa.CompletionPattern != `turn\.completed` {
 		t.Errorf("CompletionPattern = %q, want %q", sa.CompletionPattern, `turn\.completed`)
+	}
+}
+
+func TestProfileResolver_TimeoutSeconds(t *testing.T) {
+	r := NewProfileResolver(testProfiles())
+
+	sa, err := r.ResolveSpawnArgs("codex", "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if sa.TimeoutSeconds != 10 {
+		t.Errorf("TimeoutSeconds = %d, want 10", sa.TimeoutSeconds)
+	}
+
+	sa2, err := r.ResolveSpawnArgs("gemini", "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sa2.TimeoutSeconds != 0 {
+		t.Errorf("TimeoutSeconds should be 0 for gemini, got %d", sa2.TimeoutSeconds)
 	}
 }
 

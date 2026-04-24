@@ -305,10 +305,7 @@ func TestE2E_TestCLI_CodexAsync(t *testing.T) {
 }
 
 func TestE2E_Agent_AsyncProgressNotification(t *testing.T) {
-	// Executor hangs on testcli I/O in daemon process context (ConPTY/pipe).
-	// Default subprocess timeout (10m) is a safety net but too slow for test.
-	// Root cause: executor process management in daemon mode needs investigation.
-	t.Skip("executor hangs on testcli in daemon+shim mode — engram #158 root cause is executor I/O, not timeout")
+	t.Skip("executor hangs despite profile timeout in daemon+shim mode — engram #158 needs instrumented debug")
 	stdin, reader := initTestCLIServer(t)
 
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{

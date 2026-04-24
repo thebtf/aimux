@@ -157,10 +157,10 @@ func TestRegression_SC9_NilErrorWrap(t *testing.T) {
 	if os.Getenv("CI") != "" {
 		t.Skip("SC-9 e2e hangs on CI race-detector runners; unit tests in pkg/executor/fallback_test.go carry the nil-wrap assertion")
 	}
-	// Executor hangs on testcli I/O in daemon process context (ConPTY/pipe).
-	// Default subprocess timeout (10m) is a safety net but too slow for test.
-	// Root cause: executor process management in daemon mode needs investigation.
-	t.Skip("executor hangs on testcli in daemon+shim mode — engram #158 root cause is executor I/O, not timeout")
+	// Profile timeout now propagated (2eea508) + safety subprocess timeout (e6a885c),
+	// but executor still hangs in daemon+shim mode. Needs instrumented debug session
+	// to trace where the ConPTY/pipe select blocks despite timeout.
+	t.Skip("executor hangs despite profile timeout in daemon+shim mode — engram #158 needs instrumented debug")
 	stdin, reader := initTestCLIServer(t)
 
 	// Dispatch an async exec with exit_code=1 (quota-like failure).
