@@ -200,6 +200,26 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 		return mcp.NewToolResultError(fmt.Sprintf("pattern error: %v", err)), nil
 	}
 
+	// --- Phase 3: enforcement gate + pattern advisor ---
+	gate := think.NewEnforcementGate()
+	var gateDecision think.GateDecision
+	if sessionID != "" {
+		sess := think.GetSession(sessionID)
+		gateDecision = gate.Check(patternName, sess)
+	} else {
+		// Stateless invocation: no session to check; treat as complete.
+		gateDecision = think.GateDecision{Status: "complete"}
+	}
+
+	advisor := think.NewPatternAdvisor()
+	var advisorRec think.Recommendation
+	if sessionID != "" {
+		sess := think.GetSession(sessionID)
+		advisorRec = advisor.Evaluate(sess, thinkResult)
+	} else {
+		advisorRec = think.Recommendation{Action: "continue", Reason: "stateless invocation"}
+	}
+
 	// Compute complexity for mode recommendation
 	complexity := think.CalculateComplexity(patternName, input, 60)
 
@@ -235,6 +255,17 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 	}
 	if len(thinkResult.ComputedFields) > 0 {
 		response["computed_fields"] = thinkResult.ComputedFields
+	}
+
+	// Phase 3: gate + advisor enrichment
+	response["gate_status"] = gateDecision.Status
+	if gateDecision.Reason != "" {
+		response["gate_reason"] = gateDecision.Reason
+	}
+	response["advisor_recommendation"] = map[string]any{
+		"action": advisorRec.Action,
+		"target": advisorRec.Target,
+		"reason": advisorRec.Reason,
 	}
 
 	// Extract step number from result data for policy state labels
