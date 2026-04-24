@@ -7,9 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Minor release: **hot-swap upgrade activation** — `upgrade(action="apply")` now exposes real mode-aware live-upgrade semantics and truthful fallback reporting.
+Minor release: **hot-swap upgrade activation** (AIMUX-7 follow-up) + **intelligent work routing** (AIMUX-8) — BM25 semantic agent discovery, think pattern advisor + enforcement gates, `critique` MCP tool.
 
 ### Added
+
+#### AIMUX-8: Intelligent Work Routing
+
+- **BM25 semantic agent discovery (`pkg/routing/`)** — `Scorer` interface + `TermIndex` in-memory
+  inverted index with IDF. `Score` p50 676 ns, `Rank200` p50 49 ms (both well under NFR thresholds).
+  `BM25Scorer` replaces the previous keyword-intersection `scoreMatch` function.
+- **`agents(action="find")` semantic ranking** — `ListCandidates` now uses BM25 ranking with
+  feedback-adjusted scores. Response: `{query, matches, count}` with ranked candidates.
+- **`agents(action="run")` auto-select + `selection_rationale`** — when no `agent` is specified,
+  `SemanticSelect` (BM25 + `FeedbackTracker`) picks the best match and injects
+  `selection_rationale: {agent_name, semantic_score, success_rate, adjusted_score, reason}` into
+  the response envelope.
+- **`FeedbackTracker` (`pkg/agents/feedback.go`)** — decay-weighted success-rate tracker.
+  `adjustedScore = 0.7*semanticScore + 0.3*successRate`. 7-day half-life. Project-scoped.
+- **`DispatchHistory` (`pkg/agents/history.go`)** — SQLite-backed dispatch history table with
+  `success_rate(agentName, taskCategory)` returning decay-weighted rates.
+- **Think enforcement gates (`pkg/think/gates.go`)** — `EnforcementGate` checks per-pattern
+  thresholds (min steps, min evidence, max confidence without evidence) for 10 patterns.
+  Every think response carries `gate_status: "complete"|"incomplete"` + `gate_reason`.
+- **Pattern advisor (`pkg/think/advisor.go`)** — `PatternAdvisor` evaluates result content via
+  BM25 against all pattern descriptions. Returns `advisor_recommendation: {action, target, reason}`.
+  Detects domain shift and suggests pattern switch (max 3 per session).
+- **Pattern stack (`pkg/think/session.go`)** — `PushPattern/PopPattern/CurrentPattern` with
+  state snapshot/restore on push. Max depth 5.
+- **`critique` MCP tool (`pkg/server/server_critique.go`)** — structured code/design review.
+  4 built-in lenses: `security`, `api-design`, `spec-compliance`, `adversarial`. Delegates to any
+  available CLI, parses output into `findings: [{severity, location, issue, suggested_fix}]`.
+  Falls back to `raw_output` when CLI returns non-JSON.
+- **`agent` tool deprecation** — `agent(agent="X", prompt="...")` now emits `deprecated: true` in
+  its response and routes internally through `agents(action="run")`. New callers should use
+  `agents(action="run", agent="X", prompt="...")` directly.
+
+#### AIMUX-8: Integration Tests
+
+- `test/e2e/agent_semantic_test.go` — verifies `agents(action=find)` returns `{query, matches, count}`,
+  and `agents(action=run)` returns either `selection_rationale` (when agents registered) or a
+  structured `{action:"choose_agent", candidates}` fallback.
+- `test/e2e/think_advisor_test.go` — verifies `debugging_approach` response carries
+  `gate_status` and `advisor_recommendation.action` under the `result` key of the guidance envelope.
+- `test/e2e/critique_test.go` — verifies `critique(lens="security")` response carries `lens` and
+  `cli_used`; validates `findings` array or graceful `raw_output` fallback.
+
+#### Hot-swap upgrade activation
 
 - Hot-swap e2e coverage on all supported platforms: `test/e2e/upgrade_hot_swap_test.go`, `test/e2e/upgrade_hot_swap_windows_test.go`, and fallback-path coverage in `test/e2e/upgrade_fallback_test.go`.
 - Structured upgrade completion logging in `pkg/upgrade/coordinator.go`: every apply emits `module=server.upgrade event=upgrade_complete prev_version=... new_version=... method=... duration_ms=... transferred_ids=[...]`, with `WARN` on deferred fallback (`handoff_error`) and `ERROR` on hard failure.

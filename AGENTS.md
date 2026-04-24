@@ -9,7 +9,7 @@ STACKS: [GO]
 ## Project Context
 
 aimux is an MCP server that multiplexes AI CLI tools. It receives MCP tool calls
-(exec, status, sessions, dialog, consensus, debate, audit, think, investigate, deepresearch, agents)
+(exec, status, sessions, dialog, consensus, debate, audit, think, investigate, deepresearch, agents, critique)
 and spawns the appropriate CLI subprocess.
 
 ## Agent Instructions
@@ -42,6 +42,62 @@ and spawns the appropriate CLI subprocess.
 - testcli emulators replicate real CLI process behavior
 - Test profiles in `test/e2e/testdata/config/`
 - `initTestCLIServer(t)` sets up aimux with testcli on PATH
+
+### critique Tool
+
+`critique(artifact, lens, cli, max_findings)` — delegates a code/design artifact to a CLI for
+structured review using one of four built-in lenses:
+
+| Lens | Focus |
+|------|-------|
+| `security` | Injection, auth flaws, secret exposure, input validation |
+| `api-design` | REST/RPC contracts, naming conventions, backward compatibility |
+| `spec-compliance` | Alignment with a stated spec or requirements document |
+| `adversarial` | Adversarial prompt injection, misuse scenarios, trust boundary violations |
+
+Response shape: `{findings, summary, cli_used, lens, tokens}` where `findings` is an array of
+`{severity, location, issue, suggested_fix}` objects. Falls back to `{raw_output}` when the
+CLI does not return parseable JSON. Missing `artifact` returns a validation error. Unknown `lens`
+returns a validation error.
+
+### agents Tool (Preferred) vs agent Tool (Deprecated)
+
+**Use `agents(action="run", prompt="...")` — NOT `agent(agent="X", prompt="...")`.**
+
+- `agents(action="run")` without an explicit `agent` parameter runs BM25 semantic auto-select
+  and returns `selection_rationale` with score breakdown.
+- `agents(action="find", prompt="...")` returns a ranked candidate list `{query, matches, count}`.
+- `agent` (singular) still works but includes a `deprecated` field in its response directing
+  callers to `agents(action="run")`. It will be removed in a future major version.
+
+### Think Tool: Advisor + Enforcement Gates
+
+Every per-pattern think tool call (e.g. `debugging_approach`, `decision_framework`) runs two
+post-processing layers before returning:
+
+1. **Enforcement gate** (`pkg/think/gates.go`) — checks per-pattern thresholds
+   (min steps, min evidence, max confidence without evidence). Returns
+   `gate_status: "complete" | "incomplete"` with a `gate_reason` field.
+
+2. **Pattern advisor** (`pkg/think/advisor.go`) — uses BM25 to compare the result content
+   against all pattern descriptions. Returns `advisor_recommendation: {action, target, reason}`
+   where `action` is `"continue"` (stay in pattern) or `"switch"` (move to a better-fit pattern).
+
+Both fields appear under the `result` key in the response (inside the guidance envelope):
+
+```json
+{
+  "result": {
+    "gate_status": "complete",
+    "gate_reason": "...",
+    "advisor_recommendation": {"action": "continue", "target": "", "reason": "..."},
+    ...
+  }
+}
+```
+
+Stateless invocations (no `session_id`) always return `gate_status: "complete"`.
+Max advisor-triggered pattern switches per session: 3.
 
 ### Upgrade Behavior
 - `upgrade(action="apply")` supports `mode="auto|hot_swap|deferred"`.
