@@ -3,15 +3,23 @@
 package e2e
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -84,27 +92,204 @@ func readResponse(reader *bufio.Reader, timeout time.Duration) (map[string]any, 
 	}
 }
 
+var (
+	e2eAimuxBuildMu    sync.Mutex
+	e2eAimuxBuildCache = make(map[string]string)
+)
+
 // buildBinary compiles the aimux binary and returns the path.
 func buildBinary(t *testing.T) string {
 	t.Helper()
+	return buildBinaryVersion(t, "")
+}
+
+func buildBinaryVersion(t *testing.T, version string) string {
+	t.Helper()
+
+	cacheKey := version
+	e2eAimuxBuildMu.Lock()
+	cachedPath, ok := e2eAimuxBuildCache[cacheKey]
+	if !ok {
+		cacheDir := filepath.Join(os.TempDir(), "aimux-e2e-build-cache")
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			e2eAimuxBuildMu.Unlock()
+			t.Fatalf("mkdir build cache: %v", err)
+		}
+
+		cachedName := "aimux-test"
+		if version != "" {
+			cachedName += "-" + strings.ReplaceAll(version, ".", "-")
+		}
+		if runtime.GOOS == "windows" {
+			cachedName += ".exe"
+		}
+		cachedPath = filepath.Join(cacheDir, cachedName)
+
+		args := []string{"build"}
+		if version != "" {
+			args = append(args, "-ldflags", "-X github.com/thebtf/aimux/pkg/build.Version="+version)
+		}
+		args = append(args, "-o", cachedPath, "./cmd/aimux")
+
+		cmd := exec.Command("go", args...)
+		cmd.Dir = projectRoot()
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			e2eAimuxBuildMu.Unlock()
+			t.Fatalf("build aimux%s: %v\n%s", versionLabel(version), err, out)
+		}
+
+		e2eAimuxBuildCache[cacheKey] = cachedPath
+	}
+	e2eAimuxBuildMu.Unlock()
 
 	binName := "aimux-test"
+	if version != "" {
+		binName += "-" + strings.ReplaceAll(version, ".", "-")
+	}
 	if runtime.GOOS == "windows" {
 		binName += ".exe"
 	}
-
 	binPath := filepath.Join(t.TempDir(), binName)
-
-	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/aimux")
-	cmd.Dir = projectRoot()
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("build aimux: %v\n%s", err, out)
-	}
-
+	copyFileForTest(t, cachedPath, binPath)
 	return binPath
+}
+
+func versionLabel(version string) string {
+	if version == "" {
+		return ""
+	}
+	return " @" + version
+}
+
+func copyFileForTest(t *testing.T, srcPath string, dstPath string) {
+	t.Helper()
+	src, err := os.Open(srcPath)
+	if err != nil {
+		t.Fatalf("open cached binary %s: %v", srcPath, err)
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		t.Fatalf("create test binary %s: %v", dstPath, err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		t.Fatalf("copy cached binary to %s: %v", dstPath, err)
+	}
+	if err := dst.Close(); err != nil {
+		t.Fatalf("close test binary %s: %v", dstPath, err)
+	}
+}
+
+func serveMockRelease(t *testing.T, currentVersion string, nextVersion string, binaryPath string) string {
+	t.Helper()
+
+	assetName := "aimux_" + runtime.GOOS + "_" + runtime.GOARCH + ".zip"
+	zipBytes := zipSingleBinaryForTest(t, filepath.Base(binaryPath), mustReadFile(t, binaryPath))
+	sum := sha256.Sum256(zipBytes)
+	checksums := hex.EncodeToString(sum[:]) + "  " + assetName + "\n"
+
+	mux := http.NewServeMux()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen mock release: %v", err)
+	}
+	server := &http.Server{Handler: mux}
+	baseURL := "http://" + ln.Addr().String()
+	go func() { _ = server.Serve(ln) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	mux.HandleFunc("/assets/"+assetName, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipBytes)
+	})
+	mux.HandleFunc("/assets/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, checksums)
+	})
+	mux.HandleFunc("/release.json", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"version":       nextVersion,
+			"asset_name":    assetName,
+			"asset_url":     baseURL + "/assets/" + assetName,
+			"release_notes": "mock release for hot-swap e2e",
+			"published_at":  "2026-04-23T00:00:00Z",
+		})
+	})
+
+	return baseURL
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file %s: %v", path, err)
+	}
+	return data
+}
+
+func zipSingleBinaryForTest(t *testing.T, name string, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(name)
+	if err != nil {
+		t.Fatalf("zip create: %v", err)
+	}
+	if _, err := w.Write(data); err != nil {
+		t.Fatalf("zip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func unzipSingleBinaryForTest(t *testing.T, zipBytes []byte) []byte {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		t.Fatalf("zip reader: %v", err)
+	}
+	if len(zr.File) != 1 {
+		t.Fatalf("mock release zip entries = %d, want 1", len(zr.File))
+	}
+	rc, err := zr.File[0].Open()
+	if err != nil {
+		t.Fatalf("zip open: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("zip read: %v", err)
+	}
+	return data
+}
+
+func compareSemver(a string, b string) int {
+	as := strings.Split(strings.TrimPrefix(a, "v"), ".")
+	bs := strings.Split(strings.TrimPrefix(b, "v"), ".")
+	for len(as) < 3 {
+		as = append(as, "0")
+	}
+	for len(bs) < 3 {
+		bs = append(bs, "0")
+	}
+	for i := 0; i < 3; i++ {
+		ai, _ := strconv.Atoi(as[i])
+		bi, _ := strconv.Atoi(bs[i])
+		if ai > bi {
+			return 1
+		}
+		if ai < bi {
+			return -1
+		}
+	}
+	return 0
 }
 
 func testdataDir() string {

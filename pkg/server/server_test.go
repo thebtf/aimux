@@ -88,6 +88,38 @@ func TestNewServer_AllToolsRegistered(t *testing.T) {
 	}
 }
 
+func TestUpgradeToolSchema_ModeParameter(t *testing.T) {
+	srv := newTestServer(t)
+	tool := srv.Tool("upgrade")
+	if tool == nil {
+		t.Fatal("upgrade tool not registered")
+	}
+
+	modeProp, ok := tool.InputSchema.Properties["mode"].(map[string]any)
+	if !ok {
+		t.Fatalf("upgrade tool mode schema missing or wrong type: %T", tool.InputSchema.Properties["mode"])
+	}
+	if got := modeProp["type"]; got != "string" {
+		t.Fatalf("upgrade mode type = %v, want string", got)
+	}
+	enumValues, ok := modeProp["enum"].([]string)
+	if !ok {
+		t.Fatalf("upgrade mode enum missing or wrong type: %T", modeProp["enum"])
+	}
+	wantEnum := []string{"auto", "hot_swap", "deferred"}
+	if len(enumValues) != len(wantEnum) {
+		t.Fatalf("upgrade mode enum len = %d, want %d", len(enumValues), len(wantEnum))
+	}
+	for i, want := range wantEnum {
+		if got := enumValues[i]; got != want {
+			t.Fatalf("upgrade mode enum[%d] = %q, want %q", i, got, want)
+		}
+	}
+	if got := modeProp["default"]; got != "auto" {
+		t.Fatalf("upgrade mode default = %v, want auto", got)
+	}
+}
+
 // Note: Full MCP protocol integration tests require starting stdio transport
 // which is complex to test in-process. The smoke test via binary + printf
 // (documented in CONTINUITY.md) covers this path.

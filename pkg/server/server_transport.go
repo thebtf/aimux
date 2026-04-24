@@ -3,19 +3,25 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/thebtf/aimux/pkg/logger"
+	"github.com/thebtf/aimux/pkg/upgrade"
 	"github.com/thebtf/mcp-mux/muxcore"
+	muxdaemon "github.com/thebtf/mcp-mux/muxcore/daemon"
+	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
 // ServeStdio starts the MCP server on stdio transport using os.Stdin/os.Stdout.
 func (s *Server) ServeStdio() error {
 	s.log.Info("MCP server starting on stdio (aimux v%s)", Version)
+	s.configureMuxCompatibility()
 	return server.ServeStdio(s.mcp)
 }
 
@@ -28,12 +34,106 @@ func (s *Server) SessionHandler() muxcore.SessionHandler {
 	return h
 }
 
+// SetDaemonControlSocketPath stores the live muxcore daemon control socket path.
+// Engine-mode upgrade uses this explicit seam to request daemon-side graceful restart.
+func (s *Server) SetDaemonControlSocketPath(socketPath string) {
+	s.daemonControlSocketPath = socketPath
+}
+
+// SetMuxEngine stores the live muxcore engine so daemon-mode paths can access
+// the in-process daemon directly instead of routing through the control socket.
+func (s *Server) SetMuxEngine(eng *engine.MuxEngine) {
+	s.muxEngine = eng
+}
+
+func (s *Server) gracefulRestartFunc() upgrade.GracefulRestartFunc {
+	if d := s.liveDaemon(); d != nil {
+		return func(ctx context.Context, drainTimeoutMs int) error {
+			_, err := d.HandleGracefulRestart(drainTimeoutMs)
+			return err
+		}
+	}
+	return upgrade.NewControlSocketGracefulRestartFunc(s.daemonControlSocketPath)
+}
+
+func (s *Server) handoffStatusFunc() upgrade.HandoffStatusFunc {
+	if d := s.liveDaemon(); d != nil {
+		return func(ctx context.Context) (upgrade.HandoffStatus, error) {
+			return readDaemonHandoffStatus(d)
+		}
+	}
+	return upgrade.NewControlSocketHandoffStatusFunc(s.daemonControlSocketPath)
+}
+
+func (s *Server) liveDaemon() *muxdaemon.Daemon {
+	if s == nil || s.muxEngine == nil {
+		return nil
+	}
+	if s.muxEngine.Mode() != engine.ModeDaemon {
+		return nil
+	}
+	return s.muxEngine.Daemon()
+}
+
+func readDaemonHandoffStatus(d *muxdaemon.Daemon) (upgrade.HandoffStatus, error) {
+	if d == nil {
+		return upgrade.HandoffStatus{}, fmt.Errorf("nil daemon")
+	}
+	status := d.HandleStatus()
+	handoffRaw, ok := status["handoff"]
+	if !ok {
+		return upgrade.HandoffStatus{}, fmt.Errorf("daemon status missing handoff counters")
+	}
+	handoffMap, ok := handoffRaw.(map[string]any)
+	if !ok {
+		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff counters malformed")
+	}
+	fallbackValue, ok := handoffMap["fallback"]
+	if !ok {
+		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff counters missing fallback")
+	}
+	var fallback uint64
+	switch v := fallbackValue.(type) {
+	case uint64:
+		fallback = v
+	case float64:
+		fallback = uint64(v)
+	case int:
+		fallback = uint64(v)
+	case int64:
+		fallback = uint64(v)
+	default:
+		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff fallback counter has unexpected type %T", fallbackValue)
+	}
+	return upgrade.HandoffStatus{Fallback: fallback}, nil
+}
+
+func (s *Server) configureMuxCompatibility() {
+	if s.mcp == nil {
+		return
+	}
+	hooks := s.mcp.GetHooks()
+	if hooks == nil {
+		return
+	}
+	hooks.AddAfterInitialize(func(ctx context.Context, id any, message *mcp.InitializeRequest, result *mcp.InitializeResult) {
+		if result.Capabilities.Experimental == nil {
+			result.Capabilities.Experimental = make(map[string]any)
+		}
+		result.Capabilities.Experimental["x-mux"] = map[string]any{
+			"sharing":    "session-aware",
+			"persistent": true,
+		}
+	})
+}
+
 // StdioHandler returns a handler function compatible with muxcore engine.Handler.
 // The handler wraps the MCP server's stdio transport, accepting custom stdin/stdout
 // from the engine's IPC layer instead of hardcoded os.Stdin/os.Stdout.
 func (s *Server) StdioHandler() func(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	return func(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 		s.log.Info("MCP server starting on engine stdio (aimux v%s)", Version)
+		s.configureMuxCompatibility()
 		stdioSrv := server.NewStdioServer(s.mcp)
 		return stdioSrv.Listen(ctx, stdin, stdout)
 	}
@@ -51,9 +151,6 @@ func (s *Server) ServeSSE(addr string) error {
 		return server.NewSSEServer(s.mcp).Start(addr)
 	}
 	s.log.Info("SSE transport: bearer token authentication enabled")
-	// Build the http.Server first so WithHTTPServer can be passed to the single
-	// NewSSEServer call. The handler is set after construction to avoid a
-	// chicken-and-egg reference, but the http.Server addr is configured upfront.
 	httpSrv := &http.Server{
 		Addr:         addr,
 		ReadTimeout:  30 * time.Second,
@@ -119,14 +216,12 @@ func bearerAuthMiddleware(token string, log *logger.Logger, next http.Handler) h
 	expected := "Bearer " + token
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := r.Header.Get("Authorization")
-		if got == "" {
-			log.Warn("auth: missing Authorization header from %s path=%s", r.RemoteAddr, r.URL.Path)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
-			log.Warn("auth: bearer token mismatch from %s path=%s", r.RemoteAddr, r.URL.Path)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		if len(got) != len(expected) || subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+			if log != nil {
+				log.Warn("auth: unauthorized request path=%s remote=%s", r.URL.Path, r.RemoteAddr)
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="aimux"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)

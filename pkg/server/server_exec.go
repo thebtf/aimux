@@ -27,6 +27,7 @@ import (
 )
 
 func (s *Server) handleExec(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ctx = context.WithValue(ctx, callToolRequestKey{}, request)
 	bp, budgetErr := budget.ParseBudgetParams(request)
 	if budgetErr != nil {
 		return mcp.NewToolResultError(budgetErr.Error()), nil

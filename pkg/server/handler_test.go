@@ -26,6 +26,7 @@ import (
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/types"
+	"github.com/thebtf/aimux/pkg/upgrade"
 )
 
 // testBinary returns a platform-appropriate binary that is guaranteed to exist.
@@ -244,6 +245,156 @@ func parseResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
 		return map[string]any{"text": text.Text}
 	}
 	return data
+}
+
+func textResult(t *testing.T, result *mcp.CallToolResult) string {
+	t.Helper()
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("result has no content")
+	}
+	text, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("content is not TextContent: %T", result.Content[0])
+	}
+	return text.Text
+}
+
+type recordingUpgradeApply struct {
+	lastMode upgrade.Mode
+	applyErr error
+	result   *upgrade.Result
+}
+
+func (r *recordingUpgradeApply) apply(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode) (*upgrade.Result, error) {
+	r.lastMode = mode
+	if r.applyErr != nil {
+		return nil, r.applyErr
+	}
+	if r.result != nil {
+		return r.result, nil
+	}
+	return &upgrade.Result{
+		Method:          "deferred",
+		PreviousVersion: coord.Version,
+		NewVersion:      coord.Version,
+		Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+	}, nil
+}
+
+func TestHandleUpgradeApply_DefaultMode(t *testing.T) {
+	srv := testServer(t)
+	apply := &recordingUpgradeApply{}
+	srv.applyUpgrade = apply.apply
+
+	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
+		"action": "apply",
+	}))
+	if err != nil {
+		t.Fatalf("handleUpgrade default mode: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleUpgrade default mode returned error: %s", textResult(t, result))
+	}
+	if apply.lastMode != upgrade.ModeAuto {
+		t.Fatalf("default mode = %q, want %q", apply.lastMode, upgrade.ModeAuto)
+	}
+	data := parseResult(t, result)
+	if data["status"] != "updated" {
+		t.Fatalf("default mode status = %v, want updated", data["status"])
+	}
+}
+
+func TestHandleUpgradeApply_HotSwapMode(t *testing.T) {
+	srv := testServer(t)
+	apply := &recordingUpgradeApply{}
+	srv.applyUpgrade = apply.apply
+	apply.result = &upgrade.Result{
+		Method:          "hot_swap",
+		PreviousVersion: Version,
+		NewVersion:      Version,
+		Message:         "Binary hot-swapped successfully.",
+	}
+
+	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
+		"action": "apply",
+		"mode":   "hot_swap",
+	}))
+	if err != nil {
+		t.Fatalf("handleUpgrade hot_swap mode: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleUpgrade hot_swap mode returned error: %s", textResult(t, result))
+	}
+	if apply.lastMode != upgrade.ModeHotSwap {
+		t.Fatalf("hot_swap mode = %q, want %q", apply.lastMode, upgrade.ModeHotSwap)
+	}
+	data := parseResult(t, result)
+	if data["status"] != "updated_hot_swap" {
+		t.Fatalf("hot_swap mode status = %v, want updated_hot_swap", data["status"])
+	}
+}
+
+func TestHandleUpgradeApply_DeferredMode(t *testing.T) {
+	srv := testServer(t)
+	apply := &recordingUpgradeApply{}
+	srv.applyUpgrade = apply.apply
+
+	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
+		"action": "apply",
+		"mode":   "deferred",
+	}))
+	if err != nil {
+		t.Fatalf("handleUpgrade deferred mode: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleUpgrade deferred mode returned error: %s", textResult(t, result))
+	}
+	if apply.lastMode != upgrade.ModeDeferred {
+		t.Fatalf("deferred mode = %q, want %q", apply.lastMode, upgrade.ModeDeferred)
+	}
+	data := parseResult(t, result)
+	if data["status"] != "updated" {
+		t.Fatalf("deferred mode status = %v, want updated", data["status"])
+	}
+	if _, ok := data["handoff_error"]; ok {
+		t.Fatalf("deferred mode handoff_error present unexpectedly: %v", data["handoff_error"])
+	}
+}
+
+func TestHandleUpgradeApply_DeferredFallbackEnvelope(t *testing.T) {
+	srv := testServer(t)
+	apply := &recordingUpgradeApply{}
+	apply.result = &upgrade.Result{
+		Method:          "deferred",
+		PreviousVersion: "4.3.0",
+		NewVersion:      "4.4.0",
+		HandoffError:    "hot-swap control seam unavailable",
+		Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+	}
+	srv.applyUpgrade = apply.apply
+
+	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
+		"action": "apply",
+	}))
+	if err != nil {
+		t.Fatalf("handleUpgrade deferred fallback envelope: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleUpgrade deferred fallback envelope returned error: %s", textResult(t, result))
+	}
+	if apply.lastMode != upgrade.ModeAuto {
+		t.Fatalf("fallback mode = %q, want %q", apply.lastMode, upgrade.ModeAuto)
+	}
+	data := parseResult(t, result)
+	if data["status"] != "updated_deferred" {
+		t.Fatalf("fallback status = %v, want updated_deferred", data["status"])
+	}
+	if data["handoff_error"] != apply.result.HandoffError {
+		t.Fatalf("fallback handoff_error = %v, want %q", data["handoff_error"], apply.result.HandoffError)
+	}
 }
 
 // --- Exec Handler ---
@@ -4123,7 +4274,6 @@ func TestNotifier_NilNotifier(t *testing.T) {
 	// Must not panic.
 	lifecycle.OnProjectConnect(project)
 }
-
 
 // --- T019/T020/T021: CLI Unavailability Error Tests ---
 

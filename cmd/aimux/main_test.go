@@ -1,8 +1,20 @@
 package main
 
 import (
+	"context"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/thebtf/aimux/pkg/logger"
+	muxdaemon "github.com/thebtf/mcp-mux/muxcore/daemon"
+	mcpsnapshot "github.com/thebtf/mcp-mux/muxcore/snapshot"
 )
 
 // TestDetectMode exercises all 8 combinations of:
@@ -163,4 +175,327 @@ func TestDetectMode_DaemonFlagExactMatch(t *testing.T) {
 	if gotExact != ModeDaemon {
 		t.Errorf("exact flag: mode = %d, want ModeDaemon (%d)", gotExact, ModeDaemon)
 	}
+
+	// Muxcore graceful-restart successor currently re-execs with "--daemon".
+	gotLegacy, errLegacy := detectMode([]string{"aimux", "--daemon"}, envFn)
+	if errLegacy != nil {
+		t.Errorf("unexpected error for legacy daemon flag: %v", errLegacy)
+	}
+	if gotLegacy != ModeDaemon {
+		t.Errorf("legacy daemon flag: mode = %d, want ModeDaemon (%d)", gotLegacy, ModeDaemon)
+	}
+
+}
+
+func TestParseHandoffFlags(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	if err := os.WriteFile(socketPath, []byte("socket"), 0o600); err != nil {
+		t.Fatalf("write socket path fixture: %v", err)
+	}
+
+	token := strings.Repeat("ab", 32)
+	got, err := parseHandoffFlags([]string{"--handoff-from", socketPath, "--handoff-token", token, "--muxcore-daemon"})
+	if err != nil {
+		t.Fatalf("parseHandoffFlags() unexpected error: %v", err)
+	}
+	if got.From != socketPath {
+		t.Fatalf("From = %q, want %q", got.From, socketPath)
+	}
+	if got.Token != token {
+		t.Fatalf("Token = %q, want %q", got.Token, token)
+	}
+}
+
+func TestParseHandoffFlags_ValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	if err := os.WriteFile(socketPath, []byte("socket"), 0o600); err != nil {
+		t.Fatalf("write socket path fixture: %v", err)
+	}
+
+	validToken := strings.Repeat("cd", 32)
+	missingPath := filepath.Join(t.TempDir(), "missing.sock")
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "requires_both_flags_when_only_from_is_set",
+			args:    []string{"--handoff-from", socketPath},
+			wantErr: "--handoff-from and --handoff-token must both be set",
+		},
+		{
+			name:    "requires_both_flags_when_only_token_is_set",
+			args:    []string{"--handoff-token", validToken},
+			wantErr: "--handoff-from and --handoff-token must both be set",
+		},
+		{
+			name:    "rejects_short_token",
+			args:    []string{"--handoff-from", socketPath, "--handoff-token", strings.Repeat("a", 63)},
+			wantErr: "--handoff-token must be 64 hex characters",
+		},
+		{
+			name:    "rejects_non_hex_token",
+			args:    []string{"--handoff-from", socketPath, "--handoff-token", strings.Repeat("z1", 32)},
+			wantErr: "--handoff-token must be 64 hex characters",
+		},
+		{
+			name:    "rejects_missing_socket_path",
+			args:    []string{"--handoff-from", missingPath, "--handoff-token", validToken},
+			wantErr: "--handoff-from path must exist",
+		},
+		{
+			name:    "rejects_directory_path",
+			args:    []string{"--handoff-from", t.TempDir(), "--handoff-token", validToken},
+			wantErr: "--handoff-from path must not be a directory",
+		},
+		{
+			name:    "rejects_missing_token_value",
+			args:    []string{"--handoff-from", socketPath, "--handoff-token"},
+			wantErr: "parse handoff flags",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := parseHandoffFlags(tt.args)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateHandoffFlags_AcceptsUppercaseHex(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	if err := os.WriteFile(socketPath, []byte("socket"), 0o600); err != nil {
+		t.Fatalf("write socket path fixture: %v", err)
+	}
+
+	tokenBytes := make([]byte, 32)
+	for i := range tokenBytes {
+		tokenBytes[i] = 0xAB
+	}
+	uppercaseToken := strings.ToUpper(hex.EncodeToString(tokenBytes))
+
+	if err := validateHandoffFlags(handoffFlags{From: socketPath, Token: uppercaseToken}); err != nil {
+		t.Fatalf("validateHandoffFlags() unexpected error for uppercase hex: %v", err)
+	}
+}
+
+func TestReceivePredecessorHandoff_TokenMismatchReturnsExit2Error(t *testing.T) {
+	t.Parallel()
+
+	goodToken := strings.Repeat("ab", 32)
+	badToken := strings.Repeat("cd", 32)
+
+	listener, socketPath, err := listenPlatformHandoffRelay()
+	if err != nil {
+		t.Fatalf("listen predecessor socket: %v", err)
+	}
+	defer func() {
+		_ = listener.Close()
+		_ = removePlatformHandoffRelay(socketPath)
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			done <- acceptErr
+			return
+		}
+		defer conn.Close()
+		_, performErr := muxdaemon.PerformHandoff(context.Background(), conn, goodToken, nil)
+		done <- performErr
+	}()
+
+	_, err = bootstrapSuccessorHandoff(context.Background(), mustTestLogger(t), handoffFlags{From: socketPath, Token: badToken})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var exitErr *exitCodeError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected exitCodeError, got %T (%v)", err, err)
+	}
+	if exitErr.Code != 2 {
+		t.Fatalf("exit code = %d, want 2", exitErr.Code)
+	}
+	if !strings.Contains(exitErr.Error(), "handoff token mismatch") {
+		t.Fatalf("error = %q, want token mismatch", exitErr.Error())
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("predecessor handoff goroutine did not finish")
+	}
+}
+
+func TestBootstrapSuccessorHandoff_RelaysIntoMuxcoreRestorePath(t *testing.T) {
+	t.Parallel()
+
+	oldTokenPath := os.Getenv("MCPMUX_HANDOFF_TOKEN_PATH")
+	oldSocketPath := os.Getenv("MCPMUX_HANDOFF_SOCKET")
+	defer restoreEnvVar(t, "MCPMUX_HANDOFF_TOKEN_PATH", oldTokenPath)
+	defer restoreEnvVar(t, "MCPMUX_HANDOFF_SOCKET", oldSocketPath)
+
+	snapshotPath := mcpsnapshot.SnapshotPath("")
+	_ = os.Remove(snapshotPath)
+	defer os.Remove(snapshotPath)
+
+	sid := "handoff-successor-bootstrap-test"
+	snapshot := mcpsnapshot.DaemonSnapshot{
+		Version:   mcpsnapshot.SnapshotVersion,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Owners: []mcpsnapshot.OwnerSnapshot{{
+			ServerID:       sid,
+			Command:        "echo",
+			Args:           []string{"relay"},
+			Cwd:            t.TempDir(),
+			Mode:           "global",
+			CachedInit:     "e30=",
+			CachedTools:    "e30=",
+		}},
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if err := os.WriteFile(snapshotPath, data, 0o644); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	defer stdinW.Close()
+	defer stdinR.Close()
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	defer stdoutR.Close()
+	defer stdoutW.Close()
+
+	predecessorListener, predecessorSocket, err := listenPlatformHandoffRelay()
+	if err != nil {
+		t.Fatalf("listen predecessor socket: %v", err)
+	}
+	defer func() {
+		_ = predecessorListener.Close()
+		_ = removePlatformHandoffRelay(predecessorSocket)
+	}()
+
+	token := strings.Repeat("ef", 32)
+	senderDone := make(chan error, 1)
+	go func() {
+		conn, acceptErr := predecessorListener.Accept()
+		if acceptErr != nil {
+			senderDone <- acceptErr
+			return
+		}
+		defer conn.Close()
+		_, performErr := muxdaemon.PerformHandoff(context.Background(), conn, token, []muxdaemon.HandoffUpstream{{
+			ServerID: sid,
+			Command:  "echo",
+			PID:      os.Getpid(),
+			StdinFD:  stdinR.Fd(),
+			StdoutFD: stdoutW.Fd(),
+		}})
+		senderDone <- performErr
+	}()
+
+	cleanup, err := bootstrapSuccessorHandoff(context.Background(), mustTestLogger(t), handoffFlags{From: predecessorSocket, Token: token})
+	if err != nil {
+		t.Fatalf("bootstrapSuccessorHandoff() error: %v", err)
+	}
+	defer cleanup()
+
+	tokenPath := os.Getenv("MCPMUX_HANDOFF_TOKEN_PATH")
+	if tokenPath == "" {
+		t.Fatal("MCPMUX_HANDOFF_TOKEN_PATH not set")
+	}
+	relaySocket := os.Getenv("MCPMUX_HANDOFF_SOCKET")
+	if relaySocket == "" {
+		t.Fatal("MCPMUX_HANDOFF_SOCKET not set")
+	}
+
+	restoredToken, err := muxdaemon.ReadHandoffToken(tokenPath)
+	if err != nil {
+		t.Fatalf("ReadHandoffToken() error: %v", err)
+	}
+	if restoredToken != token {
+		t.Fatalf("restored token = %q, want %q", restoredToken, token)
+	}
+
+	relayConn, err := dialPlatformHandoffConn(context.Background(), relaySocket)
+	if err != nil {
+		t.Fatalf("dial relay socket: %v", err)
+	}
+	defer relayConn.Close()
+
+	received, err := muxdaemon.ReceiveHandoff(context.Background(), relayConn, token)
+	if err != nil {
+		t.Fatalf("ReceiveHandoff() via relay error: %v", err)
+	}
+	if len(received) != 1 {
+		t.Fatalf("received %d upstreams, want 1", len(received))
+	}
+	if received[0].ServerID != sid {
+		t.Fatalf("server id = %q, want %q", received[0].ServerID, sid)
+	}
+	if received[0].StdinFD == 0 || received[0].StdoutFD == 0 {
+		t.Fatalf("received invalid FDs: stdin=%d stdout=%d", received[0].StdinFD, received[0].StdoutFD)
+	}
+	_ = os.NewFile(received[0].StdinFD, "").Close()
+	_ = os.NewFile(received[0].StdoutFD, "").Close()
+
+	select {
+	case err := <-senderDone:
+		if err != nil {
+			t.Fatalf("predecessor PerformHandoff() error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("predecessor PerformHandoff() did not finish")
+	}
+}
+
+func mustTestLogger(t *testing.T) *logger.Logger {
+	t.Helper()
+	l, err := logger.New("", logger.LevelDebug)
+	if err != nil {
+		t.Fatalf("logger.New(): %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	return l
+}
+
+func restoreEnvVar(t *testing.T, key, value string) {
+	t.Helper()
+	if value == "" {
+		_ = os.Unsetenv(key)
+		return
+	}
+	if err := os.Setenv(key, value); err != nil {
+		t.Fatalf("restore %s: %v", key, err)
+	}
+}
+
+func listenPlatformHandoffRelayAtPath(socketPath string) (net.Listener, error) {
+	return listenPlatformHandoffRelayForTest(socketPath)
 }

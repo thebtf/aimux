@@ -38,8 +38,30 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error 
 
 	log.Info("aimux v%s shim ready (name=%s)", build.Version, engineName)
 
+	exePath, exeErr := os.Executable()
+	if exeErr != nil {
+		return fmt.Errorf("resolve executable: %w", exeErr)
+	}
+	hadDirectUpstream := false
+	previousDirectUpstream := os.Getenv("AIMUX_DIRECT_UPSTREAM")
+	if previousDirectUpstream != "" {
+		hadDirectUpstream = true
+	}
+	if err := os.Setenv("AIMUX_DIRECT_UPSTREAM", "1"); err != nil {
+		return fmt.Errorf("set AIMUX_DIRECT_UPSTREAM: %w", err)
+	}
+	defer func() {
+		if hadDirectUpstream {
+			_ = os.Setenv("AIMUX_DIRECT_UPSTREAM", previousDirectUpstream)
+			return
+		}
+		_ = os.Unsetenv("AIMUX_DIRECT_UPSTREAM")
+	}()
+
 	eng, engErr := engine.New(engine.Config{
 		Name:           engineName,
+		Command:        exePath,
+		Args:           []string{},
 		DaemonFlag:     daemonFlagValue(),
 		Persistent:     true,
 		SessionHandler: &stubSessionHandler{log: log},

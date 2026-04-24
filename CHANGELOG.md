@@ -7,23 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Patch/Minor release: **CR-3 (US3 + US4)** — structured error classifier per CLI (codex/gemini/claude-code) + real ConPTY probe on Windows.
+Minor release: **hot-swap upgrade activation** — `upgrade(action="apply")` now exposes real mode-aware live-upgrade semantics and truthful fallback reporting.
 
 ### Added
 
-- `ErrorClassifier` interface + per-CLI structured parsers: `codex.go`, `gemini.go`, `claude.go` in `pkg/executor/classify/`.
-- `classifier.Register(cli, c)` registry — dispatcher falls back to substring classifier for unregistered CLIs.
-- Real `ConPTY.ProbeConPTY()` via Win32 `CreatePseudoConsole` allocation (`pkg/executor/conpty/`).
-- `requires_tty: bool` field on CLI profiles (`config/cli.d/*/profile.yaml`); `true` for aider, gptme, qwen.
+- Hot-swap e2e coverage on all supported platforms: `test/e2e/upgrade_hot_swap_test.go`, `test/e2e/upgrade_hot_swap_windows_test.go`, and fallback-path coverage in `test/e2e/upgrade_fallback_test.go`.
+- Structured upgrade completion logging in `pkg/upgrade/coordinator.go`: every apply emits `module=server.upgrade event=upgrade_complete prev_version=... new_version=... method=... duration_ms=... transferred_ids=[...]`, with `WARN` on deferred fallback (`handoff_error`) and `ERROR` on hard failure.
 
 ### Changed
 
-- `ClassifyError` now delegates to registered per-CLI parser; substring classifier remains as fallback.
-- Daemon startup hard-fails with exit 1 when ConPTY probe returns non-nil AND an active TTY-dependent CLI is enabled.
+- `upgrade(action="apply")` now supports explicit `mode=auto|hot_swap|deferred` semantics end-to-end. `auto` tries daemon-side graceful restart first, `hot_swap` fails hard if live handoff is unavailable, and `deferred` skips live handoff entirely.
+- Upgrade responses now distinguish live success from fallback: `updated_hot_swap` on successful daemon handoff, `updated_deferred` when `auto` falls back after a live-path failure, and `updated` for explicit deferred mode to preserve the legacy contract.
+- `pkg/server/server.go` no longer carries stale v4.3.0 references in upgrade-path comments; legacy behavior is described semantically instead of by old release number.
 
-### Fixed
+### Migration
 
-- Phase 6 (US4) ConPTY probe: replaced `runtime.GOOS == "windows"` fake with real `CreatePseudoConsole` allocation.
+- Operators that want the old behavior explicitly should call `upgrade(action="apply", mode="deferred")`.
+- Automation that calls `upgrade(action="apply")` in engine mode should accept both `updated_hot_swap` and `updated_deferred`; inspect `handoff_error` on fallback before deciding whether to alert or retry.
+- Release version finalization remains a release-step concern; current dev work continues to use the build-time `pkg/build.Version` source of truth.
 
 ## [4.7.0] - 2026-04-22
 

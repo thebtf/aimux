@@ -17,6 +17,10 @@ const (
 	// ModeDaemon is the long-lived daemon that serves MCP requests and manages
 	// LoomEngine, SQLite, skills, and the orchestrator.
 	ModeDaemon
+	// ModeDirect serves MCP directly on stdio without muxcore engine ownership.
+	// Used only for daemon-spawned child upstreams so the owner has a real process
+	// that can be detached during graceful-restart handoff.
+	ModeDirect
 )
 
 // detectMode returns the runtime mode of this aimux.exe invocation, mirroring
@@ -54,11 +58,23 @@ func detectMode(args []string, env func(string) string) (Mode, error) {
 		)
 	}
 
-	// FR-1: Daemon mode when the daemon flag is present anywhere in args.
-	// slices.Contains is an exact match — prefix matches like
-	// "--muxcore-daemon-debug" do NOT trigger daemon mode (spec EC-3).
-	if slices.Contains(args, daemonFlag) {
+	// FR-1: Daemon mode when either daemon flag is present anywhere in args.
+	// aimux starts daemon mode with "--muxcore-daemon", while muxcore graceful-
+	// restart currently re-execs the successor with "--daemon".
+	// Prefix matches like "--muxcore-daemon-debug" still do NOT trigger daemon mode.
+	//
+	// Priority matters: daemon re-exec inherits the shim environment, including
+	// AIMUX_DIRECT_UPSTREAM=1 used for owner-spawned child upstreams. A daemon flag
+	// must win so the long-lived daemon does not accidentally boot in direct child mode.
+	if slices.Contains(args, daemonFlag) || slices.Contains(args, "--daemon") {
 		return ModeDaemon, nil
+	}
+
+	// Direct-child mode is an internal daemon→upstream execution path.
+	// It bypasses muxcore entirely and serves MCP on stdio so the daemon owner
+	// manages a real child process that supports ShutdownForHandoff().
+	if env("AIMUX_DIRECT_UPSTREAM") == "1" {
+		return ModeDirect, nil
 	}
 
 	return ModeShim, nil

@@ -23,18 +23,46 @@ type projectContextKey struct{}
 // projectAgentsKey is the context key for storing per-project agent overlay.
 type projectAgentsKey struct{}
 
+// callToolRequestKey stores the active CallToolRequest for direct-stdio child upstreams.
+type callToolRequestKey struct{}
+
 // ProjectContextFromContext retrieves the muxcore.ProjectContext from the request context.
-// Returns the zero value and false if no ProjectContext is present (e.g., direct stdio mode).
+// Falls back to muxcore-injected _meta fields in direct-stdio child-upstream mode.
 func ProjectContextFromContext(ctx context.Context) (muxcore.ProjectContext, bool) {
-	v, ok := ctx.Value(projectContextKey{}).(muxcore.ProjectContext)
-	return v, ok
+	if v, ok := ctx.Value(projectContextKey{}).(muxcore.ProjectContext); ok {
+		return v, true
+	}
+	if req, ok := ctx.Value(callToolRequestKey{}).(mcp.CallToolRequest); ok {
+		if req.Params.Meta != nil {
+			cwd, _ := req.Params.Meta.AdditionalFields["muxCwd"].(string)
+			if cwd != "" {
+				pc := muxcore.ProjectContext{
+					ID:  muxcore.ProjectContextID(cwd),
+					Cwd: cwd,
+				}
+				if rawEnv, ok := req.Params.Meta.AdditionalFields["muxEnv"].(map[string]any); ok {
+					env := make(map[string]string, len(rawEnv))
+					for k, v := range rawEnv {
+						if str, ok := v.(string); ok {
+							env[k] = str
+						}
+					}
+					pc.Env = env
+				}
+				return pc, true
+			}
+		}
+	}
+	return muxcore.ProjectContext{}, false
 }
 
 // ProjectAgentsFromContext retrieves the per-project agent overlay from the request context.
 // Returns nil if no overlay is present (direct stdio mode or no project-specific agents).
 func ProjectAgentsFromContext(ctx context.Context) []*agents.Agent {
-	v, _ := ctx.Value(projectAgentsKey{}).([]*agents.Agent)
-	return v
+	if v, ok := ctx.Value(projectAgentsKey{}).([]*agents.Agent); ok {
+		return v
+	}
+	return nil
 }
 
 // cwdFromRequestOrContext returns the working directory from either the MCP

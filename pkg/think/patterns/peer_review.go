@@ -163,8 +163,6 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 	// Determine verdict from severity distribution.
 	verdict := computeVerdict(objections)
 
-	_ = artifact // used in return data
-
 	reviewSource := "keyword-analysis"
 	if samplingSource != "" {
 		reviewSource = samplingSource
@@ -181,9 +179,8 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 	}
 
 	// Tier 2A: text analysis
-	primaryText := validInput["artifact"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
+	if analysis := AnalyzeText(artifact); analysis != nil {
+		domain := MatchDomainTemplate(artifact)
 		if domain != nil {
 			analysis.Gaps = DetectGaps(analysis.Entities, domain)
 		}

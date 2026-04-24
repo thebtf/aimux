@@ -41,6 +41,7 @@ import (
 	"github.com/thebtf/aimux/pkg/updater"
 	"github.com/thebtf/aimux/pkg/upgrade"
 	"github.com/thebtf/mcp-mux/muxcore"
+	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
 // Version is the canonical aimux version string. Used in MCP serverInfo handshake,
@@ -49,7 +50,7 @@ import (
 // handshake consistent across binary and transport layers.
 // The actual string lives in pkg/build so thin binaries (shim mode) can import
 // it without pulling in the full daemon dependency graph.
-const Version = build.Version
+var Version = build.Version
 
 // legacyInstructions is kept as fallback for proxy/shim mode where live state is unavailable.
 const legacyInstructions = `aimux — AI CLI Multiplexer (13 MCP tools, 12 CLIs, 23 think patterns)
@@ -113,30 +114,33 @@ If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable C
 
 // Server holds all dependencies for the MCP server.
 type Server struct {
-	cfg             *config.Config
-	log             *logger.Logger
-	registry        *driver.Registry
-	router          *routing.Router
-	sessions        *session.Registry
-	jobs            *session.JobManager
-	breakers        *executor.BreakerRegistry
-	executor        types.Executor
-	mcp             *server.MCPServer
-	orchestrator    *orch.Orchestrator
-	agentReg        *agents.Registry
-	promptEng       *prompt.Engine
-	hooks           *hooks.Registry
-	metrics         *metrics.Collector
-	store           *session.Store
-	gcCancel        context.CancelFunc
-	skillEngine     *skills.Engine
-	rateLimiter     *ratelimit.Limiter
-	authToken       string
-	projectDir      string // directory used for initial agent discovery
-	guidanceReg     *guidance.Registry
-	cooldownTracker *executor.ModelCooldownTracker
-	sessionHandler  muxcore.SessionHandler // stored for upgrade tool deferred restart
-	loom            *loom.LoomEngine       // central task mediator (LoomEngine v3)
+	cfg                     *config.Config
+	log                     *logger.Logger
+	registry                *driver.Registry
+	router                  *routing.Router
+	sessions                *session.Registry
+	jobs                    *session.JobManager
+	breakers                *executor.BreakerRegistry
+	executor                types.Executor
+	mcp                     *server.MCPServer
+	orchestrator            *orch.Orchestrator
+	agentReg                *agents.Registry
+	promptEng               *prompt.Engine
+	hooks                   *hooks.Registry
+	metrics                 *metrics.Collector
+	store                   *session.Store
+	gcCancel                context.CancelFunc
+	skillEngine             *skills.Engine
+	rateLimiter             *ratelimit.Limiter
+	authToken               string
+	projectDir              string // directory used for initial agent discovery
+	guidanceReg             *guidance.Registry
+	cooldownTracker         *executor.ModelCooldownTracker
+	sessionHandler          muxcore.SessionHandler // stored for upgrade tool routing
+	applyUpgrade            func(context.Context, *upgrade.Coordinator, upgrade.Mode) (*upgrade.Result, error)
+	muxEngine               *engine.MuxEngine
+	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
+	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -418,18 +422,29 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 	}
 }
 
+// Tool returns the registered MCP tool definition for the named tool.
+// Returns nil if the tool is not found.
+// Used by tests to verify schema wiring on registered tools.
+func (s *Server) Tool(name string) *mcp.Tool {
+	if s == nil || s.mcp == nil {
+		return nil
+	}
+	st := s.mcp.GetTool(name)
+	if st == nil {
+		return nil
+	}
+	return &st.Tool
+}
+
 // ToolDescription returns the description string that was registered for the named MCP tool.
 // Returns an empty string if the tool is not found.
 // Used by tests to verify that registered descriptions contain required structured sections.
 func (s *Server) ToolDescription(name string) string {
-	if s == nil || s.mcp == nil {
+	tool := s.Tool(name)
+	if tool == nil {
 		return ""
 	}
-	st := s.mcp.GetTool(name)
-	if st == nil {
-		return ""
-	}
-	return st.Tool.Description
+	return tool.Description
 }
 
 // Shutdown stops background services (GC reaper, snapshot) and closes persistence.
@@ -978,6 +993,11 @@ func (s *Server) registerTools() {
 				mcp.Required(),
 				mcp.Description("Action: check (detect latest version) or apply (download and replace binary)"),
 				mcp.Enum("check", "apply"),
+			),
+			mcp.WithString("mode",
+				mcp.Description("action=apply: upgrade mode (default auto). auto tries hot-swap then falls back to deferred, hot_swap requires live handoff, deferred skips hot-swap."),
+				mcp.Enum(string(upgrade.ModeAuto), string(upgrade.ModeHotSwap), string(upgrade.ModeDeferred)),
+				mcp.DefaultString(string(upgrade.ModeAuto)),
 			),
 			mcp.WithBoolean("include_content",
 				mcp.Description("action=check: return full release_notes body (default false)"),
@@ -1533,6 +1553,11 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		return marshalToolResult(payload)
 
 	case "apply":
+		mode := upgrade.Mode(request.GetString("mode", string(upgrade.ModeAuto)))
+		if mode != upgrade.ModeAuto && mode != upgrade.ModeHotSwap && mode != upgrade.ModeDeferred {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid upgrade mode %q (use auto, hot_swap, or deferred)", mode)), nil
+		}
+
 		binaryPath, exeErr := os.Executable()
 		if exeErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("locate executable: %v", exeErr)), nil
@@ -1550,14 +1575,22 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		}
 
 		coord := &upgrade.Coordinator{
-			Version:        Version,
-			BinaryPath:     binaryPath,
-			SessionHandler: sh,
-			EngineMode:     engineMode,
-			Logger:         s.log,
+			Version:         Version,
+			BinaryPath:      binaryPath,
+			SessionHandler:  sh,
+			EngineMode:      engineMode,
+			GracefulRestart: s.gracefulRestartFunc(),
+			HandoffStatus:   s.handoffStatusFunc(),
+			Logger:          s.log,
 		}
 
-		result, applyErr := coord.Apply(ctx, upgrade.ModeAuto)
+		applyUpgrade := s.applyUpgrade
+		if applyUpgrade == nil {
+			applyUpgrade = func(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode) (*upgrade.Result, error) {
+				return coord.Apply(ctx, mode)
+			}
+		}
+		result, applyErr := applyUpgrade(ctx, coord, mode)
 		if applyErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("update failed: %v", applyErr)), nil
 		}
@@ -1581,15 +1614,16 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 				"message":                 result.Message,
 			})
 		case "deferred":
-			// Preserve v4.3.0 wire format: status="updated" for backwards compat.
-			// Phase 3 will switch to status="updated_deferred" when adding hot-swap.
+			status := "updated"
 			payload := map[string]any{
-				"status":           "updated",
+				"status":           status,
 				"previous_version": result.PreviousVersion,
 				"new_version":      result.NewVersion,
 				"message":          result.Message,
 			}
 			if result.HandoffError != "" {
+				status = "updated_deferred"
+				payload["status"] = status
 				payload["handoff_error"] = result.HandoffError
 			}
 			return marshalToolResult(payload)
