@@ -31,7 +31,8 @@ func TestE2E_ThinkAdvisor_EnrichedResponse(t *testing.T) {
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
 		"name": "debugging_approach",
 		"arguments": map[string]any{
-			"hypothesis": "test hypothesis for advisor e2e verification",
+			"issue":      "test issue for advisor e2e verification",
+			"hypothesis": "test hypothesis",
 		},
 	}))
 
