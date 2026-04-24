@@ -129,21 +129,13 @@ func TestShim_Latency(t *testing.T) {
 		latencies = append(latencies, latency)
 		t.Logf("  iteration %2d: %v", i+1, latency)
 
-		// Allow shim to complete its IPC bridge and exit naturally.
-		// Close its stdin so the shim's engine.Run gets EOF and terminates.
+		// Shim uses StdinEOFWaitForDisconnect — it stays alive waiting for the
+		// daemon to close the IPC connection, so it won't exit naturally within a
+		// reasonable window. Kill immediately after recording latency to keep the
+		// iteration budget under control (avoids 3s×20 = 60s overrun).
 		if shimCmd.Process != nil {
-			// Give a brief window for natural exit, then kill to avoid process leak.
-			done := make(chan struct{})
-			go func() {
-				shimCmd.Wait()
-				close(done)
-			}()
-			select {
-			case <-done:
-			case <-time.After(3 * time.Second):
-				shimCmd.Process.Kill()
-				shimCmd.Wait()
-			}
+			shimCmd.Process.Kill()
+			shimCmd.Wait() //nolint:errcheck // process was killed; non-zero exit is expected
 		}
 	}
 
