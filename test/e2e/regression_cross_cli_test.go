@@ -90,41 +90,24 @@ func waitForJobTerminal(t *testing.T, stdin io.Writer, reader *bufio.Reader, job
 
 	for time.Now().Before(cutoff) {
 		line := jsonRPCRequest(reqID, "tools/call", map[string]any{
-			"name":      "sessions",
-			"arguments": map[string]any{"action": "list"},
+			"name":      "status",
+			"arguments": map[string]any{"job_id": jobID},
 		})
 		reqID++
 
 		if _, err := fmt.Fprint(stdin, line); err != nil {
-			t.Fatalf("write sessions list: %v", err)
+			t.Fatalf("write status poll: %v", err)
 		}
 
 		resp, err := readResponse(reader, 5*time.Second)
 		if err != nil {
-			t.Fatalf("sessions list: %v", err)
+			t.Fatalf("status poll: %v", err)
 		}
 
 		data := extractToolJSON(t, resp)
-
-		// Check loom_tasks for this job.
-		loomTasks, _ := data["loom_tasks"].([]any)
-		for _, raw := range loomTasks {
-			task, _ := raw.(map[string]any)
-			if task["id"] == jobID {
-				if status, _ := task["status"].(string); status == "failed" || status == "completed" {
-					return data
-				}
-			}
-		}
-
-		// Also check legacy sessions list.
-		sessions, _ := data["sessions"].([]any)
-		for _, raw := range sessions {
-			sess, _ := raw.(map[string]any)
-			if sess["job_id"] == jobID {
-				if status, _ := sess["status"].(string); status == "failed" || status == "completed" {
-					return data
-				}
+		if status, ok := data["status"].(string); ok {
+			if status == "failed" || status == "completed" {
+				return data
 			}
 		}
 
@@ -160,7 +143,6 @@ func TestRegression_SC9_NilErrorWrap(t *testing.T) {
 	// Profile timeout now propagated (2eea508) + safety subprocess timeout (e6a885c),
 	// but executor still hangs in daemon+shim mode. Needs instrumented debug session
 	// to trace where the ConPTY/pipe select blocks despite timeout.
-	t.Skip("executor hangs despite profile timeout in daemon+shim mode — engram #158 needs instrumented debug")
 	stdin, reader := initTestCLIServer(t)
 
 	// Dispatch an async exec with exit_code=1 (quota-like failure).

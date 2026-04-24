@@ -305,7 +305,10 @@ func TestE2E_TestCLI_CodexAsync(t *testing.T) {
 }
 
 func TestE2E_Agent_AsyncProgressNotification(t *testing.T) {
-	t.Skip("executor hangs despite profile timeout in daemon+shim mode — engram #158 needs instrumented debug")
+	// Job reaches terminal state (status=completed via poll), but progress
+	// notifications don't arrive through daemon→shim IPC path. Separate
+	// issue from #158 — muxcore notification forwarding, not job lifecycle.
+	t.Skip("progress notifications not forwarded through daemon+shim IPC — separate from #158")
 	stdin, reader := initTestCLIServer(t)
 
 	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
