@@ -139,7 +139,7 @@ var (
 // ModeHotSwap requires a daemon-side graceful restart seam and fails if unavailable.
 // ModeAuto tries the daemon-side seam first and falls back to deferred with
 // HandoffError populated when live restart cannot be completed.
-func (c *Coordinator) Apply(ctx context.Context, mode Mode) (result *Result, err error) {
+func (c *Coordinator) Apply(ctx context.Context, mode Mode, force bool) (result *Result, err error) {
 	startedAt := time.Now()
 	var release *updater.Release
 	defer func() {
@@ -153,7 +153,12 @@ func (c *Coordinator) Apply(ctx context.Context, mode Mode) (result *Result, err
 
 	applyUpdate := c.applyUpdateFunc()
 
-	release, err = applyUpdate(ctx, c.Version)
+	effectiveVersion := c.Version
+	if force {
+		effectiveVersion = "0.0.0"
+	}
+
+	release, err = applyUpdate(ctx, effectiveVersion)
 	if err != nil {
 		if errors.Is(err, updater.ErrChecksumVerification) {
 			return nil, fmt.Errorf("apply update: %w", err)

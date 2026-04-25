@@ -137,7 +137,7 @@ type Server struct {
 	guidanceReg             *guidance.Registry
 	cooldownTracker         *executor.ModelCooldownTracker
 	sessionHandler          muxcore.SessionHandler // stored for upgrade tool routing
-	applyUpgrade            func(context.Context, *upgrade.Coordinator, upgrade.Mode) (*upgrade.Result, error)
+	applyUpgrade            func(context.Context, *upgrade.Coordinator, upgrade.Mode, bool) (*upgrade.Result, error)
 	muxEngine               *engine.MuxEngine
 	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
 	loom                    *loom.LoomEngine         // central task mediator (LoomEngine v3)
@@ -1035,7 +1035,8 @@ func (s *Server) registerTools() {
 				"action=check: detect latest version. action=apply: download, verify checksum, replace binary. "+
 				"After apply, daemon will exit when all CC sessions disconnect (deferred restart). "+
 				"action=check returns compact status fields (fits ~4k chars); release_notes are omitted by default (release_notes_length is reported). "+
-				"Use include_content=true to return the full release_notes body."),
+				"Use include_content=true to return the full release_notes body. "+
+				"action=apply with force=true re-runs the full upgrade pipeline even when already up-to-date."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: check (detect latest version) or apply (download and replace binary)"),
@@ -1048,6 +1049,9 @@ func (s *Server) registerTools() {
 			),
 			mcp.WithBoolean("include_content",
 				mcp.Description("action=check: return full release_notes body (default false)"),
+			),
+			mcp.WithBoolean("force",
+				mcp.Description("action=apply: re-download and re-install even if already at latest version. Use for testing the upgrade pipeline or recovering from a corrupted binary."),
 			),
 			mcp.WithToolAnnotation(mcp.ToolAnnotation{
 				ReadOnlyHint:    mcp.ToBoolPtr(false),
@@ -1604,6 +1608,7 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		if mode != upgrade.ModeAuto && mode != upgrade.ModeHotSwap && mode != upgrade.ModeDeferred {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid upgrade mode %q (use auto, hot_swap, or deferred)", mode)), nil
 		}
+		force := request.GetBool("force", false)
 
 		binaryPath, exeErr := os.Executable()
 		if exeErr != nil {
@@ -1633,11 +1638,11 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 
 		applyUpgrade := s.applyUpgrade
 		if applyUpgrade == nil {
-			applyUpgrade = func(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode) (*upgrade.Result, error) {
-				return coord.Apply(ctx, mode)
+			applyUpgrade = func(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode, force bool) (*upgrade.Result, error) {
+				return coord.Apply(ctx, mode, force)
 			}
 		}
-		result, applyErr := applyUpgrade(ctx, coord, mode)
+		result, applyErr := applyUpgrade(ctx, coord, mode, force)
 		if applyErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("update failed: %v", applyErr)), nil
 		}

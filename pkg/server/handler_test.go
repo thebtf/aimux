@@ -263,13 +263,15 @@ func textResult(t *testing.T, result *mcp.CallToolResult) string {
 }
 
 type recordingUpgradeApply struct {
-	lastMode upgrade.Mode
-	applyErr error
-	result   *upgrade.Result
+	lastMode  upgrade.Mode
+	lastForce bool
+	applyErr  error
+	result    *upgrade.Result
 }
 
-func (r *recordingUpgradeApply) apply(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode) (*upgrade.Result, error) {
+func (r *recordingUpgradeApply) apply(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode, force bool) (*upgrade.Result, error) {
 	r.lastMode = mode
+	r.lastForce = force
 	if r.applyErr != nil {
 		return nil, r.applyErr
 	}
@@ -394,6 +396,36 @@ func TestHandleUpgradeApply_DeferredFallbackEnvelope(t *testing.T) {
 	}
 	if data["handoff_error"] != apply.result.HandoffError {
 		t.Fatalf("fallback handoff_error = %v, want %q", data["handoff_error"], apply.result.HandoffError)
+	}
+}
+
+func TestHandleUpgradeApply_Force(t *testing.T) {
+	srv := testServer(t)
+	apply := &recordingUpgradeApply{}
+	apply.result = &upgrade.Result{
+		Method:          "hot_swap",
+		PreviousVersion: Version,
+		NewVersion:      Version,
+		Message:         "Binary re-installed (force).",
+	}
+	srv.applyUpgrade = apply.apply
+
+	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
+		"action": "apply",
+		"force":  true,
+	}))
+	if err != nil {
+		t.Fatalf("handleUpgrade force: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleUpgrade force returned error: %s", textResult(t, result))
+	}
+	if !apply.lastForce {
+		t.Fatal("force flag not passed to coordinator")
+	}
+	data := parseResult(t, result)
+	if data["status"] != "updated_hot_swap" {
+		t.Fatalf("force status = %v, want updated_hot_swap", data["status"])
 	}
 }
 

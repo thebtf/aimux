@@ -167,6 +167,7 @@ func run() error {
 			Name:           engineName,
 			Persistent:     true,
 			SessionHandler: srv.SessionHandler(),
+			Logger:         log.StdLogger(),
 		})
 		if engErr != nil {
 			return fmt.Errorf("engine init: %w", engErr)

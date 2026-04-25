@@ -3,6 +3,7 @@ package upgrade_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -83,7 +84,7 @@ func TestCoordinatorApply_DeferredSignalsSessionHandler(t *testing.T) {
 		},
 	}
 
-	result, err := coord.Apply(context.Background(), upgrade.ModeDeferred)
+	result, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestCoordinatorApply_AutoUsesGracefulRestartInEngineMode(t *testing.T) {
 		},
 	}
 
-	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, false)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestCoordinatorApply_AutoFallsBackWhenEngineModeSeamUnavailable(t *testing.
 		},
 	}
 
-	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, false)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestCoordinatorApply_AutoBypassesGracefulRestartOutsideEngineMode(t *testin
 		},
 	}
 
-	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, false)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestCoordinatorApply_PropagatesGracefulRestartFailureInHotSwapMode(t *testi
 		},
 	}
 
-	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
+	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap, false)
 	if err == nil {
 		t.Fatal("expected graceful restart error")
 	}
@@ -223,7 +224,7 @@ func TestCoordinatorApply_HotSwapFailsOutsideEngineMode(t *testing.T) {
 		},
 	}
 
-	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
+	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap, false)
 	if err == nil {
 		t.Fatal("expected ModeHotSwap to fail outside engine mode")
 	}
@@ -249,7 +250,7 @@ func TestCoordinatorApply_ConcurrentCallsReturnAlreadyInProgress(t *testing.T) {
 	var firstErr error
 	go func() {
 		defer wg.Done()
-		_, firstErr = coord.Apply(context.Background(), upgrade.ModeDeferred)
+		_, firstErr = coord.Apply(context.Background(), upgrade.ModeDeferred, false)
 	}()
 
 	select {
@@ -258,7 +259,7 @@ func TestCoordinatorApply_ConcurrentCallsReturnAlreadyInProgress(t *testing.T) {
 		t.Fatal("timed out waiting for first apply to start")
 	}
 
-	_, err := coord.Apply(context.Background(), upgrade.ModeDeferred)
+	_, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false)
 	if err == nil {
 		t.Fatal("expected already_in_progress error")
 	}
@@ -274,36 +275,21 @@ func TestCoordinatorApply_ConcurrentCallsReturnAlreadyInProgress(t *testing.T) {
 }
 
 func TestCoordinatorApply_AutoFallsBackWithDiskFullClass(t *testing.T) {
-	exeDir := t.TempDir()
-	exePath := filepath.Join(exeDir, "aimux-test.exe")
-	if err := os.WriteFile(exePath, []byte("current"), 0o755); err != nil {
-		t.Fatalf("write exe: %v", err)
-	}
-
-	updater.SetTestHooks(
-		nil,
-		func(ctx context.Context, currentVersion string, targetPath string) (*updater.Release, error) {
-			if err := os.WriteFile(targetPath, []byte("new"), 0o755); err != nil {
-				return nil, err
-			}
-			return &updater.Release{Version: "4.4.0"}, nil
-		},
-		nil,
-		func(newBinaryPath string, currentExePath string) error {
-			return errors.New("no space left on device")
-		},
-	)
-	defer updater.SetTestHooks(nil, nil, nil, nil)
-
 	mock := &mockSessionHandler{}
 	coord := &upgrade.Coordinator{
-		Version:        "4.3.0",
-		BinaryPath:     exePath,
+		Version:    "4.3.0",
+		BinaryPath: filepath.Join(t.TempDir(), "aimux-test.exe"),
 		EngineMode:     true,
 		SessionHandler: mock,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return nil, &updater.ApplyError{
+				Release: &updater.Release{Version: "4.4.0"},
+				Err:     fmt.Errorf("install: %w: no space left on device", updater.ErrDiskFull),
+			}
+		},
 	}
 
-	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, false)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -322,36 +308,18 @@ func TestCoordinatorApply_AutoFallsBackWithDiskFullClass(t *testing.T) {
 }
 
 func TestCoordinatorApply_ChecksumFailureIsHardErrorInAuto(t *testing.T) {
-	exeDir := t.TempDir()
-	exePath := filepath.Join(exeDir, "aimux-test.exe")
-	if err := os.WriteFile(exePath, []byte("current"), 0o755); err != nil {
-		t.Fatalf("write exe: %v", err)
-	}
-
-	updater.SetTestHooks(
-		nil,
-		func(ctx context.Context, currentVersion string, targetPath string) (*updater.Release, error) {
-			if err := os.WriteFile(targetPath, []byte("new"), 0o755); err != nil {
-				return nil, err
-			}
-			return &updater.Release{Version: "4.4.0"}, nil
-		},
-		func(binaryPath string, release *updater.Release) error {
-			return updater.ErrChecksumVerification
-		},
-		nil,
-	)
-	defer updater.SetTestHooks(nil, nil, nil, nil)
-
 	mock := &mockSessionHandler{}
 	coord := &upgrade.Coordinator{
-		Version:        "4.3.0",
-		BinaryPath:     exePath,
+		Version:    "4.3.0",
+		BinaryPath: filepath.Join(t.TempDir(), "aimux-test.exe"),
 		EngineMode:     true,
 		SessionHandler: mock,
+		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
+			return nil, fmt.Errorf("apply update: %w", updater.ErrChecksumVerification)
+		},
 	}
 
-	_, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	_, err := coord.Apply(context.Background(), upgrade.ModeAuto, false)
 	if err == nil {
 		t.Fatal("expected checksum failure to be a hard error")
 	}
@@ -380,7 +348,7 @@ func TestCoordinatorApply_LogsInfoOnHotSwapSuccess(t *testing.T) {
 			},
 		}
 	}, func(coord *upgrade.Coordinator) {
-		result, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
+		result, err := coord.Apply(context.Background(), upgrade.ModeHotSwap, false)
 		if err != nil {
 			t.Fatalf("Apply: %v", err)
 		}
@@ -414,7 +382,7 @@ func TestCoordinatorApply_LogsWarnOnDeferredFallback(t *testing.T) {
 			},
 		}
 	}, func(coord *upgrade.Coordinator) {
-		result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+		result, err := coord.Apply(context.Background(), upgrade.ModeAuto, false)
 		if err != nil {
 			t.Fatalf("Apply: %v", err)
 		}
@@ -451,7 +419,7 @@ func TestCoordinatorApply_LogsErrorOnHardFailure(t *testing.T) {
 			},
 		}
 	}, func(coord *upgrade.Coordinator) {
-		_, err := coord.Apply(context.Background(), "")
+		_, err := coord.Apply(context.Background(), "", false)
 		if err == nil {
 			t.Fatal("expected hard error")
 		}
@@ -520,7 +488,7 @@ func TestCoordinatorApply_AutoFallsBackWhenDaemonReportsFallback(t *testing.T) {
 		},
 	}
 
-	result, err := coord.Apply(context.Background(), upgrade.ModeAuto)
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, false)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -558,7 +526,7 @@ func TestCoordinatorApply_HotSwapFailsWhenDaemonReportsFallback(t *testing.T) {
 		},
 	}
 
-	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap)
+	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap, false)
 	if err == nil {
 		t.Fatal("expected hot_swap mode to fail when daemon reports fallback")
 	}
@@ -677,10 +645,10 @@ func (m *mockControlHandler) HandleRemove(serverID string) error {
 	return nil
 }
 
-func (m *mockControlHandler) HandleGracefulRestart(drainTimeoutMs int) (snapshotPath string, err error) {
+func (m *mockControlHandler) HandleGracefulRestart(drainTimeoutMs int) (snapshotPath string, afterResponse func(), err error) {
 	m.gracefulRestartCalls++
 	m.lastDrainTimeoutMs = drainTimeoutMs
-	return "", nil
+	return "", nil, nil
 }
 
 func (m *mockControlHandler) HandleRefreshSessionToken(prevToken string) (newToken string, err error) {

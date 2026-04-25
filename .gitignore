@@ -40,3 +40,5 @@ cover.out
 
 # e2e aimux test log
 .e2e-test.log
+
+.tmp/

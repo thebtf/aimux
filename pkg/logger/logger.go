@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -71,6 +72,7 @@ type Logger struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	mu      sync.RWMutex // protects level changes
+	writeMu sync.Mutex   // serializes writes from drain goroutine and sync callers
 }
 
 // isNullDevice returns true if path refers to the OS null device.
@@ -168,6 +170,37 @@ func (l *Logger) Close() error {
 	return nil
 }
 
+// StdLogger returns a *log.Logger that routes output through this Logger at
+// INFO level. Useful for passing to libraries that accept *log.Logger (e.g.
+// muxcore engine.Config.Logger). The returned logger has no prefix and no
+// flags — timestamps and level tags are added by this Logger's writeEntry.
+func (l *Logger) StdLogger() *log.Logger {
+	return log.New(&loggerWriter{l: l}, "", 0)
+}
+
+// loggerWriter adapts Logger to io.Writer for use with log.New.
+// Each Write call is treated as a single INFO log entry.
+type loggerWriter struct {
+	l *Logger
+}
+
+func (w *loggerWriter) Write(p []byte) (int, error) {
+	msg := string(p)
+	// Trim trailing newline added by log.Logger.Output
+	if len(msg) > 0 && msg[len(msg)-1] == '\n' {
+		msg = msg[:len(msg)-1]
+	}
+	// Write synchronously, bypassing the async channel. muxcore daemon logs
+	// (handoff, snapshot, control) must hit disk immediately — the process may
+	// be terminated before the async channel drains.
+	w.l.writeEntry(entry{
+		level:   LevelInfo,
+		message: msg,
+		time:    time.Now(),
+	})
+	return len(p), nil
+}
+
 func (l *Logger) log(level Level, format string, args ...any) {
 	l.mu.RLock()
 	currentLevel := l.level
@@ -220,5 +253,7 @@ func (l *Logger) writeEntry(e entry) {
 		e.level.String(),
 		e.message,
 	)
+	l.writeMu.Lock()
 	_, _ = fmt.Fprint(l.writer, line)
+	l.writeMu.Unlock()
 }

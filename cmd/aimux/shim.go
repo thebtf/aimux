@@ -66,6 +66,7 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error 
 		Persistent:     true,
 		SessionHandler: &stubSessionHandler{log: log},
 		StdinEOFPolicy: owner.StdinEOFWaitForDisconnect,
+		Logger:         log.StdLogger(),
 	})
 	if engErr != nil {
 		return fmt.Errorf("shim engine init: %w", engErr)

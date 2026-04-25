@@ -49,7 +49,10 @@ func (s *Server) SetMuxEngine(eng *engine.MuxEngine) {
 func (s *Server) gracefulRestartFunc() upgrade.GracefulRestartFunc {
 	if d := s.liveDaemon(); d != nil {
 		return func(ctx context.Context, drainTimeoutMs int) error {
-			_, err := d.HandleGracefulRestart(drainTimeoutMs)
+			_, afterFn, err := d.HandleGracefulRestart(drainTimeoutMs)
+			if afterFn != nil {
+				afterFn()
+			}
 			return err
 		}
 	}

@@ -3,13 +3,14 @@ module github.com/thebtf/aimux
 go 1.25.4
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/creack/pty v1.1.24
 	github.com/creativeprojects/go-selfupdate v1.5.2
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/thebtf/aimux/loom v0.1.1
-	github.com/thebtf/mcp-mux/muxcore v0.21.6
+	github.com/thebtf/mcp-mux/muxcore v0.21.19
 	google.golang.org/genai v1.52.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.1
@@ -22,7 +23,6 @@ require (
 	code.gitea.io/sdk/gitea v0.22.1 // indirect
 	github.com/42wim/httpsig v1.2.3 // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
-	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davidmz/go-pageant v1.0.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
