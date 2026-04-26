@@ -153,6 +153,95 @@ func TestCritical_NoSampling(t *testing.T) {
 	}
 }
 
+// TestCritical_StructuredFields verifies that assumptions, alternatives, evidence,
+// and conclusion are accepted by Validate and echoed through Handle output (TS v1 parity).
+func TestCritical_StructuredFields(t *testing.T) {
+	p := &criticalThinkingPattern{}
+
+	input := map[string]any{
+		"issue":        "We should proceed because it confirms our original assumption.",
+		"assumptions":  []any{"team is available", "budget is fixed"},
+		"alternatives": []any{"delay launch", "reduce scope"},
+		"evidence":     []any{"Q3 data shows 20% growth", "competitor launched last week"},
+		"conclusion":   "Launch in Q4 is the safest option.",
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate rejected structured fields: %v", err)
+	}
+
+	// All 5 fields must survive Validate.
+	for _, field := range []string{"issue", "assumptions", "alternatives", "evidence", "conclusion"} {
+		if _, ok := validated[field]; !ok {
+			t.Errorf("Validate dropped field %q", field)
+		}
+	}
+
+	result, err := p.Handle(validated, "test-structured-fields")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	// All structured fields must be echoed in output data.
+	assumptions, ok := result.Data["assumptions"].([]any)
+	if !ok || len(assumptions) != 2 {
+		t.Errorf("expected assumptions echoed as []any len=2, got %T %v", result.Data["assumptions"], result.Data["assumptions"])
+	}
+	alternatives, ok := result.Data["alternatives"].([]any)
+	if !ok || len(alternatives) != 2 {
+		t.Errorf("expected alternatives echoed as []any len=2, got %T %v", result.Data["alternatives"], result.Data["alternatives"])
+	}
+	evidence, ok := result.Data["evidence"].([]any)
+	if !ok || len(evidence) != 2 {
+		t.Errorf("expected evidence echoed as []any len=2, got %T %v", result.Data["evidence"], result.Data["evidence"])
+	}
+	conclusion, ok := result.Data["conclusion"].(string)
+	if !ok || conclusion == "" {
+		t.Errorf("expected conclusion echoed as non-empty string, got %T %v", result.Data["conclusion"], result.Data["conclusion"])
+	}
+
+	// Count fields must match slice lengths.
+	if result.Data["assumptionCount"] != 2 {
+		t.Errorf("expected assumptionCount=2, got %v", result.Data["assumptionCount"])
+	}
+	if result.Data["alternativeCount"] != 2 {
+		t.Errorf("expected alternativeCount=2, got %v", result.Data["alternativeCount"])
+	}
+	if result.Data["evidenceCount"] != 2 {
+		t.Errorf("expected evidenceCount=2, got %v", result.Data["evidenceCount"])
+	}
+	if result.Data["hasConclusion"] != true {
+		t.Errorf("expected hasConclusion=true, got %v", result.Data["hasConclusion"])
+	}
+}
+
+// TestCritical_StructuredFieldsAbsent verifies that omitting the optional fields
+// does not cause errors and leaves them absent from output data.
+func TestCritical_StructuredFieldsAbsent(t *testing.T) {
+	p := &criticalThinkingPattern{}
+
+	input := map[string]any{
+		"issue": "How hard can it be, obviously this will work.",
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+
+	result, err := p.Handle(validated, "test-fields-absent")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	for _, field := range []string{"assumptions", "alternatives", "evidence", "conclusion"} {
+		if _, present := result.Data[field]; present {
+			t.Errorf("expected field %q absent when not provided, but found in output", field)
+		}
+	}
+}
+
 // TestCritical_SamplingFailureFallback verifies that when the SamplingProvider
 // returns an error, Handle returns keyword-based results without error.
 func TestCritical_SamplingFailureFallback(t *testing.T) {
