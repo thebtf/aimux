@@ -67,6 +67,100 @@ func TestMetacognitiveMonitoring_OverconfidentFlag(t *testing.T) {
 	}
 }
 
+func TestMetacognitiveMonitoring_CanonicalFieldNames(t *testing.T) {
+	p := NewMetacognitiveMonitoringPattern()
+
+	input := map[string]any{
+		"task":          "test canonical names",
+		"confidence":    0.7,
+		"claims":        []any{"c1", "c2"},
+		"biases":        []any{"b1"},
+		"uncertainties": []any{"u1", "u2", "u3"},
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	result, err := p.Handle(validated, "s1")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	// canonical singular names must be present
+	if _, ok := result.Data["claimCount"]; !ok {
+		t.Error("claimCount missing (expected canonical singular field)")
+	}
+	if _, ok := result.Data["biasCount"]; !ok {
+		t.Error("biasCount missing (expected canonical singular field)")
+	}
+	if _, ok := result.Data["uncertaintyCount"]; !ok {
+		t.Error("uncertaintyCount missing (expected canonical singular field)")
+	}
+
+	// values must be correct
+	if got := result.Data["claimCount"].(int); got != 2 {
+		t.Errorf("claimCount = %d, want 2", got)
+	}
+	if got := result.Data["biasCount"].(int); got != 1 {
+		t.Errorf("biasCount = %d, want 1", got)
+	}
+	if got := result.Data["uncertaintyCount"].(int); got != 3 {
+		t.Errorf("uncertaintyCount = %d, want 3", got)
+	}
+}
+
+func TestMetacognitiveMonitoring_SuggestedNextPattern(t *testing.T) {
+	p := NewMetacognitiveMonitoringPattern()
+
+	input := map[string]any{
+		"task":       "check suggested next",
+		"confidence": 0.6,
+	}
+	validated, _ := p.Validate(input)
+	result, err := p.Handle(validated, "s1")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if result.SuggestedNextPattern != "decision_framework" {
+		t.Errorf("SuggestedNextPattern = %q, want %q", result.SuggestedNextPattern, "decision_framework")
+	}
+}
+
+func TestMetacognitiveMonitoring_InputGuidanceWhenNoConfidence(t *testing.T) {
+	p := NewMetacognitiveMonitoringPattern()
+
+	// Without confidence — inputGuidance must be present
+	inputNoConf := map[string]any{
+		"task":   "test without confidence",
+		"claims": []any{"c1"},
+	}
+	validated, _ := p.Validate(inputNoConf)
+	result, err := p.Handle(validated, "s1")
+	if err != nil {
+		t.Fatalf("Handle (no confidence): %v", err)
+	}
+	guidance, ok := result.Data["inputGuidance"].(string)
+	if !ok || guidance == "" {
+		t.Errorf("inputGuidance missing or empty when confidence not provided: %v", result.Data["inputGuidance"])
+	}
+
+	// With confidence — inputGuidance must NOT be present
+	inputWithConf := map[string]any{
+		"task":       "test with confidence",
+		"confidence": 0.5,
+		"claims":     []any{"c1"},
+	}
+	validated2, _ := p.Validate(inputWithConf)
+	result2, err := p.Handle(validated2, "s1")
+	if err != nil {
+		t.Fatalf("Handle (with confidence): %v", err)
+	}
+	if _, present := result2.Data["inputGuidance"]; present {
+		t.Error("inputGuidance should not be set when confidence is provided")
+	}
+}
+
 func TestMetacognitiveMonitoring_AdjustmentReasonDescribesPenalties(t *testing.T) {
 	p := NewMetacognitiveMonitoringPattern()
 

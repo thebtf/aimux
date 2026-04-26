@@ -115,8 +115,10 @@ func (p *sourceComparisonPattern) Handle(validInput map[string]any, sessionID st
 			claimB, _ := sb["claim"].(string)
 
 			agreement := "uncertain"
+			similarity := 0.0
 			if claimA != "" && claimB != "" {
-				if claimA == claimB {
+				similarity = jaccardSimilarity(claimA, claimB)
+				if similarity >= 0.5 {
 					agreement = "agree"
 					agreements++
 				} else {
@@ -126,9 +128,10 @@ func (p *sourceComparisonPattern) Handle(validInput map[string]any, sessionID st
 			total++
 
 			matrix = append(matrix, map[string]any{
-				"source_a":  sa["name"],
-				"source_b":  sb["name"],
-				"agreement": agreement,
+				"source_a":   sa["name"],
+				"source_b":   sb["name"],
+				"agreement":  agreement,
+				"similarity": similarity,
 			})
 		}
 	}

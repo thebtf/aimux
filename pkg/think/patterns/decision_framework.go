@@ -254,6 +254,7 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 		return ranked[i].TotalScore > ranked[j].TotalScore
 	})
 
+	// hasTies scans all adjacent pairs (backward-compat).
 	hasTies := false
 	for i := 1; i < len(ranked); i++ {
 		if ranked[i].TotalScore == ranked[i-1].TotalScore {
@@ -262,23 +263,40 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 		}
 	}
 
-	// Convert ranked to []any for JSON.
+	// tied checks only the top-2 (TS contract compat).
+	tied := len(ranked) >= 2 && ranked[0].TotalScore == ranked[1].TotalScore
+
+	// winner is the name of the top-ranked option.
+	winner := ""
+	if len(ranked) > 0 {
+		winner = ranked[0].Name
+	}
+
+	// Convert ranked to []any for JSON, adding 1-based rank.
 	rankedAny := make([]any, len(ranked))
 	for i, r := range ranked {
-		rankedAny[i] = map[string]any{"name": r.Name, "totalScore": r.TotalScore}
+		rankedAny[i] = map[string]any{
+			"name":       r.Name,
+			"totalScore": r.TotalScore,
+			"rank":       i + 1,
+		}
 	}
 
 	data := map[string]any{
 		"decision":      decision,
 		"rankedOptions": rankedAny,
 		"hasTies":       hasTies,
+		"tied":          tied,
+		"winner":        winner,
+		"optionCount":   len(options),
+		"criteriaCount": len(criteria),
 		"criteriaUsed":  criteriaUsed,
 		"guidance": BuildGuidance("decision_framework", "full",
 			[]string{"criteria", "options"},
 		),
 	}
 
-	return think.MakeThinkResult("decision_framework", data, sessionID, nil, "", []string{"rankedOptions", "hasTies"}), nil
+	return think.MakeThinkResult("decision_framework", data, sessionID, nil, "metacognitive_monitoring", []string{"rankedOptions", "hasTies"}), nil
 }
 
 // samplingCriteriaResponse is the JSON shape we ask the LLM to return for criteria suggestions.

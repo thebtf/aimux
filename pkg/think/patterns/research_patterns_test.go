@@ -46,8 +46,8 @@ func TestSourceComparison_TwoSources(t *testing.T) {
 	input, err := p.Validate(map[string]any{
 		"topic": "LLM accuracy",
 		"sources": []any{
-			map[string]any{"name": "Paper A", "claim": "LLMs hallucinate 10% of the time"},
-			map[string]any{"name": "Paper B", "claim": "LLMs hallucinate 20% of the time"},
+			map[string]any{"name": "Paper A", "claim": "quantum computing enables exponential speedup"},
+			map[string]any{"name": "Paper B", "claim": "traditional CPUs remain faster for most workloads"},
 		},
 	})
 	if err != nil {

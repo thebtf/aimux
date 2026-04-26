@@ -50,8 +50,10 @@ func (p *metacognitiveMonitoringPattern) Validate(input map[string]any) (map[str
 	if v, ok := input["uncertainties"].([]any); ok {
 		out["uncertainties"] = v
 	}
-	if v, err := toFloat64(input["confidence"]); err == nil {
-		out["confidence"] = v
+	if input["confidence"] != nil {
+		if v, err := toFloat64(input["confidence"]); err == nil {
+			out["confidence"] = v
+		}
 	}
 	return out, nil
 }
@@ -102,6 +104,11 @@ func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessi
 
 	data := map[string]any{
 		"task":                  task,
+		// canonical names (TS contract)
+		"claimCount":            claimsCount,
+		"biasCount":             biasesCount,
+		"uncertaintyCount":      uncertaintiesCount,
+		// backward-compat aliases (plural forms)
 		"claimsCount":           claimsCount,
 		"biasesCount":           biasesCount,
 		"uncertaintiesCount":    uncertaintiesCount,
@@ -133,7 +140,12 @@ func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessi
 
 	data["guidance"] = BuildGuidance("metacognitive_monitoring", "basic", []string{"claims", "biases", "uncertainties", "cognitiveProcesses", "confidence", "knowledgeAssessment"})
 
-	return think.MakeThinkResult("metacognitive_monitoring", data, sessionID, nil, "", computed), nil
+	if _, hasConf := validInput["confidence"]; !hasConf {
+		data["inputGuidance"] = "Provide a confidence value (0.0-1.0) to enable calibration. Without it, only claim/bias/uncertainty counting is available."
+		computed = append(computed, "inputGuidance")
+	}
+
+	return think.MakeThinkResult("metacognitive_monitoring", data, sessionID, nil, "decision_framework", computed), nil
 }
 
 type metacogCalibration struct {

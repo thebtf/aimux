@@ -263,6 +263,229 @@ func TestDecision_FallbackWithoutSampling(t *testing.T) {
 	}
 }
 
+// TestDecisionFramework_Winner verifies that the winner field equals the name of the
+// top-ranked option after scoring.
+func TestDecisionFramework_Winner(t *testing.T) {
+	p := NewDecisionFrameworkPattern()
+
+	input := map[string]any{
+		"decision": "choose a cache",
+		"criteria": []any{
+			map[string]any{"name": "speed", "weight": 1.0},
+		},
+		"options": []any{
+			map[string]any{
+				"name":   "Redis",
+				"scores": map[string]any{"speed": 9.0},
+			},
+			map[string]any{
+				"name":   "Memcached",
+				"scores": map[string]any{"speed": 7.0},
+			},
+		},
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-winner")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	winner, ok := result.Data["winner"].(string)
+	if !ok || winner == "" {
+		t.Fatalf("expected non-empty winner string, got %v (%T)", result.Data["winner"], result.Data["winner"])
+	}
+	if winner != "Redis" {
+		t.Errorf("expected winner=Redis (highest score), got %q", winner)
+	}
+}
+
+// TestDecisionFramework_RankField verifies that each rankedOption has a 1-based rank field.
+func TestDecisionFramework_RankField(t *testing.T) {
+	p := NewDecisionFrameworkPattern()
+
+	input := map[string]any{
+		"decision": "choose a queue",
+		"criteria": []any{
+			map[string]any{"name": "reliability", "weight": 1.0},
+		},
+		"options": []any{
+			map[string]any{
+				"name":   "Kafka",
+				"scores": map[string]any{"reliability": 9.0},
+			},
+			map[string]any{
+				"name":   "RabbitMQ",
+				"scores": map[string]any{"reliability": 7.0},
+			},
+			map[string]any{
+				"name":   "SQS",
+				"scores": map[string]any{"reliability": 8.0},
+			},
+		},
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-rank")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	ranked, ok := result.Data["rankedOptions"].([]any)
+	if !ok || len(ranked) == 0 {
+		t.Fatalf("expected rankedOptions slice, got %v", result.Data["rankedOptions"])
+	}
+	for i, entry := range ranked {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			t.Fatalf("rankedOptions[%d] is not a map", i)
+		}
+		rank, ok := m["rank"].(int)
+		if !ok {
+			t.Fatalf("rankedOptions[%d].rank missing or wrong type: %v (%T)", i, m["rank"], m["rank"])
+		}
+		if rank != i+1 {
+			t.Errorf("rankedOptions[%d].rank = %d, want %d", i, rank, i+1)
+		}
+	}
+}
+
+// TestDecisionFramework_Counts verifies that optionCount and criteriaCount are present
+// and reflect the input lengths.
+func TestDecisionFramework_Counts(t *testing.T) {
+	p := NewDecisionFrameworkPattern()
+
+	input := map[string]any{
+		"decision": "choose a framework",
+		"criteria": []any{
+			map[string]any{"name": "perf", "weight": 0.6},
+			map[string]any{"name": "community", "weight": 0.4},
+		},
+		"options": []any{
+			map[string]any{
+				"name":   "Go",
+				"scores": map[string]any{"perf": 9.0, "community": 8.0},
+			},
+			map[string]any{
+				"name":   "Rust",
+				"scores": map[string]any{"perf": 9.5, "community": 7.0},
+			},
+			map[string]any{
+				"name":   "Node",
+				"scores": map[string]any{"perf": 7.0, "community": 9.0},
+			},
+		},
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-counts")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if oc, ok := result.Data["optionCount"].(int); !ok || oc != 3 {
+		t.Errorf("expected optionCount=3, got %v (%T)", result.Data["optionCount"], result.Data["optionCount"])
+	}
+	if cc, ok := result.Data["criteriaCount"].(int); !ok || cc != 2 {
+		t.Errorf("expected criteriaCount=2, got %v (%T)", result.Data["criteriaCount"], result.Data["criteriaCount"])
+	}
+}
+
+// TestDecisionFramework_TiedTopTwo verifies that tied=true when top-2 scores are equal.
+func TestDecisionFramework_TiedTopTwo(t *testing.T) {
+	p := NewDecisionFrameworkPattern()
+
+	input := map[string]any{
+		"decision": "pick an option",
+		"criteria": []any{
+			map[string]any{"name": "value", "weight": 1.0},
+		},
+		"options": []any{
+			map[string]any{
+				"name":   "A",
+				"scores": map[string]any{"value": 8.0},
+			},
+			map[string]any{
+				"name":   "B",
+				"scores": map[string]any{"value": 8.0},
+			},
+			map[string]any{
+				"name":   "C",
+				"scores": map[string]any{"value": 5.0},
+			},
+		},
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-tied")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	tied, ok := result.Data["tied"].(bool)
+	if !ok {
+		t.Fatalf("expected tied bool, got %v (%T)", result.Data["tied"], result.Data["tied"])
+	}
+	if !tied {
+		t.Error("expected tied=true when top-2 scores are equal")
+	}
+	// hasTies must also be true for backward compat.
+	if ht, ok := result.Data["hasTies"].(bool); !ok || !ht {
+		t.Errorf("expected hasTies=true for backward compat, got %v", result.Data["hasTies"])
+	}
+}
+
+// TestDecisionFramework_NotTiedTopTwo verifies that tied=false when top-2 scores differ.
+func TestDecisionFramework_NotTiedTopTwo(t *testing.T) {
+	p := NewDecisionFrameworkPattern()
+
+	input := map[string]any{
+		"decision": "clear winner",
+		"criteria": []any{
+			map[string]any{"name": "value", "weight": 1.0},
+		},
+		"options": []any{
+			map[string]any{
+				"name":   "X",
+				"scores": map[string]any{"value": 9.0},
+			},
+			map[string]any{
+				"name":   "Y",
+				"scores": map[string]any{"value": 5.0},
+			},
+		},
+	}
+
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	result, err := p.Handle(validated, "test-not-tied")
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	tied, ok := result.Data["tied"].(bool)
+	if !ok {
+		t.Fatalf("expected tied bool, got %v (%T)", result.Data["tied"], result.Data["tied"])
+	}
+	if tied {
+		t.Error("expected tied=false when top-2 scores differ")
+	}
+}
+
 // TestDecision_SamplingFailureFallbackToGeneric verifies that when sampling fails
 // and no domain template matches, generic default criteria are used gracefully.
 func TestDecision_SamplingFailureFallbackToGeneric(t *testing.T) {
