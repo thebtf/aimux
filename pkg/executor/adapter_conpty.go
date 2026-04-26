@@ -77,3 +77,8 @@ func (a *CLIConPTYAdapter) IsAlive() types.HealthStatus {
 func (a *CLIConPTYAdapter) Close() error {
 	return nil
 }
+
+// Legacy returns the underlying LegacyExecutor for Strangler Fig bridging.
+func (a *CLIConPTYAdapter) Legacy() types.LegacyExecutor {
+	return a.legacy
+}

@@ -77,6 +77,13 @@ type Session interface {
 	PID() int
 }
 
+// LegacyAccessor is implemented by ExecutorV2 adapters that wrap a LegacyExecutor.
+// Used by Swarm.LegacyRun() for Strangler Fig bridging: Swarm manages lifecycle
+// while callers continue using SpawnArgs/Result (legacy types) until full migration.
+type LegacyAccessor interface {
+	Legacy() LegacyExecutor
+}
+
 // Strategy defines an orchestration pattern.
 // Implementations: PairCoding, SequentialDialog, ParallelConsensus,
 // StructuredDebate, AuditPipeline.
