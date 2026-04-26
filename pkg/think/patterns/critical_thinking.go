@@ -10,15 +10,23 @@ import (
 )
 
 // biasCatalogs maps bias names to their trigger phrases.
+// Each bias has multiple formulations to catch real-world phrasing variations.
 var biasCatalogs = map[string][]string{
-	"confirmation_bias":      {"proves my point", "as expected", "confirms", "validates my", "exactly what i thought", "as i predicted"},
-	"anchoring":              {"initial estimate", "first impression", "starting point", "original assumption", "based on the first"},
-	"sunk_cost":              {"already invested", "too far to stop", "can't waste", "put too much into", "come this far"},
-	"availability_heuristic": {"recent example", "just saw", "heard about", "in the news", "happened recently"},
-	"bandwagon":              {"everyone thinks", "popular opinion", "most people", "consensus is", "generally accepted"},
-	"dunning_kruger":         {"i know everything", "simple enough", "how hard can", "obviously", "anyone can"},
-	"survivorship_bias":      {"successful examples", "winners show", "look at those who made it", "they all did"},
-	"framing_effect":         {"depends on how", "way you look at", "perspective changes", "if you frame"},
+	"confirmation_bias":      {"proves my point", "as expected", "confirms", "validates my", "exactly what i thought", "as i predicted", "supports our view", "aligns with what we"},
+	"anchoring":              {"initial estimate", "first impression", "starting point", "original assumption", "based on the first", "our first choice", "started with"},
+	"sunk_cost":              {"already invested", "too far to stop", "can't waste", "put too much into", "come this far", "waste that investment", "invested heavily", "thrown away", "wasted effort", "since we've invested", "switching would waste"},
+	"availability_heuristic": {"recent example", "just saw", "heard about", "in the news", "happened recently", "i just read", "last time this happened"},
+	"bandwagon":              {"everyone thinks", "popular opinion", "most people", "consensus is", "generally accepted", "everyone knows", "everyone uses", "widely adopted", "industry standard"},
+	"dunning_kruger":         {"i know everything", "simple enough", "how hard can", "obviously", "anyone can", "trivial to", "easy to implement"},
+	"survivorship_bias":      {"successful examples", "winners show", "look at those who made it", "they all did", "success stories", "top companies all"},
+	"framing_effect":         {"depends on how", "way you look at", "perspective changes", "if you frame", "spin it as"},
+	"appeal_to_authority":    {"the cto said", "the boss said", "expert says", "authority on", "leadership decided", "management says", "senior engineer said", "architect said"},
+	"status_quo_bias":        {"always used", "always done it", "has always been", "we've always", "why change", "if it ain't broke", "worked so far", "never had problems with"},
+	"hasty_generalization":   {"everyone knows", "is always", "is never", "all of them", "none of them", "is faster than", "is better than", "is slower than", "is always better"},
+	"false_dichotomy":        {"only two options", "either we", "the only choice", "no other way", "binary choice", "must choose between"},
+	"appeal_to_tradition":    {"we've always done", "traditional approach", "the way it's been", "historically", "legacy technology", "old way works"},
+	"ad_hominem":             {"they don't understand", "they're not qualified", "what do they know", "never built anything"},
+	"slippery_slope":         {"if we allow", "next thing you know", "where does it end", "will lead to", "opens the door to"},
 }
 
 type criticalThinkingPattern struct {
