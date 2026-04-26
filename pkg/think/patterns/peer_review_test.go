@@ -178,3 +178,26 @@ func TestPeerReview_ShortArtifactSkipsSampling(t *testing.T) {
 		t.Error("sampling must not be called for artifacts ≤100 characters")
 	}
 }
+
+func TestPeerReview_ContentAwareObjections(t *testing.T) {
+	p := &peerReviewPattern{}
+	input := map[string]any{
+		"artifact": "This authentication service validates JWT tokens by checking the signature against a hardcoded secret key stored in the source code. Session tokens are stored in localStorage on the client side. The service has no rate limiting on the login endpoint.",
+	}
+	validated, _ := p.Validate(input)
+	result, err := p.Handle(validated, "")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	objections, _ := result.Data["objections"].([]map[string]any)
+	foundSecurity := false
+	for _, o := range objections {
+		if o["category"] == "security" {
+			foundSecurity = true
+			break
+		}
+	}
+	if !foundSecurity {
+		t.Error("expected security-domain objections for auth artifact, got none")
+	}
+}

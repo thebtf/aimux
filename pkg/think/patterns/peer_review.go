@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -161,6 +162,13 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 		// On error: fall through — existing keyword-based review stands.
 	}
 
+	// Content-aware domain objections (augments keyword-only mode).
+	artifactLower := strings.ToLower(artifact)
+	domainObjections := detectDomainObjections(artifactLower)
+	for _, do := range domainObjections {
+		objections = append(objections, do)
+	}
+
 	// Compute objection density: P-weighted score / log(artifact length + 1).
 	pWeights := map[string]float64{"P0": 4, "P1": 3, "P2": 2, "P3": 1}
 	weightedSum := 0.0
@@ -250,6 +258,77 @@ func (p *peerReviewPattern) requestSamplingReview(artifact string) ([]map[string
 		})
 	}
 	return objections, resp.Strengths, nil
+}
+
+// detectDomainObjections scans artifact text for domain keywords and produces
+// domain-specific objections that keyword-only mode would otherwise miss.
+func detectDomainObjections(text string) []map[string]any {
+	var result []map[string]any
+
+	// Security domain
+	securityKeywords := []string{"jwt", "auth", "token", "password", "secret", "credential", "session", "login", "encrypt"}
+	securityHits := 0
+	for _, kw := range securityKeywords {
+		if strings.Contains(text, kw) {
+			securityHits++
+		}
+	}
+	if securityHits >= 2 {
+		if strings.Contains(text, "hardcoded") || strings.Contains(text, "source code") {
+			result = append(result, map[string]any{
+				"severity": "P0", "category": "security",
+				"objection": "Secrets appear to be hardcoded — use environment variables or a secrets manager",
+			})
+		}
+		if !strings.Contains(text, "rate limit") {
+			result = append(result, map[string]any{
+				"severity": "P1", "category": "security",
+				"objection": "No rate limiting mentioned for authentication endpoints",
+			})
+		}
+		if strings.Contains(text, "localstorage") || strings.Contains(text, "local storage") {
+			result = append(result, map[string]any{
+				"severity": "P1", "category": "security",
+				"objection": "Storing tokens in localStorage is vulnerable to XSS — consider httpOnly cookies",
+			})
+		}
+	}
+
+	// Performance domain
+	perfKeywords := []string{"latency", "throughput", "cache", "query", "n+1", "slow", "timeout", "benchmark"}
+	perfHits := 0
+	for _, kw := range perfKeywords {
+		if strings.Contains(text, kw) {
+			perfHits++
+		}
+	}
+	if perfHits >= 2 {
+		if !strings.Contains(text, "benchmark") && !strings.Contains(text, "measurement") {
+			result = append(result, map[string]any{
+				"severity": "P2", "category": "performance",
+				"objection": "Performance claims without benchmark data — measure before optimizing",
+			})
+		}
+	}
+
+	// API domain
+	apiKeywords := []string{"endpoint", "rest", "graphql", "api", "contract", "schema", "versioning"}
+	apiHits := 0
+	for _, kw := range apiKeywords {
+		if strings.Contains(text, kw) {
+			apiHits++
+		}
+	}
+	if apiHits >= 2 {
+		if !strings.Contains(text, "version") {
+			result = append(result, map[string]any{
+				"severity": "P2", "category": "api_design",
+				"objection": "API versioning strategy not mentioned — breaking changes will affect consumers",
+			})
+		}
+	}
+
+	return result
 }
 
 // computeVerdict derives the overall verdict from the objection severity set.

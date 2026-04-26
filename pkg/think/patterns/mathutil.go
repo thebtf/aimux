@@ -80,6 +80,21 @@ func NgramExtract(text string, n, topK int) []string {
 	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
 		return !('a' <= r && r <= 'z') && !('0' <= r && r <= '9')
 	})
+	// Filter out pure-numeric tokens to prevent numbers from appearing in themes.
+	filtered := words[:0]
+	for _, w := range words {
+		isNumeric := true
+		for _, r := range w {
+			if !('0' <= r && r <= '9') {
+				isNumeric = false
+				break
+			}
+		}
+		if !isNumeric {
+			filtered = append(filtered, w)
+		}
+	}
+	words = filtered
 	if len(words) < n {
 		return nil
 	}

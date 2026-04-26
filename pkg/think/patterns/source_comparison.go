@@ -3,6 +3,7 @@ package patterns
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -193,6 +194,45 @@ func (p *sourceComparisonPattern) Handle(validInput map[string]any, sessionID st
 		"sourceAgreementScores": sourceAgreementScores,
 		"outlierSources":        outlierSources,
 		"guidance":              BuildGuidance("source_comparison", "full", []string{"topic", "sources"}),
+	}
+
+	// Topic-keyword fallback: when Jaccard is too low for all pairs (vocabulary mismatch),
+	// fall back to counting shared topic words per source.
+	allLow := true
+	for _, row := range matrix {
+		if sim, ok := row["similarity"].(float64); ok && sim >= 0.1 {
+			allLow = false
+			break
+		}
+	}
+	if allLow && len(matrix) > 0 {
+		topicWords := make(map[string]bool)
+		for _, w := range strings.Fields(strings.ToLower(topic)) {
+			if len(w) > 3 {
+				topicWords[w] = true
+			}
+		}
+		topicCoverage := make(map[string]float64)
+		for _, si := range sources {
+			sa, ok := si.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := sa["name"].(string)
+			claim, _ := sa["claim"].(string)
+			claimWords := strings.Fields(strings.ToLower(claim))
+			hits := 0
+			for _, w := range claimWords {
+				if topicWords[w] {
+					hits++
+				}
+			}
+			if len(topicWords) > 0 {
+				topicCoverage[name] = float64(hits) / float64(len(topicWords))
+			}
+		}
+		data["topicCoverageFallback"] = topicCoverage
+		data["fallbackReason"] = "Jaccard similarity <0.1 for all pairs — vocabulary mismatch, using topic-keyword coverage instead"
 	}
 
 	return think.MakeThinkResult("source_comparison", data, sessionID, nil, "", nil), nil

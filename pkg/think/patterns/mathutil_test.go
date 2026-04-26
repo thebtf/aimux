@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -126,5 +127,24 @@ func TestNgramExtract_TopK(t *testing.T) {
 	got := NgramExtract(text, 2, 3)
 	if len(got) != 3 {
 		t.Errorf("NgramExtract topK=3 returned %d, want 3", len(got))
+	}
+}
+
+func TestNgramExtract_FiltersNumbers(t *testing.T) {
+	text := "improved accuracy by 23 percent from 0.75 to 0.95 on 10M documents"
+	got := NgramExtract(text, 2, 5)
+	for _, ng := range got {
+		for _, word := range strings.Fields(ng) {
+			isNumeric := true
+			for _, r := range word {
+				if r < '0' || r > '9' {
+					isNumeric = false
+					break
+				}
+			}
+			if isNumeric {
+				t.Errorf("n-gram %q contains pure-numeric token %q", ng, word)
+			}
+		}
 	}
 }

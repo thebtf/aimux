@@ -315,6 +315,27 @@ func TestCriticalThinking_StructuralBiasDetection(t *testing.T) {
 	}
 }
 
+func TestCriticalThinking_AssumptionCrossReference(t *testing.T) {
+	p := NewCriticalThinkingPattern()
+	input := map[string]any{
+		"issue": "We should rewrite our monolith in microservices because our team has grown to 30 engineers and deployment conflicts are increasing. The CTO estimates 6 months for the rewrite.",
+		"assumptions": []any{
+			"Microservices will solve our deployment conflicts",
+			"6 months is enough for a full rewrite",
+			"The weather is nice today",
+		},
+	}
+	validated, _ := p.Validate(input)
+	result, err := p.Handle(validated, "")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	contradicted, ok := result.Data["contradictedAssumptions"].([]map[string]any)
+	if !ok || len(contradicted) == 0 {
+		t.Error("expected contradicted assumptions for certainty-laden assumptions about contested topic")
+	}
+}
+
 // TestCritical_SamplingFailureFallback verifies that when the SamplingProvider
 // returns an error, Handle returns keyword-based results without error.
 func TestCritical_SamplingFailureFallback(t *testing.T) {

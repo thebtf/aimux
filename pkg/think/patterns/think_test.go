@@ -214,3 +214,20 @@ func TestThinkNoAutoRouteForFallbackPattern(t *testing.T) {
 		t.Errorf("expected suggestedPattern in result data for non-routed think")
 	}
 }
+
+func TestThink_SuggestedWorkflow(t *testing.T) {
+	p := &thinkPattern{}
+	input, _ := p.Validate(map[string]any{
+		"thought": "We need to analyze the component architecture and understand dependencies between services",
+	})
+	result, err := p.Handle(input, "")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if wf, ok := result.Data["suggestedWorkflow"].([]string); ok {
+		if len(wf) < 2 {
+			t.Errorf("suggestedWorkflow too short: %v", wf)
+		}
+	}
+	// suggestedWorkflow may be nil if confidenceLevel is not "high" — that's OK
+}

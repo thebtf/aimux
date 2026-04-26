@@ -138,6 +138,51 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		}
 	}
 
+	// Assumption-evidence cross-reference: flag assumptions that contradict the issue text.
+	var contradictedAssumptions []map[string]any
+	if assumptions, ok := validInput["assumptions"].([]any); ok && len(assumptions) > 0 {
+		issueWords := make(map[string]bool)
+		for _, w := range strings.Fields(strings.ToLower(issue)) {
+			if len(w) > 3 {
+				issueWords[w] = true
+			}
+		}
+
+		var contradicted []map[string]any
+		for _, a := range assumptions {
+			as, ok := a.(string)
+			if !ok || as == "" {
+				continue
+			}
+			// Check for negation patterns: assumption says X, issue says "not X" or "conflicts/fails/problem"
+			aWords := strings.Fields(strings.ToLower(as))
+			sharedWords := 0
+			for _, w := range aWords {
+				if len(w) > 3 && issueWords[w] {
+					sharedWords++
+				}
+			}
+			// Assumptions sharing >30% vocabulary with the issue but containing certainty language
+			// are potentially contradicted (assumption claims certainty about a problem area)
+			certaintyMarkers := []string{"will", "always", "never", "must", "enough", "solve", "guarantee", "eliminate"}
+			hasCertainty := false
+			for _, marker := range certaintyMarkers {
+				if strings.Contains(strings.ToLower(as), marker) {
+					hasCertainty = true
+					break
+				}
+			}
+			if sharedWords >= 2 && hasCertainty {
+				contradicted = append(contradicted, map[string]any{
+					"assumption": as,
+					"reason":     "Assumption expresses certainty about a contested topic in the issue",
+					"source":     "assumption_cross_reference",
+				})
+			}
+		}
+		contradictedAssumptions = contradicted
+	}
+
 	// Tier 1.5: sampling-enhanced bias detection — merge LLM-detected biases, deduplicate.
 	if p.sampling != nil {
 		if sampledBiases, err := p.requestSamplingBiases(issue); err == nil {
@@ -182,6 +227,10 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		data["assumptions"] = v
 		if arr, ok := v.([]any); ok {
 			data["assumptionCount"] = len(arr)
+		}
+		if len(contradictedAssumptions) > 0 {
+			data["contradictedAssumptions"] = contradictedAssumptions
+			data["contradictedAssumptionCount"] = len(contradictedAssumptions)
 		}
 	}
 	if v, ok := validInput["alternatives"]; ok {

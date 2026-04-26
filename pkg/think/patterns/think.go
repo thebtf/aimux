@@ -72,6 +72,35 @@ func (p *thinkPattern) Handle(validInput map[string]any, sessionID string) (*thi
 		confidenceLevel = "low"
 	}
 
+	// FR-5: Suggested workflow chains for complex inputs.
+	var suggestedWorkflow []string
+	if confidenceLevel == "high" {
+		switch suggestedPattern {
+		case "architecture_analysis":
+			suggestedWorkflow = []string{"architecture_analysis", "problem_decomposition", "decision_framework"}
+		case "problem_decomposition":
+			suggestedWorkflow = []string{"problem_decomposition", "architecture_analysis", "temporal_thinking"}
+		case "debugging_approach":
+			suggestedWorkflow = []string{"debugging_approach", "scientific_method", "metacognitive_monitoring"}
+		case "decision_framework":
+			suggestedWorkflow = []string{"decision_framework", "structured_argumentation", "metacognitive_monitoring"}
+		}
+	}
+
+	// FR-6: Anti-pattern warnings from empirical routing data.
+	var avoidPatterns []map[string]any
+	for _, kw := range keywords {
+		switch {
+		case kw == "strategy" || kw == "approach" || kw == "option":
+			avoidPatterns = append(avoidPatterns, map[string]any{
+				"pattern": "source_comparison",
+				"reason":  "Jaccard similarity fails on strategy/approach descriptions — use decision_framework instead",
+			})
+		case kw == "recursive" || kw == "depth" || kw == "nested":
+			// Don't warn — recursive_thinking IS appropriate here
+		}
+	}
+
 	// Auto-route: if confidence is high enough and the pattern is not the fallback,
 	// execute the target pattern directly and annotate the result.
 	if confidence >= autoRouteConfidenceThreshold && suggestedPattern != "sequential_thinking" {
@@ -88,6 +117,12 @@ func (p *thinkPattern) Handle(validInput map[string]any, sessionID string) (*thi
 		"alternativePatterns": alts,
 		"confidenceLevel":     confidenceLevel,
 		"guidance":            BuildGuidance("think", "basic", []string{"thought"}),
+	}
+	if suggestedWorkflow != nil {
+		data["suggestedWorkflow"] = suggestedWorkflow
+	}
+	if len(avoidPatterns) > 0 {
+		data["avoidPatterns"] = avoidPatterns
 	}
 
 	return think.MakeThinkResult("think", data, sessionID, nil, suggestedPattern, nil), nil
