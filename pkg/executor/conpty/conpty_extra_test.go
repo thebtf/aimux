@@ -9,23 +9,50 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-func TestConPTY_Start_ReturnsError(t *testing.T) {
+// TestConPTY_Start_CreatesSession verifies that Start() successfully creates a
+// persistent session on Windows (M6 implementation). On non-Windows platforms
+// the test is skipped — TestConPTY_Start_Unavailable covers that path.
+func TestConPTY_Start_CreatesSession(t *testing.T) {
 	e := conpty.New()
 	if !e.Available() {
-		t.Skip("ConPTY not available on this platform — Start() returns a different error")
+		t.Skip("ConPTY not available on this platform")
 	}
+
+	sess, err := e.Start(context.Background(), types.SpawnArgs{
+		Command:           "cmd",
+		Args:              []string{"/k"},
+		InactivitySeconds: 2,
+	})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("Start() returned nil session")
+	}
+	defer sess.Close()
+
+	if !sess.Alive() {
+		t.Error("session.Alive() = false immediately after Start()")
+	}
+	if sess.PID() <= 0 {
+		t.Errorf("session.PID() = %d, want > 0", sess.PID())
+	}
+}
+
+// TestConPTY_Start_Unavailable verifies that Start() returns an error on
+// non-Windows platforms where ConPTY is not available.
+func TestConPTY_Start_Unavailable(t *testing.T) {
+	e := conpty.New()
+	if e.Available() {
+		t.Skip("ConPTY available on this platform — test targets unavailable case")
+	}
+
 	_, err := e.Start(context.Background(), types.SpawnArgs{
 		Command: "echo",
 		Args:    []string{"test"},
 	})
-
 	if err == nil {
-		t.Fatal("expected error from Start() — ConPTY handles single-shot only")
-	}
-
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "Pipe executor") {
-		t.Errorf("error should mention Pipe executor, got: %s", errMsg)
+		t.Fatal("expected error when ConPTY unavailable")
 	}
 }
 

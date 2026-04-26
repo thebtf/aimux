@@ -36,7 +36,7 @@ func (a *CLIPTYAdapter) Info() types.ExecutorInfo {
 		Type: types.ExecutorTypeCLI,
 		Capabilities: types.ExecutorCapabilities{
 			Streaming:          false,
-			PersistentSessions: false,
+			PersistentSessions: true,
 		},
 	}
 }

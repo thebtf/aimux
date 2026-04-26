@@ -32,7 +32,7 @@ func (a *CLIConPTYAdapter) Info() types.ExecutorInfo {
 		Name: "conpty",
 		Type: types.ExecutorTypeCLI,
 		Capabilities: types.ExecutorCapabilities{
-			PersistentSessions: false, // M6: conpty.Start() not yet implemented
+			PersistentSessions: true,
 			Streaming:          false,
 		},
 	}

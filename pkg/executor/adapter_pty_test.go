@@ -35,7 +35,7 @@ func TestCLIPTYAdapter_Info(t *testing.T) {
 	if info.Capabilities.Streaming {
 		t.Error("Info().Capabilities.Streaming = true, want false")
 	}
-	if info.Capabilities.PersistentSessions {
-		t.Error("Info().Capabilities.PersistentSessions = true, want false")
+	if !info.Capabilities.PersistentSessions {
+		t.Error("Info().Capabilities.PersistentSessions = false, want true (M6 implemented)")
 	}
 }
