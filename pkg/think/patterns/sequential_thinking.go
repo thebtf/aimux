@@ -150,8 +150,10 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 	}
 
 	branchId, _ := validInput["branchId"].(string)
-	if branchId != "" {
-		branches[branchId] = entry
+	_, hasBranchFrom := validInput["branchFromThought"]
+	if branchId != "" && hasBranchFrom {
+		existing, _ := branches[branchId].([]any)
+		branches[branchId] = append(existing, entry)
 	}
 
 	// Scan prior thoughts for similarity (duplicate warning) and contradiction detection.
@@ -225,15 +227,40 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 		guidanceDepth = "basic"
 	}
 
+	// nextThoughtNeeded / needsMoreThoughts: pass through from validInput when present,
+	// otherwise derive from position (matches TS v1 pass-through behaviour).
+	nextThoughtNeeded, hasNTN := validInput["nextThoughtNeeded"]
+	if !hasNTN {
+		nextThoughtNeeded = thoughtNumber < totalThoughts
+	}
+	needsMoreThoughts, hasNMT := validInput["needsMoreThoughts"]
+	if !hasNMT {
+		needsMoreThoughts = false
+	}
+
 	data := map[string]any{
-		"thoughtEntry":          entry,
-		"totalInSession":        len(thoughts),
-		"totalThoughts":         validInput["totalThoughts"],
-		"hasBranches":           hasBranches,
-		"stage":                 stage,
+		// ── core ──────────────────────────────────────────────────────────────
+		"thoughtEntry":   entry,
+		"totalInSession": len(thoughts),
+		// TS v1 alias for totalInSession
+		"thoughtHistoryLength": len(thoughts),
+		"totalThoughts":        validInput["totalThoughts"],
+		// ── branch ────────────────────────────────────────────────────────────
+		"hasBranches": hasBranches,
+		"branchCount": len(branches),
+		// ── stage / flow ──────────────────────────────────────────────────────
+		"stage":             stage,
+		"nextThoughtNeeded": nextThoughtNeeded,
+		"needsMoreThoughts": needsMoreThoughts,
+		// ── step tracking booleans (TS v1) ────────────────────────────────────
+		"hasCurrentStep":    thoughtNumber > 0,
+		"hasPreviousSteps":  thoughtNumber > 1,
+		"hasRemainingSteps": thoughtNumber < totalThoughts,
+		// ── contradiction ─────────────────────────────────────────────────────
 		"contradictionDetected": contradictionDetected,
 		"contradictsWith":       contradictsWith,
-		"guidance":              BuildGuidance("sequential_thinking", guidanceDepth, []string{"thoughtNumber", "totalThoughts", "isRevision", "revisesThought", "branchFromThought", "branchId"}),
+		// ── guidance ──────────────────────────────────────────────────────────
+		"guidance": BuildGuidance("sequential_thinking", guidanceDepth, []string{"thoughtNumber", "totalThoughts", "isRevision", "revisesThought", "branchFromThought", "branchId"}),
 	}
 
 	if duplicateSimilarity >= duplicateThoughtThreshold {

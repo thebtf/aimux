@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"fmt"
 	"testing"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -127,6 +128,142 @@ func TestSequential_Contradiction(t *testing.T) {
 	}
 	if r.Data["contradictsWith"] != 1 {
 		t.Errorf("contradictsWith = %v, want 1", r.Data["contradictsWith"])
+	}
+}
+
+// TestSequential_BranchAccumulates verifies that multiple calls with the same
+// branchId accumulate entries in a slice rather than overwriting.
+// branchFromThought must be set for branch tracking to activate (matches TS v1).
+func TestSequential_BranchAccumulates(t *testing.T) {
+	think.ClearSessions()
+	p := NewSequentialThinkingPattern()
+	sid := "seq-branch-accum-1"
+
+	for i := 1; i <= 3; i++ {
+		input, err := p.Validate(map[string]any{
+			"thought":           fmt.Sprintf("branch thought %d", i),
+			"thoughtNumber":     i,
+			"totalThoughts":     5,
+			"branchId":          "alt-path",
+			"branchFromThought": 1,
+		})
+		if err != nil {
+			t.Fatalf("validate thought %d: %v", i, err)
+		}
+		r, err := p.Handle(input, sid)
+		if err != nil {
+			t.Fatalf("handle thought %d: %v", i, err)
+		}
+		// After each call the branch count must be 1 (one branch ID, growing slice).
+		if r.Data["branchCount"] != 1 {
+			t.Errorf("thought %d: branchCount = %v, want 1", i, r.Data["branchCount"])
+		}
+	}
+
+	// Verify the branch slice grew to 3 by inspecting the session state directly.
+	sess := think.GetOrCreateSession(sid, "sequential_thinking", nil)
+	branches, _ := sess.State["branches"].(map[string]any)
+	entries, _ := branches["alt-path"].([]any)
+	if len(entries) != 3 {
+		t.Errorf("branch 'alt-path' has %d entries, want 3", len(entries))
+	}
+}
+
+// TestSequential_BranchIdWithoutBranchFrom verifies that branchId alone (without
+// branchFromThought) does NOT register a branch entry, matching TS v1 behaviour.
+func TestSequential_BranchIdWithoutBranchFrom(t *testing.T) {
+	think.ClearSessions()
+	p := NewSequentialThinkingPattern()
+	sid := "seq-branch-nofrom-1"
+
+	input, err := p.Validate(map[string]any{
+		"thought":  "thought with branchId but no branchFromThought",
+		"branchId": "orphan-branch",
+	})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	r, err := p.Handle(input, sid)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if r.Data["hasBranches"] != false {
+		t.Errorf("hasBranches = %v, want false (branchFromThought not set)", r.Data["hasBranches"])
+	}
+	if r.Data["branchCount"] != 0 {
+		t.Errorf("branchCount = %v, want 0", r.Data["branchCount"])
+	}
+}
+
+// TestSequential_NextThoughtNeeded verifies that nextThoughtNeeded is present
+// in the output and reflects whether more thoughts remain.
+func TestSequential_NextThoughtNeeded(t *testing.T) {
+	think.ClearSessions()
+	p := NewSequentialThinkingPattern()
+	sid := "seq-ntn-1"
+
+	cases := []struct {
+		thoughtNumber int
+		wantNTN       bool
+	}{
+		{1, true},  // more thoughts remain
+		{2, true},  // more thoughts remain
+		{3, false}, // last thought
+	}
+
+	for _, tc := range cases {
+		input, err := p.Validate(map[string]any{
+			"thought":       "a step",
+			"thoughtNumber": tc.thoughtNumber,
+			"totalThoughts": 3,
+		})
+		if err != nil {
+			t.Fatalf("validate thought %d: %v", tc.thoughtNumber, err)
+		}
+		r, err := p.Handle(input, sid)
+		if err != nil {
+			t.Fatalf("handle thought %d: %v", tc.thoughtNumber, err)
+		}
+		if r.Data["nextThoughtNeeded"] != tc.wantNTN {
+			t.Errorf("thought %d: nextThoughtNeeded = %v, want %v",
+				tc.thoughtNumber, r.Data["nextThoughtNeeded"], tc.wantNTN)
+		}
+	}
+}
+
+// TestSequential_BranchCount verifies that branchCount is a numeric count (not
+// just the hasBranches bool present in earlier versions).
+func TestSequential_BranchCount(t *testing.T) {
+	think.ClearSessions()
+	p := NewSequentialThinkingPattern()
+	sid := "seq-bcount-1"
+
+	// Add two distinct branch IDs.
+	for _, bid := range []string{"branch-a", "branch-b"} {
+		input, err := p.Validate(map[string]any{
+			"thought":           "branching thought",
+			"branchId":          bid,
+			"branchFromThought": 1,
+		})
+		if err != nil {
+			t.Fatalf("validate branch %s: %v", bid, err)
+		}
+		if _, err = p.Handle(input, sid); err != nil {
+			t.Fatalf("handle branch %s: %v", bid, err)
+		}
+	}
+
+	// Third call — no branch — just read back branchCount.
+	input, err := p.Validate(map[string]any{"thought": "regular thought"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	r, err := p.Handle(input, sid)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if r.Data["branchCount"] != 2 {
+		t.Errorf("branchCount = %v, want 2", r.Data["branchCount"])
 	}
 }
 
