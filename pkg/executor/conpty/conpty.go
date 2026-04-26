@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor"
+	"github.com/thebtf/aimux/pkg/executor/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -202,20 +203,62 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	}
 }
 
-// Start begins a persistent ConPTY session.
-// Persistent sessions (multi-turn, stateful) are handled by the Pipe executor,
-// which manages process lifecycle and stdin/stdout independently.
-// ConPTY executor is designed for single-shot Run() calls with unbuffered output.
+// conptySessionPM is the package-level ProcessManager for persistent ConPTY sessions.
+var conptySessionPM = executor.NewProcessManager()
+
+// ConPTYSessionProcessManager returns the ProcessManager used for persistent ConPTY sessions.
+// Called by server shutdown to kill all tracked ConPTY session processes.
+func ConPTYSessionProcessManager() *executor.ProcessManager {
+	return conptySessionPM
+}
+
+const defaultConPTYInactivitySeconds = 5
+
+// Start begins a persistent ConPTY session for multi-turn interaction.
 //
 // T003 note: ConPTY merges stdout and stderr onto a single pseudo-console output
 // pipe by design (Windows CreatePseudoConsole API behavior). There is no
 // separate stderr stream to drain — all subprocess output (including stderr)
-// flows through handle.Stdout and is captured by IOManager.
+// flows through handle.Stdout and is captured by the session reader.
+//
+// The session uses session.BaseSession for the lifetime reader goroutine +
+// inactivity-based response detection pattern (same as pipe executor).
 func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
 	if !e.available {
 		return nil, types.NewExecutorError("ConPTY not available on this platform", nil, "")
 	}
-	return nil, fmt.Errorf("ConPTY executor handles single-shot runs only; use Pipe executor for persistent sessions")
+
+	cmd := exec.Command(args.Command, args.Args...)
+	cmd.Dir = args.CWD
+	switch {
+	case len(args.EnvList) > 0:
+		cmd.Env = args.EnvList
+	case len(args.Env) > 0:
+		cmd.Env = os.Environ()
+		for k, v := range args.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+
+	// Stdin pipe must be created before Spawn (which calls cmd.Start internally).
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, types.NewExecutorError("ConPTY: failed to create stdin pipe", err, "")
+	}
+
+	handle, err := conptySessionPM.Spawn(cmd)
+	if err != nil {
+		return nil, types.NewExecutorError(
+			fmt.Sprintf("ConPTY session start failed for %s", args.Command), err, "")
+	}
+
+	inactivity := time.Duration(args.InactivitySeconds) * time.Second
+	if args.InactivitySeconds <= 0 {
+		inactivity = defaultConPTYInactivitySeconds * time.Second
+	}
+
+	sess := session.New("", stdin, handle.Stdout, inactivity, handle, conptySessionPM)
+	return sess, nil
 }
 
 // probeConPTY checks if the current platform supports ConPTY.

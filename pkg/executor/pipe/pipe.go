@@ -14,9 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/thebtf/aimux/pkg/executor"
+	"github.com/thebtf/aimux/pkg/executor/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -161,156 +160,6 @@ func SessionProcessManager() *executor.ProcessManager {
 	return sessionPM
 }
 
-// readChunk is a single read result from the lifetime reader goroutine.
-type readChunk struct {
-	data []byte
-	err  error
-}
-
-// pipeSession holds a persistent CLI process for multi-turn interaction.
-//
-// Goroutine architecture (T001 fix):
-//
-//	One "lifetime reader" goroutine is started in Start() and lives until
-//	stdout is closed (either by the process exiting or by Close()). It
-//	continuously reads from s.stdout and sends chunks to s.readCh.
-//
-//	Send() consumes chunks from s.readCh using an inactivity timer.  When
-//	no new data arrives for inactivityTimeout the response is considered
-//	complete and Send() returns — the lifetime reader keeps running.
-//
-//	On Close(), s.stdout is closed, which causes the next Read in the
-//	lifetime reader to return io.EOF, ending the goroutine cleanly.
-type pipeSession struct {
-	id     string
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	handle *executor.ProcessHandle
-
-	// inactivityTimeout is derived from SpawnArgs.InactivitySeconds at Start().
-	inactivityTimeout time.Duration
-
-	// readCh carries chunks from the lifetime reader to Send().
-	// Buffered to reduce blocking between bursts.
-	readCh chan readChunk
-
-	// readerDone is closed when the lifetime reader goroutine exits.
-	readerDone chan struct{}
-
-	// closeOnce ensures Close() only runs its cleanup once.
-	closeOnce sync.Once
-
-	// mu serialises concurrent Send() calls (sessions are single-turn at a time).
-	mu sync.Mutex
-}
-
-func (s *pipeSession) ID() string { return s.id }
-
-// Send writes prompt to stdin and reads the response via the lifetime reader.
-//
-// Inactivity detection: the timer is reset on each incoming chunk.  When it
-// fires without new data the response is treated as complete and Send returns
-// with Partial=true.  The lifetime reader goroutine is NOT stopped — it
-// persists for future Send() calls.
-func (s *pipeSession) Send(ctx context.Context, prompt string) (*types.Result, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	start := time.Now()
-
-	_, err := fmt.Fprintln(s.stdin, prompt)
-	if err != nil {
-		return nil, types.NewExecutorError("failed to write to stdin", err, "")
-	}
-
-	var buf bytes.Buffer
-	timer := time.NewTimer(s.inactivityTimeout)
-	defer timer.Stop()
-
-	partial := false
-	for {
-		select {
-		case c := <-s.readCh:
-			if len(c.data) > 0 {
-				buf.Write(c.data)
-				// Reset inactivity timer — more data may still be coming.
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timer.Reset(s.inactivityTimeout)
-			}
-			if c.err != nil {
-				// stdout closed (process exited or Close was called) — done.
-				goto done
-			}
-
-		case <-timer.C:
-			// No new data for inactivityTimeout — treat as end of response.
-			// The lifetime reader goroutine stays running for subsequent Send()s.
-			partial = true
-			goto done
-
-		case <-ctx.Done():
-			partial = true
-			goto done
-		}
-	}
-
-done:
-	return &types.Result{
-		Content:    buf.String(),
-		Partial:    partial,
-		DurationMS: time.Since(start).Milliseconds(),
-	}, nil
-}
-
-func (s *pipeSession) Stream(ctx context.Context, prompt string) (<-chan types.Event, error) {
-	ch := make(chan types.Event, 64)
-
-	go func() {
-		defer close(ch)
-		result, err := s.Send(ctx, prompt)
-		if err != nil {
-			ch <- types.Event{Type: types.EventTypeError, Error: err}
-			return
-		}
-		ch <- types.Event{Type: types.EventTypeContent, Content: result.Content}
-		ch <- types.Event{Type: types.EventTypeComplete}
-	}()
-
-	return ch, nil
-}
-
-// Close terminates the session.  It closes stdout (which causes the lifetime
-// reader goroutine to exit via EOF) and kills the underlying process.
-func (s *pipeSession) Close() error {
-	s.closeOnce.Do(func() {
-		// Close stdout first so the lifetime reader unblocks and exits.
-		_ = s.stdout.Close()
-		// Wait for the reader to exit before killing — avoids a race on the handle.
-		<-s.readerDone
-		_ = s.stdin.Close()
-		sessionPM.Kill(s.handle)
-		sessionPM.Cleanup(s.handle)
-	})
-	return nil
-}
-
-func (s *pipeSession) Alive() bool {
-	return sessionPM.IsAlive(s.handle)
-}
-
-func (s *pipeSession) PID() int {
-	if s.handle != nil {
-		return s.handle.PID
-	}
-	return 0
-}
-
 // Start begins a persistent session via stdin/stdout pipes.
 func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
 	cmd := exec.Command(args.Command, args.Args...)
@@ -341,37 +190,9 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 		inactivity = defaultInactivitySeconds * time.Second
 	}
 
-	sess := &pipeSession{
-		id:                uuid.NewString(),
-		cmd:               cmd,
-		stdin:             stdin,
-		stdout:            handle.Stdout,
-		handle:            handle,
-		inactivityTimeout: inactivity,
-		readCh:            make(chan readChunk, 32),
-		readerDone:        make(chan struct{}),
-	}
-
-	// T001: start the single lifetime reader goroutine.
-	// It owns the stdout pipe exclusively and sends all data to readCh.
-	// It exits when stdout returns any error (EOF, closed pipe, etc.).
-	go func() {
-		defer close(sess.readerDone)
-		tmp := make([]byte, 4096)
-		for {
-			n, readErr := sess.stdout.Read(tmp)
-			if n > 0 {
-				cp := make([]byte, n)
-				copy(cp, tmp[:n])
-				sess.readCh <- readChunk{data: cp}
-			}
-			if readErr != nil {
-				sess.readCh <- readChunk{err: readErr}
-				return
-			}
-		}
-	}()
-
+	// T001: session.New starts the lifetime reader goroutine and returns a
+	// *BaseSession that implements types.Session (ID/Send/Stream/Close/Alive/PID).
+	sess := session.New("", stdin, handle.Stdout, inactivity, handle, sessionPM)
 	return sess, nil
 }
 

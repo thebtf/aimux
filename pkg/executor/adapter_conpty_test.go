@@ -21,8 +21,8 @@ func TestCLIConPTYAdapter_Info(t *testing.T) {
 	if info.Type != types.ExecutorTypeCLI {
 		t.Errorf("Info().Type = %v, want ExecutorTypeCLI", info.Type)
 	}
-	if info.Capabilities.PersistentSessions {
-		t.Error("Info().Capabilities.PersistentSessions = true, want false (M6 not yet implemented)")
+	if !info.Capabilities.PersistentSessions {
+		t.Error("Info().Capabilities.PersistentSessions = false, want true (M6 implemented)")
 	}
 	if info.Capabilities.Streaming {
 		t.Error("Info().Capabilities.Streaming = true, want false")
