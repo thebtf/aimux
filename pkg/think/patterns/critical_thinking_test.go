@@ -365,3 +365,33 @@ func TestCritical_SamplingFailureFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestCriticalThinking_TimeOptimism(t *testing.T) {
+	p := NewCriticalThinkingPattern()
+	tests := []struct {
+		name      string
+		issue     string
+		wantBias  string
+	}{
+		{"under_minutes", "We should parallelize tests to reduce deployment time to under 5 minutes", "time_optimism"},
+		{"just_weeks", "This feature will take just 2 weeks to implement", "time_optimism"},
+		{"should_parallelize", "We should parallelize the entire test suite", "silver_bullet"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := map[string]any{"issue": tt.issue}
+			validated, _ := p.Validate(input)
+			result, _ := p.Handle(validated, "")
+			biases, _ := result.Data["detectedBiases"].([]map[string]any)
+			found := false
+			for _, b := range biases {
+				if b["bias"] == tt.wantBias {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected %s bias, got %v", tt.wantBias, biases)
+			}
+		})
+	}
+}

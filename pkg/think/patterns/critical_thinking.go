@@ -33,8 +33,9 @@ var biasCatalogs = map[string][]string{
 // structuralBiasPatterns detects implicit biases via regex patterns that match
 // sentence structure rather than specific trigger phrases.
 var structuralBiasPatterns = map[string]*regexp.Regexp{
-	"planning_fallacy":          regexp.MustCompile(`(?i)\d+\s*(?:months?|weeks?|sprints?|years?|days?)\s+(?:for\s+(?:the|a|full)\s+)?(?:rewrite|rebuild|replace|migration|refactor)`),
-	"silver_bullet":             regexp.MustCompile(`(?i)(?:should|need\s+to|must|let'?s)\s+(?:rewrite|rebuild|replace|migrate\s+to|switch\s+to|move\s+to)`),
+	"planning_fallacy":          regexp.MustCompile(`(?i)\d+\s*(?:months?|weeks?|sprints?|years?|days?)\s+(?:for\s+(?:the|a|full|complete)\s+)?(?:rewrite|rebuild|replace|migration|refactor|parallelize|optimize|migrate|deploy|implement|complete|finish|deliver|launch|ship)`),
+	"time_optimism":             regexp.MustCompile(`(?i)(?:under|less\s+than|only|just)\s+\d+\s*(?:months?|weeks?|sprints?|years?|days?|minutes?|hours?)`),
+	"silver_bullet":             regexp.MustCompile(`(?i)(?:should|need\s+to|must|let'?s)\s+(?:rewrite|rebuild|replace|migrate\s+to|switch\s+to|move\s+to|parallelize|adopt|implement)`),
 	"overconfidence":            regexp.MustCompile(`(?i)(?:will\s+(?:solve|eliminate|fix\s+all|guarantee|ensure)|completely\s+(?:solve|eliminate|remove))`),
 	"correlation_not_causation": regexp.MustCompile(`(?i)because\s+(?:(?:the\s+)?(?:team|company|org(?:anization)?|department))\s+(?:has\s+)?(?:grew|grown|scaled|hired|expanded|doubled|tripled)`),
 	"false_precision":           regexp.MustCompile(`(?i)(?:exactly|precisely)\s+\d+`),

@@ -328,6 +328,29 @@ func detectDomainObjections(text string) []map[string]any {
 		}
 	}
 
+	// Data consistency domain
+	consistencyKeywords := []string{"cache", "invalidation", "stale", "ttl", "consistency", "eventual", "sync", "replication"}
+	consistencyHits := 0
+	for _, kw := range consistencyKeywords {
+		if strings.Contains(text, kw) {
+			consistencyHits++
+		}
+	}
+	if consistencyHits >= 2 {
+		if strings.Contains(text, "no") && (strings.Contains(text, "invalidation") || strings.Contains(text, "invalidat")) {
+			result = append(result, map[string]any{
+				"severity": "P1", "category": "data_consistency",
+				"objection": "No cache invalidation strategy — stale data will be served after writes",
+			})
+		}
+		if strings.Contains(text, "stale") {
+			result = append(result, map[string]any{
+				"severity": "P2", "category": "data_consistency",
+				"objection": "Stale data acknowledged but no mitigation strategy described",
+			})
+		}
+	}
+
 	return result
 }
 

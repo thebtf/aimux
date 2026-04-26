@@ -201,3 +201,26 @@ func TestPeerReview_ContentAwareObjections(t *testing.T) {
 		t.Error("expected security-domain objections for auth artifact, got none")
 	}
 }
+
+func TestPeerReview_DataConsistencyObjections(t *testing.T) {
+	p := &peerReviewPattern{}
+	input := map[string]any{
+		"artifact": "The caching layer uses Redis with a 5-minute TTL. There is no cache invalidation on write operations — stale data is served until TTL expires.",
+	}
+	validated, _ := p.Validate(input)
+	result, err := p.Handle(validated, "")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	objections, _ := result.Data["objections"].([]map[string]any)
+	foundConsistency := false
+	for _, o := range objections {
+		if o["category"] == "data_consistency" {
+			foundConsistency = true
+			break
+		}
+	}
+	if !foundConsistency {
+		t.Error("expected data_consistency objections for caching artifact with no invalidation")
+	}
+}
