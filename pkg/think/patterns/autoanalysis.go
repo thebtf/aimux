@@ -7,6 +7,14 @@ import (
 	"unicode"
 )
 
+// Guidance provides progressive enrichment instructions in every pattern response.
+type Guidance struct {
+	CurrentDepth string   `json:"current_depth"` // "basic", "enriched", "full"
+	NextLevel    string   `json:"next_level"`    // what providing more data unlocks
+	Example      string   `json:"example"`       // copy-pasteable enriched call
+	Enrichments  []string `json:"enrichments"`   // available optional fields
+}
+
 // stopWords is the set of common English words filtered out by ExtractKeywords.
 var stopWords = map[string]struct{}{
 	"the": {}, "a": {}, "an": {}, "is": {}, "are": {}, "was": {}, "were": {},

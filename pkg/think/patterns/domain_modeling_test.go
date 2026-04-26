@@ -193,19 +193,13 @@ func TestDomainModel_AutoAnalysis_DomainTemplate(t *testing.T) {
 
 	data := result.Data
 
-	// suggestedEntities must be present and non-empty.
-	se, ok := data["suggestedEntities"].([]string)
-	if !ok || len(se) == 0 {
-		t.Errorf("expected non-empty suggestedEntities, got %v (%T)", data["suggestedEntities"], data["suggestedEntities"])
-	}
-
-	// autoAnalysis.source must be "domain-template".
+	// autoAnalysis.source must be "keyword-analysis".
 	aa, ok := data["autoAnalysis"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected autoAnalysis map, got %T", data["autoAnalysis"])
 	}
-	if aa["source"] != "domain-template" {
-		t.Errorf("expected source=domain-template, got %v", aa["source"])
+	if aa["source"] != "keyword-analysis" {
+		t.Errorf("expected source=keyword-analysis, got %v", aa["source"])
 	}
 
 	// guidance must be present.

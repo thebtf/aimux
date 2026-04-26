@@ -166,16 +166,6 @@ func (p *temporalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		[]string{"events", "states", "transitions", "constraints"},
 	)
 
-	// Tier 2A: text analysis
-	primaryText := validInput["timeFrame"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	return think.MakeThinkResult("temporal_thinking", data, sessionID, nil, "", []string{"totalComponents"}), nil
 }
 

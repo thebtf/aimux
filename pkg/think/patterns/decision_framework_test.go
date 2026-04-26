@@ -140,8 +140,8 @@ func TestDecisionFramework_AutoMode_DomainTemplate(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected autoAnalysis map, got %T", result.Data["autoAnalysis"])
 	}
-	if aa["source"] != "domain-template" {
-		t.Errorf("expected source=domain-template, got %v", aa["source"])
+	if aa["source"] != "keyword-analysis" {
+		t.Errorf("expected source=keyword-analysis, got %v", aa["source"])
 	}
 }
 
@@ -257,9 +257,9 @@ func TestDecision_FallbackWithoutSampling(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected autoAnalysis map, got %T", result.Data["autoAnalysis"])
 	}
-	// Domain template should win even without sampling.
-	if aa["source"] != "domain-template" {
-		t.Errorf("expected source=domain-template, got %v", aa["source"])
+	// Without sampling, source should be keyword-analysis.
+	if aa["source"] != "keyword-analysis" {
+		t.Errorf("expected source=keyword-analysis, got %v", aa["source"])
 	}
 }
 

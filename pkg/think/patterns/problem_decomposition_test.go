@@ -277,19 +277,13 @@ func TestProblemDecomp_AutoAnalysis_DomainTemplate(t *testing.T) {
 		t.Fatalf("Handle failed: %v", err)
 	}
 
-	// suggestedSubProblems must be present and non-empty (auth template has 5 items).
-	ssp, ok := result.Data["suggestedSubProblems"].([]string)
-	if !ok || len(ssp) == 0 {
-		t.Errorf("expected non-empty suggestedSubProblems, got %v (%T)", result.Data["suggestedSubProblems"], result.Data["suggestedSubProblems"])
-	}
-
-	// autoAnalysis source must be "domain-template".
+	// autoAnalysis source must be "keyword-analysis".
 	aa, ok := result.Data["autoAnalysis"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected autoAnalysis map, got %T", result.Data["autoAnalysis"])
 	}
-	if aa["source"] != "domain-template" {
-		t.Errorf("expected autoAnalysis.source=domain-template, got %v", aa["source"])
+	if aa["source"] != "keyword-analysis" {
+		t.Errorf("expected autoAnalysis.source=keyword-analysis, got %v", aa["source"])
 	}
 
 	// guidance must be present.

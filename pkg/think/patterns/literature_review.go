@@ -94,16 +94,6 @@ func (p *literatureReviewPattern) Handle(validInput map[string]any, sessionID st
 		"guidance":            BuildGuidance("literature_review", "full", []string{"papers", "criteria", "timeFrame"}),
 	}
 
-	// Tier 2A: text analysis
-	primaryText := validInput["topic"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	return think.MakeThinkResult("literature_review", data, sessionID, nil, "source_comparison", nil), nil
 }
 

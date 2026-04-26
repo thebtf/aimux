@@ -130,20 +130,9 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 	var suggestedDependencies []map[string]string
 	var autoAnalysisSource string
 	var extractedKW []string
-	var domainTmpl *DomainTemplate // lifted for reuse in text analysis
-
 	if countSlice("subProblems") == 0 && countSlice("dependencies") == 0 {
 		extractedKW = ExtractKeywords(problem)
-		domainTmpl = MatchDomainTemplate(problem)
-		if domainTmpl != nil {
-			suggestedSubProblems = domainTmpl.SubProblems
-			for _, dep := range domainTmpl.Dependencies {
-				suggestedDependencies = append(suggestedDependencies, dep)
-			}
-			autoAnalysisSource = "domain-template"
-		} else {
-			autoAnalysisSource = "keyword-analysis"
-		}
+		autoAnalysisSource = "keyword-analysis"
 	}
 
 	data := map[string]any{
@@ -222,15 +211,6 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 		}(),
 		[]string{"subProblems", "dependencies", "risks", "stakeholders"},
 	)
-
-	// Tier 2A: text analysis
-	primaryText := validInput["problem"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		if domainTmpl != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domainTmpl)
-		}
-		data["textAnalysis"] = analysis
-	}
 
 	return think.MakeThinkResult("problem_decomposition", data, sessionID, nil, "", []string{"totalComponents"}), nil
 }

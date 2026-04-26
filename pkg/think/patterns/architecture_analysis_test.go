@@ -198,19 +198,13 @@ func TestArchAnalysis_AutoAnalysis_SingleComponent(t *testing.T) {
 
 	data := result.Data
 
-	// suggestedComponents must be present.
-	sc, ok := data["suggestedComponents"].([]string)
-	if !ok || len(sc) == 0 {
-		t.Errorf("expected non-empty suggestedComponents, got %v (%T)", data["suggestedComponents"], data["suggestedComponents"])
-	}
-
-	// autoAnalysis must be present.
+	// autoAnalysis must be present with keyword-analysis source.
 	aa, ok := data["autoAnalysis"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected autoAnalysis map, got %T", data["autoAnalysis"])
 	}
-	if aa["source"] != "domain-template" {
-		t.Errorf("expected source=domain-template, got %v", aa["source"])
+	if aa["source"] != "keyword-analysis" {
+		t.Errorf("expected source=keyword-analysis, got %v", aa["source"])
 	}
 
 	// guidance must be present.

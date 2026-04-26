@@ -133,16 +133,6 @@ func (p *metacognitiveMonitoringPattern) Handle(validInput map[string]any, sessi
 
 	data["guidance"] = BuildGuidance("metacognitive_monitoring", "basic", []string{"claims", "biases", "uncertainties", "cognitiveProcesses", "confidence", "knowledgeAssessment"})
 
-	// Tier 2A: text analysis
-	primaryText := validInput["task"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	return think.MakeThinkResult("metacognitive_monitoring", data, sessionID, nil, "", computed), nil
 }
 

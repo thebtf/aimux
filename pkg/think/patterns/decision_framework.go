@@ -154,17 +154,13 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 	// Auto-mode: criteria or options were not supplied — generate suggestions.
 	if autoMode, _ := validInput["autoMode"].(bool); autoMode {
 		keywords := ExtractKeywords(decision)
-		tmpl := MatchDomainTemplate(decision)
 
 		var suggestedCriteria []string
 		var suggestedOptions []string
 		autoSource := "keyword-analysis"
 
-		if tmpl != nil && len(tmpl.Criteria) > 0 {
-			suggestedCriteria = tmpl.Criteria
-			autoSource = "domain-template"
-		} else if p.sampling != nil {
-			// No domain template: try sampling for context-aware criteria.
+		if p.sampling != nil {
+			// Try sampling for context-aware criteria.
 			if sampledCriteria, sampledOptions, err := p.requestSamplingCriteria(decision); err == nil {
 				suggestedCriteria = sampledCriteria
 				suggestedOptions = append([]string(nil), sampledOptions...)
@@ -174,9 +170,7 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 
 		if len(suggestedCriteria) == 0 {
 			suggestedCriteria = []string{"performance", "cost", "maintainability", "scalability"}
-			if autoSource != "domain-template" {
-				autoSource = "keyword-analysis"
-			}
+			autoSource = "keyword-analysis"
 		}
 
 		// Build an option template with all criteria pre-filled as score placeholders.
@@ -207,14 +201,6 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 				})
 			}
 			data["suggestedOptions"] = optionExamples
-		}
-
-		// Tier 2A: text analysis
-		if analysis := AnalyzeText(decision); analysis != nil {
-			if tmpl != nil {
-				analysis.Gaps = DetectGaps(analysis.Entities, tmpl)
-			}
-			data["textAnalysis"] = analysis
 		}
 
 		return think.MakeThinkResult("decision_framework", data, sessionID, nil, "", []string{"suggestedCriteria", "optionTemplate"}), nil
@@ -290,15 +276,6 @@ func (p *decisionFrameworkPattern) Handle(validInput map[string]any, sessionID s
 		"guidance": BuildGuidance("decision_framework", "full",
 			[]string{"criteria", "options"},
 		),
-	}
-
-	// Tier 2A: text analysis
-	if analysis := AnalyzeText(decision); analysis != nil {
-		domain := MatchDomainTemplate(decision)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
 	}
 
 	return think.MakeThinkResult("decision_framework", data, sessionID, nil, "", []string{"rankedOptions", "hasTies"}), nil

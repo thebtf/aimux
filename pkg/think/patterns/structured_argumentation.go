@@ -182,15 +182,5 @@ func (p *structuredArgumentationPattern) Handle(validInput map[string]any, sessi
 		"guidance":          BuildGuidance("structured_argumentation", guidanceDepth, []string{"argument"}),
 	}
 
-	// Tier 2A: text analysis (added on every call for stateful pattern)
-	primaryText := validInput["topic"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	return think.MakeThinkResult("structured_argumentation", data, sessionID, nil, "", nil), nil
 }

@@ -105,16 +105,6 @@ func (p *researchSynthesisPattern) Handle(validInput map[string]any, sessionID s
 		"guidance":          BuildGuidance("research_synthesis", "full", []string{"topic", "findings"}),
 	}
 
-	// Tier 2A: text analysis
-	primaryText := validInput["topic"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	return think.MakeThinkResult("research_synthesis", data, sessionID, nil, "", nil), nil
 }
 

@@ -178,15 +178,6 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 		"guidance":      BuildGuidance("peer_review", "full", []string{"claims", "methodology", "novelty"}),
 	}
 
-	// Tier 2A: text analysis
-	if analysis := AnalyzeText(artifact); analysis != nil {
-		domain := MatchDomainTemplate(artifact)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	return think.MakeThinkResult("peer_review", data, sessionID, nil, "", nil), nil
 }
 

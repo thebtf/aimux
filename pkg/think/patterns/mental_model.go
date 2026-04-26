@@ -140,16 +140,6 @@ func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string)
 
 	data["guidance"] = BuildGuidance("mental_model", "basic", []string{"steps", "reasoning", "conclusion"})
 
-	// Tier 2A: text analysis
-	primaryText := validInput["problem"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	return think.MakeThinkResult("mental_model", data, sessionID, nil, "", []string{"known", "description", "completenessScore", "clarityScore", "coherenceScore", "complexity"}), nil
 }
 

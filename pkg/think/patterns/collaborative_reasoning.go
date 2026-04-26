@@ -190,16 +190,6 @@ func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessio
 		"guidance":                BuildGuidance("collaborative_reasoning", guidanceDepth, []string{"stage", "contribution", "personas"}),
 	}
 
-	// Tier 2A: text analysis (added on every call for stateful pattern)
-	primaryText := validInput["topic"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	return think.MakeThinkResult("collaborative_reasoning", data, sessionID, nil, "", nil), nil
 }
 

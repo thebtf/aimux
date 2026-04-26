@@ -5,18 +5,17 @@ import (
 	"testing"
 )
 
-// TestSelectTier_KnownDomainLow: short auth text matches the "auth" domain template
-// and has low complexity → SelectTier returns "basic".
-func TestSelectTier_KnownDomainLow(t *testing.T) {
+// TestSelectTier_LowComplexity: short text with no sampling → "analysis".
+func TestSelectTier_LowComplexity(t *testing.T) {
 	text := "Design auth"
 	got := SelectTier(text, false, "")
-	if got != "basic" {
-		t.Errorf("SelectTier(%q): want basic, got %q", text, got)
+	if got != "analysis" {
+		t.Errorf("SelectTier(%q): want analysis, got %q", text, got)
 	}
 }
 
 // TestSelectTier_UnknownDomainLow: short text with no domain template match
-// and low complexity → SelectTier returns "analysis".
+// and low complexity → "analysis".
 func TestSelectTier_UnknownDomainLow(t *testing.T) {
 	text := "Design quantum circuit"
 	got := SelectTier(text, false, "")
@@ -74,10 +73,19 @@ func TestSelectTier_HighWithoutSampling(t *testing.T) {
 
 // TestSelectTier_ExplicitOverride: explicit depth parameter overrides complexity analysis.
 func TestSelectTier_ExplicitOverride(t *testing.T) {
-	// Simple text that would normally resolve to "basic", but explicit="deep".
+	// Simple text that would normally resolve to "analysis", but explicit="deep".
 	text := "Design auth"
 	got := SelectTier(text, false, "deep")
 	if got != "deep" {
 		t.Errorf("SelectTier(%q, explicitDepth=deep): want deep, got %q", text, got)
+	}
+}
+
+// TestSelectTier_ExplicitBasic: explicit "basic" is returned regardless of complexity.
+func TestSelectTier_ExplicitBasic(t *testing.T) {
+	text := "Design auth"
+	got := SelectTier(text, false, "basic")
+	if got != "basic" {
+		t.Errorf("SelectTier(%q, explicitDepth=basic): want basic, got %q", text, got)
 	}
 }

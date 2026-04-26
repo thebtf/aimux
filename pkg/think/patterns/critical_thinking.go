@@ -118,16 +118,6 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		"guidance":       BuildGuidance("critical_thinking", "full", []string{"issue"}),
 	}
 
-	// Tier 2A: text analysis
-	primaryText := validInput["issue"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	// When biases are detected, suggest decision_framework to apply structured evaluation.
 	suggestedNext := ""
 	if len(detectedBiases) > 0 {

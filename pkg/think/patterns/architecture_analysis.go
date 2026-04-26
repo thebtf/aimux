@@ -137,8 +137,7 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 	var suggestedComponents []string
 	var autoAnalysisSource string
 	var extractedKW []string
-	var domainTmpl *DomainTemplate // lifted for reuse in text analysis
-	var primarySearchText string   // lifted for text analysis
+	var primarySearchText string // lifted for auto-analysis
 	if len(components) <= 1 {
 		if len(components) == 1 {
 			if m, ok := components[0].(map[string]any); ok {
@@ -146,13 +145,7 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 			}
 		}
 		extractedKW = ExtractKeywords(primarySearchText)
-		domainTmpl = MatchDomainTemplate(primarySearchText)
-		if domainTmpl != nil && len(domainTmpl.Components) > 0 {
-			suggestedComponents = domainTmpl.Components
-			autoAnalysisSource = "domain-template"
-		} else {
-			autoAnalysisSource = "keyword-analysis"
-		}
+		autoAnalysisSource = "keyword-analysis"
 	}
 
 	// ca[name] = afferent coupling — how many others depend on this component.
@@ -274,16 +267,6 @@ func (p *architectureAnalysisPattern) Handle(validInput map[string]any, sessionI
 		}(),
 		[]string{"components"},
 	)
-
-	// Tier 2A: text analysis
-	if primarySearchText != "" {
-		if analysis := AnalyzeText(primarySearchText); analysis != nil {
-			if domainTmpl != nil {
-				analysis.Gaps = DetectGaps(analysis.Entities, domainTmpl)
-			}
-			data["textAnalysis"] = analysis
-		}
-	}
 
 	return think.MakeThinkResult("architecture_analysis", data, sessionID, nil, "", []string{"highlyCoupled", "couplingDetected"}), nil
 }

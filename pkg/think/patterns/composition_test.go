@@ -90,14 +90,9 @@ func TestChain_DecompToArchitecture(t *testing.T) {
 	// Step 2: get suggestedSubProblems from result.
 	suggestedSubProblems, ok := pdResult.Data["suggestedSubProblems"].([]string)
 	if !ok || len(suggestedSubProblems) == 0 {
-		// Fallback: derive from domain template directly so the chain is testable
+		// Fallback: use hardcoded sub-problems so the chain is testable
 		// even if the input triggers no auto-analysis.
-		tmpl := MatchDomainTemplate(problem)
-		if tmpl != nil && len(tmpl.SubProblems) > 0 {
-			suggestedSubProblems = tmpl.SubProblems
-		} else {
-			suggestedSubProblems = []string{"api-design", "service-layer", "data-access"}
-		}
+		suggestedSubProblems = []string{"api-design", "service-layer", "data-access"}
 	}
 
 	// Step 3: build components from sub-problems — each sub-problem becomes a component.

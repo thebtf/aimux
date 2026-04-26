@@ -146,15 +146,5 @@ func (p *sourceComparisonPattern) Handle(validInput map[string]any, sessionID st
 		"guidance":         BuildGuidance("source_comparison", "full", []string{"topic", "sources"}),
 	}
 
-	// Tier 2A: text analysis
-	primaryText := validInput["topic"].(string)
-	if analysis := AnalyzeText(primaryText); analysis != nil {
-		domain := MatchDomainTemplate(primaryText)
-		if domain != nil {
-			analysis.Gaps = DetectGaps(analysis.Entities, domain)
-		}
-		data["textAnalysis"] = analysis
-	}
-
 	return think.MakeThinkResult("source_comparison", data, sessionID, nil, "", nil), nil
 }
