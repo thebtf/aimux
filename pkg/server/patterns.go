@@ -149,6 +149,12 @@ func (s *Server) registerPatternTools() {
 				mcp.Description("Session ID for stateful continuation")))
 		}
 
+		// mode parameter: always present on every pattern tool.
+		opts = append(opts, mcp.WithString("mode",
+			mcp.Description("Thinking mode. solo: instant local processing. consensus: spawn multi-model analysis. auto (default): complexity metrics decide."),
+			mcp.Enum("solo", "consensus", "auto"),
+		))
+
 		// All solo pattern tools are read-only and idempotent — they produce
 		// structured analysis locally without modifying external state.
 		opts = append(opts, mcp.WithToolAnnotation(mcp.ToolAnnotation{
@@ -177,16 +183,29 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 	// Build input map from all fields declared in the handler's schema.
 	// This avoids maintaining a separate hardcoded allowlist that can diverge
 	// from SchemaFields() as patterns evolve.
+	// Also capture mode and session_id separately — they are not pattern fields.
 	input := make(map[string]any)
+	requestedMode := "auto" // default
 	if args, ok := request.Params.Arguments.(map[string]any); ok {
 		for fieldName := range handler.SchemaFields() {
 			if v, exists := args[fieldName]; exists {
 				input[fieldName] = v
 			}
 		}
+		if m, ok := args["mode"].(string); ok && m != "" {
+			requestedMode = m
+		}
 	}
 
 	sessionID := request.GetString("session_id", "")
+
+	// Fast-fail: reject consensus mode on solo-only patterns before executing handler.
+	if requestedMode == "consensus" && think.GetDialogConfig(patternName) == nil {
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"pattern %q does not support consensus mode (solo-only). Use solo or auto, or pick a pattern that supports multi-model analysis",
+			patternName,
+		)), nil
+	}
 
 	// Validate input
 	validInput, err := handler.Validate(input)
@@ -226,6 +245,12 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 	// Compute complexity for mode recommendation
 	complexity := think.CalculateComplexity(patternName, input, 60)
 
+	// Determine effective mode based on requested mode + complexity + pattern capability.
+	effectiveMode, modeErr := resolveEffectiveMode(requestedMode, patternName, complexity.Recommendation)
+	if modeErr != nil {
+		return mcp.NewToolResultError(modeErr.Error()), nil
+	}
+
 	// Build response with mode indicator
 	summary := think.GenerateSummary(thinkResult, complexity.Recommendation)
 	response := map[string]any{
@@ -234,7 +259,7 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 		"summary":   summary,
 		"timestamp": thinkResult.Timestamp,
 		"data":                   thinkResult.Data,
-		"mode":                   "solo",
+		"mode":                   effectiveMode,
 		"complexityRecommendation": complexity.Recommendation,
 		"complexity": map[string]any{
 			"total":     complexity.Total,
@@ -271,6 +296,12 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 		"reason": advisorRec.Reason,
 	}
 
+	// Consensus-mode graceful degradation hints.
+	if effectiveMode == "consensus_recommended" {
+		response["consensus_available"] = false
+		response["consensus_hint"] = "Consensus mode requires dialog manager integration. Use consensus/debate tools directly for multi-model analysis."
+	}
+
 	// Extract step number from result data for policy state labels
 	stepNumber := 0
 	if n, ok := thinkResult.Data["thoughtNumber"]; ok {
@@ -289,4 +320,32 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 		StepNumber: stepNumber,
 	}
 	return s.marshalGuidedToolResult("think", patternName, thinkState, response)
+}
+
+// resolveEffectiveMode maps (requestedMode, patternName, complexityRecommendation)
+// to the effective mode string placed in the response.
+//
+// Pre-condition: caller has already fast-failed for consensus+solo-only combinations.
+//
+// Rules:
+//   - "solo"      → always "solo", regardless of complexity.
+//   - "consensus" → "consensus_recommended" (graceful degradation until dialog manager
+//     integration is wired; caller has already validated pattern supports consensus).
+//   - "auto"      → "consensus_recommended" when complexity recommends consensus AND
+//     the pattern has a dialog config; "solo" otherwise.
+//   - default     → treated as "auto".
+func resolveEffectiveMode(requestedMode, patternName, complexityRec string) (string, error) {
+	switch requestedMode {
+	case "solo":
+		return "solo", nil
+	case "consensus":
+		// Graceful degradation: dialog manager not yet wired — advertise but don't block.
+		// Solo-only patterns are already rejected before this function is reached.
+		return "consensus_recommended", nil
+	default: // "auto" or unrecognised values
+		if complexityRec == "consensus" && think.GetDialogConfig(patternName) != nil {
+			return "consensus_recommended", nil
+		}
+		return "solo", nil
+	}
 }

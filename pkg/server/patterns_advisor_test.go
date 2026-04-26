@@ -135,3 +135,186 @@ func TestHandlePattern_EnrichedResponse_AdvisorFields(t *testing.T) {
 		}
 	}
 }
+
+// --- Mode routing tests ---
+
+// TestHandlePattern_ModeSolo_AlwaysSolo verifies that mode=solo forces solo
+// regardless of input complexity.
+func TestHandlePattern_ModeSolo_AlwaysSolo(t *testing.T) {
+	patterns.RegisterAll()
+	srv := testServer(t)
+
+	// Use a pattern with a dialog config so auto might recommend consensus.
+	req := makeRequest("critical_thinking", map[string]any{
+		"issue": "evaluate my reasoning about caching",
+		"mode":  "solo",
+	})
+
+	result, err := srv.handlePattern(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handlePattern: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	inner := parseGuidedResult(t, result)
+	mode, ok := inner["mode"].(string)
+	if !ok {
+		t.Fatalf("mode not present or not a string; full: %v", inner)
+	}
+	if mode != "solo" {
+		t.Errorf("mode=solo requested, got %q", mode)
+	}
+}
+
+// TestHandlePattern_ModeAuto_SimpleInput_Solo verifies that mode=auto with
+// simple (short) input routes to solo.
+func TestHandlePattern_ModeAuto_SimpleInput_Solo(t *testing.T) {
+	patterns.RegisterAll()
+	srv := testServer(t)
+
+	req := makeRequest("critical_thinking", map[string]any{
+		"issue": "short",
+		"mode":  "auto",
+	})
+
+	result, err := srv.handlePattern(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handlePattern: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	inner := parseGuidedResult(t, result)
+	mode, ok := inner["mode"].(string)
+	if !ok {
+		t.Fatalf("mode not present or not a string; full: %v", inner)
+	}
+	// Simple input is below complexity threshold — should stay solo.
+	if mode != "solo" {
+		t.Errorf("simple input with mode=auto: expected solo, got %q", mode)
+	}
+}
+
+// TestHandlePattern_ModeAuto_ComplexInput_ConsensusRecommended verifies that
+// mode=auto with complex input produces mode=consensus_recommended.
+//
+// Complexity routing formula: rawScore = textLen*0.3 + subItems*0.3 + depth*0.2 + bias*0.2
+// Threshold = 60. To breach it we use decision_framework (bias=30) with:
+//   - long "decision" text (>500 chars → textLen=100, contributes 30)
+//   - 10+ "options" items (subItems=100, contributes 30)
+//   - bias=30, contributes 6
+//   Total = 66 ≥ 60 → recommendation "consensus".
+func TestHandlePattern_ModeAuto_ComplexInput_ConsensusRecommended(t *testing.T) {
+	patterns.RegisterAll()
+	srv := testServer(t)
+
+	// Long decision text pushes textLen score to 100.
+	longDecision := "Should we migrate our core transaction processing service from a monolithic " +
+		"PostgreSQL-backed architecture to a distributed microservices topology with Kafka " +
+		"event sourcing? The current system handles 50k TPS with p99 latency of 12ms. The " +
+		"proposed migration would involve splitting into 8 bounded contexts, each with its own " +
+		"data store, connected via an event bus with exactly-once semantics guaranteed by a " +
+		"custom idempotency layer. This requires 18 months of parallel-run investment plus " +
+		"retraining the entire engineering organisation on event-driven patterns."
+
+	// 10 options pushes subItems score to 100.
+	options := []any{
+		"Full migration to microservices",
+		"Strangler-fig incremental extraction",
+		"Keep monolith, optimise queries",
+		"Add read replicas for scale-out",
+		"CQRS with a separate read model",
+		"Introduce a cache layer (Redis)",
+		"Vertical scaling of current DB",
+		"Migrate to distributed SQL (CockroachDB)",
+		"Hybrid: extract only hottest services",
+		"Postpone decision, gather more data",
+	}
+
+	req := makeRequest("decision_framework", map[string]any{
+		"decision": longDecision,
+		"options":  options,
+		"mode":     "auto",
+	})
+
+	result, err := srv.handlePattern(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handlePattern: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	inner := parseGuidedResult(t, result)
+	mode, ok := inner["mode"].(string)
+	if !ok {
+		t.Fatalf("mode not present or not a string; full: %v", inner)
+	}
+	// decision_framework has ComplexityBias=30; with max text + 10 options the
+	// total score is 66 which exceeds the threshold of 60.
+	if mode != "consensus_recommended" {
+		t.Errorf("complex input with mode=auto: expected consensus_recommended, got %q", mode)
+	}
+
+	// Must also carry consensus_available and consensus_hint.
+	if _, ok := inner["consensus_available"]; !ok {
+		t.Error("consensus_available field missing in consensus_recommended response")
+	}
+	if _, ok := inner["consensus_hint"]; !ok {
+		t.Error("consensus_hint field missing in consensus_recommended response")
+	}
+}
+
+// TestHandlePattern_ModeConsensus_SoloOnlyPattern_ReturnsError verifies that
+// mode=consensus on a solo-only pattern (no dialog config) returns a tool error.
+func TestHandlePattern_ModeConsensus_SoloOnlyPattern_ReturnsError(t *testing.T) {
+	patterns.RegisterAll()
+	srv := testServer(t)
+
+	// "think" is a solo-only pattern (no dialog config).
+	req := makeRequest("think", map[string]any{
+		"thought": "test thought",
+		"mode":    "consensus",
+	})
+
+	result, err := srv.handlePattern(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handlePattern returned Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for consensus mode on solo-only pattern, got success")
+	}
+}
+
+// TestHandlePattern_ModeDefault_ActsLikeAuto verifies that omitting the mode
+// parameter defaults to auto behavior (same result as explicit mode=auto).
+func TestHandlePattern_ModeDefault_ActsLikeAuto(t *testing.T) {
+	patterns.RegisterAll()
+	srv := testServer(t)
+
+	// Simple input — no mode field.
+	req := makeRequest("critical_thinking", map[string]any{
+		"issue": "short",
+	})
+
+	result, err := srv.handlePattern(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handlePattern: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	inner := parseGuidedResult(t, result)
+	mode, ok := inner["mode"].(string)
+	if !ok {
+		t.Fatalf("mode not present or not a string; full: %v", inner)
+	}
+	// Default with simple input → solo (same as explicit mode=auto).
+	if mode != "solo" {
+		t.Errorf("no mode param with simple input: expected solo (auto default), got %q", mode)
+	}
+}
