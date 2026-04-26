@@ -186,11 +186,13 @@ func (p *sourceComparisonPattern) Handle(validInput map[string]any, sessionID st
 	}
 
 	data := map[string]any{
-		"topic":            topic,
-		"sourceCount":      len(sources),
-		"comparisonMatrix": matrix,
-		"overallConsensus": overallConsensus,
-		"guidance":         BuildGuidance("source_comparison", "full", []string{"topic", "sources"}),
+		"topic":                 topic,
+		"sourceCount":           len(sources),
+		"comparisonMatrix":      matrix,
+		"overallConsensus":      overallConsensus,
+		"sourceAgreementScores": sourceAgreementScores,
+		"outlierSources":        outlierSources,
+		"guidance":              BuildGuidance("source_comparison", "full", []string{"topic", "sources"}),
 	}
 
 	return think.MakeThinkResult("source_comparison", data, sessionID, nil, "", nil), nil
