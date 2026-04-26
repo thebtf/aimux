@@ -112,6 +112,22 @@ func (p *stochasticAlgorithmPattern) Handle(validInput map[string]any, sessionID
 		"analysisPrompt":    fmt.Sprintf("Apply %s (%s) to: %s", algType, description, problemDef),
 	}
 
+	// Summary flags (TS v1 parity).
+	_, hasParams := validInput["parameters"]
+	_, hasResult := validInput["result"]
+	data["hasParameters"] = hasParams
+	data["hasResult"] = hasResult
+
+	// Non-implemented algorithm guidance (TS v1 parity).
+	switch algType {
+	case "mdp":
+		data["inputGuidance"] = "MDP computation not yet implemented. Required parameters: { states: [], actions: [], transitions: {}, rewards: {} }"
+	case "mcts":
+		data["inputGuidance"] = "MCTS computation not yet implemented. Required parameters: { rootState: {}, actions: [], explorationConstant: number, simulationCount: number }"
+	case "hmm":
+		data["inputGuidance"] = "HMM computation not yet implemented. Required parameters: { states: [], observations: [], transitionMatrix: [][], emissionMatrix: [][], initialProbs: [] }"
+	}
+
 	// Bandit + Bayesian: compute EV/variance when outcomes are provided in parameters.
 	if algType == "bandit" || algType == "bayesian" {
 		if params, ok := validInput["parameters"].(map[string]any); ok {
