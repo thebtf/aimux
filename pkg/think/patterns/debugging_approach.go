@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -129,6 +130,15 @@ func (p *debuggingApproachPattern) Validate(input map[string]any) (map[string]an
 			validated["findings_text"] = s
 		}
 
+		// resolution_text
+		if v, ok := input["resolution_text"]; ok {
+			s, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("field 'resolution_text' must be a string")
+			}
+			validated["resolution_text"] = s
+		}
+
 		// hypothesis_text → create hypothesis map
 		if v, ok := input["hypothesis_text"]; ok {
 			text, ok := v.(string)
@@ -233,6 +243,7 @@ func (p *debuggingApproachPattern) SchemaFields() map[string]think.FieldSchema {
 		"step_number":       {Type: "number", Required: false, Description: "External step tracking number"},
 		"next_step_needed":  {Type: "boolean", Required: false, Description: "Whether another step is needed"},
 		"findings_text":     {Type: "string", Required: false, Description: "Findings from this debugging step"},
+		"resolution_text":   {Type: "string", Required: false, Description: "Resolution text when bug is resolved"},
 	}
 }
 
@@ -241,20 +252,39 @@ func (p *debuggingApproachPattern) Category() string { return "solo" }
 func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
 	sess := think.GetOrCreateSession(sessionID, "debugging_approach", map[string]any{
 		"hypotheses": []any{},
+		"steps":      []any{},
+		"resolution": "",
 	})
 
 	hypotheses, _ := sess.State["hypotheses"].([]any)
+	steps, _ := sess.State["steps"].([]any)
+	resolution, _ := sess.State["resolution"].(string)
 
-	// Add new hypothesis
+	// Add new hypothesis with duplicate detection (case-insensitive exact match).
+	duplicateDetected := false
 	if hRaw, ok := validInput["hypothesis"]; ok {
 		h := hRaw.(map[string]any)
-		entry := map[string]any{
-			"id":      h["id"],
-			"text":    h["text"],
-			"status":  "untested",
-			"addedAt": time.Now().UTC().Format(time.RFC3339),
+		newText, _ := h["text"].(string)
+		newTextLower := strings.ToLower(newText)
+		for _, existing := range hypotheses {
+			if em, ok := existing.(map[string]any); ok {
+				if existText, ok := em["text"].(string); ok {
+					if strings.ToLower(existText) == newTextLower {
+						duplicateDetected = true
+						break
+					}
+				}
+			}
 		}
-		hypotheses = append(hypotheses, entry)
+		if !duplicateDetected {
+			entry := map[string]any{
+				"id":      h["id"],
+				"text":    h["text"],
+				"status":  "untested",
+				"addedAt": time.Now().UTC().Format(time.RFC3339),
+			}
+			hypotheses = append(hypotheses, entry)
+		}
 	}
 
 	// Resolve __last__ sentinel for flat hypothesis_action path.
@@ -307,8 +337,32 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 		hypotheses = updated
 	}
 
+	// Track steps: each Handle invocation with findings_text or approachName is a step.
+	stepEntry := map[string]any{
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}
+	if approachName, ok := validInput["approachName"].(string); ok {
+		stepEntry["approachName"] = approachName
+	}
+	if findingsText, ok := validInput["findings_text"].(string); ok {
+		stepEntry["findings"] = findingsText
+	}
+	// Only append a step when there's meaningful content to track.
+	if _, hasApproach := stepEntry["approachName"]; hasApproach {
+		steps = append(steps, stepEntry)
+	} else if _, hasFindings := stepEntry["findings"]; hasFindings {
+		steps = append(steps, stepEntry)
+	}
+
+	// Track resolution: resolution_text input field (TS v1 parity).
+	if resText, ok := validInput["resolution_text"].(string); ok && resText != "" {
+		resolution = resText
+	}
+
 	think.UpdateSessionState(sessionID, map[string]any{
 		"hypotheses": hypotheses,
+		"steps":      steps,
+		"resolution": resolution,
 	})
 
 	issue := validInput["issue"].(string)
@@ -337,6 +391,23 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 		guidanceDepth = "basic"
 	}
 
+	// TS v1 parity: hasFindings — true when any step has findings recorded.
+	hasFindings := false
+	for _, s := range steps {
+		if sm, ok := s.(map[string]any); ok {
+			if _, found := sm["findings"]; found {
+				hasFindings = true
+				break
+			}
+		}
+	}
+	// Also consider current findings_text input.
+	if ft, ok := validInput["findings_text"].(string); ok && ft != "" {
+		hasFindings = true
+	}
+
+	hasResolution := resolution != ""
+
 	data := map[string]any{
 		"issue":             issue,
 		"methodDescription": methodDescription,
@@ -344,7 +415,17 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 		"hypothesisCount":   len(hypotheses),
 		"confirmedCount":    confirmedCount,
 		"refutedCount":      refutedCount,
+		// TS v1 parity fields.
+		"duplicateDetected": duplicateDetected,
+		"stepCount":         len(steps),
+		"steps":             steps,
+		"hasFindings":       hasFindings,
+		"hasResolution":     hasResolution,
+		"suggestedNext":     "scientific_method",
 		"guidance":          BuildGuidance("debugging_approach", guidanceDepth, []string{"approachName", "hypothesis", "hypothesisUpdate"}),
+	}
+	if hasResolution {
+		data["resolution"] = resolution
 	}
 
 	// Propagate flat format optional fields to output.
