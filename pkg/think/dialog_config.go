@@ -169,6 +169,29 @@ func BuildPatternDialogPrompt(config *DialogConfig, input map[string]any) string
 	return interpolateTemplate(config.PromptTemplate, input)
 }
 
+// ThinkConsensusCLIs is the temporary allowlist for consensus mode.
+// Only these CLIs are used for think pattern consensus/dialog.
+var ThinkConsensusCLIs = map[string]bool{
+	"codex":  true,
+	"claude": true,
+	"gemini": true,
+}
+
+// FilterParticipants returns only participants whose CLI is in the allowed set.
+// Filtered participants are logged via the returned list of warnings.
+func FilterParticipants(participants []DialogParticipant, allowed map[string]bool) ([]DialogParticipant, []string) {
+	var filtered []DialogParticipant
+	var warnings []string
+	for _, p := range participants {
+		if allowed[p.CLI] {
+			filtered = append(filtered, p)
+		} else {
+			warnings = append(warnings, fmt.Sprintf("CLI %q filtered from consensus mode (not in allowlist)", p.CLI))
+		}
+	}
+	return filtered, warnings
+}
+
 // GetDialogPatterns returns the list of patterns that have dialog configs.
 func GetDialogPatterns() []string {
 	names := make([]string, 0, len(dialogConfigs))
