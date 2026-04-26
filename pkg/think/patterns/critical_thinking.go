@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -27,6 +28,16 @@ var biasCatalogs = map[string][]string{
 	"appeal_to_tradition":    {"we've always done", "traditional approach", "the way it's been", "historically", "legacy technology", "old way works"},
 	"ad_hominem":             {"they don't understand", "they're not qualified", "what do they know", "never built anything"},
 	"slippery_slope":         {"if we allow", "next thing you know", "where does it end", "will lead to", "opens the door to"},
+}
+
+// structuralBiasPatterns detects implicit biases via regex patterns that match
+// sentence structure rather than specific trigger phrases.
+var structuralBiasPatterns = map[string]*regexp.Regexp{
+	"planning_fallacy":          regexp.MustCompile(`(?i)\d+\s*(?:months?|weeks?|sprints?|years?|days?)\s+(?:for\s+(?:the|a|full)\s+)?(?:rewrite|rebuild|replace|migration|refactor)`),
+	"silver_bullet":             regexp.MustCompile(`(?i)(?:should|need\s+to|must|let'?s)\s+(?:rewrite|rebuild|replace|migrate\s+to|switch\s+to|move\s+to)`),
+	"overconfidence":            regexp.MustCompile(`(?i)(?:will\s+(?:solve|eliminate|fix\s+all|guarantee|ensure)|completely\s+(?:solve|eliminate|remove))`),
+	"correlation_not_causation": regexp.MustCompile(`(?i)because\s+(?:(?:the\s+)?(?:team|company|org(?:anization)?|department))\s+(?:has\s+)?(?:grew|grown|scaled|hired|expanded|doubled|tripled)`),
+	"false_precision":           regexp.MustCompile(`(?i)(?:exactly|precisely)\s+\d+`),
 }
 
 type criticalThinkingPattern struct {
@@ -102,6 +113,28 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 				"bias":     biasName,
 				"triggers": matched,
 			})
+		}
+	}
+
+	// Structural bias detection via regex patterns.
+	for biasName, pattern := range structuralBiasPatterns {
+		if locs := pattern.FindStringIndex(issue); locs != nil {
+			// Check dedup against already-detected biases.
+			alreadyDetected := false
+			for _, b := range detectedBiases {
+				if b["bias"] == biasName {
+					alreadyDetected = true
+					break
+				}
+			}
+			if !alreadyDetected {
+				matched := issue[locs[0]:locs[1]]
+				detectedBiases = append(detectedBiases, map[string]any{
+					"bias":     biasName,
+					"triggers": []string{matched},
+					"source":   "structural_pattern",
+				})
+			}
 		}
 	}
 

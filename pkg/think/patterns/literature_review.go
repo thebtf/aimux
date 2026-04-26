@@ -97,45 +97,41 @@ func (p *literatureReviewPattern) Handle(validInput map[string]any, sessionID st
 	return think.MakeThinkResult("literature_review", data, sessionID, nil, "source_comparison", nil), nil
 }
 
-// deriveThemes extracts recurring keywords from paper titles/strings.
+// deriveThemes extracts bigrams from paper titles/abstracts using NgramExtract.
 func deriveThemes(topic string, papers []any) []string {
-	wordFreq := make(map[string]int)
-	topicWords := tokenize(topic)
-	for _, w := range topicWords {
-		wordFreq[w]++
-	}
+	// Collect all text from papers.
+	var allText strings.Builder
+	allText.WriteString(topic)
+	allText.WriteString(" ")
 	for _, p := range papers {
-		var text string
 		switch v := p.(type) {
 		case string:
-			text = v
+			allText.WriteString(v)
+			allText.WriteString(" ")
 		case map[string]any:
 			if t, ok := v["title"].(string); ok {
-				text = t
+				allText.WriteString(t)
+				allText.WriteString(" ")
 			}
 			if abs, ok := v["abstract"].(string); ok {
-				text += " " + abs
+				allText.WriteString(abs)
+				allText.WriteString(" ")
 			}
-		}
-		for _, w := range tokenize(text) {
-			wordFreq[w]++
 		}
 	}
 
-	// Return words appearing more than once as themes (up to 5).
-	var themes []string
-	for w, c := range wordFreq {
-		if c >= 2 && len(w) > 3 {
-			themes = append(themes, w)
-		}
-		if len(themes) >= 5 {
-			break
-		}
+	// Extract bigrams as primary themes.
+	bigrams := NgramExtract(allText.String(), 2, 5)
+	if len(bigrams) >= 2 {
+		return bigrams
 	}
-	if len(themes) == 0 {
-		themes = []string{topic}
+
+	// Fallback to single-word frequency when <2 bigrams found.
+	words := NgramExtract(allText.String(), 1, 5)
+	if len(words) > 0 {
+		return words
 	}
-	return themes
+	return []string{topic}
 }
 
 func identifyGaps(topic string, papers []any) []string {
@@ -146,16 +142,61 @@ func identifyGaps(topic string, papers []any) []string {
 			"Cross-domain replication not assessed",
 		}
 	}
-	return []string{
-		fmt.Sprintf("Limited coverage of edge cases in '%s'", topic),
-		"Lack of reproducibility data across studies",
+
+	// Tokenize topic into keywords.
+	topicKeywords := make(map[string]bool)
+	for _, w := range tokenize(topic) {
+		if len(w) > 3 {
+			topicKeywords[w] = true
+		}
 	}
+
+	// Collect all paper text.
+	var paperText strings.Builder
+	for _, p := range papers {
+		switch v := p.(type) {
+		case string:
+			paperText.WriteString(strings.ToLower(v))
+			paperText.WriteString(" ")
+		case map[string]any:
+			if t, ok := v["title"].(string); ok {
+				paperText.WriteString(strings.ToLower(t))
+				paperText.WriteString(" ")
+			}
+			if abs, ok := v["abstract"].(string); ok {
+				paperText.WriteString(strings.ToLower(abs))
+				paperText.WriteString(" ")
+			}
+		}
+	}
+	paperContent := paperText.String()
+
+	// Find topic keywords absent from paper content.
+	var gaps []string
+	for kw := range topicKeywords {
+		if !strings.Contains(paperContent, kw) {
+			gaps = append(gaps, fmt.Sprintf("Topic term '%s' not covered by any paper", kw))
+		}
+	}
+
+	// Always add structural gap observations.
+	if len(papers) < 5 {
+		gaps = append(gaps, fmt.Sprintf("Limited sample size (%d papers) — may miss important perspectives", len(papers)))
+	}
+	gaps = append(gaps, "Lack of reproducibility data across studies")
+
+	return gaps
 }
 
 func suggestDirections(gaps []string, topic string) []string {
+	themes := NgramExtract(topic, 2, 3)
 	directions := make([]string, 0, len(gaps)+1)
 	for _, g := range gaps {
-		directions = append(directions, fmt.Sprintf("Address: %s", g))
+		if len(themes) > 0 {
+			directions = append(directions, fmt.Sprintf("Investigate: %s (relevant to '%s')", g, themes[0]))
+		} else {
+			directions = append(directions, fmt.Sprintf("Address: %s", g))
+		}
 	}
 	directions = append(directions, fmt.Sprintf("Meta-analysis of existing '%s' studies", topic))
 	return directions

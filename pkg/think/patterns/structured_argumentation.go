@@ -216,8 +216,9 @@ func (p *structuredArgumentationPattern) Handle(validInput map[string]any, sessi
 	}
 
 	data := map[string]any{
-		"topic":     topic,
-		"arguments": arguments,
+		"topic":      topic,
+		"arguments":  arguments,
+		"session_id": sessionID,
 		// Flat counts (Go-native, preferred by MCP callers).
 		"claimCount":    claimCount,
 		"evidenceCount": evidenceCount,

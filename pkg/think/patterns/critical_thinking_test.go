@@ -242,6 +242,79 @@ func TestCritical_StructuredFieldsAbsent(t *testing.T) {
 	}
 }
 
+func TestCriticalThinking_StructuralBiasDetection(t *testing.T) {
+	p := NewCriticalThinkingPattern()
+
+	tests := []struct {
+		name      string
+		issue     string
+		wantBias  string
+		wantCount int // minimum bias count
+	}{
+		{
+			name:      "planning_fallacy",
+			issue:     "The CTO estimates 6 months for the rewrite of the entire platform",
+			wantBias:  "planning_fallacy",
+			wantCount: 1,
+		},
+		{
+			name:      "silver_bullet",
+			issue:     "We should rewrite our monolith in microservices",
+			wantBias:  "silver_bullet",
+			wantCount: 1,
+		},
+		{
+			name:      "overconfidence",
+			issue:     "This new framework will solve all our performance problems",
+			wantBias:  "overconfidence",
+			wantCount: 1,
+		},
+		{
+			name:      "correlation_not_causation",
+			issue:     "We need microservices because the team has grown to 30 engineers",
+			wantBias:  "correlation_not_causation",
+			wantCount: 1,
+		},
+		{
+			name:      "combined_monolith_scenario",
+			issue:     "We should rewrite our monolith in microservices because our team has grown to 30 engineers. The CTO estimates 6 months for the rewrite.",
+			wantBias:  "", // check count only
+			wantCount: 2,  // at least planning_fallacy + silver_bullet or correlation
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := map[string]any{"issue": tt.issue}
+			validated, err := p.Validate(input)
+			if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			result, err := p.Handle(validated, "")
+			if err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			biasCount, _ := result.Data["biasCount"].(int)
+			if biasCount < tt.wantCount {
+				t.Errorf("biasCount = %d, want >= %d (biases: %v)", biasCount, tt.wantCount, result.Data["detectedBiases"])
+			}
+			if tt.wantBias != "" {
+				biases, _ := result.Data["detectedBiases"].([]map[string]any)
+				found := false
+				for _, b := range biases {
+					if b["bias"] == tt.wantBias {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected bias %q not found in %v", tt.wantBias, biases)
+				}
+			}
+		})
+	}
+}
+
 // TestCritical_SamplingFailureFallback verifies that when the SamplingProvider
 // returns an error, Handle returns keyword-based results without error.
 func TestCritical_SamplingFailureFallback(t *testing.T) {

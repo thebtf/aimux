@@ -103,3 +103,28 @@ func TestArg_FlatBackwardCompat(t *testing.T) {
 		t.Fatalf("expected claimCount=1, got %v", r.Data["claimCount"])
 	}
 }
+
+func TestStructuredArgumentation_SessionIDInData(t *testing.T) {
+	think.ClearSessions()
+	p := NewStructuredArgumentationPattern()
+	input := map[string]any{
+		"topic":         "test topic",
+		"argument_type": "claim",
+		"argument_text": "Test claim text",
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	result, err := p.Handle(validated, "test-session-123")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	sid, ok := result.Data["session_id"]
+	if !ok {
+		t.Fatal("session_id not found in result data")
+	}
+	if sid != "test-session-123" {
+		t.Errorf("session_id = %v, want test-session-123", sid)
+	}
+}
