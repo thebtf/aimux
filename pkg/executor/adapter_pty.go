@@ -101,3 +101,8 @@ func (a *CLIPTYAdapter) IsAlive() types.HealthStatus {
 func (a *CLIPTYAdapter) Close() error {
 	return nil
 }
+
+// Legacy returns the underlying LegacyExecutor for Strangler Fig bridging.
+func (a *CLIPTYAdapter) Legacy() types.LegacyExecutor {
+	return a.legacy
+}

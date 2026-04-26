@@ -16,6 +16,7 @@ import (
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/agents"
 	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
+	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
@@ -143,6 +144,7 @@ type Server struct {
 	loom                    *loom.LoomEngine         // central task mediator (LoomEngine v3)
 	dispatchHistory         *agents.DispatchHistory  // agent dispatch feedback history (T003)
 	feedbackTracker         *agents.FeedbackTracker  // BM25 score adjustment from outcomes (T004)
+	swarm                   *swarm.Swarm             // executor lifecycle manager (M2 Strangler Fig)
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -171,6 +173,10 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		executor:        selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
 		cooldownTracker: executor.NewModelCooldownTracker(),
 	}
+	// M2 Strangler Fig: initialize Swarm, wrapping s.executor via an indirection
+	// pointer so the factory always sees the current executor (including test swaps).
+	// CLIPipeAdapter implements LegacyAccessor, enabling Swarm.LegacyRun bridging.
+	s.swarm = swarm.New(wrapExecutorAsV2Factory(&s.executor))
 	s.metrics = metrics.New()
 
 	// Initialize rate limiter — per-tool token bucket.
@@ -489,6 +495,15 @@ func (s *Server) Shutdown() {
 			s.log.Warn("final snapshot failed: %v", err)
 		}
 		s.store.Close()
+	}
+
+	// Shutdown Swarm — closes all managed ExecutorV2 handles.
+	if s.swarm != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.swarm.Shutdown(shutCtx); err != nil && s.log != nil {
+			s.log.Warn("swarm shutdown: %v", err)
+		}
 	}
 }
 

@@ -116,3 +116,10 @@ func (a *CLIPipeAdapter) IsAlive() types.HealthStatus {
 func (a *CLIPipeAdapter) Close() error {
 	return nil
 }
+
+// Legacy returns the underlying LegacyExecutor for Strangler Fig bridging.
+// Used by Swarm.LegacyRun() to call Run(SpawnArgs) through Swarm lifecycle
+// management without converting to Message/Response.
+func (a *CLIPipeAdapter) Legacy() types.LegacyExecutor {
+	return a.legacy
+}
