@@ -8,9 +8,9 @@ import (
 // Executor spawns and manages CLI processes.
 // Three implementations: ConPTY (Windows), PTY (Linux/Mac), Pipe (fallback).
 //
-// Deprecated: Use ExecutorV2 for new code. This interface is preserved as
-// LegacyExecutor and aliased for backward compatibility during M1→M8 migration.
-// Will be removed in v5.0.0 when all callers migrate to ExecutorV2.
+// Deprecated: Use ExecutorV2. Will be removed in v6.0.0.
+// This interface is preserved as LegacyExecutor and aliased for backward
+// compatibility during M1→M8 migration.
 type Executor = LegacyExecutor
 
 // LegacyExecutor is the original executor interface (v4.x).

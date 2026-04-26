@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/thebtf/aimux/pkg/dialogue"
@@ -150,6 +151,7 @@ func (d *SequentialDialog) turnsToPartialResult(dlg *dialogue.Dialogue, particip
 
 // executeLegacy is the original dialog logic preserved for Strangler Fig fallback.
 func (d *SequentialDialog) executeLegacy(ctx context.Context, params types.StrategyParams, maxTurns int) (*types.StrategyResult, error) {
+	fmt.Fprintf(os.Stderr, "[DEPRECATED] %s using legacy executor path — migrate to Dialogue Controller (v5.0.0 will remove this)\n", d.Name())
 	participants := params.CLIs
 	budget := ComputeDialogBudget(nil)
 	remainingTurns := maxTurns * len(participants)
