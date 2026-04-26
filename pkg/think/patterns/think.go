@@ -132,7 +132,7 @@ func suggestPatternFromKeywords(keywords []string) (string, float64) {
 
 	categories := []candidate{
 		// Debug / error signals.
-		{"debugging_approach", []string{"bug", "error", "crash", "fail", "broken", "exception", "panic", "nil", "undefined"}},
+		{"debugging_approach", []string{"bug", "debug", "error", "crash", "fail", "broken", "exception", "panic", "nil", "undefined", "race", "deadlock", "goroutine", "segfault", "stacktrace"}},
 		// Architecture / design signals.
 		{"architecture_analysis", []string{"design", "architecture", "system", "structure", "service", "layer", "pattern", "module"}},
 		// Decision / choice signals.
