@@ -102,6 +102,56 @@ func findIncompleteExperiments(entries []any) []string {
 	return result
 }
 
+// findLinkedIDs returns the IDs of all entries whose linkedTo equals targetID.
+func findLinkedIDs(entries []any, targetID, entryType string) []string {
+	var ids []string
+	for _, e := range entries {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if em["type"] == entryType && em["linkedTo"] == targetID {
+			if id, ok := em["id"].(string); ok {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
+// hypothesisSurvived returns true when the hypothesis with the given ID has at least one
+// complete chain: hypothesis → prediction → experiment → result.
+func hypothesisSurvived(entries []any, hypothesisID string) bool {
+	for _, predID := range findLinkedIDs(entries, hypothesisID, "prediction") {
+		for _, expID := range findLinkedIDs(entries, predID, "experiment") {
+			if len(findLinkedIDs(entries, expID, "result")) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// findSurvivedHypotheses returns the IDs of all hypothesis entries that have a complete
+// hypothesis → prediction → experiment → result chain in the session.
+func findSurvivedHypotheses(entries []any) []string {
+	var survived []string
+	for _, e := range entries {
+		em, ok := e.(map[string]any)
+		if !ok || em["type"] != "hypothesis" {
+			continue
+		}
+		id, ok := em["id"].(string)
+		if !ok {
+			continue
+		}
+		if hypothesisSurvived(entries, id) {
+			survived = append(survived, id)
+		}
+	}
+	return survived
+}
+
 // hasEntryOfType returns true if entries contains at least one entry of the given type.
 func hasEntryOfType(entries []any, entryType string) bool {
 	for _, e := range entries {
@@ -391,6 +441,13 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 	incompleteExperiments := findIncompleteExperiments(entries)
 	entryCount := countByType(entries)
 
+	survivedHypotheses := findSurvivedHypotheses(entries)
+	totalHypotheses := entryCount["hypothesis"]
+	var hypothesisSurvivalRate float64
+	if totalHypotheses > 0 {
+		hypothesisSurvivalRate = float64(len(survivedHypotheses)) / float64(totalHypotheses)
+	}
+
 	guidanceDepth := "enriched"
 	if len(entries) == 0 {
 		guidanceDepth = "basic"
@@ -444,9 +501,11 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 		"stageHistoryLen":       len(stageHistory),
 		"entriesCount":          len(entries),
 		"hypothesesCount":       len(hypothesesHistory),
-		"untestedHypotheses":    untestedHypotheses,
-		"incompleteExperiments": incompleteExperiments,
-		"entryCount":            entryCount,
+		"untestedHypotheses":       untestedHypotheses,
+		"incompleteExperiments":    incompleteExperiments,
+		"entryCount":               entryCount,
+		"hypothesisSurvivalRate":   hypothesisSurvivalRate,
+		"survivedHypotheses":       survivedHypotheses,
 		"guidance":              BuildGuidance("scientific_method", guidanceDepth, []string{"entry", "hypothesis", "observation", "question", "analysis", "conclusion"}),
 	}
 	if addedEntry != nil {

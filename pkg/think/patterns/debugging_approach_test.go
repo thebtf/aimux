@@ -279,6 +279,63 @@ func TestDebugging_ConfidenceEnumMapping(t *testing.T) {
 	}
 }
 
+// TestDebuggingApproach_MethodEfficiency: verify per-approach efficiency scoring.
+func TestDebuggingApproach_MethodEfficiency(t *testing.T) {
+	think.ClearSessions()
+	p := NewDebuggingApproachPattern()
+	sid := "test-method-eff"
+
+	// Step 1: binary_search, propose hypothesis
+	input1, _ := p.Validate(map[string]any{
+		"issue":             "API returns 500",
+		"approachName":     "binary_search",
+		"hypothesis_text":   "Database connection pool exhausted",
+		"hypothesis_action": "propose",
+	})
+	p.Handle(input1, sid) //nolint:errcheck
+
+	// Step 2: binary_search, confirm hypothesis
+	input2, _ := p.Validate(map[string]any{
+		"issue":             "API returns 500",
+		"approachName":     "binary_search",
+		"hypothesis_action": "confirm",
+	})
+	p.Handle(input2, sid) //nolint:errcheck
+
+	// Step 3: trace, propose hypothesis
+	input3, _ := p.Validate(map[string]any{
+		"issue":             "API returns 500",
+		"approachName":     "trace",
+		"hypothesis_text":   "Middleware timeout",
+		"hypothesis_action": "propose",
+	})
+	p.Handle(input3, sid) //nolint:errcheck
+
+	// Step 4: trace, refute hypothesis
+	input4, _ := p.Validate(map[string]any{
+		"issue":             "API returns 500",
+		"approachName":     "trace",
+		"hypothesis_action": "refute",
+	})
+	result, err := p.Handle(input4, sid)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	eff, ok := result.Data["methodEfficiency"].(map[string]float64)
+	if !ok {
+		t.Fatalf("methodEfficiency not found or wrong type: %v (%T)", result.Data["methodEfficiency"], result.Data["methodEfficiency"])
+	}
+	// binary_search: 1 confirmed, 0 refuted → 1.0
+	if eff["binary_search"] != 1.0 {
+		t.Errorf("binary_search efficiency = %v, want 1.0", eff["binary_search"])
+	}
+	// trace: 0 confirmed, 1 refuted → 0.0
+	if eff["trace"] != 0.0 {
+		t.Errorf("trace efficiency = %v, want 0.0", eff["trace"])
+	}
+}
+
 // TestDebugging_OverconfidenceWarning: confidence=0.95, 2 findings → VERIFY directive.
 func TestDebugging_OverconfidenceWarning(t *testing.T) {
 	think.ClearSessions()

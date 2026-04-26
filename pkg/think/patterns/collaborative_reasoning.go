@@ -235,6 +235,33 @@ func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessio
 	hasOpenQuestions := typesSeen["question"]
 	hasFinalRecommendation := currentStage == "decision" || currentStage == "reflection"
 
+	// Compute per-stage contribution type frequencies and Shannon entropy.
+	stageTypeCounts := map[string]map[string]int{}
+	for _, cRaw := range contributions {
+		if c, ok := cRaw.(map[string]any); ok {
+			s, _ := c["stage"].(string)
+			t, _ := c["type"].(string)
+			if s == "" || t == "" {
+				continue
+			}
+			if stageTypeCounts[s] == nil {
+				stageTypeCounts[s] = map[string]int{}
+			}
+			stageTypeCounts[s][t]++
+		}
+	}
+	stageTypeEntropy := make(map[string]float64, len(stageTypeCounts))
+	for s, typeCounts := range stageTypeCounts {
+		stageTypeEntropy[s] = ShannonEntropy(typeCounts)
+	}
+
+	lowDiversityStages := []string{}
+	for s, e := range stageTypeEntropy {
+		if e < 0.5 {
+			lowDiversityStages = append(lowDiversityStages, s)
+		}
+	}
+
 	guidanceDepth := "enriched"
 	if len(contributions) == 0 {
 		guidanceDepth = "basic"
@@ -263,7 +290,10 @@ func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessio
 		"contributionsPerPersona": participation.contributionsPerPersona,
 		"silentPersonas":          participation.silentPersonas,
 		"participationBalance":    participation.participationBalance,
-		"guidance":                BuildGuidance("collaborative_reasoning", guidanceDepth, []string{"stage", "contribution", "personas"}),
+		// Stage contribution-type diversity.
+		"stageTypeEntropy":   stageTypeEntropy,
+		"lowDiversityStages": lowDiversityStages,
+		"guidance":           BuildGuidance("collaborative_reasoning", guidanceDepth, []string{"stage", "contribution", "personas"}),
 	}
 	// Only include persona rotation fields when they have values.
 	if activePersonaId != "" {

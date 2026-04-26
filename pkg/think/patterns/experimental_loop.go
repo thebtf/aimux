@@ -102,6 +102,16 @@ func (p *experimentalLoopPattern) Handle(validInput map[string]any, sessionID st
 		guidanceDepth = "basic"
 	}
 
+	// Collect all metric values from session history for trend analysis.
+	metrics := make([]float64, 0, len(experiments))
+	for _, raw := range experiments {
+		if e, ok := raw.(map[string]any); ok {
+			if m, ok := e["metric"].(float64); ok {
+				metrics = append(metrics, m)
+			}
+		}
+	}
+
 	data := map[string]any{
 		"hypothesis":      hypothesis,
 		"experimentCount": len(experiments),
@@ -110,6 +120,19 @@ func (p *experimentalLoopPattern) Handle(validInput map[string]any, sessionID st
 		"isImprovement":   isImprovement,
 		"suggestedAction": suggestedAction,
 		"guidance":        BuildGuidance("experimental_loop", guidanceDepth, []string{"observation", "result", "metric"}),
+	}
+
+	if len(metrics) >= 3 {
+		slope := LinearSlope(metrics)
+		data["metricTrendSlope"] = slope
+		switch {
+		case slope > 0.01:
+			data["trendDirection"] = "improving"
+		case slope < -0.01:
+			data["trendDirection"] = "degrading"
+		default:
+			data["trendDirection"] = "plateauing"
+		}
 	}
 	return think.MakeThinkResult("experimental_loop", data, sessionID, nil, "experimental_loop", nil), nil
 }

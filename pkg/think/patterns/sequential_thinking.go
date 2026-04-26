@@ -168,6 +168,32 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 		}
 	}
 
+	// Revision quality assessment: look up the original thought when isRevision=true.
+	var (
+		revisionDelta float64
+		weakRevision  bool
+		hasRevDelta   bool
+	)
+	if isRevision {
+		if revisesThought, ok := validInput["revisesThought"].(int); ok && revisesThought > 0 {
+			for _, existing := range thoughts {
+				m, ok := existing.(map[string]any)
+				if !ok {
+					continue
+				}
+				if n, ok := m["thoughtNumber"].(int); ok && n == revisesThought {
+					if orig, ok := m["thought"].(string); ok {
+						sim := jaccardSimilarity(orig, currentThought)
+						revisionDelta = 1.0 - sim
+						weakRevision = revisionDelta < 0.15
+						hasRevDelta = true
+					}
+					break
+				}
+			}
+		}
+	}
+
 	var (
 		duplicateSimilarTo     string
 		duplicateSimilarity    float64
@@ -269,6 +295,11 @@ func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID 
 			duplicateSimilarity*100, duplicateSimilarTo,
 		)
 		data["similarity"] = duplicateSimilarity
+	}
+
+	if hasRevDelta {
+		data["revisionDelta"] = revisionDelta
+		data["weakRevision"] = weakRevision
 	}
 
 	// Propagate optional flat param to output.

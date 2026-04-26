@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"fmt"
 	"testing"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -201,5 +202,57 @@ func TestCollab_FlatBackwardCompat(t *testing.T) {
 	}
 	if r.Data["contributionCount"] != 1 {
 		t.Fatalf("expected contributionCount=1, got %v", r.Data["contributionCount"])
+	}
+}
+
+func TestCollaborativeReasoning_StageTypeEntropy(t *testing.T) {
+	think.ClearSessions()
+	p := NewCollaborativeReasoningPattern()
+	sid := "test-entropy"
+
+	// All contributions in same stage, same type → low entropy
+	for i := 0; i < 4; i++ {
+		input, _ := p.Validate(map[string]any{
+			"topic":             "API design",
+			"personas":          []any{"Alice", "Bob"},
+			"stage":             "critique",
+			"contribution_type": "concern",
+			"contribution_text": fmt.Sprintf("Concern %d about the API", i),
+			"persona_id":        "Alice",
+		})
+		p.Handle(input, sid)
+	}
+
+	// Final call
+	input, _ := p.Validate(map[string]any{
+		"topic":             "API design",
+		"personas":          []any{"Alice", "Bob"},
+		"stage":             "critique",
+		"contribution_type": "concern",
+		"contribution_text": "Yet another concern",
+		"persona_id":        "Bob",
+	})
+	result, err := p.Handle(input, sid)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	entropy, ok := result.Data["stageTypeEntropy"].(map[string]float64)
+	if !ok {
+		t.Fatalf("stageTypeEntropy missing: %v", result.Data)
+	}
+	if e, exists := entropy["critique"]; !exists || e > 0.1 {
+		t.Errorf("critique entropy = %v, want near 0 (all same type)", e)
+	}
+
+	lowDiv, _ := result.Data["lowDiversityStages"].([]string)
+	found := false
+	for _, s := range lowDiv {
+		if s == "critique" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'critique' in lowDiversityStages, got %v", lowDiv)
 	}
 }

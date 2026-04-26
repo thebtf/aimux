@@ -267,6 +267,57 @@ func TestSequential_BranchCount(t *testing.T) {
 	}
 }
 
+// TestSequentialThinking_RevisionDelta verifies that revisionDelta and weakRevision
+// are computed correctly when isRevision=true and the original thought is in session history.
+func TestSequentialThinking_RevisionDelta(t *testing.T) {
+	think.ClearSessions()
+	p := NewSequentialThinkingPattern()
+	sid := "test-revision-delta"
+
+	// First thought
+	input1, _ := p.Validate(map[string]any{
+		"thought":       "We should use PostgreSQL for the database because it supports JSON well",
+		"thoughtNumber": float64(1),
+		"totalThoughts": float64(3),
+	})
+	p.Handle(input1, sid)
+
+	// Weak revision (almost identical)
+	input2, _ := p.Validate(map[string]any{
+		"thought":        "We should use PostgreSQL for the database because it supports JSON very well",
+		"thoughtNumber":  float64(2),
+		"totalThoughts":  float64(3),
+		"isRevision":     true,
+		"revisesThought": float64(1),
+	})
+	result2, err := p.Handle(input2, sid)
+	if err != nil {
+		t.Fatalf("Handle weak revision: %v", err)
+	}
+	if weak, ok := result2.Data["weakRevision"].(bool); !ok || !weak {
+		t.Errorf("expected weakRevision=true for near-identical revision, got %v", result2.Data["weakRevision"])
+	}
+
+	// Strong revision (substantially different)
+	input3, _ := p.Validate(map[string]any{
+		"thought":        "Actually MongoDB would be better here because our data is document-oriented and schema-free",
+		"thoughtNumber":  float64(3),
+		"totalThoughts":  float64(3),
+		"isRevision":     true,
+		"revisesThought": float64(1),
+	})
+	result3, err := p.Handle(input3, sid)
+	if err != nil {
+		t.Fatalf("Handle strong revision: %v", err)
+	}
+	if delta, ok := result3.Data["revisionDelta"].(float64); !ok || delta < 0.3 {
+		t.Errorf("expected revisionDelta > 0.3 for substantial revision, got %v", result3.Data["revisionDelta"])
+	}
+	if weak, ok := result3.Data["weakRevision"].(bool); ok && weak {
+		t.Error("expected weakRevision=false for substantial revision")
+	}
+}
+
 // TestSequential_StepNumber: step_number appears in output data when provided.
 func TestSequential_StepNumber(t *testing.T) {
 	think.ClearSessions()

@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"fmt"
 	"testing"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -444,5 +445,44 @@ func TestCollaborativeReasoning_ContributionAndStage(t *testing.T) {
 	}
 	if progress["ideation"] != 1 {
 		t.Fatalf("expected 1 contribution in ideation, got %d", progress["ideation"])
+	}
+}
+
+// --- experimental_loop ---
+
+func TestExperimentalLoop_MetricTrend(t *testing.T) {
+	think.ClearSessions()
+	p := NewExperimentalLoopPattern()
+	sid := "test-trend"
+
+	// 5 experiments with increasing metrics
+	for i, m := range []float64{10, 20, 30, 40, 50} {
+		input, _ := p.Validate(map[string]any{
+			"hypothesis": fmt.Sprintf("Iteration %d", i+1),
+			"metric":     m,
+		})
+		p.Handle(input, sid)
+	}
+
+	// Final call to get trend
+	input, _ := p.Validate(map[string]any{
+		"hypothesis": "Final check",
+		"metric":     float64(60),
+	})
+	result, err := p.Handle(input, sid)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	slope, ok := result.Data["metricTrendSlope"].(float64)
+	if !ok {
+		t.Fatal("metricTrendSlope missing from data")
+	}
+	if slope <= 0 {
+		t.Errorf("slope = %v, want > 0 for increasing metrics", slope)
+	}
+	dir, ok := result.Data["trendDirection"].(string)
+	if !ok || dir != "improving" {
+		t.Errorf("trendDirection = %v, want 'improving'", dir)
 	}
 }

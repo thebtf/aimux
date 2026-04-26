@@ -171,6 +171,7 @@ func (p *debuggingApproachPattern) Validate(input map[string]any) (map[string]an
 			if !ok {
 				return nil, fmt.Errorf("field 'hypothesis_action' must be a string")
 			}
+			validated["hypothesis_action"] = action
 			var status string
 			switch action {
 			case "confirm":
@@ -347,6 +348,9 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 	if findingsText, ok := validInput["findings_text"].(string); ok {
 		stepEntry["findings"] = findingsText
 	}
+	if hypAction, ok := validInput["hypothesis_action"].(string); ok {
+		stepEntry["hypothesis_action"] = hypAction
+	}
 	// Only append a step when there's meaningful content to track.
 	if _, hasApproach := stepEntry["approachName"]; hasApproach {
 		steps = append(steps, stepEntry)
@@ -441,6 +445,42 @@ func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID s
 
 	if refutedCount >= pivotSuggestionThreshold {
 		data["suggestion"] = "3+ hypotheses refuted — consider trying a fundamentally different approach"
+	}
+
+	// Method efficiency: for each unique approachName in steps, compute
+	// confirmed / (confirmed + refuted) based on hypothesis_action recorded in those steps.
+	efficiencyMap := map[string]float64{}
+	type methodCounts struct{ confirmed, refuted int }
+	counts := map[string]*methodCounts{}
+	for _, sRaw := range steps {
+		sm, ok := sRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		approach, hasApproach := sm["approachName"].(string)
+		if !hasApproach || approach == "" {
+			continue
+		}
+		action, _ := sm["hypothesis_action"].(string)
+		if _, seen := counts[approach]; !seen {
+			counts[approach] = &methodCounts{}
+		}
+		switch action {
+		case "confirm":
+			counts[approach].confirmed++
+		case "refute":
+			counts[approach].refuted++
+		}
+	}
+	for approach, mc := range counts {
+		total := mc.confirmed + mc.refuted
+		if total == 0 {
+			continue
+		}
+		efficiencyMap[approach] = float64(mc.confirmed) / float64(total)
+	}
+	if len(efficiencyMap) > 0 {
+		data["methodEfficiency"] = efficiencyMap
 	}
 
 	// Forced Reflection Protocol: gate hypothesis submission behind evidence requirements.

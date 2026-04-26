@@ -337,6 +337,167 @@ func TestScientific_FlatLifecycleGate(t *testing.T) {
 	}
 }
 
+// TestScientificMethod_HypothesisSurvivalRate verifies that hypothesisSurvivalRate equals 1.0
+// when a hypothesis has a complete hypothesis → prediction → experiment → result chain.
+func TestScientificMethod_HypothesisSurvivalRate(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "test-survival"
+
+	// Hypothesis (will be assigned id E-1)
+	i1, err := p.Validate(map[string]any{
+		"stage":      "hypothesis",
+		"entry_type": "hypothesis",
+		"entry_text": "Cache invalidation is wrong",
+	})
+	if err != nil {
+		t.Fatalf("validate hypothesis: %v", err)
+	}
+	if _, err = p.Handle(i1, sid); err != nil {
+		t.Fatalf("handle hypothesis: %v", err)
+	}
+
+	// Prediction linked to E-1 (will be assigned id E-2)
+	i2, err := p.Validate(map[string]any{
+		"stage":      "hypothesis",
+		"entry_type": "prediction",
+		"entry_text": "Clearing cache should fix 500s",
+		"link_to":    "E-1",
+	})
+	if err != nil {
+		t.Fatalf("validate prediction: %v", err)
+	}
+	if _, err = p.Handle(i2, sid); err != nil {
+		t.Fatalf("handle prediction: %v", err)
+	}
+
+	// Experiment linked to E-2 (will be assigned id E-3)
+	i3, err := p.Validate(map[string]any{
+		"stage":      "experiment",
+		"entry_type": "experiment",
+		"entry_text": "Cleared cache, monitored errors",
+		"link_to":    "E-2",
+	})
+	if err != nil {
+		t.Fatalf("validate experiment: %v", err)
+	}
+	if _, err = p.Handle(i3, sid); err != nil {
+		t.Fatalf("handle experiment: %v", err)
+	}
+
+	// Result linked to E-3 (will be assigned id E-4)
+	i4, err := p.Validate(map[string]any{
+		"stage":      "analysis",
+		"entry_type": "result",
+		"entry_text": "500s dropped to zero",
+		"link_to":    "E-3",
+	})
+	if err != nil {
+		t.Fatalf("validate result: %v", err)
+	}
+	result, err := p.Handle(i4, sid)
+	if err != nil {
+		t.Fatalf("handle result: %v", err)
+	}
+
+	rate, ok := result.Data["hypothesisSurvivalRate"].(float64)
+	if !ok {
+		t.Fatalf("hypothesisSurvivalRate not in data: %v", result.Data)
+	}
+	if rate != 1.0 {
+		t.Errorf("hypothesisSurvivalRate = %v, want 1.0 (1 survived out of 1)", rate)
+	}
+
+	survived, ok := result.Data["survivedHypotheses"].([]string)
+	if !ok {
+		t.Fatalf("survivedHypotheses not in data: %v", result.Data)
+	}
+	if len(survived) != 1 || survived[0] != "E-1" {
+		t.Errorf("survivedHypotheses = %v, want [E-1]", survived)
+	}
+}
+
+// TestScientificMethod_HypothesisSurvivalRate_Partial verifies that rate reflects partial
+// completion: one hypothesis survived, one did not.
+func TestScientificMethod_HypothesisSurvivalRate_Partial(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "test-survival-partial"
+
+	// Hypothesis 1 (E-1) — will get a full chain
+	i1, _ := p.Validate(map[string]any{"stage": "hypothesis", "entry_type": "hypothesis", "entry_text": "H1"})
+	p.Handle(i1, sid)
+
+	// Hypothesis 2 (E-2) — will have no prediction
+	i2, _ := p.Validate(map[string]any{"stage": "hypothesis", "entry_type": "hypothesis", "entry_text": "H2 untested"})
+	p.Handle(i2, sid)
+
+	// Prediction for H1 → E-1 (E-3)
+	i3, _ := p.Validate(map[string]any{"stage": "hypothesis", "entry_type": "prediction", "entry_text": "P1", "link_to": "E-1"})
+	p.Handle(i3, sid)
+
+	// Experiment for prediction E-3 (E-4)
+	i4, _ := p.Validate(map[string]any{"stage": "experiment", "entry_type": "experiment", "entry_text": "Exp1", "link_to": "E-3"})
+	p.Handle(i4, sid)
+
+	// Result for experiment E-4 (E-5)
+	i5, _ := p.Validate(map[string]any{"stage": "analysis", "entry_type": "result", "entry_text": "R1", "link_to": "E-4"})
+	result, err := p.Handle(i5, sid)
+	if err != nil {
+		t.Fatalf("handle result: %v", err)
+	}
+
+	rate, ok := result.Data["hypothesisSurvivalRate"].(float64)
+	if !ok {
+		t.Fatalf("hypothesisSurvivalRate not in data")
+	}
+	// 1 out of 2 hypotheses survived → 0.5
+	if rate != 0.5 {
+		t.Errorf("hypothesisSurvivalRate = %v, want 0.5", rate)
+	}
+
+	survived, ok := result.Data["survivedHypotheses"].([]string)
+	if !ok {
+		t.Fatalf("survivedHypotheses not in data")
+	}
+	if len(survived) != 1 || survived[0] != "E-1" {
+		t.Errorf("survivedHypotheses = %v, want [E-1]", survived)
+	}
+}
+
+// TestScientificMethod_HypothesisSurvivalRate_NoHypotheses verifies that rate is 0.0
+// when there are no hypotheses in the session.
+func TestScientificMethod_HypothesisSurvivalRate_NoHypotheses(t *testing.T) {
+	think.ClearSessions()
+	p := NewScientificMethodPattern()
+	sid := "test-survival-empty"
+
+	i, _ := p.Validate(map[string]any{"stage": "observation"})
+	result, err := p.Handle(i, sid)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	rate, ok := result.Data["hypothesisSurvivalRate"].(float64)
+	if !ok {
+		t.Fatalf("hypothesisSurvivalRate not in data")
+	}
+	if rate != 0.0 {
+		t.Errorf("hypothesisSurvivalRate = %v, want 0.0", rate)
+	}
+
+	survived, ok := result.Data["survivedHypotheses"].([]string)
+	if !ok {
+		// nil slice is also acceptable — check if field exists at all
+		if _, exists := result.Data["survivedHypotheses"]; !exists {
+			t.Fatal("survivedHypotheses missing from data")
+		}
+	}
+	if len(survived) != 0 {
+		t.Errorf("survivedHypotheses = %v, want empty", survived)
+	}
+}
+
 // TestScientific_BackwardCompat: old nested entry map still works.
 func TestScientific_BackwardCompat(t *testing.T) {
 	think.ClearSessions()
