@@ -160,10 +160,53 @@ func (p *structuredArgumentationPattern) Handle(validInput map[string]any, sessi
 		}
 	}
 
-	var unsupportedClaims []string
-	for id := range claimIDs {
+	// Build unsupportedClaims as structured objects (TS v1 parity: Array<{id, text}>).
+	var unsupportedClaims []map[string]any
+	for _, aRaw := range arguments {
+		a, ok := aRaw.(map[string]any)
+		if !ok || a["type"] != "claim" {
+			continue
+		}
+		id, ok := a["id"].(string)
+		if !ok {
+			continue
+		}
 		if !supportedClaimIDs[id] {
-			unsupportedClaims = append(unsupportedClaims, id)
+			unsupportedClaims = append(unsupportedClaims, map[string]any{
+				"id":   id,
+				"text": a["text"],
+			})
+		}
+	}
+
+	// Compute claimStrengths: per-claim ratio of evidence / (evidence + rebuttals).
+	// Matches TS v1: strength = evidenceCount / (evidenceCount + rebuttalCount), 0 if no evidence.
+	evidencePerClaim := map[string]int{}
+	rebuttalPerClaim := map[string]int{}
+	for _, aRaw := range arguments {
+		a, ok := aRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		ref, _ := a["supportsClaimId"].(string)
+		if ref == "" {
+			continue
+		}
+		switch a["type"] {
+		case "evidence":
+			evidencePerClaim[ref]++
+		case "rebuttal":
+			rebuttalPerClaim[ref]++
+		}
+	}
+	claimStrengths := map[string]float64{}
+	for id := range claimIDs {
+		ev := evidencePerClaim[id]
+		rb := rebuttalPerClaim[id]
+		if ev == 0 {
+			claimStrengths[id] = 0.0
+		} else {
+			claimStrengths[id] = float64(ev) / float64(ev+rb)
 		}
 	}
 
@@ -173,14 +216,31 @@ func (p *structuredArgumentationPattern) Handle(validInput map[string]any, sessi
 	}
 
 	data := map[string]any{
-		"topic":             topic,
-		"arguments":         arguments,
-		"claimCount":        claimCount,
-		"evidenceCount":     evidenceCount,
-		"rebuttalCount":     rebuttalCount,
+		"topic":     topic,
+		"arguments": arguments,
+		// Flat counts (Go-native, preferred by MCP callers).
+		"claimCount":    claimCount,
+		"evidenceCount": evidenceCount,
+		"rebuttalCount": rebuttalCount,
+		// TS v1 parity: argumentCount envelope.
+		"argumentCount": map[string]any{
+			"claim":    claimCount,
+			"evidence": evidenceCount,
+			"rebuttal": rebuttalCount,
+			"total":    len(arguments),
+		},
+		// TS v1 parity: structured unsupportedClaims with id+text.
 		"unsupportedClaims": unsupportedClaims,
-		"guidance":          BuildGuidance("structured_argumentation", guidanceDepth, []string{"argument"}),
+		// TS v1 parity: per-claim strength ratios.
+		"claimStrengths": claimStrengths,
+		"guidance":       BuildGuidance("structured_argumentation", guidanceDepth, []string{"argument"}),
 	}
 
-	return think.MakeThinkResult("structured_argumentation", data, sessionID, nil, "", nil), nil
+	// suggestedNext: decision_framework when claims are being evaluated (TS v1 implied terminal → self).
+	suggestedNext := ""
+	if claimCount > 0 {
+		suggestedNext = "decision_framework"
+	}
+
+	return think.MakeThinkResult("structured_argumentation", data, sessionID, nil, suggestedNext, nil), nil
 }

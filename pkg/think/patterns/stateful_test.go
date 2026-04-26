@@ -328,9 +328,12 @@ func TestStructuredArgumentation_ClaimAndEvidence(t *testing.T) {
 	if r1.Data["claimCount"] != 1 {
 		t.Fatalf("expected claimCount=1, got %v", r1.Data["claimCount"])
 	}
-	unsupported := r1.Data["unsupportedClaims"].([]string)
+	unsupported := r1.Data["unsupportedClaims"].([]map[string]any)
 	if len(unsupported) != 1 {
 		t.Fatalf("expected 1 unsupported claim, got %d", len(unsupported))
+	}
+	if unsupported[0]["id"] != "A-1" {
+		t.Fatalf("expected unsupported claim id=A-1, got %v", unsupported[0]["id"])
 	}
 
 	// Add evidence supporting the claim
@@ -345,7 +348,7 @@ func TestStructuredArgumentation_ClaimAndEvidence(t *testing.T) {
 	if r2.Data["evidenceCount"] != 1 {
 		t.Fatalf("expected evidenceCount=1, got %v", r2.Data["evidenceCount"])
 	}
-	unsupported2 := r2.Data["unsupportedClaims"].([]string)
+	unsupported2 := r2.Data["unsupportedClaims"].([]map[string]any)
 	if len(unsupported2) != 0 {
 		t.Fatalf("expected 0 unsupported claims after evidence, got %d", len(unsupported2))
 	}

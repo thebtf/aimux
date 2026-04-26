@@ -396,8 +396,51 @@ func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID st
 		guidanceDepth = "basic"
 	}
 
+	// TS v1 parity: stageSequence — array of stage strings from history.
+	stageSeq := make([]string, 0, len(stageHistory))
+	for _, s := range stageHistory {
+		if str, ok := s.(string); ok {
+			stageSeq = append(stageSeq, str)
+		}
+	}
+
+	// TS v1 parity: has* boolean flags — one per stage type, computed from entry types in session.
+	hasByType := map[string]bool{}
+	for _, e := range entries {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, ok := em["type"].(string); ok {
+			hasByType[t] = true
+		}
+	}
+
+	// TS v1 parity: nextStageNeeded — true when the inquiry is not yet at conclusion.
+	nextStageNeeded := stage != "conclusion" && stage != "iteration"
+
+	// TS v1 parity: iteration — count of times this session has been called (= stageHistory length).
+	iteration := len(stageHistory)
+
 	data := map[string]any{
-		"stage":                 stage,
+		"stage": stage,
+		// TS v1 field names.
+		"stageHistoryLength": len(stageHistory),
+		"hypothesesTracked":  len(hypothesesHistory),
+		"stageSequence":      stageSeq,
+		// TS v1 parity: full entries array.
+		"entries": entries,
+		// TS v1 parity: has* per-stage booleans.
+		"hasObservation": hasByType["observation"],
+		"hasQuestion":    hasByType["question"],
+		"hasHypothesis":  hasByType["hypothesis"],
+		"hasExperiment":  hasByType["experiment"],
+		"hasAnalysis":    hasByType["analysis"],
+		"hasConclusion":  hasByType["conclusion"],
+		// TS v1 parity: flow control fields.
+		"iteration":       iteration,
+		"nextStageNeeded": nextStageNeeded,
+		// Go-native fields (kept for backward compat).
 		"stageHistoryLen":       len(stageHistory),
 		"entriesCount":          len(entries),
 		"hypothesesCount":       len(hypothesesHistory),

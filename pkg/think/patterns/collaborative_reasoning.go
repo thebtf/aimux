@@ -173,24 +173,115 @@ func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessio
 
 	topic := validInput["topic"].(string)
 
+	// TS v1 parity: stagesCompleted — array of stage keys that have at least one contribution.
+	stagesCompleted := make([]string, 0, len(stageProgress))
+	for s := range stageProgress {
+		stagesCompleted = append(stagesCompleted, s)
+	}
+
+	// TS v1 parity: has* type-based booleans — contribution types present in session.
+	typesSeen := map[string]bool{}
+	for _, cRaw := range contributions {
+		if c, ok := cRaw.(map[string]any); ok {
+			if t, ok := c["type"].(string); ok {
+				typesSeen[t] = true
+			}
+		}
+	}
+
+	// TS v1 parity: personaCount from known personas list.
+	personaCount := 0
+	if personas, ok := validInput["personas"].([]any); ok {
+		personaCount = len(personas)
+	}
+
+	// TS v1 parity: iteration — total number of contributions in session.
+	iteration := len(contributions)
+
+	// TS v1 parity: nextContributionNeeded — true when not at reflection stage (final stage).
+	nextContributionNeeded := currentStage != "reflection"
+
+	// TS v1 parity: activePersonaId / nextPersonaId — derived from last contribution persona
+	// and knownPersonas rotation (approximate; Go uses string personas not {id,name} objects).
+	var activePersonaId string
+	var nextPersonaId string
+	if len(contributions) > 0 {
+		if last, ok := contributions[len(contributions)-1].(map[string]any); ok {
+			activePersonaId, _ = last["persona"].(string)
+		}
+	}
+	// Next persona: if knownPersonas available, rotate to next after active.
+	if personas, ok := validInput["personas"].([]any); ok && len(personas) > 1 && activePersonaId != "" {
+		for i, p := range personas {
+			if ps, ok := p.(string); ok && ps == activePersonaId {
+				next := personas[(i+1)%len(personas)]
+				nextPersonaId, _ = next.(string)
+				break
+			}
+		}
+	}
+
+	// TS v1 parity: consensus/disagreement/insight/question point counts from contribution types.
+	consensusPointCount := 0
+	for _, cRaw := range contributions {
+		if c, ok := cRaw.(map[string]any); ok {
+			if c["type"] == "synthesis" {
+				consensusPointCount++
+			}
+		}
+	}
+	hasDisagreements := typesSeen["challenge"] || typesSeen["concern"]
+	hasKeyInsights := typesSeen["insight"]
+	hasOpenQuestions := typesSeen["question"]
+	hasFinalRecommendation := currentStage == "decision" || currentStage == "reflection"
+
 	guidanceDepth := "enriched"
 	if len(contributions) == 0 {
 		guidanceDepth = "basic"
 	}
 
 	data := map[string]any{
-		"topic":                   topic,
-		"currentStage":            currentStage,
-		"contributions":           contributions,
-		"contributionCount":       len(contributions),
+		"topic": topic,
+		// TS v1 field alias.
+		"stage":        currentStage,
+		"currentStage": currentStage,
+		// Contribution tracking.
+		"contributions":     contributions,
+		"contributionCount": len(contributions),
+		// TS v1 parity fields.
+		"personaCount":           personaCount,
+		"iteration":              iteration,
+		"nextContributionNeeded": nextContributionNeeded,
+		"stagesCompleted":        stagesCompleted,
+		"consensusPointCount":    consensusPointCount,
+		"hasDisagreements":       hasDisagreements,
+		"hasKeyInsights":         hasKeyInsights,
+		"hasOpenQuestions":       hasOpenQuestions,
+		"hasFinalRecommendation": hasFinalRecommendation,
+		// Participation metrics.
 		"stageProgress":           stageProgress,
 		"contributionsPerPersona": participation.contributionsPerPersona,
 		"silentPersonas":          participation.silentPersonas,
 		"participationBalance":    participation.participationBalance,
 		"guidance":                BuildGuidance("collaborative_reasoning", guidanceDepth, []string{"stage", "contribution", "personas"}),
 	}
+	// Only include persona rotation fields when they have values.
+	if activePersonaId != "" {
+		data["activePersonaId"] = activePersonaId
+	}
+	if nextPersonaId != "" {
+		data["nextPersonaId"] = nextPersonaId
+	}
 
-	return think.MakeThinkResult("collaborative_reasoning", data, sessionID, nil, "", nil), nil
+	// suggestedNext: decision_framework at decision stage, reflect at reflection, self otherwise.
+	suggestedNext := "collaborative_reasoning"
+	if currentStage == "decision" {
+		suggestedNext = "decision_framework"
+	} else if currentStage == "reflection" {
+		suggestedNext = "structured_argumentation"
+	}
+
+	return think.MakeThinkResult("collaborative_reasoning", data, sessionID, nil, suggestedNext, nil), nil
 }
 
 type participationResult struct {
