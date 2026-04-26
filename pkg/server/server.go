@@ -16,6 +16,7 @@ import (
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/agents"
 	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
+	"github.com/thebtf/aimux/pkg/dialogue"
 	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
@@ -290,11 +291,18 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	cliResolver := resolve.NewProfileResolver(cfg.CLIProfiles)
 
 	// Initialize orchestrator with all strategies
+	dlgStrategy := orch.NewSequentialDialog(s.executor, cliResolver)
+	consensusStrategy := orch.NewParallelConsensus(s.executor, cliResolver)
+	debateStrategy := orch.NewStructuredDebate(s.executor, cliResolver)
+	dlgCtrl := dialogue.New()
+	dlgStrategy.SetDialogue(dlgCtrl, s.swarm)
+	consensusStrategy.SetDialogue(dlgCtrl, s.swarm)
+	debateStrategy.SetDialogue(dlgCtrl, s.swarm)
 	s.orchestrator = orch.New(log,
 		orch.NewPairCoding(s.executor, s.executor, cliResolver),
-		orch.NewSequentialDialog(s.executor, cliResolver),
-		orch.NewParallelConsensus(s.executor, cliResolver),
-		orch.NewStructuredDebate(s.executor, cliResolver),
+		dlgStrategy,
+		consensusStrategy,
+		debateStrategy,
 		orch.NewAuditPipeline(s.executor, cliResolver),
 		orch.NewWorkflowStrategy(s.executor, cliResolver),
 	)

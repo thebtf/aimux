@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/thebtf/aimux/pkg/dialogue"
+	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -14,6 +16,9 @@ import (
 type SequentialDialog struct {
 	executor types.Executor
 	resolver types.CLIResolver
+	// Strangler Fig (M3): optional dialogue path. Nil means legacy executor.Run path.
+	dialogue *dialogue.Controller
+	swarm    *swarm.Swarm
 }
 
 // NewSequentialDialog creates a dialog strategy.
@@ -21,11 +26,19 @@ func NewSequentialDialog(executor types.Executor, resolver types.CLIResolver) *S
 	return &SequentialDialog{executor: executor, resolver: resolver}
 }
 
+// SetDialogue wires the dialogue controller and swarm for the M3 new path.
+// When set, Execute() uses dialogue.ModeSequential instead of the legacy executor.Run path.
+func (d *SequentialDialog) SetDialogue(ctrl *dialogue.Controller, sw *swarm.Swarm) {
+	d.dialogue = ctrl
+	d.swarm = sw
+}
+
 // Name returns the strategy name.
 func (d *SequentialDialog) Name() string { return "dialog" }
 
 // Execute runs a sequential dialog: each participant responds in turn,
 // seeing all previous responses. Continues until max_turns or convergence.
+// When a dialogue controller is set (M3 Strangler Fig), uses dialogue.ModeSequential.
 func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyParams) (*types.StrategyResult, error) {
 	// maxTurns is NEW turns only; prior turn count from history does not reduce the budget
 	maxTurns := params.MaxTurns
@@ -38,11 +51,110 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 		return nil, fmt.Errorf("dialog requires at least 2 participants, got %d", len(participants))
 	}
 
-	budget := ComputeDialogBudget(nil) // default context window
+	// M3 Strangler Fig: new dialogue path when controller is wired.
+	if d.dialogue != nil {
+		return d.executeWithDialogue(ctx, params, maxTurns)
+	}
+	return d.executeLegacy(ctx, params, maxTurns)
+}
+
+type turnEntry struct {
+	CLI     string
+	Content string
+	Turn    int
+}
+
+func buildDialogPrompt(topic string, history []turnEntry, currentCLI string) string {
+	return buildDialogPromptWithContext(topic, BuildDialogContext(history, 0), currentCLI, 0)
+}
+
+// executeWithDialogue is the M3 new path: uses dialogue.ModeSequential via SwarmParticipants.
+// It does NOT support session resume (prior_turns) — that path stays in the legacy executor.
+func (d *SequentialDialog) executeWithDialogue(ctx context.Context, params types.StrategyParams, maxTurns int) (*types.StrategyResult, error) {
+	participants := params.CLIs
+
+	var dlgParticipants []dialogue.Participant
+	for _, cli := range participants {
+		handle, err := d.swarm.Get(ctx, cli, swarm.Stateless)
+		if err != nil {
+			return d.executeLegacy(ctx, params, maxTurns)
+		}
+		dlgParticipants = append(dlgParticipants, dialogue.NewSwarmParticipant(d.swarm, handle, cli, "participant"))
+	}
+
+	dlg, err := d.dialogue.NewDialogue(dialogue.DialogueConfig{
+		Participants: dlgParticipants,
+		Mode:         dialogue.ModeSequential,
+		MaxTurns:     maxTurns * len(participants),
+		Topic:        params.Prompt,
+	})
+	if err != nil {
+		return d.executeLegacy(ctx, params, maxTurns)
+	}
+
+	for dlg.Status == dialogue.StatusActive {
+		if _, err := d.dialogue.NextTurn(ctx, dlg); err != nil {
+			// Return partial results rather than bare error.
+			if len(dlg.Turns) > 0 {
+				return d.turnsToPartialResult(dlg, participants), nil
+			}
+			return d.executeLegacy(ctx, params, maxTurns)
+		}
+	}
+	_ = d.dialogue.Close(dlg)
+
+	var sb strings.Builder
+	var participantNames []string
+	seen := make(map[string]bool)
+	for _, t := range dlg.Turns {
+		sb.WriteString(fmt.Sprintf("## %s (turn %d)\n\n%s\n\n", t.Participant, t.TurnNumber, CompactTurnContent(t.Content, 0)))
+		if !seen[t.Participant] {
+			participantNames = append(participantNames, t.Participant)
+			seen[t.Participant] = true
+		}
+	}
+
+	// Encode turns as TurnHistory for session resume compatibility.
+	var history []turnEntry
+	for _, t := range dlg.Turns {
+		history = append(history, turnEntry{CLI: t.Participant, Content: t.Content, Turn: t.TurnNumber})
+	}
+	historyJSON, _ := json.Marshal(history)
+
+	return &types.StrategyResult{
+		Content:      sb.String(),
+		Status:       "completed",
+		Turns:        len(dlg.Turns),
+		Participants: participantNames,
+		TurnHistory:  historyJSON,
+	}, nil
+}
+
+// turnsToPartialResult converts accumulated dialogue turns to a partial StrategyResult.
+func (d *SequentialDialog) turnsToPartialResult(dlg *dialogue.Dialogue, participants []string) *types.StrategyResult {
+	var sb strings.Builder
+	var history []turnEntry
+	for _, t := range dlg.Turns {
+		sb.WriteString(fmt.Sprintf("## %s (turn %d)\n\n%s\n\n", t.Participant, t.TurnNumber, t.Content))
+		history = append(history, turnEntry{CLI: t.Participant, Content: t.Content, Turn: t.TurnNumber})
+	}
+	historyJSON, _ := json.Marshal(history)
+	return &types.StrategyResult{
+		Content:      sb.String(),
+		Status:       "partial",
+		Turns:        len(dlg.Turns),
+		Participants: participants,
+		TurnHistory:  historyJSON,
+	}
+}
+
+// executeLegacy is the original dialog logic preserved for Strangler Fig fallback.
+func (d *SequentialDialog) executeLegacy(ctx context.Context, params types.StrategyParams, maxTurns int) (*types.StrategyResult, error) {
+	participants := params.CLIs
+	budget := ComputeDialogBudget(nil)
 	remainingTurns := maxTurns * len(participants)
 	responseHint := budget / max(remainingTurns, 1)
 
-	// Load prior turn history for session resume.
 	var history []turnEntry
 	if raw, ok := params.Extra["prior_turns"]; ok {
 		switch v := raw.(type) {
@@ -52,9 +164,8 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 			_ = json.Unmarshal([]byte(v), &history)
 		}
 	}
-	totalTurns := len(history) // continue numbering from prior session
-
-	qg := NewQualityGate(0) // default max retries
+	totalTurns := len(history)
+	qg := NewQualityGate(0)
 
 	for turn := 0; turn < maxTurns; turn++ {
 		for _, cli := range participants {
@@ -66,7 +177,6 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 
 			result, err := d.executor.Run(ctx, resolveOrFallbackWithOpts(d.resolver, cli, prompt, params.CWD, params.Timeout, params.Model, params.Effort))
 			if err != nil {
-				// Return partial results on failure instead of bare error
 				if len(history) > 0 {
 					var sb strings.Builder
 					for _, h := range history {
@@ -85,7 +195,6 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 				return nil, fmt.Errorf("dialog turn %d (%s) failed: %w", totalTurns, cli, err)
 			}
 
-			// Quality gate: evaluate turn content; re-prompt once on low-quality output
 			if action := qg.Evaluate(cli, result.Content, "", 0); action == QualityRetry {
 				retryPrompt := buildDialogPromptWithContext(
 					params.Prompt+"\n\nYour previous response was below quality threshold. Please provide a substantive response.",
@@ -103,7 +212,6 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 		}
 	}
 
-	// Combine all responses
 	var sb strings.Builder
 	for _, h := range history {
 		sb.WriteString(fmt.Sprintf("## %s (turn %d)\n\n%s\n\n", h.CLI, h.Turn, h.Content))
@@ -117,16 +225,6 @@ func (d *SequentialDialog) Execute(ctx context.Context, params types.StrategyPar
 		Participants: participants,
 		TurnHistory:  historyJSON,
 	}, nil
-}
-
-type turnEntry struct {
-	CLI     string
-	Content string
-	Turn    int
-}
-
-func buildDialogPrompt(topic string, history []turnEntry, currentCLI string) string {
-	return buildDialogPromptWithContext(topic, BuildDialogContext(history, 0), currentCLI, 0)
 }
 
 func buildDialogPromptWithContext(topic, dialogContext, currentCLI string, responseHint int) string {
