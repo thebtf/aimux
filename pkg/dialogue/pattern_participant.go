@@ -81,7 +81,10 @@ func buildPatternInput(prompt string, history []DialogueTurn) map[string]any {
 	if len(history) > 0 {
 		var sb strings.Builder
 		for _, t := range history {
-			sb.WriteString(fmt.Sprintf("[%s]: %s\n", t.Participant, t.Content))
+			// Use XML-style structured delimiters to prevent injection via
+			// fabricated "[OtherParticipant]: ..." patterns in output.
+			sb.WriteString(fmt.Sprintf("<dialogue-turn participant=%q>\n%s\n</dialogue-turn>\n",
+				sanitizeName(t.Participant), t.Content))
 		}
 		input["history"] = sb.String()
 	}

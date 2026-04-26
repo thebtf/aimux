@@ -74,21 +74,26 @@ func (p *SwarmParticipant) Respond(ctx context.Context, prompt string, history [
 
 // historyToTurns converts DialogueTurn slice into types.Turn slice suitable
 // for inclusion in a types.Message.History.
+//
+// Each turn is wrapped in XML-style <dialogue-turn> delimiters to prevent
+// cross-participant prompt injection: a participant cannot fabricate a
+// prior turn by emitting "[OtherName]: ..." in its output because the
+// structured tags are hard to replicate accidentally in natural language.
+// Turns are presented as role "user" so the LLM treats them as external
+// context rather than its own prior output (prevents "assistant" role abuse).
 func historyToTurns(history []DialogueTurn) []types.Turn {
 	if len(history) == 0 {
 		return nil
 	}
 
-	turns := make([]types.Turn, 0, len(history)*2)
+	turns := make([]types.Turn, 0, len(history))
 	for _, dt := range history {
-		// Each prior dialogue turn becomes an assistant turn prefixed by the
-		// speaker's name so the executor understands multi-party context.
-		content := dt.Content
-		if dt.Participant != "" {
-			content = fmt.Sprintf("[%s]: %s", dt.Participant, dt.Content)
-		}
+		// Use structured XML-style delimiters resistant to injection.
+		// %q quotes the participant name, escaping special characters.
+		content := fmt.Sprintf("<dialogue-turn participant=%q role=%q>\n%s\n</dialogue-turn>",
+			sanitizeName(dt.Participant), dt.Role, dt.Content)
 		turns = append(turns, types.Turn{
-			Role:    "assistant",
+			Role:    "user",
 			Content: content,
 		})
 	}
@@ -97,12 +102,15 @@ func historyToTurns(history []DialogueTurn) []types.Turn {
 }
 
 // buildStancePrompt prepends a stance declaration to the base prompt.
+// Both participantName and stance are sanitized to strip control characters
+// that could be used for prompt injection (e.g. "\n\nIgnore instructions...").
 func buildStancePrompt(basePrompt, participantName, stance string) string {
 	if stance == "" {
 		return basePrompt
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("You are %s. Your stance: %s.\n\n", participantName, strings.ToUpper(stance)))
+	sb.WriteString(fmt.Sprintf("You are %s. Your stance: %s.\n\n",
+		sanitizeName(participantName), strings.ToUpper(sanitizeStance(stance))))
 	sb.WriteString(basePrompt)
 	return sb.String()
 }

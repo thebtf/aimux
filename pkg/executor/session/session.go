@@ -56,6 +56,9 @@ type BaseSession struct {
 	// readerDone is closed when the lifetime reader goroutine exits.
 	readerDone chan struct{}
 
+	// stopCh is closed by Close() to unblock the reader goroutine when readCh is full.
+	stopCh chan struct{}
+
 	// closeOnce ensures cleanup runs exactly once even under concurrent Close calls.
 	closeOnce sync.Once
 
@@ -94,6 +97,7 @@ func New(
 		inactivityTimeout: inactivityTimeout,
 		readCh:            make(chan readChunk, 32),
 		readerDone:        make(chan struct{}),
+		stopCh:            make(chan struct{}),
 	}
 
 	// Start the single lifetime reader goroutine.
@@ -107,10 +111,17 @@ func New(
 			if n > 0 {
 				cp := make([]byte, n)
 				copy(cp, tmp[:n])
-				s.readCh <- readChunk{data: cp}
+				select {
+				case s.readCh <- readChunk{data: cp}:
+				case <-s.stopCh:
+					return
+				}
 			}
 			if readErr != nil {
-				s.readCh <- readChunk{err: readErr}
+				select {
+				case s.readCh <- readChunk{err: readErr}:
+				case <-s.stopCh:
+				}
 				return
 			}
 		}
@@ -210,7 +221,9 @@ func (s *BaseSession) Stream(ctx context.Context, prompt string) (<-chan types.E
 // Close is idempotent — subsequent calls are no-ops.
 func (s *BaseSession) Close() error {
 	s.closeOnce.Do(func() {
-		// Close stdout first so the lifetime reader unblocks and exits.
+		// Signal the reader goroutine to stop even if readCh is full.
+		close(s.stopCh)
+		// Close stdout so the lifetime reader unblocks from Read() and exits.
 		_ = s.stdout.Close()
 		// Wait for the reader to exit before killing — avoids a race on the handle.
 		<-s.readerDone

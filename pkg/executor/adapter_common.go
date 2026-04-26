@@ -7,14 +7,14 @@ import (
 )
 
 // messageToSpawnArgs converts an ExecutorV2 Message to a legacy SpawnArgs.
-// Command and Args must be populated by the caller — they are CLI-specific and
-// cannot be derived from a Message alone.
 //
 // Metadata keys recognized:
-//   - "cwd"     (string)  — working directory
-//   - "timeout" (int/int64/float64) — timeout in seconds
-//   - "stdin"   (string)  — data piped to the process stdin
-//   - "completion_pattern" (string) — regex to detect completion
+//   - "command" (string)               — executable path/name
+//   - "args"    ([]string or []any)    — command-line arguments
+//   - "cwd"     (string)               — working directory
+//   - "timeout" (int/int64/float64)    — timeout in seconds
+//   - "stdin"   (string)               — data piped to the process stdin
+//   - "completion_pattern" (string)    — regex to detect completion
 //   - "env"     (map[string]any or map[string]string) — extra env vars
 func messageToSpawnArgs(msg types.Message) types.SpawnArgs {
 	args := types.SpawnArgs{
@@ -23,6 +23,27 @@ func messageToSpawnArgs(msg types.Message) types.SpawnArgs {
 
 	if msg.Metadata == nil {
 		return args
+	}
+
+	if v, ok := msg.Metadata["command"]; ok {
+		if s, ok := v.(string); ok {
+			args.Command = s
+		}
+	}
+
+	if v, ok := msg.Metadata["args"]; ok {
+		switch sl := v.(type) {
+		case []string:
+			args.Args = sl
+		case []any:
+			strs := make([]string, 0, len(sl))
+			for _, item := range sl {
+				if s, ok := item.(string); ok {
+					strs = append(strs, s)
+				}
+			}
+			args.Args = strs
+		}
 	}
 
 	if v, ok := msg.Metadata["cwd"]; ok {

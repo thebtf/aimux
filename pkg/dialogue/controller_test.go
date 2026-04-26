@@ -595,8 +595,9 @@ func TestHistoryToTurns_NonEmpty(t *testing.T) {
 		t.Fatalf("expected 2 turns, got %d", len(turns))
 	}
 	for _, t := range turns {
-		if t.Role != "assistant" {
-			// All history turns are represented as assistant turns
+		if t.Role != "user" {
+			// History turns are presented as "user" role so the LLM treats them
+			// as external context rather than its own prior output (SEC-002).
 		}
 	}
 	if !strings.Contains(turns[0].Content, "alice") {

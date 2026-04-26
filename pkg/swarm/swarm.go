@@ -13,6 +13,29 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
+// GetOption is a functional option for Get.
+type GetOption func(*getOpts)
+
+type getOpts struct {
+	scope string
+}
+
+// WithScope binds the returned handle to a session-specific scope so that two
+// sessions requesting the same executor name receive independent handles.
+// Without WithScope the handle is global (backward-compatible behaviour).
+func WithScope(scope string) GetOption {
+	return func(o *getOpts) { o.scope = scope }
+}
+
+// registryKey returns the composite key used in the Swarm registry.
+// An empty scope means global (Persistent / no-scope callers).
+func registryKey(scope, name string) string {
+	if scope == "" {
+		return name
+	}
+	return scope + ":" + name
+}
+
 // SpawnMode determines executor lifecycle policy for handles returned by Get.
 type SpawnMode int
 
@@ -86,21 +109,32 @@ func New(factoryFn func(name string) (types.ExecutorV2, error)) *Swarm {
 //   - Stateless: always creates a new executor and a fresh Handle.
 //   - Stateful/Persistent: returns the first alive existing Handle, or spawns
 //     a new one if none exist or all are dead.
-func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode) (*Handle, error) {
+//
+// Pass WithScope(sessionID) to isolate handles per session (SEC-001). Without a
+// scope the handle is global — two callers without scope share the same handle.
+func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...GetOption) (*Handle, error) {
 	if name == "" {
 		return nil, errors.New("swarm: executor name must not be empty")
 	}
 
+	// Stateless always spawns fresh — no registry lookup needed.
 	if mode == Stateless {
 		return s.spawn(name, mode)
 	}
 
-	// Stateful / Persistent: try to reuse an existing alive handle.
-	s.mu.RLock()
-	handles := s.registry[name]
-	s.mu.RUnlock()
+	var o getOpts
+	for _, fn := range opts {
+		fn(&o)
+	}
+	key := registryKey(o.scope, name)
 
-	for _, h := range handles {
+	// Stateful/Persistent: find-or-spawn under write lock to prevent TOCTOU
+	// (BUG-003). Two concurrent goroutines must not both observe an empty
+	// registry and both spawn separate handles for the same key.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, h := range s.registry[key] {
 		h.mu.Lock()
 		alive := h.executor != nil && h.executor.IsAlive() == types.HealthAlive
 		h.mu.Unlock()
@@ -109,16 +143,12 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode) (*Handle, 
 		}
 	}
 
-	// No alive handle — spawn a new one and register it.
-	h, err := s.spawn(name, mode)
+	// No alive handle — spawn a new one (still under write lock).
+	h, err := s.spawnLocked(name, mode)
 	if err != nil {
 		return nil, err
 	}
-
-	s.mu.Lock()
-	s.registry[name] = append(s.registry[name], h)
-	s.mu.Unlock()
-
+	s.registry[key] = append(s.registry[key], h)
 	return h, nil
 }
 
@@ -270,6 +300,8 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 
 // spawn creates a new executor via the factory and wraps it in a Handle.
 // It does NOT register the handle in the registry (caller is responsible).
+// It acquires s.mu briefly to generate the next ID — safe to call without
+// holding s.mu (e.g., from the Stateless path in Get).
 func (s *Swarm) spawn(name string, mode SpawnMode) (*Handle, error) {
 	exec, err := s.factoryFn(name)
 	if err != nil {
@@ -280,6 +312,30 @@ func (s *Swarm) spawn(name string, mode SpawnMode) (*Handle, error) {
 	s.nextID++
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
 	s.mu.Unlock()
+
+	now := time.Now()
+	return &Handle{
+		ID:         id,
+		Name:       name,
+		Mode:       mode,
+		executor:   exec,
+		startedAt:  now,
+		lastUsedAt: now,
+	}, nil
+}
+
+// spawnLocked is identical to spawn but must be called with s.mu already held
+// (write lock). Used by Get to avoid a second lock acquisition while the
+// find-or-spawn critical section is in progress (BUG-003 fix).
+func (s *Swarm) spawnLocked(name string, mode SpawnMode) (*Handle, error) {
+	// factoryFn must be safe to call without holding s.mu — documented in New.
+	exec, err := s.factoryFn(name)
+	if err != nil {
+		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
+	}
+
+	s.nextID++
+	id := fmt.Sprintf("%s-%d", name, s.nextID)
 
 	now := time.Now()
 	return &Handle{

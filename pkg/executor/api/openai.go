@@ -70,8 +70,10 @@ func (e *OpenAIExecutor) Send(ctx context.Context, msg types.Message) (*types.Re
 	}
 
 	content := ""
+	finishReason := ""
 	if len(resp.Choices) > 0 {
 		content = resp.Choices[0].Message.Content
+		finishReason = string(resp.Choices[0].FinishReason)
 	}
 
 	return &types.Response{
@@ -83,9 +85,9 @@ func (e *OpenAIExecutor) Send(ctx context.Context, msg types.Message) (*types.Re
 		},
 		Duration: time.Since(start),
 		Metadata: map[string]any{
-			"model":   resp.Model,
-			"id":      resp.ID,
-			"stop":    resp.Choices[0].FinishReason,
+			"model": resp.Model,
+			"id":    resp.ID,
+			"stop":  finishReason,
 		},
 	}, nil
 }

@@ -478,6 +478,148 @@ func TestSwarm_SpawnMode_String(t *testing.T) {
 	}
 }
 
+// --- scope tests (SEC-001) ---
+
+func TestSwarm_Get_DifferentScopes_DifferentHandles(t *testing.T) {
+	t.Parallel()
+
+	var spawnCount atomic.Int32
+	factory := func(name string) (types.ExecutorV2, error) {
+		spawnCount.Add(1)
+		return &mockExecutorV2{alive: types.HealthAlive}, nil
+	}
+
+	s := swarm.New(factory)
+	ctx := context.Background()
+
+	h1, err := s.Get(ctx, "claude", swarm.Stateful, swarm.WithScope("session-A"))
+	if err != nil {
+		t.Fatalf("Get session-A: %v", err)
+	}
+	h2, err := s.Get(ctx, "claude", swarm.Stateful, swarm.WithScope("session-B"))
+	if err != nil {
+		t.Fatalf("Get session-B: %v", err)
+	}
+
+	if h1.ID == h2.ID {
+		t.Errorf("different scopes returned same handle ID %q; expected independent handles", h1.ID)
+	}
+	if spawnCount.Load() != 2 {
+		t.Errorf("expected 2 factory calls for two different scopes, got %d", spawnCount.Load())
+	}
+}
+
+func TestSwarm_Get_SameScope_SameHandle(t *testing.T) {
+	t.Parallel()
+
+	var spawnCount atomic.Int32
+	factory := func(name string) (types.ExecutorV2, error) {
+		spawnCount.Add(1)
+		return &mockExecutorV2{alive: types.HealthAlive}, nil
+	}
+
+	s := swarm.New(factory)
+	ctx := context.Background()
+
+	h1, err := s.Get(ctx, "claude", swarm.Stateful, swarm.WithScope("session-X"))
+	if err != nil {
+		t.Fatalf("Get #1: %v", err)
+	}
+	h2, err := s.Get(ctx, "claude", swarm.Stateful, swarm.WithScope("session-X"))
+	if err != nil {
+		t.Fatalf("Get #2: %v", err)
+	}
+
+	if h1.ID != h2.ID {
+		t.Errorf("same scope returned different handles (%q vs %q); expected same handle", h1.ID, h2.ID)
+	}
+	if spawnCount.Load() != 1 {
+		t.Errorf("expected 1 factory call for same scope, got %d", spawnCount.Load())
+	}
+}
+
+func TestSwarm_Get_NoScope_BackwardCompat(t *testing.T) {
+	t.Parallel()
+
+	var spawnCount atomic.Int32
+	factory := func(name string) (types.ExecutorV2, error) {
+		spawnCount.Add(1)
+		return &mockExecutorV2{alive: types.HealthAlive}, nil
+	}
+
+	s := swarm.New(factory)
+	ctx := context.Background()
+
+	// Two calls without scope share the same global handle (backward compat).
+	h1, err := s.Get(ctx, "codex", swarm.Persistent)
+	if err != nil {
+		t.Fatalf("Get #1: %v", err)
+	}
+	h2, err := s.Get(ctx, "codex", swarm.Persistent)
+	if err != nil {
+		t.Fatalf("Get #2: %v", err)
+	}
+
+	if h1.ID != h2.ID {
+		t.Errorf("no-scope calls returned different handles (%q vs %q); expected shared global handle", h1.ID, h2.ID)
+	}
+	if spawnCount.Load() != 1 {
+		t.Errorf("expected 1 factory call without scope, got %d", spawnCount.Load())
+	}
+}
+
+// --- TOCTOU race test (BUG-003) ---
+
+func TestSwarm_Get_Concurrent_NoDoubleSpawn(t *testing.T) {
+	t.Parallel()
+
+	var spawnCount atomic.Int32
+	factory := func(name string) (types.ExecutorV2, error) {
+		spawnCount.Add(1)
+		// Tiny sleep to encourage interleaving.
+		time.Sleep(time.Microsecond)
+		return &mockExecutorV2{alive: types.HealthAlive}, nil
+	}
+
+	s := swarm.New(factory)
+	ctx := context.Background()
+
+	const goroutines = 50
+	handles := make(chan *swarm.Handle, goroutines)
+	var wg sync.WaitGroup
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h, err := s.Get(ctx, "codex", swarm.Stateful)
+			if err != nil {
+				t.Errorf("Get: %v", err)
+				return
+			}
+			handles <- h
+		}()
+	}
+
+	wg.Wait()
+	close(handles)
+
+	// Collect all returned handles.
+	seen := make(map[string]struct{})
+	for h := range handles {
+		seen[h.ID] = struct{}{}
+	}
+
+	// Under TOCTOU fix, exactly one executor must have been spawned and all
+	// goroutines must share the same handle ID.
+	if spawnCount.Load() != 1 {
+		t.Errorf("TOCTOU: expected exactly 1 factory call, got %d (race detected)", spawnCount.Load())
+	}
+	if len(seen) != 1 {
+		t.Errorf("TOCTOU: expected 1 unique handle ID, got %d", len(seen))
+	}
+}
+
 func TestSwarm_Get_DeadPersistent_Respawns(t *testing.T) {
 	t.Parallel()
 

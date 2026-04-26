@@ -62,28 +62,6 @@ func (a *CLIPipeAdapter) Send(ctx context.Context, msg types.Message) (*types.Re
 		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
 	}
 
-	if msg.Metadata != nil {
-		if v, ok := msg.Metadata["command"]; ok {
-			if s, ok := v.(string); ok {
-				args.Command = s
-			}
-		}
-		if v, ok := msg.Metadata["args"]; ok {
-			switch sl := v.(type) {
-			case []string:
-				args.Args = sl
-			case []any:
-				strs := make([]string, 0, len(sl))
-				for _, item := range sl {
-					if s, ok := item.(string); ok {
-						strs = append(strs, s)
-					}
-				}
-				args.Args = strs
-			}
-		}
-	}
-
 	result, err := a.legacy.Run(ctx, args)
 	if err != nil {
 		return nil, err

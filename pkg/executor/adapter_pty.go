@@ -55,20 +55,6 @@ func (a *CLIPTYAdapter) Info() types.ExecutorInfo {
 func (a *CLIPTYAdapter) Send(ctx context.Context, msg types.Message) (*types.Response, error) {
 	args := messageToSpawnArgs(msg)
 
-	// Resolve command/args from Metadata if provided.
-	if msg.Metadata != nil {
-		if v, ok := msg.Metadata["command"]; ok {
-			if s, ok := v.(string); ok {
-				args.Command = s
-			}
-		}
-		if v, ok := msg.Metadata["args"]; ok {
-			if sl, ok := v.([]string); ok {
-				args.Args = sl
-			}
-		}
-	}
-
 	result, err := a.legacy.Run(ctx, args)
 	if err != nil {
 		return nil, err
