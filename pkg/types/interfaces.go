@@ -7,7 +7,15 @@ import (
 
 // Executor spawns and manages CLI processes.
 // Three implementations: ConPTY (Windows), PTY (Linux/Mac), Pipe (fallback).
-type Executor interface {
+//
+// Deprecated: Use ExecutorV2 for new code. This interface is preserved as
+// LegacyExecutor and aliased for backward compatibility during M1→M8 migration.
+// Will be removed in v5.0.0 when all callers migrate to ExecutorV2.
+type Executor = LegacyExecutor
+
+// LegacyExecutor is the original executor interface (v4.x).
+// Kept for backward compatibility — all existing code continues to work unchanged.
+type LegacyExecutor interface {
 	// Run executes a single prompt and returns the result.
 	Run(ctx context.Context, args SpawnArgs) (*Result, error)
 
@@ -19,6 +27,33 @@ type Executor interface {
 
 	// Available checks if this executor can run on the current platform.
 	Available() bool
+}
+
+// ExecutorV2 is the unified executor interface for aimux v5 agent engine.
+// Both CLI binaries and HTTP APIs implement this contract. Higher layers
+// (Swarm, Dialogue Controller, Workflows) interact only with ExecutorV2 —
+// never with transport-specific details.
+//
+// Design: Decorator pattern — uniform Send(msg)→Response externally,
+// backend-specific internals hidden. Zero-value fields for inapplicable
+// aspects (CLI: TokensUsed={0,0}, API: ExitCode=0).
+type ExecutorV2 interface {
+	// Info returns metadata about this executor (name, type, capabilities).
+	Info() ExecutorInfo
+
+	// Send sends a message and waits for the complete response.
+	Send(ctx context.Context, msg Message) (*Response, error)
+
+	// SendStream sends a message and delivers incremental output via onChunk.
+	// Returns the complete aggregated response after the final chunk.
+	// Executors that don't support streaming call onChunk once with Done=true.
+	SendStream(ctx context.Context, msg Message, onChunk func(Chunk)) (*Response, error)
+
+	// IsAlive returns the current health status of this executor.
+	IsAlive() HealthStatus
+
+	// Close releases all resources held by this executor (process, connection, etc.).
+	Close() error
 }
 
 // Session represents a persistent CLI process for multi-turn interaction.

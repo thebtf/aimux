@@ -25,3 +25,24 @@ func (s *Selector) Select() types.Executor {
 	return nil
 }
 
+// SelectV2 returns the best available executor wrapped as an ExecutorV2.
+// Uses the same priority order as Select (ConPTY > PTY > Pipe) but returns
+// the unified v5 interface. Returns nil if no executor is available.
+func (s *Selector) SelectV2() types.ExecutorV2 {
+	selected := s.Select()
+	if selected == nil {
+		return nil
+	}
+
+	// Map by name to the correct adapter with appropriate capabilities.
+	switch selected.Name() {
+	case "conpty":
+		return NewCLIConPTYAdapter(selected)
+	case "pty":
+		return NewCLIPTYAdapter(selected)
+	default:
+		// Pipe is the fallback — also used for any future executor types.
+		return NewCLIPipeAdapter(selected)
+	}
+}
+
