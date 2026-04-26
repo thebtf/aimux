@@ -11,6 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -98,6 +101,10 @@ type Coordinator struct {
 	// May be nil; logging is skipped when nil.
 	Logger *logger.Logger
 
+	// Source is an optional path to a local binary to install.
+	// When set, the coordinator skips GitHub download and uses this file directly.
+	Source string
+
 	applyInProgress atomic.Bool
 }
 
@@ -151,45 +158,53 @@ func (c *Coordinator) Apply(ctx context.Context, mode Mode, force bool) (result 
 	}
 	defer c.applyInProgress.Store(false)
 
-	applyUpdate := c.applyUpdateFunc()
+	// Local binary source: skip GitHub download and install from local file.
+	if c.Source != "" {
+		release, err = c.applyFromLocal(ctx, c.Source)
+		if err != nil {
+			return nil, fmt.Errorf("apply local binary: %w", err)
+		}
+	} else {
+		applyUpdate := c.applyUpdateFunc()
 
-	effectiveVersion := c.Version
-	if force {
-		effectiveVersion = "0.0.0"
-	}
+		effectiveVersion := c.Version
+		if force {
+			effectiveVersion = "0.0.0"
+		}
 
-	release, err = applyUpdate(ctx, effectiveVersion)
-	if err != nil {
-		if errors.Is(err, updater.ErrChecksumVerification) {
+		release, err = applyUpdate(ctx, effectiveVersion)
+		if err != nil {
+			if errors.Is(err, updater.ErrChecksumVerification) {
+				return nil, fmt.Errorf("apply update: %w", err)
+			}
+			if errors.Is(err, updater.ErrDiskFull) {
+				failedRelease, ok := updater.ReleaseFromError(err)
+				if !ok || failedRelease == nil {
+					return nil, fmt.Errorf("apply update: %w", err)
+				}
+				release = failedRelease
+				switch mode {
+				case ModeAuto, "":
+					fallback := c.afterDeferredInstall(failedRelease)
+					fallback.HandoffError = "disk_full"
+					if fallback.Message != "" {
+						fallback.Message += " Hot-swap unavailable: disk_full"
+					}
+					return fallback, nil
+				default:
+					return nil, fmt.Errorf("apply update: %w", err)
+				}
+			}
 			return nil, fmt.Errorf("apply update: %w", err)
 		}
-		if errors.Is(err, updater.ErrDiskFull) {
-			failedRelease, ok := updater.ReleaseFromError(err)
-			if !ok || failedRelease == nil {
-				return nil, fmt.Errorf("apply update: %w", err)
-			}
-			release = failedRelease
-			switch mode {
-			case ModeAuto, "":
-				fallback := c.afterDeferredInstall(failedRelease)
-				fallback.HandoffError = "disk_full"
-				if fallback.Message != "" {
-					fallback.Message += " Hot-swap unavailable: disk_full"
-				}
-				return fallback, nil
-			default:
-				return nil, fmt.Errorf("apply update: %w", err)
-			}
+		if release == nil {
+			return &Result{
+				Method:          "up_to_date",
+				PreviousVersion: c.Version,
+				NewVersion:      c.Version,
+				Message:         "Already up to date.",
+			}, nil
 		}
-		return nil, fmt.Errorf("apply update: %w", err)
-	}
-	if release == nil {
-		return &Result{
-			Method:          "up_to_date",
-			PreviousVersion: c.Version,
-			NewVersion:      c.Version,
-			Message:         "Already up to date.",
-		}, nil
 	}
 
 	switch mode {
@@ -343,6 +358,59 @@ func (c *Coordinator) afterHotSwapInstall(ctx context.Context, release *updater.
 		PreviousVersion: c.Version,
 		NewVersion:      release.Version,
 		Message:         "Binary updated. Daemon handoff completed successfully.",
+	}, nil
+}
+
+// applyFromLocal installs a binary from a local file path instead of downloading
+// from GitHub. It performs the same atomic replacement as GitHub-sourced updates:
+// rename current → .old, copy source → current path.
+func (c *Coordinator) applyFromLocal(_ context.Context, sourcePath string) (*updater.Release, error) {
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("source binary not found: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("source path is a directory, not a binary: %s", sourcePath)
+	}
+
+	// Atomic replacement: rename running binary to .old, copy source to binary path.
+	// On Windows, running executables can be renamed but not deleted.
+	oldPath := c.BinaryPath + ".old"
+	_ = os.Remove(oldPath) // remove previous .old if it exists
+	if err := os.Rename(c.BinaryPath, oldPath); err != nil {
+		return nil, fmt.Errorf("rename current binary: %w", err)
+	}
+
+	// Copy source to binary path.
+	src, err := os.Open(sourcePath)
+	if err != nil {
+		// Rollback: restore original binary.
+		_ = os.Rename(oldPath, c.BinaryPath)
+		return nil, fmt.Errorf("open source binary: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(c.BinaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		_ = os.Rename(oldPath, c.BinaryPath)
+		return nil, fmt.Errorf("create target binary: %w", err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		_ = os.Remove(c.BinaryPath)
+		_ = os.Rename(oldPath, c.BinaryPath)
+		return nil, fmt.Errorf("copy binary: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		_ = os.Remove(c.BinaryPath)
+		_ = os.Rename(oldPath, c.BinaryPath)
+		return nil, fmt.Errorf("finalize target binary: %w", err)
+	}
+
+	return &updater.Release{
+		Version:      "local-dev",
+		AssetName:    filepath.Base(sourcePath),
+		ReleaseNotes: fmt.Sprintf("Installed from local source: %s", sourcePath),
 	}, nil
 }
 

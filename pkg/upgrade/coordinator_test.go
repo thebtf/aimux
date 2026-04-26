@@ -563,6 +563,104 @@ func TestSessionHandler_InterfaceShape(t *testing.T) {
 	var _ upgrade.SessionHandler = (*mockSessionHandler)(nil)
 }
 
+func TestCoordinator_ApplyFromLocal(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a fake source binary with known content.
+	srcPath := filepath.Join(dir, "aimux-new.exe")
+	srcContent := []byte("fake-binary-content-v2")
+	if err := os.WriteFile(srcPath, srcContent, 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	// Create a fake current binary that will be replaced.
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	if err := os.WriteFile(binaryPath, []byte("fake-binary-content-v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		BinaryPath: binaryPath,
+		Source:     srcPath,
+	}
+
+	result, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.NewVersion != "local-dev" {
+		t.Fatalf("NewVersion = %q, want local-dev", result.NewVersion)
+	}
+
+	// Verify the binary at BinaryPath now contains the source content.
+	got, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("ReadFile binary after apply: %v", err)
+	}
+	if string(got) != string(srcContent) {
+		t.Fatalf("binary content = %q, want %q", got, srcContent)
+	}
+
+	// .old file should exist (original backup).
+	oldPath := binaryPath + ".old"
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("expected .old backup to exist: %v", err)
+	}
+}
+
+func TestCoordinator_ApplyFromLocal_MissingSource(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		BinaryPath: binaryPath,
+		Source:     filepath.Join(dir, "nonexistent.exe"),
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false)
+	if err == nil {
+		t.Fatal("expected error for missing source binary")
+	}
+	if !strings.Contains(err.Error(), "source binary not found") {
+		t.Fatalf("error = %q, want source binary not found", err)
+	}
+
+	// Verify the original binary is untouched (no rename should have occurred).
+	if _, statErr := os.Stat(binaryPath); statErr != nil {
+		t.Fatalf("original binary should still exist: %v", statErr)
+	}
+}
+
+func TestCoordinator_ApplyFromLocal_SourceIsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		BinaryPath: binaryPath,
+		Source:     dir, // a directory, not a file
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false)
+	if err == nil {
+		t.Fatal("expected error when source is a directory")
+	}
+	if !strings.Contains(err.Error(), "directory") {
+		t.Fatalf("error = %q, want directory error", err)
+	}
+}
+
 func runApplyAndReadSingleLogLine(t *testing.T, buildCoordinator func(*logger.Logger) *upgrade.Coordinator, runApply func(*upgrade.Coordinator)) string {
 	t.Helper()
 

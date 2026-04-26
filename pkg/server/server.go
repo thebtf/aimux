@@ -1051,7 +1051,7 @@ func (s *Server) registerTools() {
 		s.handleCritique,
 	)
 
-	// upgrade tool — binary self-update from GitHub releases
+	// upgrade tool — binary self-update from GitHub releases or local binary
 	s.mcp.AddTool(
 		mcp.NewTool("upgrade",
 			mcp.WithDescription("[manage — server state, no cost] Check for and apply aimux binary updates from GitHub releases. "+
@@ -1059,7 +1059,8 @@ func (s *Server) registerTools() {
 				"After apply, daemon will exit when all CC sessions disconnect (deferred restart). "+
 				"action=check returns compact status fields (fits ~4k chars); release_notes are omitted by default (release_notes_length is reported). "+
 				"Use include_content=true to return the full release_notes body. "+
-				"action=apply with force=true re-runs the full upgrade pipeline even when already up-to-date."),
+				"action=apply with force=true re-runs the full upgrade pipeline even when already up-to-date. "+
+				"action=apply with source=<path> installs a local binary instead of downloading from GitHub (for dev iteration)."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: check (detect latest version) or apply (download and replace binary)"),
@@ -1075,6 +1076,9 @@ func (s *Server) registerTools() {
 			),
 			mcp.WithBoolean("force",
 				mcp.Description("action=apply: re-download and re-install even if already at latest version. Use for testing the upgrade pipeline or recovering from a corrupted binary."),
+			),
+			mcp.WithString("source",
+				mcp.Description("action=apply: path to local binary to install instead of downloading from GitHub. Use for dev iteration."),
 			),
 			mcp.WithToolAnnotation(mcp.ToolAnnotation{
 				ReadOnlyHint:    mcp.ToBoolPtr(false),
@@ -1632,6 +1636,7 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 			return mcp.NewToolResultError(fmt.Sprintf("invalid upgrade mode %q (use auto, hot_swap, or deferred)", mode)), nil
 		}
 		force := request.GetBool("force", false)
+		source := request.GetString("source", "")
 
 		binaryPath, exeErr := os.Executable()
 		if exeErr != nil {
@@ -1657,6 +1662,7 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 			GracefulRestart: s.gracefulRestartFunc(),
 			HandoffStatus:   s.handoffStatusFunc(),
 			Logger:          s.log,
+			Source:          source,
 		}
 
 		applyUpgrade := s.applyUpgrade
