@@ -274,3 +274,56 @@ func TestTemporal_NoTimestamps(t *testing.T) {
 		t.Errorf("totalComponents: got %v, want 6", data["totalComponents"])
 	}
 }
+
+func TestTemporal_MermaidDiagram(t *testing.T) {
+	p := NewTemporalThinkingPattern()
+	input := map[string]any{
+		"timeFrame":   "deployment window",
+		"states":      []any{"staging", "production"},
+		"events":      []any{makeEvent(1.0, "deploy-start"), makeEvent(2.0, "deploy-end")},
+		"transitions": []any{"staging -> production"},
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	result, err := p.Handle(validated, "test-mermaid")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	diagram, ok := result.Data["mermaidDiagram"].(string)
+	if !ok || diagram == "" {
+		t.Fatal("expected non-empty mermaidDiagram")
+	}
+	if !contains(diagram, "sequenceDiagram") {
+		t.Error("diagram must start with sequenceDiagram")
+	}
+	if !contains(diagram, "participant staging") {
+		t.Error("diagram must declare staging participant")
+	}
+	if !contains(diagram, "staging->>production") {
+		t.Error("diagram must contain transition arrow")
+	}
+}
+
+func TestTemporal_MermaidDiagram_Empty(t *testing.T) {
+	p := NewTemporalThinkingPattern()
+	input := map[string]any{"timeFrame": "empty test"}
+	validated, _ := p.Validate(input)
+	result, err := p.Handle(validated, "test-mermaid-empty")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if _, ok := result.Data["mermaidDiagram"]; ok {
+		t.Error("mermaidDiagram should not be present when no states/events/transitions")
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

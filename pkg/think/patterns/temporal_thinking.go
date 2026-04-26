@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -156,6 +157,11 @@ func (p *temporalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		}
 	}
 
+	// Mermaid sequence diagram (TS v1 parity — visual representation of temporal model).
+	if diagram := generateMermaidDiagram(validInput); diagram != "" {
+		data["mermaidDiagram"] = diagram
+	}
+
 	// Guidance — always included.
 	data["guidance"] = BuildGuidance("temporal_thinking",
 		func() string {
@@ -231,6 +237,95 @@ func buildTimeline(events []any) *timelineResult {
 		totalTimespan: totalTimespan,
 		longestGap:    longestGap,
 	}
+}
+
+// generateMermaidDiagram builds a Mermaid sequenceDiagram from states, events,
+// and transitions. Returns empty string if insufficient data.
+func generateMermaidDiagram(input map[string]any) string {
+	states, _ := input["states"].([]any)
+	events, _ := input["events"].([]any)
+	transitions, _ := input["transitions"].([]any)
+
+	if len(states) == 0 && len(events) == 0 && len(transitions) == 0 {
+		return ""
+	}
+
+	var lines []string
+	lines = append(lines, "sequenceDiagram")
+
+	// Declare participants from states.
+	for _, s := range states {
+		if name, ok := s.(string); ok && name != "" {
+			lines = append(lines, fmt.Sprintf("    participant %s", name))
+		}
+	}
+
+	// Add events as notes.
+	for _, e := range events {
+		ev, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := ev["name"].(string)
+		if name == "" {
+			continue
+		}
+		// Place note on first participant, or as standalone.
+		if len(states) > 0 {
+			first, _ := states[0].(string)
+			if first != "" {
+				lines = append(lines, fmt.Sprintf("    Note over %s: %s", first, name))
+				continue
+			}
+		}
+		lines = append(lines, fmt.Sprintf("    Note right of participant: %s", name))
+	}
+
+	// Add transitions as arrows.
+	for _, t := range transitions {
+		if ts, ok := t.(string); ok && ts != "" {
+			// Try to parse "A -> B" or "A → B" format.
+			if from, to, ok := parseTransition(ts); ok {
+				lines = append(lines, fmt.Sprintf("    %s->>%s: transition", from, to))
+			}
+		}
+	}
+
+	if len(lines) <= 1 {
+		return "" // Only header, no content.
+	}
+
+	result := ""
+	for i, line := range lines {
+		if i > 0 {
+			result += "\n"
+		}
+		result += line
+	}
+	return result
+}
+
+// parseTransition extracts source and target from transition strings like "A -> B", "A → B", "A to B".
+func parseTransition(s string) (string, string, bool) {
+	for _, sep := range []string{"->", "→", " to "} {
+		parts := splitTransition(s, sep)
+		if len(parts) == 2 {
+			from := strings.TrimSpace(parts[0])
+			to := strings.TrimSpace(parts[1])
+			if from != "" && to != "" {
+				return from, to, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func splitTransition(s, sep string) []string {
+	idx := strings.Index(s, sep)
+	if idx < 0 {
+		return nil
+	}
+	return []string{s[:idx], s[idx+len(sep):]}
 }
 
 // extractTimestamp reads "time" or "timestamp" from an event map and returns
