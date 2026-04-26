@@ -23,6 +23,7 @@ import (
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
+	swarmPkg "github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -496,9 +497,17 @@ func (s *Server) executeJob(ctx context.Context, jobID, sessionID, role string, 
 		var err error
 		candProfile, profileErr := s.registry.Get(cand.CLI)
 		if profileErr == nil && (len(candProfile.ModelFallback) > 0 || len(candProfile.FallbackSuffixStrip) > 0) && candProfile.ModelFlag != "" {
+			// TODO(M2+): migrate runWithModelFallback to use Swarm handles per model attempt.
 			result, err = s.runWithModelFallback(ctx, s.executor, candProfile, currentArgs)
 		} else {
-			result, err = s.executor.Run(ctx, currentArgs)
+			// M2 Strangler Fig: route through Swarm for lifecycle management (health check,
+			// restart on crash). Falls back to direct executor.Run if Swarm.Get fails.
+			if h, swarmErr := s.swarm.Get(ctx, cand.CLI, swarmPkg.Stateless); swarmErr == nil {
+				result, err = s.swarm.LegacyRun(ctx, h, currentArgs)
+			} else {
+				s.log.Warn("swarm.Get failed for %s, falling back to direct executor: %v", cand.CLI, swarmErr)
+				result, err = s.executor.Run(ctx, currentArgs)
+			}
 		}
 
 		if err != nil {
@@ -799,6 +808,19 @@ func selectBestExecutor() types.Executor {
 		pipeExec.New(),   // Pipe: everywhere (fallback)
 	)
 	return sel.Select()
+}
+
+// wrapExecutorAsV2Factory returns a Swarm factory that wraps *execPtr (an
+// indirection into Server.executor) via NewCLIPipeAdapter. Using a pointer
+// means the factory always reads the current value of srv.executor, including
+// swaps made in tests or hot-restart scenarios.
+//
+// CLIPipeAdapter implements types.LegacyAccessor (Legacy() → LegacyExecutor),
+// which is required by Swarm.LegacyRun for Strangler Fig bridging.
+func wrapExecutorAsV2Factory(execPtr *types.Executor) func(name string) (types.ExecutorV2, error) {
+	return func(_ string) (types.ExecutorV2, error) {
+		return executor.NewCLIPipeAdapter(*execPtr), nil
+	}
 }
 
 // projectIDFromContext extracts the ProjectContext.ID for Loom task scoping.
