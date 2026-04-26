@@ -99,6 +99,25 @@ Both fields appear under the `result` key in the response (inside the guidance e
 Stateless invocations (no `session_id`) always return `gate_status: "complete"`.
 Max advisor-triggered pattern switches per session: 3.
 
+## Architecture Glossary (v5)
+
+| Term | Definition |
+|------|-----------|
+| ExecutorV2 | Unified interface for CLI and API backends (Send/SendStream/IsAlive/Close/Info) |
+| LegacyExecutor | Original v4 executor interface (Run/Start/Name/Available) — deprecated, use ExecutorV2 |
+| Swarm | Process/connection pool manager — sole entry point for executor access |
+| Handle | Opaque reference to a Swarm-managed executor instance |
+| SpawnMode | Executor lifecycle: Stateless (per-request), Stateful (per-session), Persistent (daemon) |
+| Dialogue Controller | Participant-agnostic conference moderator (pkg/dialogue/) |
+| Participant | Anything that speaks in a dialogue: CLI, API, think pattern, external agent |
+| SwarmParticipant | Adapter: Executor via Swarm → Participant interface |
+| PatternParticipant | Adapter: Think pattern → Participant interface |
+| Domain Workflow | Multi-step scenario with quality gates (codereview, secaudit, debug, etc.) |
+| Workflow Engine | Generic step executor: SingleExec, Dialogue, ThinkPattern, Gate, Parallel |
+| Strangler Fig | Migration pattern: build new alongside legacy, re-wire callers incrementally |
+| LegacyRun | Swarm bridge: legacy SpawnArgs/Result through Swarm lifecycle management |
+| API Executor | HTTP API backend (OpenAI, Anthropic, Google AI) implementing ExecutorV2 |
+
 ### Upgrade Behavior
 - `upgrade(action="apply")` supports `mode="auto|hot_swap|deferred"`.
 - `mode="auto"` is the default: in engine mode it tries daemon-side graceful restart first and falls back safely if live handoff cannot complete.

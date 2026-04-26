@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -118,6 +119,7 @@ func (c *ParallelConsensus) executeWithDialogue(ctx context.Context, params type
 
 // executeLegacy is the original consensus logic extracted for Strangler Fig fallback.
 func (c *ParallelConsensus) executeLegacy(ctx context.Context, params types.StrategyParams, synthesize bool) (*types.StrategyResult, error) {
+	fmt.Fprintf(os.Stderr, "[DEPRECATED] %s using legacy executor path — migrate to Dialogue Controller (v5.0.0 will remove this)\n", c.Name())
 	participants := params.CLIs
 
 	type opinionResult struct {

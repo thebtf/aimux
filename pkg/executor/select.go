@@ -16,6 +16,8 @@ func NewSelector(executors ...types.Executor) *Selector {
 }
 
 // Select returns the best available executor for the current platform.
+//
+// Deprecated: Use SelectV2(). Will be removed in v6.0.0.
 func (s *Selector) Select() types.Executor {
 	for _, exec := range s.executors {
 		if exec.Available() {

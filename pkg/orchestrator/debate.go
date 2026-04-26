@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/thebtf/aimux/pkg/dialogue"
@@ -148,6 +149,7 @@ func (d *StructuredDebate) executeWithDialogue(ctx context.Context, params types
 
 // executeLegacy is the original debate logic preserved for Strangler Fig fallback.
 func (d *StructuredDebate) executeLegacy(ctx context.Context, params types.StrategyParams, maxTurns int, synthesize bool) (*types.StrategyResult, error) {
+	fmt.Fprintf(os.Stderr, "[DEPRECATED] %s using legacy executor path — migrate to Dialogue Controller (v5.0.0 will remove this)\n", d.Name())
 	participants := params.CLIs
 
 	stances := make([]string, len(participants))
