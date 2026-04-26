@@ -141,6 +141,50 @@ func (p *sourceComparisonPattern) Handle(validInput map[string]any, sessionID st
 		overallConsensus = float64(agreements) / float64(total) * 100.0
 	}
 
+	// Compute per-source mean Jaccard similarity against all other sources.
+	sourceAgreementScores := make(map[string]float64, len(sources))
+	for i, si := range sources {
+		sa := si.(map[string]any)
+		nameA, _ := sa["name"].(string)
+		claimA, _ := sa["claim"].(string)
+		sum := 0.0
+		count := 0
+		for j, sj := range sources {
+			if i == j {
+				continue
+			}
+			sb := sj.(map[string]any)
+			claimB, _ := sb["claim"].(string)
+			if claimA != "" && claimB != "" {
+				sum += jaccardSimilarity(claimA, claimB)
+			}
+			count++
+		}
+		if count > 0 {
+			sourceAgreementScores[nameA] = sum / float64(count)
+		} else {
+			sourceAgreementScores[nameA] = 0.0
+		}
+	}
+
+	// Identify outlier sources: mean score more than 1 stddev below the group mean.
+	scoreSlice := make([]float64, len(sources))
+	nameSlice := make([]string, len(sources))
+	for i, si := range sources {
+		sa := si.(map[string]any)
+		name, _ := sa["name"].(string)
+		nameSlice[i] = name
+		scoreSlice[i] = sourceAgreementScores[name]
+	}
+	groupMean, groupStdDev := MeanStdDev(scoreSlice)
+	threshold := groupMean - groupStdDev
+	outlierSources := make([]string, 0)
+	for i, name := range nameSlice {
+		if scoreSlice[i] < threshold {
+			outlierSources = append(outlierSources, name)
+		}
+	}
+
 	data := map[string]any{
 		"topic":            topic,
 		"sourceCount":      len(sources),

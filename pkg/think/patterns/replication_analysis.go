@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"strings"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -98,7 +99,13 @@ func (p *replicationAnalysisPattern) Handle(validInput map[string]any, sessionID
 	for i, r := range risks {
 		riskAny[i] = r
 	}
-	feasibility, effort := assessFeasibility(reqAny, riskAny, resources, constraints)
+	feasibility, effort := assessFeasibility(riskAny, resources)
+
+	// resourceCoverageRatio: how well resources cover requirements.
+	resourceCoverageRatio := 0.0
+	if len(requirements) > 0 {
+		resourceCoverageRatio = float64(len(resources)) / float64(len(requirements))
+	}
 
 	data := map[string]any{
 		"claim":                  claim,
@@ -107,6 +114,7 @@ func (p *replicationAnalysisPattern) Handle(validInput map[string]any, sessionID
 		"risks":                  risks,
 		"estimatedEffort":        effort,
 		"criticalAssumptions":    criticalAssumptions,
+		"resourceCoverageRatio":  resourceCoverageRatio,
 		"guidance":               BuildGuidance("replication_analysis", replicationDepth(validInput), []string{"originalMethod", "resources", "constraints"}),
 	}
 
@@ -167,25 +175,48 @@ func buildAssumptions(method string) []string {
 	return assumptions
 }
 
-func assessFeasibility(_ []any, risks, resources, constraints []any) (string, string) {
-	blockers := 0
+func assessFeasibility(risks []any, resources []any) (string, string) {
+	// Weighted risk scoring: critical risks (data unavailability, methodology ambiguity) carry
+	// more weight than minor risks (environment differences, constraints).
+	criticalKeywords := []string{"unavailable", "nda", "proprietary", "cannot access", "ambiguity", "diverge"}
+	var criticalCount, minorCount int
 	for _, r := range risks {
-		if rs, ok := r.(string); ok && len(rs) > 0 {
-			blockers++
+		rs, ok := r.(string)
+		if !ok || rs == "" {
+			continue
+		}
+		lowered := strings.ToLower(rs)
+		isCritical := false
+		for _, kw := range criticalKeywords {
+			if strings.Contains(lowered, kw) {
+				isCritical = true
+				break
+			}
+		}
+		if isCritical {
+			criticalCount++
+		} else {
+			minorCount++
 		}
 	}
+	riskScore := float64(criticalCount)*0.4 + float64(minorCount)*0.1
 
-	hasResources := len(resources) > 0
-	hasConstraints := len(constraints) > 0
+	effort := "low"
+	switch {
+	case riskScore > 0.6:
+		effort = "high"
+	case riskScore > 0.3:
+		effort = "medium"
+	}
 
 	switch {
-	case !hasResources && hasConstraints:
-		return "infeasible", "high"
-	case blockers > 4:
-		return "partial", "high"
-	case hasResources:
-		return "feasible", "medium"
+	case len(resources) == 0 && riskScore > 0.3:
+		return "infeasible", effort
+	case riskScore > 0.6:
+		return "infeasible", effort
+	case riskScore > 0.3:
+		return "partial", effort
 	default:
-		return "partial", "medium"
+		return "feasible", effort
 	}
 }

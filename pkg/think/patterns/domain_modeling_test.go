@@ -232,6 +232,39 @@ func TestDomainModel_AutoAnalysis_KeywordFallback(t *testing.T) {
 	}
 }
 
+func TestDomainModeling_HubEntities(t *testing.T) {
+	p := NewDomainModelingPattern()
+	input, _ := p.Validate(map[string]any{
+		"domainName": "E-commerce",
+		"entities":   []any{"User", "Order", "Product", "Payment", "Shipment"},
+		"relationships": []any{
+			map[string]any{"from": "User", "to": "Order"},
+			map[string]any{"from": "User", "to": "Payment"},
+			map[string]any{"from": "User", "to": "Shipment"},
+			map[string]any{"from": "Order", "to": "Product"},
+			map[string]any{"from": "Order", "to": "Payment"},
+		},
+	})
+	result, err := p.Handle(input, "")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	hubs, ok := result.Data["hubEntities"].([]string)
+	if !ok {
+		t.Fatal("hubEntities missing")
+	}
+	// User appears in 3/5 rels = 60%, Order in 3/5 = 60% → both are hubs
+	if len(hubs) < 1 {
+		t.Error("expected at least 1 hub entity")
+	}
+	if _, ok := result.Data["density"].(float64); !ok {
+		t.Error("density missing")
+	}
+	if _, ok := result.Data["maxDegree"].(int); !ok {
+		t.Error("maxDegree missing")
+	}
+}
+
 // TestDomainModel_AutoAnalysis_BackwardCompat verifies that when entities ARE provided,
 // existing behavior is preserved (no suggestedEntities).
 func TestDomainModel_AutoAnalysis_BackwardCompat(t *testing.T) {

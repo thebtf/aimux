@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -173,12 +174,19 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 					spAny[i] = s
 				}
 				dagRes := analyzeDag(edges, spAny)
-				data["dag"] = map[string]any{
+				dagMap := map[string]any{
 					"hasCycle":          dagRes.hasCycle,
 					"cyclePath":         dagRes.cyclePath,
 					"topologicalOrder":  dagRes.topologicalOrder,
 					"orphanSubProblems": dagRes.orphanSubProblems,
 				}
+				if !dagRes.hasCycle && dagRes.topologicalOrder != nil {
+					adj := buildAdj(edges)
+					cp := longestPath(dagRes.topologicalOrder, adj)
+					dagMap["criticalPath"] = cp
+					dagMap["highRiskCriticalNodes"] = highRiskNodes(cp, validInput["risks"])
+				}
+				data["dag"] = dagMap
 			}
 		}
 	}
@@ -189,12 +197,19 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 		if edges != nil {
 			subProblems, _ := validInput["subProblems"].([]any)
 			result := analyzeDag(edges, subProblems)
-			data["dag"] = map[string]any{
+			dagMap := map[string]any{
 				"hasCycle":          result.hasCycle,
 				"cyclePath":         result.cyclePath,
 				"topologicalOrder":  result.topologicalOrder,
 				"orphanSubProblems": result.orphanSubProblems,
 			}
+			if !result.hasCycle && result.topologicalOrder != nil {
+				adj := buildAdj(edges)
+				cp := longestPath(result.topologicalOrder, adj)
+				dagMap["criticalPath"] = cp
+				dagMap["highRiskCriticalNodes"] = highRiskNodes(cp, validInput["risks"])
+			}
+			data["dag"] = dagMap
 		}
 	}
 
@@ -458,4 +473,73 @@ func sortedKeys(m map[string]struct{}) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// buildAdj constructs an adjacency list from a slice of directed edges.
+func buildAdj(edges []dagEdge) map[string][]string {
+	adj := map[string][]string{}
+	for _, e := range edges {
+		adj[e.from] = append(adj[e.from], e.to)
+	}
+	return adj
+}
+
+// longestPath computes the longest path in a DAG given its topological order
+// and adjacency list. Returns the reconstructed path as a slice of node names.
+func longestPath(topoOrder []string, adj map[string][]string) []string {
+	if len(topoOrder) == 0 {
+		return nil
+	}
+	dist := make(map[string]int, len(topoOrder))
+	prev := make(map[string]string, len(topoOrder))
+	for _, n := range topoOrder {
+		dist[n] = 0
+	}
+	for _, u := range topoOrder {
+		for _, v := range adj[u] {
+			if dist[u]+1 > dist[v] {
+				dist[v] = dist[u] + 1
+				prev[v] = u
+			}
+		}
+	}
+	// Find the node with the maximum distance.
+	maxNode := topoOrder[0]
+	for _, n := range topoOrder {
+		if dist[n] > dist[maxNode] {
+			maxNode = n
+		}
+	}
+	// Reconstruct path by following predecessor links.
+	var path []string
+	for n := maxNode; n != ""; n = prev[n] {
+		path = append([]string{n}, path...)
+	}
+	return path
+}
+
+// highRiskNodes returns the subset of criticalPath nodes that are mentioned in
+// any risk string (case-insensitive substring match).
+func highRiskNodes(criticalPath []string, risksRaw any) []string {
+	risks, _ := risksRaw.([]any)
+	if len(risks) == 0 || len(criticalPath) == 0 {
+		return nil
+	}
+	riskLower := make([]string, 0, len(risks))
+	for _, r := range risks {
+		if s, ok := r.(string); ok {
+			riskLower = append(riskLower, strings.ToLower(s))
+		}
+	}
+	var result []string
+	for _, node := range criticalPath {
+		nodeLower := strings.ToLower(node)
+		for _, r := range riskLower {
+			if strings.Contains(r, nodeLower) {
+				result = append(result, node)
+				break
+			}
+		}
+	}
+	return result
 }

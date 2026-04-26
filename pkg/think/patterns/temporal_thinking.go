@@ -154,6 +154,89 @@ func (p *temporalThinkingPattern) Handle(validInput map[string]any, sessionID st
 			data["sortedEvents"] = tl.sortedEvents
 			data["totalTimespan"] = tl.totalTimespan
 			data["longestGap"] = tl.longestGap
+
+			n := len(tl.sortedEvents)
+
+			// averageGap: totalTimespan divided by (n-1) inter-event intervals.
+			averageGap := 0.0
+			if n >= 2 {
+				averageGap = tl.totalTimespan / float64(n-1)
+			}
+			data["averageGap"] = averageGap
+
+			// paceDistribution: count events per third of the timeline.
+			pace := map[string]int{"early": 0, "mid": 0, "late": 0}
+			if n >= 2 {
+				// Re-extract sorted timestamps for bucketing.
+				timed := make([]timedEvent, 0, n)
+				for _, e := range events {
+					ev, ok := e.(map[string]any)
+					if !ok {
+						continue
+					}
+					ts, ok := extractTimestamp(ev)
+					if !ok {
+						continue
+					}
+					timed = append(timed, timedEvent{timestamp: ts, raw: ev})
+				}
+				sort.Slice(timed, func(i, j int) bool {
+					return timed[i].timestamp < timed[j].timestamp
+				})
+				first := timed[0].timestamp
+				span := tl.totalTimespan
+				if span > 0 {
+					third := span / 3.0
+					for _, te := range timed {
+						pos := te.timestamp - first
+						switch {
+						case pos < third:
+							pace["early"]++
+						case pos < 2*third:
+							pace["mid"]++
+						default:
+							pace["late"]++
+						}
+					}
+				}
+			}
+			data["paceDistribution"] = pace
+
+			// significantPauses: gaps > 2× averageGap.
+			var significantPauses []map[string]any
+			if averageGap > 0 {
+				// Re-sort timed events for gap computation.
+				timed := make([]timedEvent, 0, n)
+				for _, e := range events {
+					ev, ok := e.(map[string]any)
+					if !ok {
+						continue
+					}
+					ts, ok := extractTimestamp(ev)
+					if !ok {
+						continue
+					}
+					timed = append(timed, timedEvent{timestamp: ts, raw: ev})
+				}
+				sort.Slice(timed, func(i, j int) bool {
+					return timed[i].timestamp < timed[j].timestamp
+				})
+				for i := 1; i < len(timed); i++ {
+					gap := timed[i].timestamp - timed[i-1].timestamp
+					if gap > 2*averageGap {
+						nameA, _ := timed[i-1].raw["name"].(string)
+						nameB, _ := timed[i].raw["name"].(string)
+						significantPauses = append(significantPauses, map[string]any{
+							"between":  [2]string{nameA, nameB},
+							"duration": gap,
+						})
+					}
+				}
+			}
+			if significantPauses == nil {
+				significantPauses = []map[string]any{}
+			}
+			data["significantPauses"] = significantPauses
 		}
 	}
 

@@ -8,6 +8,25 @@ import (
 	think "github.com/thebtf/aimux/pkg/think"
 )
 
+// modelTriggerWords maps model names to keywords that indicate a strong fit.
+var modelTriggerWords = map[string][]string{
+	"first_principles":       {"assumption", "fundamental", "from scratch", "ground truth", "basic", "axiom"},
+	"inversion":              {"avoid", "prevent", "failure", "wrong", "opposite", "reverse"},
+	"second_order_thinking":  {"consequence", "effect", "ripple", "downstream", "indirect", "cascade"},
+	"probabilistic_thinking": {"probability", "risk", "distribution", "chance", "likelihood", "odds"},
+	"occams_razor":           {"simple", "simplest", "complexity", "unnecessary", "minimal"},
+	"pareto_principle":       {"80", "20", "vital few", "trivial many", "majority", "minority"},
+	"circle_of_competence":   {"expertise", "competence", "know", "familiar", "skill", "domain"},
+	"opportunity_cost":       {"trade-off", "alternative", "cost", "foregone", "sacrifice", "instead"},
+	"systems_thinking":       {"system", "feedback", "loop", "interconnect", "emergent", "network"},
+	"hanlons_razor":          {"malice", "careless", "incompetence", "mistake", "error", "accident"},
+	"map_is_not_territory":   {"model", "map", "reality", "abstraction", "representation", "limit"},
+	"jobs_to_be_done":        {"job", "customer", "hire", "outcome", "goal", "progress"},
+	"via_negativa":           {"remove", "subtract", "eliminate", "less", "reduce", "harmful"},
+	"leverage_points":        {"leverage", "small change", "large effect", "pivot", "shift", "intervention"},
+	"margin_of_safety":       {"buffer", "margin", "safety", "cushion", "threshold", "reserve"},
+}
+
 // knownModels maps model names to their descriptions.
 var knownModels = map[string]string{
 	"first_principles":       "Break down complex problems into fundamental truths and build up from there",
@@ -112,7 +131,28 @@ func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string)
 	stepCount := len(steps)
 
 	completenessScore := math.Min(float64(totalTextLength)/1000.0, 1.0)
-	clarityScore := math.Min(float64(stepCount)/10.0, 1.0)
+	clarityScore := math.Min(float64(stepCount)/5.0, 1.0)
+
+	// Compute alignment between problem text and model's expected trigger words.
+	lowerProblem := strings.ToLower(problem)
+	alignmentScore := 0.0
+	if triggers, ok := modelTriggerWords[normalizedName]; ok && len(triggers) > 0 {
+		matched := 0
+		for _, word := range triggers {
+			if strings.Contains(lowerProblem, word) {
+				matched++
+			}
+		}
+		alignmentScore = float64(matched) / float64(len(triggers))
+	}
+
+	modelFit := "mismatch"
+	if alignmentScore >= 0.3 {
+		modelFit = "strong"
+	} else if alignmentScore >= 0.1 {
+		modelFit = "weak"
+	}
+
 	coherenceScore := (completenessScore + clarityScore) / 2.0
 
 	stepComplexity := float64(stepCount)
@@ -137,6 +177,8 @@ func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string)
 		"clarityScore":      clarityScore,
 		"coherenceScore":    coherenceScore,
 		"complexity":        complexity,
+		"alignmentScore":    alignmentScore,
+		"modelFit":          modelFit,
 	}
 
 	if known {

@@ -81,6 +81,25 @@ func (p *recursiveThinkingPattern) Handle(validInput map[string]any, sessionID s
 	}
 	isBaseCase := currentDepth >= maxDepth
 
+	// Detect branch factor from problem text (e.g. "3-ary", "k-ary", "n-ary").
+	branchFactor := 2
+	for i := 0; i < len(problem)-3; i++ {
+		ch := problem[i]
+		if ch >= '2' && ch <= '9' && problem[i+1] == '-' &&
+			problem[i+2] == 'a' && problem[i+3] == 'r' && len(problem) > i+4 && problem[i+4] == 'y' {
+			branchFactor = int(ch - '0')
+			break
+		}
+	}
+	estimatedCallTreeNodes := int(math.Pow(float64(branchFactor), depthRemaining))
+
+	stackRisk := "safe"
+	if depthRemaining > 1000 {
+		stackRisk = "overflow"
+	} else if depthRemaining > 100 {
+		stackRisk = "warn"
+	}
+
 	depthWarning := ""
 	if currentDepth >= maxDepth {
 		depthWarning = fmt.Sprintf("Maximum recursion depth reached (%.0f/%.0f). Consider base case resolution.", currentDepth, maxDepth)
@@ -111,6 +130,8 @@ func (p *recursiveThinkingPattern) Handle(validInput map[string]any, sessionID s
 		"isBaseCase":                 isBaseCase,
 		"keywords":                   keywords,
 		"recursiveStructureDetected": recursiveStructureDetected,
+		"estimatedCallTreeNodes":     estimatedCallTreeNodes,
+		"stackRisk":                  stackRisk,
 		"guidance":                   BuildGuidance("recursive_thinking", "basic", []string{"baseCase", "recursiveCase", "convergenceCheck", "maxDepth"}),
 	}
 	return think.MakeThinkResult("recursive_thinking", data, sessionID, nil, "", []string{"depthWarning", "convergenceWarning", "depthRemaining", "depthPercentage", "isBaseCase"}), nil

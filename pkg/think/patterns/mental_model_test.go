@@ -62,7 +62,7 @@ func TestMentalModel_ClarityScalesByStepCount(t *testing.T) {
 		t.Errorf("clarityScore with no steps = %.4f, want 0.0", clarityNoSteps)
 	}
 
-	// 5 steps → clarityScore = 0.5
+	// 5 steps → clarityScore = 1.0 (formula: min(stepCount/5.0, 1.0))
 	inputFiveSteps := map[string]any{
 		"modelName": "occams_razor",
 		"problem":   "choose the simplest solution",
@@ -72,7 +72,7 @@ func TestMentalModel_ClarityScalesByStepCount(t *testing.T) {
 	resultFive, _ := p.Handle(validatedFive, "s1")
 	clarityFive := resultFive.Data["clarityScore"].(float64)
 
-	const wantFive = 0.5
+	const wantFive = 1.0
 	const epsilon = 0.0001
 	if clarityFive < wantFive-epsilon || clarityFive > wantFive+epsilon {
 		t.Errorf("clarityScore with 5 steps = %.4f, want %.4f", clarityFive, wantFive)

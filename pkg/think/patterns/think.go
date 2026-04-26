@@ -43,7 +43,34 @@ func (p *thinkPattern) Handle(validInput map[string]any, sessionID string) (*thi
 	thought := validInput["thought"].(string)
 
 	keywords := ExtractKeywords(thought)
-	suggestedPattern, confidence := suggestPatternFromKeywords(keywords)
+	ranked := rankPatterns(keywords)
+
+	var suggestedPattern string
+	var confidence float64
+	if len(ranked) == 0 {
+		suggestedPattern = "sequential_thinking"
+		confidence = 0.0
+	} else {
+		suggestedPattern = ranked[0].pattern
+		confidence = ranked[0].score
+	}
+
+	// Build top-3 alternative patterns (may include the winner).
+	alts := make([]string, 0, 3)
+	for i := 0; i < len(ranked) && i < 3; i++ {
+		alts = append(alts, ranked[i].pattern)
+	}
+
+	// Confidence level label.
+	var confidenceLevel string
+	switch {
+	case confidence >= 0.3:
+		confidenceLevel = "high"
+	case confidence >= 0.15:
+		confidenceLevel = "medium"
+	default:
+		confidenceLevel = "low"
+	}
 
 	// Auto-route: if confidence is high enough and the pattern is not the fallback,
 	// execute the target pattern directly and annotate the result.
@@ -54,11 +81,13 @@ func (p *thinkPattern) Handle(validInput map[string]any, sessionID string) (*thi
 	}
 
 	data := map[string]any{
-		"thought":          thought,
-		"thoughtLength":    len(thought),
-		"keywords":         keywords,
-		"suggestedPattern": suggestedPattern,
-		"guidance":         BuildGuidance("think", "basic", []string{"thought"}),
+		"thought":             thought,
+		"thoughtLength":       len(thought),
+		"keywords":            keywords,
+		"suggestedPattern":    suggestedPattern,
+		"alternativePatterns": alts,
+		"confidenceLevel":     confidenceLevel,
+		"guidance":            BuildGuidance("think", "basic", []string{"thought"}),
 	}
 
 	return think.MakeThinkResult("think", data, sessionID, nil, suggestedPattern, nil), nil
@@ -109,15 +138,19 @@ func tryAutoRoute(thought, targetPattern, sessionID string) *think.ThinkResult {
 	return result
 }
 
-// suggestPatternFromKeywords returns a pattern name and a confidence score based on
-// keyword signals in the thought.
-//
-// Confidence = number of matching signal keywords / total keyword count.
-// If total keywords is 0, confidence is 0 and the fallback pattern is returned.
-func suggestPatternFromKeywords(keywords []string) (string, float64) {
+// patternScore holds a scored pattern candidate.
+type patternScore struct {
+	pattern string
+	score   float64
+}
+
+// rankPatterns scores every category against the keyword set and returns all candidates
+// sorted by score descending. Candidates with score == 0 are omitted.
+// The caller is responsible for appending the fallback if the result is empty.
+func rankPatterns(keywords []string) []patternScore {
 	total := len(keywords)
 	if total == 0 {
-		return "sequential_thinking", 0.0
+		return nil
 	}
 
 	kwSet := make(map[string]bool, total)
@@ -125,12 +158,12 @@ func suggestPatternFromKeywords(keywords []string) (string, float64) {
 		kwSet[k] = true
 	}
 
-	type candidate struct {
+	type category struct {
 		pattern string
 		signals []string
 	}
 
-	categories := []candidate{
+	categories := []category{
 		// Debug / error signals.
 		{"debugging_approach", []string{"bug", "debug", "error", "crash", "fail", "broken", "exception", "panic", "nil", "undefined", "race", "deadlock", "goroutine", "segfault", "stacktrace"}},
 		// Architecture / design signals.
@@ -145,9 +178,7 @@ func suggestPatternFromKeywords(keywords []string) (string, float64) {
 		{"problem_decomposition", []string{"recursive", "decompose", "break", "sub-problem", "nested", "tree", "hierarchy"}},
 	}
 
-	bestPattern := "sequential_thinking"
-	bestMatches := 0
-
+	ranked := make([]patternScore, 0, len(categories))
 	for _, cat := range categories {
 		matches := 0
 		for _, sig := range cat.signals {
@@ -155,16 +186,33 @@ func suggestPatternFromKeywords(keywords []string) (string, float64) {
 				matches++
 			}
 		}
-		if matches > bestMatches {
-			bestMatches = matches
-			bestPattern = cat.pattern
+		if matches > 0 {
+			ranked = append(ranked, patternScore{
+				pattern: cat.pattern,
+				score:   float64(matches) / float64(total),
+			})
 		}
 	}
 
-	if bestMatches == 0 {
-		return "sequential_thinking", 0.0
+	// Insertion sort — at most 6 elements, no import needed.
+	for i := 1; i < len(ranked); i++ {
+		for j := i; j > 0 && ranked[j].score > ranked[j-1].score; j-- {
+			ranked[j], ranked[j-1] = ranked[j-1], ranked[j]
+		}
 	}
 
-	confidence := float64(bestMatches) / float64(total)
-	return bestPattern, confidence
+	return ranked
+}
+
+// suggestPatternFromKeywords returns a pattern name and a confidence score based on
+// keyword signals in the thought.
+//
+// Confidence = number of matching signal keywords / total keyword count.
+// If total keywords is 0, confidence is 0 and the fallback pattern is returned.
+func suggestPatternFromKeywords(keywords []string) (string, float64) {
+	ranked := rankPatterns(keywords)
+	if len(ranked) == 0 {
+		return "sequential_thinking", 0.0
+	}
+	return ranked[0].pattern, ranked[0].score
 }

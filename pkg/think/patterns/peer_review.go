@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -160,6 +161,18 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 		// On error: fall through — existing keyword-based review stands.
 	}
 
+	// Compute objection density: P-weighted score / log(artifact length + 1).
+	pWeights := map[string]float64{"P0": 4, "P1": 3, "P2": 2, "P3": 1}
+	weightedSum := 0.0
+	for _, o := range objections {
+		sev, _ := o["severity"].(string)
+		weightedSum += pWeights[sev]
+	}
+	objectionDensity := weightedSum / math.Log(float64(len(artifact)+1))
+
+	// noEvidenceWarning is true when the review produced no objections and no strengths.
+	noEvidenceWarning := len(objections) == 0 && len(strengths) == 0
+
 	// Determine verdict from severity distribution.
 	verdict := computeVerdict(objections)
 
@@ -169,13 +182,15 @@ func (p *peerReviewPattern) Handle(validInput map[string]any, sessionID string) 
 	}
 
 	data := map[string]any{
-		"artifact":      artifact,
-		"reviewVerdict": verdict,
-		"objections":    objections,
-		"revisionPlan":  revisionPlan,
-		"strengths":     strengths,
-		"reviewSource":  reviewSource,
-		"guidance":      BuildGuidance("peer_review", "full", []string{"claims", "methodology", "novelty"}),
+		"artifact":          artifact,
+		"reviewVerdict":     verdict,
+		"objections":        objections,
+		"revisionPlan":      revisionPlan,
+		"strengths":         strengths,
+		"reviewSource":      reviewSource,
+		"objectionDensity":  objectionDensity,
+		"noEvidenceWarning": noEvidenceWarning,
+		"guidance":          BuildGuidance("peer_review", "full", []string{"claims", "methodology", "novelty"}),
 	}
 
 	return think.MakeThinkResult("peer_review", data, sessionID, nil, "", nil), nil

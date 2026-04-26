@@ -163,6 +163,32 @@ func TestThinkAutoRouteResultFields(t *testing.T) {
 	}
 }
 
+// TestThink_AlternativePatterns verifies that Handle populates alternativePatterns and confidenceLevel.
+func TestThink_AlternativePatterns(t *testing.T) {
+	p := NewThinkPattern()
+	input, _ := p.Validate(map[string]any{
+		"thought": "We need to decompose this problem into smaller components and analyze the architecture",
+	})
+	result, err := p.Handle(input, "")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	alts, ok := result.Data["alternativePatterns"].([]string)
+	if !ok || len(alts) == 0 {
+		t.Fatal("alternativePatterns missing or empty")
+	}
+	if len(alts) > 3 {
+		t.Errorf("alternativePatterns has %d entries, want <= 3", len(alts))
+	}
+	conf, ok := result.Data["confidenceLevel"].(string)
+	if !ok {
+		t.Fatal("confidenceLevel missing")
+	}
+	if conf != "high" && conf != "medium" && conf != "low" {
+		t.Errorf("confidenceLevel = %q, want high/medium/low", conf)
+	}
+}
+
 // TestThinkNoAutoRouteForFallbackPattern verifies that when suggestPatternFromKeywords
 // returns "sequential_thinking" (the fallback), Handle does NOT auto-execute it even if
 // confidence were somehow >= 0.7, because the fallback is explicitly excluded.

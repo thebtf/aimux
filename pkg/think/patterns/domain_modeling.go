@@ -157,6 +157,52 @@ func (p *domainModelingPattern) Handle(validInput map[string]any, sessionID stri
 		data["orphanEntities"] = orphans
 		data["danglingRelationships"] = dangling
 		data["consistent"] = consistent
+
+		// Graph density: ratio of actual to possible relationships.
+		density := 0.0
+		if entityCount >= 2 {
+			density = float64(relationshipCount) / float64(entityCount*(entityCount-1))
+		}
+		data["density"] = density
+
+		// Degree map: count how many relationships each entity appears in (as from or to).
+		degreeMap := make(map[string]int)
+		for _, r := range relationships {
+			rel, ok := r.(map[string]any)
+			if !ok {
+				continue
+			}
+			from, _ := coalesceString(rel, "from", "source")
+			to, _ := coalesceString(rel, "to", "target")
+			if from != "" {
+				degreeMap[from]++
+			}
+			if to != "" {
+				degreeMap[to]++
+			}
+		}
+
+		// maxDegree: highest connection count among all entities.
+		maxDegree := 0
+		for _, deg := range degreeMap {
+			if deg > maxDegree {
+				maxDegree = deg
+			}
+		}
+		data["maxDegree"] = maxDegree
+
+		// hubEntities: entities appearing in >30% of relationships.
+		threshold := 0.3 * float64(relationshipCount)
+		var hubEntities []string
+		for entity, deg := range degreeMap {
+			if float64(deg) > threshold {
+				hubEntities = append(hubEntities, entity)
+			}
+		}
+		if hubEntities == nil {
+			hubEntities = []string{}
+		}
+		data["hubEntities"] = hubEntities
 	}
 
 	// Guidance — always included.

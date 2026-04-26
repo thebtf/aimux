@@ -81,6 +81,10 @@ func (p *visualReasoningPattern) Handle(validInput map[string]any, sessionID str
 		data["elementsByType"] = stats.elementsByType
 		data["isolatedElements"] = stats.isolatedElements
 		data["density"] = stats.density
+
+		degreeMap := computeDegreeMap(elements, relationships)
+		data["degreeMap"] = degreeMap
+		data["highDegreeElements"] = computeHighDegreeElements(degreeMap)
 	} else {
 		// No elements provided — derive suggestions from operation keywords.
 		keywords := ExtractKeywords(operation)
@@ -239,4 +243,60 @@ func computeVisualElementStats(elements []any, relationships []any) visualElemen
 		isolatedElements: isolatedElements,
 		density:          density,
 	}
+}
+
+// computeDegreeMap counts how many relationships reference each element (as from/to/source/target).
+func computeDegreeMap(elements []any, relationships []any) map[string]int {
+	degreeMap := make(map[string]int)
+	// Initialize with 0 for all element IDs.
+	for _, e := range elements {
+		id := ""
+		if obj, ok := e.(map[string]any); ok {
+			if v, ok := obj["id"].(string); ok && v != "" {
+				id = v
+			} else if v, ok := obj["name"].(string); ok && v != "" {
+				id = v
+			}
+		} else if s, ok := e.(string); ok {
+			id = s
+		}
+		if id != "" {
+			degreeMap[id] = 0
+		}
+	}
+	// Count relationship endpoint references.
+	for _, r := range relationships {
+		if obj, ok := r.(map[string]any); ok {
+			for _, field := range []string{"from", "to", "source", "target"} {
+				if v, ok := obj[field].(string); ok && v != "" {
+					degreeMap[v]++
+				}
+			}
+		}
+	}
+	return degreeMap
+}
+
+// computeHighDegreeElements returns element IDs with degree > mean + stddev.
+func computeHighDegreeElements(degreeMap map[string]int) []string {
+	if len(degreeMap) == 0 {
+		return []string{}
+	}
+	values := make([]float64, 0, len(degreeMap))
+	for _, d := range degreeMap {
+		values = append(values, float64(d))
+	}
+	mean, stddev := MeanStdDev(values)
+	threshold := mean + stddev
+
+	var highDeg []string
+	for id, d := range degreeMap {
+		if float64(d) > threshold {
+			highDeg = append(highDeg, id)
+		}
+	}
+	if highDeg == nil {
+		highDeg = []string{}
+	}
+	return highDeg
 }

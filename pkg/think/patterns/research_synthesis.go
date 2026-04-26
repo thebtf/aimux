@@ -96,13 +96,76 @@ func (p *researchSynthesisPattern) Handle(validInput map[string]any, sessionID s
 		"Which findings are most robust under replication?",
 	}
 
+	// Contradiction detection: finding pairs with low Jaccard similarity that share a topic keyword.
+	topicKW := make(map[string]bool)
+	for _, w := range tokenize(topic) {
+		if len(w) > 3 {
+			topicKW[w] = true
+		}
+	}
+	var contradictoryPairs []map[string]any
+	findingStrings := toStringSlice(findings)
+	for i := 0; i < len(findingStrings); i++ {
+		for j := i + 1; j < len(findingStrings); j++ {
+			sim := jaccardSimilarity(findingStrings[i], findingStrings[j])
+			if sim < 0.15 {
+				// Check for shared topic keyword.
+				wordsI := tokenize(findingStrings[i])
+				hasShared := false
+				for _, w := range wordsI {
+					if topicKW[w] {
+						hasShared = true
+						break
+					}
+				}
+				if hasShared {
+					contradictoryPairs = append(contradictoryPairs, map[string]any{
+						"findingA":        findingStrings[i],
+						"findingB":        findingStrings[j],
+						"similarity":      sim,
+					})
+				}
+			}
+		}
+	}
+	if contradictoryPairs == nil {
+		contradictoryPairs = []map[string]any{}
+	}
+
+	// themeOverlap: for findings assigned to "general", list their keywords that didn't match.
+	themeOverlap := make(map[string][]string)
+	if generalFindings, ok := groups["general"]; ok {
+		for _, f := range generalFindings {
+			fs, _ := f.(string)
+			words := tokenize(fs)
+			var unmatched []string
+			for _, w := range words {
+				if len(w) > 3 {
+					matchesTopic := false
+					for _, tw := range tokenize(topic) {
+						if w == tw {
+							matchesTopic = true
+							break
+						}
+					}
+					if !matchesTopic {
+						unmatched = append(unmatched, w)
+					}
+				}
+			}
+			themeOverlap[fs] = unmatched
+		}
+	}
+
 	data := map[string]any{
-		"topic":             topic,
-		"findingCount":      len(findings),
-		"synthesizedClaims": synthesizedClaims,
-		"overallConclusion": overallConclusion,
-		"openQuestions":     openQuestions,
-		"guidance":          BuildGuidance("research_synthesis", "full", []string{"topic", "findings"}),
+		"topic":              topic,
+		"findingCount":       len(findings),
+		"synthesizedClaims":  synthesizedClaims,
+		"overallConclusion":  overallConclusion,
+		"openQuestions":      openQuestions,
+		"contradictoryPairs": contradictoryPairs,
+		"themeOverlap":       themeOverlap,
+		"guidance":           BuildGuidance("research_synthesis", "full", []string{"topic", "findings"}),
 	}
 
 	return think.MakeThinkResult("research_synthesis", data, sessionID, nil, "", nil), nil
