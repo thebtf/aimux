@@ -3,6 +3,7 @@ package patterns
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -85,14 +86,18 @@ func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string)
 	modelName := validInput["modelName"].(string)
 	problem := validInput["problem"].(string)
 
+	// Normalize modelName to match TS v1 behaviour: lowercase, spaces and dashes → underscore.
+	normalizedName := strings.ToLower(modelName)
+	normalizedName = strings.NewReplacer(" ", "_", "-", "_").Replace(normalizedName)
+
 	description := "custom model"
 	known := false
-	if desc, ok := knownModels[modelName]; ok {
+	if desc, ok := knownModels[normalizedName]; ok {
 		description = desc
 		known = true
 	}
 
-	analysisPrompt := fmt.Sprintf("Apply the '%s' mental model (%s) to analyze: %s", modelName, description, problem)
+	analysisPrompt := fmt.Sprintf("Apply the '%s' mental model (%s) to analyze: %s", normalizedName, description, problem)
 
 	steps, _ := validInput["steps"].([]any)
 	reasoning, _ := validInput["reasoning"].(string)
@@ -135,7 +140,7 @@ func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string)
 	}
 
 	if known {
-		data["analysisSteps"] = mentalModelAnalysisSteps(modelName, problem)
+		data["analysisSteps"] = mentalModelAnalysisSteps(normalizedName, problem)
 	}
 
 	data["guidance"] = BuildGuidance("mental_model", "basic", []string{"steps", "reasoning", "conclusion"})

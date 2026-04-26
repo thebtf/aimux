@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	think "github.com/thebtf/aimux/pkg/think"
 )
@@ -166,7 +167,7 @@ func (p *temporalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		[]string{"events", "states", "transitions", "constraints"},
 	)
 
-	return think.MakeThinkResult("temporal_thinking", data, sessionID, nil, "", []string{"totalComponents"}), nil
+	return think.MakeThinkResult("temporal_thinking", data, sessionID, nil, "visual_reasoning", []string{"totalComponents"}), nil
 }
 
 // timedEvent is an event with a resolved numeric timestamp.
@@ -250,9 +251,20 @@ func extractTimestamp(ev map[string]any) (float64, bool) {
 		case int64:
 			return float64(val), true
 		case string:
-			f, err := strconv.ParseFloat(val, 64)
-			if err == nil {
+			// First try numeric string (e.g. "1714000000").
+			if f, err := strconv.ParseFloat(val, 64); err == nil {
 				return f, true
+			}
+			// Fall back to ISO 8601 / RFC 3339 parsing (matches TS v1 Date.parse behaviour).
+			for _, layout := range []string{
+				time.RFC3339,
+				time.RFC3339Nano,
+				"2006-01-02T15:04:05Z",
+				"2006-01-02",
+			} {
+				if t, err := time.Parse(layout, val); err == nil {
+					return float64(t.UnixMilli()), true
+				}
 			}
 		}
 	}

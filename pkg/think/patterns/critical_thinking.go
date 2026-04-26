@@ -41,7 +41,11 @@ func (p *criticalThinkingPattern) Description() string {
 
 func (p *criticalThinkingPattern) SchemaFields() map[string]think.FieldSchema {
 	return map[string]think.FieldSchema{
-		"issue": {Type: "string", Required: true, Description: "Text to scan for cognitive biases"},
+		"issue":        {Type: "string", Required: true, Description: "Text to scan for cognitive biases"},
+		"assumptions":  {Type: "array", Required: false, Description: "List of assumptions to evaluate", Items: map[string]any{"type": "string"}},
+		"alternatives": {Type: "array", Required: false, Description: "List of alternative perspectives", Items: map[string]any{"type": "string"}},
+		"evidence":     {Type: "array", Required: false, Description: "List of evidence items", Items: map[string]any{"type": "string"}},
+		"conclusion":   {Type: "string", Required: false, Description: "Conclusion being evaluated"},
 	}
 }
 
@@ -56,7 +60,21 @@ func (p *criticalThinkingPattern) Validate(input map[string]any) (map[string]any
 	if !ok || s == "" {
 		return nil, fmt.Errorf("field 'issue' must be a non-empty string")
 	}
-	return map[string]any{"issue": s}, nil
+	out := map[string]any{"issue": s}
+	// Optional structured reasoning fields — TS v1 parity.
+	if v, ok := input["assumptions"].([]any); ok {
+		out["assumptions"] = v
+	}
+	if v, ok := input["alternatives"].([]any); ok {
+		out["alternatives"] = v
+	}
+	if v, ok := input["evidence"].([]any); ok {
+		out["evidence"] = v
+	}
+	if v, ok := input["conclusion"].(string); ok {
+		out["conclusion"] = v
+	}
+	return out, nil
 }
 
 func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
@@ -118,8 +136,33 @@ func (p *criticalThinkingPattern) Handle(validInput map[string]any, sessionID st
 		"guidance":       BuildGuidance("critical_thinking", "full", []string{"issue"}),
 	}
 
+	// Echo optional structured reasoning fields when provided (TS v1 parity).
+	if v, ok := validInput["assumptions"]; ok {
+		data["assumptions"] = v
+		if arr, ok := v.([]any); ok {
+			data["assumptionCount"] = len(arr)
+		}
+	}
+	if v, ok := validInput["alternatives"]; ok {
+		data["alternatives"] = v
+		if arr, ok := v.([]any); ok {
+			data["alternativeCount"] = len(arr)
+		}
+	}
+	if v, ok := validInput["evidence"]; ok {
+		data["evidence"] = v
+		if arr, ok := v.([]any); ok {
+			data["evidenceCount"] = len(arr)
+		}
+	}
+	if v, ok := validInput["conclusion"]; ok {
+		data["conclusion"] = v
+		data["hasConclusion"] = v.(string) != ""
+	}
+
 	// When biases are detected, suggest decision_framework to apply structured evaluation.
-	suggestedNext := ""
+	// Always provide nextHint = "structured_argumentation" (TS v1 parity); override when biases detected.
+	suggestedNext := "structured_argumentation"
 	if len(detectedBiases) > 0 {
 		suggestedNext = "decision_framework"
 	}

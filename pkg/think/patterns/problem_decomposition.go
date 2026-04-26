@@ -212,7 +212,7 @@ func (p *problemDecompositionPattern) Handle(validInput map[string]any, sessionI
 		[]string{"subProblems", "dependencies", "risks", "stakeholders"},
 	)
 
-	return think.MakeThinkResult("problem_decomposition", data, sessionID, nil, "", []string{"totalComponents"}), nil
+	return think.MakeThinkResult("problem_decomposition", data, sessionID, nil, "architecture_analysis", []string{"totalComponents"}), nil
 }
 
 // samplingDecomposition is the JSON shape we ask the LLM to return.
