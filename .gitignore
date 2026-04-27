@@ -42,3 +42,7 @@ cover.out
 .e2e-test.log
 
 .tmp/
+
+# Local Go workspace (multi-module dev)
+go.work
+go.work.sum
