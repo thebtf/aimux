@@ -21,6 +21,30 @@ Pre-purge CLI-launching tools (exec, agent, agents, critique, investigate, conse
 
 ## Agent Instructions
 
+### Memory-First — NON-NEGOTIABLE
+
+**Before ANY destructive or non-trivial action, recall memory first.** Destructive includes — but is not limited to:
+
+- Removing/replacing binaries (`aimux*.exe`, daemon swaps, hot-swaps)
+- Killing processes, restarting daemons, dropping sockets
+- `git rm`, `git reset --hard`, force-push, branch deletion, history rewrite
+- Deleting files, directories, or test fixtures
+- Reverting commits, dropping migrations, schema changes
+- Any cleanup of "stale" state — `Remove-Item`, `rm -rf`, socket purge, cache wipe
+- Replying to "how do I X" with a `Glob` of `scripts/` or a guess
+
+**Required check (in order):**
+1. `mcp__plugin_engram_engram__recall_memory(query: "...")` — project + global memories
+2. `~/.claude/projects/<project>/memory/MEMORY.md` index
+3. `.agent/specs/<feature>/` if a feature owns this area
+4. THEN consult code, scripts, web
+
+**Why:** memory contains verified procedures with anti-patterns table. The filesystem (`scripts/`, comments, file names) shows EVERY attempt — including failed workarounds and dead paths. Memory shows what actually works. Reading filesystem first means picking the workaround over the standard.
+
+**Concrete example caught in this repo:** `scripts/graceful-upgrade-dev.ps1` is a kill+restart workaround for issue #170. The standard path is `mcp__aimux-dev__upgrade(source=..., force=true)`, documented in memory `feedback_dev_update_via_muxcore.md`. Glob over `scripts/*upgrade*` finds the workaround first; recall finds the standard first. Use recall.
+
+If the memory protocol feels redundant: the redundancy is the safety. A memory hit is 5 seconds. A wrong destructive action is hours.
+
 ### Build & Test
 - Always run `go build ./...` after modifying any `.go` file
 - Run `go test ./...` before claiming "tests pass"
