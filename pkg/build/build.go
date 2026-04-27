@@ -13,7 +13,10 @@
 //     real release: always a signal that injection was skipped.
 package build
 
-import "runtime/debug"
+import (
+	"runtime/debug"
+	"strings"
+)
 
 // Version is the canonical aimux version string. Default is the explicit
 // "0.0.0-dev" sentinel — release/install builds override via ldflags or
@@ -38,8 +41,11 @@ func init() {
 		return
 	}
 	// Prefer module version (set by `go install ...@vX.Y.Z`).
+	// Strip the leading "v" so log lines don't double up — every aimux log
+	// line writes "aimux v%s" and adds the prefix itself; module versions
+	// (and goreleaser-injected git tags) carry an explicit "v" we must drop.
 	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		Version = info.Main.Version
+		Version = strings.TrimPrefix(info.Main.Version, "v")
 	}
 	// Always populate Commit from VCS info when available, even when Version
 	// stays at "0.0.0-dev" — gives plain `go build` a unique identifier.

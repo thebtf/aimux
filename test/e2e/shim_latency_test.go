@@ -48,8 +48,13 @@ func latencyProjectRoot() string {
 
 // shimReadyPattern matches the log line emitted by runShim() before engine.Run(ctx).
 // shim.go: log.Info("aimux v%s shim ready (name=%s)", build.Version, engineName)
-// Logger format: "2006/01/02 15:04:05 [INFO] aimux v4.5.2 shim ready (name=aimux)"
-var shimReadyPattern = regexp.MustCompile(`aimux v\d+\.\d+\.\d+ shim ready`)
+// Logger formats accepted (any of these — release tags, pseudo-versions, dev sentinel):
+//   - "aimux v5.0.2 shim ready (name=aimux)"           — released
+//   - "aimux v0.0.0-202604... shim ready (name=...)"    — Go module pseudo-version
+//   - "aimux v0.0.0-dev+abc1234 shim ready (...)"       — local dev with VCS revision
+//   - "aimux v0.0.0-dev shim ready (...)"               — pure source tarball
+// Version may carry suffixes (-dev, +dirty, pseudo-version timestamp+hash) per pkg/build/build.go.
+var shimReadyPattern = regexp.MustCompile(`aimux v\d+\.\d+\.\d+\S*\s+shim ready`)
 
 // daemonReadyPattern matches the log line emitted by main.go daemon branch.
 // main.go: log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", ...)

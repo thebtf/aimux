@@ -20,7 +20,7 @@ done
 
 cd "$(dirname "$0")/.."
 
-VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo '0.0.0-dev')"
+VERSION="$(git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo '0.0.0-dev')"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

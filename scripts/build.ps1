@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
-$version   = (git describe --tags --always --dirty 2>$null) -join ""
+$version   = ((git describe --tags --always --dirty 2>$null) -join "").TrimStart('v')
 $commit    = (git rev-parse --short HEAD 2>$null) -join ""
 $buildDate = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ" -AsUTC)
 
