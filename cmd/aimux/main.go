@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/logger"
@@ -24,6 +25,13 @@ import (
 )
 
 func main() {
+	// Early --version short-circuit, before any heavy init / config load.
+	for _, a := range os.Args[1:] {
+		if a == "--version" || a == "-version" || a == "-v" {
+			fmt.Println("aimux", build.String())
+			return
+		}
+	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "aimux: %v\n", err)
 		var exitErr *exitCodeError
