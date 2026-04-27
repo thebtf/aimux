@@ -13,6 +13,7 @@ require (
 	github.com/openai/openai-go/v3 v3.32.0
 	github.com/thebtf/aimux/loom v0.2.0
 	github.com/thebtf/mcp-mux/muxcore v0.22.0
+	golang.org/x/sys v0.43.0
 	google.golang.org/genai v1.52.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.1
@@ -64,7 +65,6 @@ require (
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250811230008-5f3141c8851a // indirect
