@@ -622,7 +622,8 @@ func (s *Server) registerTools() {
 				"action=refresh-warmup re-runs CLI warmup probes and updates the routing pool. "+
 				"Session status=aborted indicates the daemon restarted while this session had running jobs (SIGKILL/crash recovery). "+
 				"aborted_job_ids lists the job IDs that were aborted during that restart reconciliation. "+
-				"last_seen_at on job rows tracks the most recent SnapshotJob write; used by ReconcileOnStartup to identify orphaned jobs."),
+				"last_seen_at on job rows tracks the most recent SnapshotJob write; used by ReconcileOnStartup to identify orphaned jobs. "+
+				"Pass all=true to sessions(action=\"list\") to return a cross-engine global view (all daemons' tasks)."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: list, info, kill, gc, health, cancel, refresh-warmup"),
@@ -657,6 +658,9 @@ func (s *Server) registerTools() {
 			),
 			mcp.WithBoolean("include_content",
 				mcp.Description("Return full job content in info action (default false)"),
+			),
+			mcp.WithBoolean("all",
+				mcp.Description("Return cross-engine global view (default false: scoped to current daemon's engine)"),
 			),
 			mcp.WithToolAnnotation(mcp.ToolAnnotation{
 				ReadOnlyHint:    mcp.ToBoolPtr(false),
@@ -1281,14 +1285,25 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			}
 		}
 
+		allFlag := request.GetBool("all", false)
 		var allLoomTasks []*loom.Task
 		projectID := projectIDFromContext(ctx)
-		if s.loom != nil && projectID != "" {
-			tasks, taskErr := s.loom.List(projectID)
-			if taskErr != nil {
-				s.log.Warn("sessions list: loom list failed for project %s: %v", projectID, taskErr)
-			} else {
-				allLoomTasks = tasks
+		if s.loom != nil {
+			if allFlag {
+				tasks, taskErr := s.loom.ListAll()
+				if taskErr != nil {
+					s.log.Warn("sessions list: loom list all failed: %v", taskErr)
+				} else {
+					allLoomTasks = tasks
+					s.log.Info("loom.scope.global_query: engine_name=%s rows=%d", s.engineName, len(allLoomTasks))
+				}
+			} else if projectID != "" {
+				tasks, taskErr := s.loom.List(projectID)
+				if taskErr != nil {
+					s.log.Warn("sessions list: loom list failed for project %s: %v", projectID, taskErr)
+				} else {
+					allLoomTasks = tasks
+				}
 			}
 		}
 		// Apply status filter to loom tasks using the same direct-match semantics
