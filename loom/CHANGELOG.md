@@ -3,6 +3,74 @@
 All notable changes to this module will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v0.2.0] — 2026-04-27
+
+### Added (AIMUX-10 loom-task-scoping)
+
+- **`Task.EngineName string`** exported field — populated on every `Create`, `Get`,
+  `List`, and `ListAll` call. JSON tag `engine_name`. Empty string on legacy pre-v3
+  rows is valid and round-trips correctly through JSON serialisation.
+
+- **`ListAll(statuses ...TaskStatus) ([]*Task, error)`** on both `TaskStore` and
+  `LoomEngine` — returns tasks across all engines sharing the database, optionally
+  filtered by status. Applies no `engine_name` or `project_id` filter. Use for
+  cross-daemon diagnostic views via `sessions(action="list", all=true)`.
+
+- **`CountAll() (int, error)`** on both `TaskStore` and `LoomEngine` — returns the
+  total row count across all engines. Complements `ListAll` for budget-layer callers.
+
+- **`TaskFilter` struct** (`loom/count.go`) — optional filter for `Count`:
+  fields `ProjectID string` and `Statuses []TaskStatus`. Zero value matches all
+  tasks scoped to the current engine.
+
+- **Schema migration v3** — idempotent `ALTER TABLE tasks ADD COLUMN engine_name TEXT
+  NOT NULL DEFAULT ''` + composite index `idx_tasks_engine_status ON tasks(engine_name,
+  status)`. Applied automatically on first daemon boot. Running the migration twice
+  yields no error. Existing rows receive `engine_name = ''` (pre-migration backfill).
+
+### Changed (AIMUX-10 loom-task-scoping)
+
+- **`NewTaskStore` signature** changed from `NewTaskStore(db *sql.DB) (*TaskStore, error)`
+  to `NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error)`. Returns a non-nil
+  error if `engineName` is empty. All in-tree callers updated.
+
+- **`NewEngine` signature** changed from `NewEngine(db *sql.DB, opts ...Option)`
+  to `NewEngine(db *sql.DB, engineName string, opts ...Option) (*LoomEngine, error)`.
+  The `engineName` argument is required and forwarded to `NewTaskStore`.
+
+- **`List` scoped by `engine_name`** — `TaskStore.List(projectID, statuses...)` now
+  filters by `AND engine_name = ?` bound to the store's `engineName`. Previously it
+  returned tasks from all engines. Existing callers using a single daemon are
+  unaffected; multi-daemon deployments must use `ListAll` for cross-engine views.
+
+- **`MarkCrashed` scoped by `engine_name`** — `TaskStore.MarkCrashed()` bulk-update
+  now includes `AND engine_name = ?`. A dev daemon can no longer mark prod tasks as
+  `failed_crash` on startup.
+
+- **`Count` scoped by `engine_name`** — `TaskStore.Count(filter TaskFilter)` filters
+  by `AND engine_name = ?`. Use `CountAll()` for cross-engine totals.
+
+### Breaking
+
+- `NewTaskStore(db)` callers must now pass `engineName` as second argument.
+- `NewEngine(db, opts...)` callers must now pass `engineName` as second argument.
+- `TaskStore.List` and `TaskStore.Count` no longer return rows from other engines;
+  use `ListAll` / `CountAll` for the previous unscoped behaviour.
+
+### Migration Guide
+
+Existing single-daemon deployments upgrade automatically:
+1. Apply the new binary — schema migration v3 runs on first `tasks` table access.
+2. New rows are stamped with the binary's `engine_name` (resolved from
+   `AIMUX_ENGINE_NAME` env var or binary basename, e.g. `aimux`).
+3. Legacy rows receive `engine_name = ''` and are excluded from scoped `List`/`Count`
+   but visible to `ListAll`/`CountAll`.
+
+Multi-daemon deployments (e.g. `aimux.exe` + `aimux-dev.exe` sharing `sessions.db`):
+- Set `AIMUX_ENGINE_NAME=aimux-dev` on the dev binary to differentiate its scope.
+- `sessions(action="list")` from each daemon now returns only its own tasks.
+- `sessions(action="list", all=true)` returns the union with `engine_name` per row.
+
 ## [v0.1.1] — 2026-04-15
 
 ### Fixed

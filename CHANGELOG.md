@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (AIMUX-10 loom-task-scoping)
+
+- **`sessions(action="list", all=true)`** — new boolean parameter on the `sessions`
+  MCP tool. When `all=true`, returns a cross-engine global view of all tasks sharing
+  the database (tasks from every daemon). Default (`all=false` or param omitted)
+  preserves the existing per-daemon scoped behaviour.
+- **`engine_name` field on session rows** — every task row in `sessions` responses
+  now includes `engine_name` identifying which daemon owns it. Populated for all
+  rows including cross-engine results from `all=true`.
+- **`loom.scope.global_query` audit log event** — emitted at INFO level (slog stderr)
+  on every `sessions(action="list", all=true)` call. Fields: `engine_name` (calling
+  daemon), `rows` (count returned). Stable key for log aggregation pipelines.
+
+### Changed (AIMUX-10 loom-task-scoping)
+
+- **`sessions(action="list")` default behaviour is now scoped** — returns only tasks
+  belonging to the calling daemon's engine. Previously returned tasks from all daemons
+  sharing the same database. Operators running a single daemon are unaffected.
+  Multi-daemon operators: use `all=true` to restore the previous unscoped view.
+- **Loom module updated to v0.2.0** — `NewTaskStore` and `NewEngine` signatures now
+  require an `engineName` argument. `List`, `Count`, and `MarkCrashed` are scoped by
+  `engine_name`. New `ListAll`, `CountAll` methods for cross-engine queries.
+  Schema migration v3 applied automatically; existing databases upgrade in-place.
+  Full details in `loom/CHANGELOG.md` v0.2.0 section.
+
 ## [4.8.1] — 2026-04-24
 
 ### Fixed
