@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -362,8 +361,9 @@ func (c *Coordinator) afterHotSwapInstall(ctx context.Context, release *updater.
 }
 
 // applyFromLocal installs a binary from a local file path instead of downloading
-// from GitHub. It performs the same atomic replacement as GitHub-sourced updates:
-// rename current → .old, copy source → current path.
+// from GitHub. It delegates the atomic replacement to atomicReplaceBinary, which
+// provides platform-appropriate semantics (stage-then-swap on Windows; direct
+// rename on Unix).
 func (c *Coordinator) applyFromLocal(_ context.Context, sourcePath string) (*updater.Release, error) {
 	info, err := os.Stat(sourcePath)
 	if err != nil {
@@ -373,38 +373,8 @@ func (c *Coordinator) applyFromLocal(_ context.Context, sourcePath string) (*upd
 		return nil, fmt.Errorf("source path is a directory, not a binary: %s", sourcePath)
 	}
 
-	// Atomic replacement: rename running binary to .old, copy source to binary path.
-	// On Windows, running executables can be renamed but not deleted.
-	oldPath := c.BinaryPath + ".old"
-	_ = os.Remove(oldPath) // remove previous .old if it exists
-	if err := os.Rename(c.BinaryPath, oldPath); err != nil {
+	if err := atomicReplaceBinary(c.BinaryPath, sourcePath); err != nil {
 		return nil, fmt.Errorf("rename current binary: %w", err)
-	}
-
-	// Copy source to binary path.
-	src, err := os.Open(sourcePath)
-	if err != nil {
-		// Rollback: restore original binary.
-		_ = os.Rename(oldPath, c.BinaryPath)
-		return nil, fmt.Errorf("open source binary: %w", err)
-	}
-	defer src.Close()
-
-	dst, err := os.OpenFile(c.BinaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		_ = os.Rename(oldPath, c.BinaryPath)
-		return nil, fmt.Errorf("create target binary: %w", err)
-	}
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
-		_ = os.Remove(c.BinaryPath)
-		_ = os.Rename(oldPath, c.BinaryPath)
-		return nil, fmt.Errorf("copy binary: %w", err)
-	}
-	if err := dst.Close(); err != nil {
-		_ = os.Remove(c.BinaryPath)
-		_ = os.Rename(oldPath, c.BinaryPath)
-		return nil, fmt.Errorf("finalize target binary: %w", err)
 	}
 
 	return &updater.Release{
