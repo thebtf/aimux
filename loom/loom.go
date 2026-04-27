@@ -278,6 +278,12 @@ func (l *LoomEngine) List(projectID string, statuses ...TaskStatus) ([]*Task, er
 	return l.store.List(projectID, statuses...)
 }
 
+// ListAll returns tasks across all engines and projects, optionally filtered by status.
+// Used for cross-daemon diagnostic views (AIMUX-10 FR-5).
+func (l *LoomEngine) ListAll(statuses ...TaskStatus) ([]*Task, error) {
+	return l.store.ListAll(statuses...)
+}
+
 // Cancel requests cancellation of a running task.
 func (l *LoomEngine) Cancel(taskID string) error {
 	l.mu.RLock()

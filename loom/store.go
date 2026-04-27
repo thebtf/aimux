@@ -275,6 +275,54 @@ func (s *TaskStore) List(projectID string, statuses ...TaskStatus) ([]*Task, err
 	return tasks, rows.Err()
 }
 
+// ListAll returns tasks across all engines and projects, optionally filtered by status.
+// Unlike List, it applies no engine_name or project_id filter — use for cross-daemon
+// global views (AIMUX-10 FR-5, sessions tool all=true opt-in).
+func (s *TaskStore) ListAll(statuses ...TaskStatus) ([]*Task, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+
+	if len(statuses) == 0 {
+		rows, err = s.db.Query(`
+			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
+			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+			       engine_name
+			FROM tasks ORDER BY created_at ASC`)
+	} else {
+		query := `
+			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
+			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+			       engine_name
+			FROM tasks WHERE status IN (`
+		placeholders := make([]interface{}, 0, len(statuses))
+		for i, st := range statuses {
+			if i > 0 {
+				query += ","
+			}
+			query += "?"
+			placeholders = append(placeholders, string(st))
+		}
+		query += ") ORDER BY created_at ASC"
+		rows, err = s.db.Query(query, placeholders...)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loom store: list all tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*Task
+	for rows.Next() {
+		task, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("loom store: scan task: %w", scanErr)
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
+}
+
 // UpdateStatus transitions a task from `from` to `to`, enforcing state machine rules.
 // Returns an error if the current status does not match `from` or the transition is invalid.
 func (s *TaskStore) UpdateStatus(id string, from, to TaskStatus) error {
