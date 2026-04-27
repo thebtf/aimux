@@ -8,9 +8,16 @@ STACKS: [GO]
 
 ## Project Context
 
-aimux is an MCP server that multiplexes AI CLI tools. It receives MCP tool calls
-(exec, status, sessions, dialog, consensus, debate, audit, think, investigate, deepresearch, agents, critique)
-and spawns the appropriate CLI subprocess.
+aimux is an MCP server. After the v5.0.3 Layer 5 purge, the live MCP surface is
+**4 server tools + 23 think pattern tools**:
+
+- `status` — async job status
+- `sessions` — session/job management (action: list/health/gc/cancel/kill/info/refresh-warmup)
+- `deepresearch` — Gemini SDK
+- `upgrade` — binary update (action: check/apply, mode: auto/hot_swap/deferred)
+- 23 think pattern tools (architecture_analysis, collaborative_reasoning, critical_thinking, debugging_approach, decision_framework, domain_modeling, experimental_loop, literature_review, mental_model, metacognitive_monitoring, peer_review, problem_decomposition, recursive_thinking, replication_analysis, research_synthesis, scientific_method, sequential_thinking, source_comparison, stochastic_algorithm, structured_argumentation, temporal_thinking, think, visual_reasoning)
+
+Pre-purge CLI-launching tools (exec, agent, agents, critique, investigate, consensus, debate, dialog, audit, workflow) — **REMOVED**. Pipeline v5 packages (`pkg/workflow/`, `pkg/dialogue/`, `pkg/swarm/`, `pkg/executor/`, `pkg/resolve/`, `pkg/driver/`, `pkg/routing/`, `loom/`) remain in-repo as dormant seams pending the next Layer 5 design. Pre-purge architecture frozen at branch `snapshot/v5.0.3-pre-cli-purge` and documented in `docs/architecture/cli-tools-current.md`.
 
 ## Agent Instructions
 
@@ -126,3 +133,51 @@ Max advisor-triggered pattern switches per session: 3.
 - Response semantics are intentional: `updated_hot_swap` means live daemon handoff succeeded, `updated_deferred` means auto mode fell back after a live-path failure, and `updated` is reserved for explicit deferred mode.
 - Inspect `handoff_error` when `status="updated_deferred"`; this is the truthful fallback signal rather than a live-upgrade success.
 - Hot-swap activation work supersedes the earlier structural-prep-only scope from engram #129; do not document the feature as "inactive pending upstream" in current project docs.
+
+### Dev Binary Upgrade — STANDARD PROCEDURE (always use this)
+
+When changes need to land on the running `aimux-dev.exe` (or `aimux.exe` for prod hot-deploy), use the live daemon hot-swap path. Do NOT use `scripts/graceful-upgrade-dev.ps1` — it is a kill+restart workaround for issue #170 and **NOT the standard procedure**.
+
+```powershell
+# 1. Build to a temp file (daemon holds aimux-dev.exe — direct overwrite fails on Windows)
+.\scripts\build.ps1 -Output aimux-dev-next.exe
+
+# 2. Smoke test the new binary in isolation (must succeed before step 3)
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8
+#    Expect: "tools: 27" (4 server + 23 think patterns) on the post-purge branch.
+#    If handshake fails or count is wrong — DO NOT proceed.
+
+# 3. Clean any stale aimux-dev-next processes left by mcp-launcher
+Get-Process aimux-dev-next -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 4. Issue the live hot-swap via the MCP tool
+mcp__aimux-dev__upgrade(action="apply", source="D:/Dev/aimux/aimux-dev-next.exe", force=true)
+#    Expect MCP error: "upstream restarted, request lost during reconnect" — that IS success.
+#    Daemon restarts on the new binary; the CC session survives across the restart.
+
+# 5. Verify
+mcp__aimux-dev__sessions(action="health")     # daemon answers → upgrade landed
+.\aimux-dev.exe --version                      # version string matches step 1 output
+```
+
+**Why this is the standard:** the upgrade tool atomically renames `source` over `aimux-dev.exe` daemon-side, no kill required, the running CC session reconnects to the new daemon transparently.
+
+**What NEVER works (anti-patterns):**
+
+| Attempt | Why it fails |
+|---|---|
+| `scripts/graceful-upgrade-dev.ps1` | Kill+restart workaround for issue #170; not the standard path. Use only when hot-swap fails repeatedly with file-lock errors AND you have permission to drop running shims. |
+| `mcp__aimux-dev__upgrade(action="apply")` without `source=` | Downloads from GitHub, not the local dev build |
+| Manual `Move-Item aimux-dev-next.exe aimux-dev.exe` | Daemon holds the file open — `Access is denied` |
+| `mux_restart` against aimux | aimux is standalone stdio, not mcp-mux managed |
+| `/mcp` Reconnect alone | Shim reconnects to OLD daemon with old code; binary never replaced |
+
+**Recovery if "Access is denied" on step 4** (stale processes from prior failed attempts):
+
+```powershell
+Get-Process | Where-Object { $_.ProcessName -match "aimux" } | Stop-Process -Force
+Remove-Item "$env:TEMP\mcp-mux-*.sock" -Force -ErrorAction SilentlyContinue
+# Then: /mcp Reconnect, retry from step 4
+```
+
+Memory: `feedback_dev_update_via_muxcore.md` (project-scoped). If you forget the procedure mid-task, `recall_memory` it BEFORE checking `scripts/`.
