@@ -1144,6 +1144,11 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		// in that mode per clarification C2. aimuxHandler.SetUpdatePending() satisfies
 		// the upgrade.SessionHandler interface directly.
 		h, engineMode := s.sessionHandler.(*aimuxHandler)
+		// Diagnostic: log actual runtime state of the type assertion. Tracks engram
+		// issue #174 (hot-swap second-apply false-deferred). Remove once root cause
+		// is verified.
+		s.log.Info("upgrade-diag: handleUpgrade entered on Server=%p sessionHandler=%T (nil=%t) ctrlSocket=%q muxEngine!=nil=%t engineMode=%t",
+			s, s.sessionHandler, s.sessionHandler == nil, s.daemonControlSocketPath, s.muxEngine != nil, engineMode)
 		var sh upgrade.SessionHandler
 		if engineMode {
 			sh = h

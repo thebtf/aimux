@@ -31,6 +31,10 @@ func (s *Server) ServeStdio() error {
 func (s *Server) SessionHandler() muxcore.SessionHandler {
 	h := &aimuxHandler{srv: s}
 	s.sessionHandler = h
+	// Diagnostic: track set-site for engram issue #174 (hot-swap false-deferred).
+	if s.log != nil {
+		s.log.Info("upgrade-diag: SessionHandler() called, s.sessionHandler now set on Server=%p", s)
+	}
 	return h
 }
 
