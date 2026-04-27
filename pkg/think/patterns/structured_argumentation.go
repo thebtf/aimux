@@ -243,5 +243,14 @@ func (p *structuredArgumentationPattern) Handle(validInput map[string]any, sessi
 		suggestedNext = "decision_framework"
 	}
 
-	return think.MakeThinkResult("structured_argumentation", data, sessionID, nil, suggestedNext, nil), nil
+	result := think.MakeThinkResult("structured_argumentation", data, sessionID, nil, suggestedNext, nil)
+
+	// R5-3: single unsupported claim warning — when session has exactly 1 claim and 0 evidence/rebuttals,
+	// flag it as load-bearing risk in the summary.
+	if claimCount == 1 && evidenceCount == 0 && rebuttalCount == 0 {
+		result.Summary = "[structured_argumentation] 1 claim, 0 evidence, 0 rebuttals" +
+			" | warning: single unsupported claim — add evidence/rebuttals before treating as load-bearing"
+	}
+
+	return result, nil
 }

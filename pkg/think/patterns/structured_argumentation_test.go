@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"strings"
 	"testing"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -126,5 +127,28 @@ func TestStructuredArgumentation_SessionIDInData(t *testing.T) {
 	}
 	if sid != "test-session-123" {
 		t.Errorf("session_id = %v, want test-session-123", sid)
+	}
+}
+
+func TestStructuredArgumentation_SingleClaimWarning_R5_3(t *testing.T) {
+	think.ClearSessions()
+	p := NewStructuredArgumentationPattern()
+	in := map[string]any{
+		"topic":         "Single claim test R5-3",
+		"argument_type": "claim",
+		"argument_text": "X is true",
+	}
+	valid, err := p.Validate(in)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	res, err := p.Handle(valid, "fresh-session-r5-3-single")
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	// Warning is set on ThinkResult.Summary (not res.Data["summary"]).
+	summary := res.Summary
+	if !strings.Contains(summary, "warning: single unsupported claim") {
+		t.Errorf("R5-3: expected single-claim warning in summary, got: %q", summary)
 	}
 }
