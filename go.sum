@@ -140,6 +140,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/thebtf/aimux/loom v0.1.1 h1:cmBspz9FqNIYSgpYvirKCEWN0jeFkrltRoL52K2njms=
 github.com/thebtf/aimux/loom v0.1.1/go.mod h1:RhaAm49BssZqO4Ziqt0LJgV2WUpMim7V/xnZaimCpWk=
+github.com/thebtf/aimux/loom v0.2.0 h1:G9SoMHh64S1XsQovrDnysATNgrNGgS8P6Q9wcfofRYg=
+github.com/thebtf/aimux/loom v0.2.0/go.mod h1:RhaAm49BssZqO4Ziqt0LJgV2WUpMim7V/xnZaimCpWk=
 github.com/thebtf/mcp-mux/muxcore v0.21.19 h1:YBeKra7K7wNT89yVezRXRBko2qlUGKQ+gxJ8EMlGJW8=
 github.com/thebtf/mcp-mux/muxcore v0.21.19/go.mod h1:tC/9aFAgj/ESYYLjohqT17mDucbYZH8uKNqBQCWMH/8=
 github.com/thejerf/suture/v4 v4.0.6 h1:QsuCEsCqb03xF9tPAsWAj8QOAJBgQI1c0VqJNaingg8=

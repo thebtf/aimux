@@ -9,7 +9,7 @@ require (
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.47.0
-	github.com/thebtf/aimux/loom v0.1.1
+	github.com/thebtf/aimux/loom v0.2.0
 	github.com/thebtf/mcp-mux/muxcore v0.21.19
 	google.golang.org/genai v1.52.1
 	gopkg.in/yaml.v3 v3.0.1
