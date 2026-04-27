@@ -79,7 +79,6 @@ CC session → .mcp.json → aimux.exe (shim) → IPC socket → aimux daemon
 - `ProjectLifecycle`: OnProjectConnect (agent discovery), OnProjectDisconnect (cleanup)
 - Per-project agent scoping: `agents/list` returns only project-relevant agents
 - `ProjectContext.Env` injected into spawned CLI process environment
-- `AIMUX_NO_ENGINE=1` bypasses engine for debugging (direct stdio)
 - Handler kept alongside SessionHandler for proxy mode (behind mcp-mux)
 
 ## CLI Profiles (12)
