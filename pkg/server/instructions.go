@@ -18,17 +18,19 @@ func buildInstructions(
 	agentCount int,
 	roleMap map[string]string,
 ) string {
+	_ = agentCount
 	cliCount := len(warmCLIs)
 	if !warmupComplete {
 		cliCount = len(allProfiles)
 	}
 
 	patternCount := len(think.GetAllPatterns())
+	toolCount := 4 + patternCount
 
 	lines := []string{
-		fmt.Sprintf("aimux — AI CLI Multiplexer (%d tools, %d CLIs, %d think patterns)", 36, cliCount, patternCount),
+		fmt.Sprintf("aimux — AI CLI Multiplexer (%d tools, %d CLIs, %d think patterns)", toolCount, cliCount, patternCount),
 		"",
-		"aimux delegates work to external AI CLIs — free for you, no token cost from your context. Use aimux for implementation, review, debugging, and multi-model consensus instead of native subagents.",
+		"aimux currently exposes a reduced MCP surface: server state tools, deep research, upgrade control, and dedicated think pattern tools.",
 		"",
 		"## Available CLIs",
 	}
@@ -36,26 +38,22 @@ func buildInstructions(
 	lines = append(lines, renderAvailableCLIs(warmCLIs, warmupComplete, allProfiles, roleMap)...)
 	lines = append(lines,
 		"",
-		fmt.Sprintf("## Agent Discovery\n%d named agents currently registered for delegation.", agentCount),
-		"",
 		"## First Actions",
 		`1. sessions(action="health") — discover server state and available CLIs`,
-		`2. agents(action="find", prompt="your task") — find the best agent for delegation`,
+		`2. think or another pattern tool — run structured reasoning in-process`,
 		"",
 		"## Tool Tags",
 		"- [solo] — runs in-process, no CLI spawn, free",
-		"- [delegate] — dispatches to external AI CLI, free for you",
+		"- [delegate] — uses external services without exposing the old CLI-launching MCP surface",
 		"- [manage] — server state management, no cost",
 		"",
 		"## Reference",
 		"For complete tool reference, think pattern examples, and role routing details, request the `guide` MCP prompt.",
 		"",
 		"## Anti-Patterns",
-		"- Don't specify cli= when role= is enough — let routing pick the best CLI",
-		"- Don't use sync exec for tasks >30s — use async=true",
-		"- Don't skip investigate for complex bugs — jumping to fix wastes time",
-		"- Don't run consensus with 1 CLI — needs 2+ for comparison",
-		"- Don't call exec for tasks an agent can handle — use agent-exec first",
+		"- Don't expect exec/agent/workflow tools on this branch — they were removed in the Layer 5 purge",
+		"- Don't assume dormant pipeline packages are active runtime surface",
+		"- Don't skip structured reasoning when a problem needs explicit evidence and tradeoff analysis",
 	)
 
 	return strings.Join(lines, "\n")

@@ -8,7 +8,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
-	"github.com/thebtf/aimux/pkg/agents"
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
@@ -19,9 +18,6 @@ const toolsListChangedNotification = `{"jsonrpc":"2.0","method":"notifications/t
 
 // projectContextKey is the context key for storing ProjectContext.
 type projectContextKey struct{}
-
-// projectAgentsKey is the context key for storing per-project agent overlay.
-type projectAgentsKey struct{}
 
 // callToolRequestKey stores the active CallToolRequest for direct-stdio child upstreams.
 type callToolRequestKey struct{}
@@ -56,15 +52,6 @@ func ProjectContextFromContext(ctx context.Context) (muxcore.ProjectContext, boo
 	return muxcore.ProjectContext{}, false
 }
 
-// ProjectAgentsFromContext retrieves the per-project agent overlay from the request context.
-// Returns nil if no overlay is present (direct stdio mode or no project-specific agents).
-func ProjectAgentsFromContext(ctx context.Context) []*agents.Agent {
-	if v, ok := ctx.Value(projectAgentsKey{}).([]*agents.Agent); ok {
-		return v
-	}
-	return nil
-}
-
 // cwdFromRequestOrContext returns the working directory from either the MCP
 // request parameter or the ProjectContext fallback. Returns empty string if
 // neither provides a value (direct stdio mode without cwd param).
@@ -85,7 +72,6 @@ func cwdFromRequestOrContext(request mcp.CallToolRequest, ctx context.Context) s
 type projectState struct {
 	id       string
 	session  *mcpserver.InProcessSession
-	agents   []*agents.Agent // project-specific agent overlay
 	refcount atomic.Int32    // number of CC sessions sharing this project
 	ready    chan struct{}   // closed after session registered; HandleRequest waits on this
 }
@@ -140,11 +126,8 @@ func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.Projec
 		return nil, ctx.Err()
 	}
 
-	// Inject ProjectContext and project agents into request context for tool handlers.
+	// Inject ProjectContext into request context for tool handlers.
 	ctx = context.WithValue(ctx, projectContextKey{}, project)
-	if len(state.agents) > 0 {
-		ctx = context.WithValue(ctx, projectAgentsKey{}, state.agents)
-	}
 
 	// Inject the project's MCP session into context for HandleMessage.
 	ctx = h.srv.mcp.WithContext(ctx, state.session)
@@ -196,18 +179,15 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 		h.srv.log.Warn("session-handler: failed to register session for project %s: %v", project.ID, err)
 	}
 
-	// Discover project-specific agents.
-	state.agents = h.srv.agentReg.DiscoverForProject(project.Cwd)
-
-	// Broadcast tools/list_changed so that connected CC sessions re-request
-	// tools/list and discover any project-specific agents just found.
+	// Broadcast tools/list_changed so connected CC sessions refresh against the
+	// per-project MCP session state.
 	h.broadcastToolsListChanged()
 
 	// Signal ready — HandleRequest waiters unblock after this.
 	close(state.ready)
 
-	h.srv.log.Info("session-handler: project %s connected (cwd=%s, agents=%d)",
-		project.ID, project.Cwd, len(state.agents))
+	h.srv.log.Info("session-handler: project %s connected (cwd=%s)",
+		project.ID, project.Cwd)
 }
 
 // OnProjectDisconnect is called when a CC session disconnects.

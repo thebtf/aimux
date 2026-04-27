@@ -5,49 +5,8 @@
     "principle": "P26"
   },
   "tools": {
-    "agent": {
-      "classification": "async_mandatory"
-    },
-    "agents": {
-      "actions": {
-        "find": "sync_ok",
-        "info": "sync_ok",
-        "list": "sync_ok",
-        "run": "async_mandatory"
-      }
-    },
-    "audit": {
-      "classification": "async_mandatory"
-    },
-    "consensus": {
-      "classification": "async_mandatory"
-    },
-    "critique": {
-      "classification": "sync_ok"
-    },
-    "debate": {
-      "classification": "async_mandatory"
-    },
     "deepresearch": {
-      "classification": "async_mandatory"
-    },
-    "dialog": {
-      "classification": "async_mandatory"
-    },
-    "exec": {
-      "classification": "async_mandatory"
-    },
-    "investigate": {
-      "actions": {
-        "assess": "sync_ok",
-        "auto": "async_mandatory",
-        "finding": "sync_ok",
-        "list": "sync_ok",
-        "recall": "sync_ok",
-        "report": "sync_ok",
-        "start": "sync_ok",
-        "status": "sync_ok"
-      }
+      "classification": "sync_ok"
     },
     "sessions": {
       "actions": {
@@ -68,9 +27,6 @@
         "check": "sync_ok",
         "apply": "sync_ok"
       }
-    },
-    "workflow": {
-      "classification": "async_mandatory"
     }
   }
 }

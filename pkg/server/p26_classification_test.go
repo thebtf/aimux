@@ -54,7 +54,7 @@ func TestP26ClassificationCoverage(t *testing.T) {
 		p26Unknown:        {},
 	}
 
-	requiredActionTools := []string{"sessions", "investigate", "agents"}
+	requiredActionTools := []string{"sessions", "upgrade"}
 	requiredActionSet := make(map[string]struct{}, len(requiredActionTools))
 	for _, tool := range requiredActionTools {
 		requiredActionSet[tool] = struct{}{}

@@ -58,9 +58,11 @@ config/skills.d/     — 13 embedded MCP skill prompts
 config/p26/          — P26 tool classification artifact
 ```
 
-## MCP Tools (13)
+## MCP Tools (4 + 23 think patterns)
 
-exec, status, sessions, think, investigate, consensus, debate, dialog, agents, agent, audit, deepresearch, workflow
+status, sessions, deepresearch, upgrade
+
+Think surface: 23 dedicated pattern tools, including `think`, `critical_thinking`, `decision_framework`, `debugging_approach`, and the rest of the registered pattern set.
 
 ## Engine Mode (muxcore)
 
@@ -71,15 +73,15 @@ CC session → .mcp.json → aimux.exe (shim) → IPC socket → aimux daemon
                                                           ├── SessionHandler.HandleRequest()
                                                           ├── MCPServer.HandleMessage() (direct JSON-RPC)
                                                           ├── InProcessSession per ProjectContext.ID
-                                                          └── Per-project agent overlay
+                                                          └── Per-project MCP session state
 ```
 
 - `SessionHandler`: direct JSON-RPC dispatch (no stdio transport overhead)
 - `ProjectContext`: ID (hash of worktree root), Cwd, Env (per-session API keys)
-- `ProjectLifecycle`: OnProjectConnect (agent discovery), OnProjectDisconnect (cleanup)
-- Per-project agent scoping: `agents/list` returns only project-relevant agents
+- `ProjectLifecycle`: OnProjectConnect/OnProjectDisconnect manage per-project MCP sessions
 - `ProjectContext.Env` injected into spawned CLI process environment
 - Handler kept alongside SessionHandler for proxy mode (behind mcp-mux)
+- Pipeline v5 packages (`workflow`, `dialogue`, `swarm`, `executor`, `resolve`, `driver`, `routing`) remain in-repo as dormant seams pending the Layer 5 redesign
 
 ## CLI Profiles (12)
 
