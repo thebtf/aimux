@@ -157,10 +157,7 @@ func run() error {
 		log.Info("aimux v%s ready — serving MCP on HTTP at %s", aimuxServer.Version, port)
 		return srv.ServeHTTP(port)
 	default:
-		engineName := os.Getenv("AIMUX_ENGINE_NAME")
-		if engineName == "" {
-			engineName = "aimux"
-		}
+		engineName := aimuxServer.ResolveEngineName()
 
 		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
 		eng, engErr := engine.New(engine.Config{

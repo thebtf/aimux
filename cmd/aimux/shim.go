@@ -13,6 +13,7 @@ import (
 	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/logger"
+	aimuxServer "github.com/thebtf/aimux/pkg/server"
 	"github.com/thebtf/mcp-mux/muxcore"
 	"github.com/thebtf/mcp-mux/muxcore/engine"
 	"github.com/thebtf/mcp-mux/muxcore/owner"
@@ -26,15 +27,12 @@ const shimErrMsg = "shim mode is not expected to serve MCP requests; this is eit
 // Shim mode bridges stdio<->IPC to an existing daemon without performing
 // any daemon-level initialization (no SQLite, no LoomEngine, no warmup).
 //
-// AIMUX_ENGINE_NAME controls IPC socket discovery — identical logic to
-// cmd/aimux/main.go:123-126 so dev/prod daemon isolation (PR #71) is preserved.
+// AIMUX_ENGINE_NAME controls IPC socket discovery via pkg/server.ResolveEngineName,
+// preserving dev/prod daemon isolation (PR #71).
 func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error {
 	// Engine name controls IPC socket discovery — different names = isolated daemons.
-	// Byte-identical to cmd/aimux/main.go:123-126 (CRITICAL: W3 from plan.md §API Contracts).
-	engineName := os.Getenv("AIMUX_ENGINE_NAME")
-	if engineName == "" {
-		engineName = "aimux"
-	}
+	// Shared resolution logic with cmd/aimux/main.go avoids drift in daemon naming.
+	engineName := aimuxServer.ResolveEngineName()
 
 	log.Info("aimux v%s shim ready (name=%s)", build.Version, engineName)
 

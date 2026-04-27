@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/thebtf/mcp-mux/muxcore/control"
@@ -38,10 +37,7 @@ type F2Metrics struct {
 // the three F2 shim-reconnect counters. Returns zero values and a non-nil
 // error if the socket cannot be reached or the response is malformed.
 func queryF2Metrics() (F2Metrics, error) {
-	name := os.Getenv("AIMUX_ENGINE_NAME")
-	if name == "" {
-		name = "aimux"
-	}
+	name := ResolveEngineName()
 	return queryF2MetricsAt(serverid.DaemonControlPath("", name))
 }
 
