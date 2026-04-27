@@ -4,13 +4,15 @@ go 1.25.4
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/anthropics/anthropic-sdk-go v1.38.0
 	github.com/creack/pty v1.1.24
 	github.com/creativeprojects/go-selfupdate v1.5.2
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.47.0
+	github.com/openai/openai-go/v3 v3.32.0
 	github.com/thebtf/aimux/loom v0.2.0
-	github.com/thebtf/mcp-mux/muxcore v0.21.19
+	github.com/thebtf/mcp-mux/muxcore v0.22.0
 	google.golang.org/genai v1.52.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.1
@@ -23,7 +25,6 @@ require (
 	code.gitea.io/sdk/gitea v0.22.1 // indirect
 	github.com/42wim/httpsig v1.2.3 // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
-	github.com/anthropics/anthropic-sdk-go v1.38.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -45,7 +46,6 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/openai/openai-go/v3 v3.32.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/thejerf/suture/v4 v4.0.6 // indirect
