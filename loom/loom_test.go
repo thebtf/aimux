@@ -15,7 +15,7 @@ import (
 
 // ---- test helpers ----
 
-func newTestDB(t *testing.T) *sql.DB {
+func newTestDB(t testing.TB) *sql.DB {
 	t.Helper()
 	// Use a per-test named in-memory database so connections within the same test
 	// share the schema, but tests remain fully isolated from each other.
@@ -31,7 +31,7 @@ func newTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func newTestStore(t *testing.T) *TaskStore {
+func newTestStore(t testing.TB) *TaskStore {
 	t.Helper()
 	db := newTestDB(t)
 	store, err := NewTaskStore(db, "test")
