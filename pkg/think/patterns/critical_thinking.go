@@ -39,6 +39,7 @@ var structuralBiasPatterns = map[string]*regexp.Regexp{
 	"overconfidence":            regexp.MustCompile(`(?i)(?:will\s+(?:solve|eliminate|fix\s+all|guarantee|ensure)|completely\s+(?:solve|eliminate|remove))`),
 	"correlation_not_causation": regexp.MustCompile(`(?i)because\s+(?:(?:the\s+)?(?:team|company|org(?:anization)?|department))\s+(?:has\s+)?(?:grew|grown|scaled|hired|expanded|doubled|tripled)`),
 	"false_precision":           regexp.MustCompile(`(?i)(?:exactly|precisely)\s+\d+`),
+	"absolute_certainty":        regexp.MustCompile(`(?i)(?:ничего\s+(?:не\s+)?(?:критичного\s+)?не\s+упущено|вышло\s+чисто|без\s+(?:всяких\s+)?(?:сомнений|долгов)|absolutely\s+(?:no|nothing)\s+\w+|no\s+(?:critical|important)\s+\w+\s+(?:missed|overlooked|skipped))`),
 }
 
 type criticalThinkingPattern struct {

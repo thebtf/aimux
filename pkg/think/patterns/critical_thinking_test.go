@@ -276,6 +276,12 @@ func TestCriticalThinking_StructuralBiasDetection(t *testing.T) {
 			wantCount: 1,
 		},
 		{
+			name:      "absolute_certainty",
+			issue:     "Ничего критичного не упущено. Вышло чисто и без долгов.",
+			wantBias:  "absolute_certainty",
+			wantCount: 1,
+		},
+		{
 			name:      "combined_monolith_scenario",
 			issue:     "We should rewrite our monolith in microservices because our team has grown to 30 engineers. The CTO estimates 6 months for the rewrite.",
 			wantBias:  "", // check count only
