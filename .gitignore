@@ -47,3 +47,6 @@ cover.out
 # Local Go workspace (multi-module dev)
 go.work
 go.work.sum
+
+# Backup binaries
+*.bak

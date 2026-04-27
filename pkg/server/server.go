@@ -50,52 +50,29 @@ import (
 var Version = build.Version
 
 // legacyInstructions is kept as fallback for proxy/shim mode where live state is unavailable.
-const legacyInstructions = `aimux — AI CLI Multiplexer (4 MCP tools, 12 CLIs, 23 think patterns)
+const legacyInstructions = `aimux — AI CLI Multiplexer (4 MCP tools + 23 think patterns, post Layer 5 purge)
 
-One MCP server with a reduced MCP tool surface: server state management,
-deep research, and structured reasoning via dedicated think pattern tools.
-
-## Skill-Based Workflows (MCP Prompts)
-
-aimux provides workflow guidance as MCP prompts. Prompts remain available even
-while the Layer 5 CLI-launching tool surface is purged.
-
-| Skill Prompt | Purpose |
-|---|---|
-| debug | 5-phase debug: reproduce → investigate → root-cause → fix → verify |
-| review | Code review with CLI-adaptive consensus/peer_review fallback |
-| audit | Codebase audit with P0-P3 triage routing to debug/security/review |
-| security | 10-category security checklist with investigate integration |
-| research | 4-phase pipeline: literature → comparison → adversarial → synthesis |
-| consensus | Multi-model consensus with "consensus ≠ correctness" warning |
-| investigate | Investigation protocol with domain auto-detect and convergence |
-| delegate | Delegation decision tree: task size → routing (direct/exec/agent) |
-| tdd | TDD workflow: RED gate → GREEN gate → IMPROVE → coverage |
-| workflow | Declarative multi-step pipeline builder |
-| agent-exec | Agent-first execution: match task → agent, exec as fallback |
-| guide | Complete reference: tools, roles, patterns |
-| background | Background async execution with role routing |
-
-Use these prompts for structured guidance. Each injects live data (your CLIs, metrics,
-past reports) and adapts to your environment.
+Reduced MCP surface: server state management, deep research via Gemini SDK,
+and structured reasoning via 23 dedicated think pattern tools.
 
 ## Tool Selection — "I need to..."
 
 | I need to... | Tool | Key params |
 |---|---|---|
 | Check async job status | status | job_id |
-| Manage sessions | sessions | action (list/health/gc/cancel) |
-| Structured reasoning/analysis | think | pattern (23 options) |
-| Deep research via Gemini | deepresearch | topic |
-| Check/apply binary updates | upgrade | action, mode |
+| Manage sessions | sessions | action (list/health/gc/cancel/kill/info/refresh-warmup) |
+| Structured reasoning / analysis | <pattern_name> | 23 individual think pattern tools |
+| Deep research via Gemini API | deepresearch | topic |
+| Check / apply binary updates | upgrade | action (check/apply) |
 
 ## Notes
-- Pipeline v5 packages remain in-repo as dormant implementation seams.
-- Think patterns are registered as individual MCP tools.
+- Layer 5 CLI-launching tools (exec/agent/agents/critique/investigate/consensus/debate/dialog/audit/workflow) were removed at v5.0.3.
+- Pipeline v5 packages (workflow, dialogue, swarm, executor, resolve, driver, routing, loom) remain in-repo as dormant seams pending the next Layer 5 design.
+- Skill prompts archived under archive/v5.0.3/skills.d/ — prompts/list returns the reduced legacy set.
 
 ## Anti-Patterns
-- Don't expect exec/agent/workflow tools on this branch — they were removed in Layer 5 purge
-- Don't assume dormant pipeline packages are active MCP surface`
+- Don't expect exec/agent/workflow tools — they were removed in the Layer 5 purge
+- Don't assume dormant pipeline packages are reachable from MCP — they are isolated until rewired`
 
 // Server holds all dependencies for the MCP server.
 type Server struct {
@@ -277,20 +254,12 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 
 	// Initialize guidance policy registry — extensible, registry-driven policy resolution.
 	s.guidanceReg = guidance.NewRegistry()
+	// Only the think policy is wired into a live MCP tool. Consensus/debate/dialog/workflow
+	// policies were Layer 5 dispatch-time guidance for tools removed in the v5.0.3 purge.
+	// They remain as dormant Pipeline v5 seams in pkg/guidance/policies/ but are not
+	// registered with the runtime registry.
 	if err := s.guidanceReg.Register(policies.NewThinkPolicy()); err != nil {
 		log.Warn("guidance: failed to register think policy: %v", err)
-	}
-	if err := s.guidanceReg.Register(policies.NewConsensusPolicy()); err != nil {
-		log.Warn("guidance: failed to register consensus policy: %v", err)
-	}
-	if err := s.guidanceReg.Register(policies.NewDebatePolicy()); err != nil {
-		log.Warn("guidance: failed to register debate policy: %v", err)
-	}
-	if err := s.guidanceReg.Register(policies.NewDialogPolicy()); err != nil {
-		log.Warn("guidance: failed to register dialog policy: %v", err)
-	}
-	if err := s.guidanceReg.Register(policies.NewWorkflowPolicy()); err != nil {
-		log.Warn("guidance: failed to register workflow policy: %v", err)
 	}
 
 	// Initialize hooks registry with built-in telemetry
