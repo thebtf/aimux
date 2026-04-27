@@ -397,6 +397,12 @@ func TestE2E_ToolsList(t *testing.T) {
 			architectureAnalysis = tm
 		}
 	}
+	// Diagnostic: log all registered tools so an unexpected count surfaces here.
+	allNames := make([]string, 0, len(toolNames))
+	for n := range toolNames {
+		allNames = append(allNames, n)
+	}
+	t.Logf("tools/list returned %d tools: %v", len(tools), allNames)
 	for _, name := range requiredTools {
 		if !toolNames[name] {
 			t.Fatalf("tools/list missing required tool: %s", name)
