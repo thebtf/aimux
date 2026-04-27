@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"slices"
 )
 
@@ -30,14 +29,6 @@ const (
 // env:  typically os.Getenv (function form enables deterministic testing)
 func detectMode(args []string, env func(string) string) (Mode, error) {
 	daemonFlag := daemonFlagValue()
-
-	// FR-5: AIMUX_NO_ENGINE=1 is deprecated and ignored. Log to stderr and
-	// proceed — the muxcore engine is always used after AIMUX-6.
-	if env("AIMUX_NO_ENGINE") == "1" {
-		fmt.Fprintf(os.Stderr,
-			"aimux: AIMUX_NO_ENGINE=1 is deprecated and ignored; aimux always runs via muxcore engine (daemon or shim mode).\n",
-		)
-	}
 
 	// FR-4: Reject proxy-mode invocations (MCP_MUX_SESSION_ID set).
 	// AIMUX_ALLOW_LEGACY_PROXY=1 is the undocumented escape hatch for local

@@ -69,10 +69,6 @@ func run() error {
 		return modeErr
 	}
 
-	if os.Getenv("AIMUX_NO_ENGINE") == "1" {
-		log.Warn("aimux: AIMUX_NO_ENGINE=1 is deprecated and ignored; aimux always runs via muxcore engine (daemon or shim mode)")
-	}
-
 	modeSignal := "default"
 	if mode == ModeDaemon {
 		modeSignal = "arg"

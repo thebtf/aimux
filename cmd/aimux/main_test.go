@@ -17,13 +17,12 @@ import (
 	mcpsnapshot "github.com/thebtf/mcp-mux/muxcore/snapshot"
 )
 
-// TestDetectMode exercises all 8 combinations of:
+// TestDetectMode exercises the 4 real combinations of:
 //   - daemon flag present/absent in args
 //   - MCP_MUX_SESSION_ID set/unset
-//   - AIMUX_NO_ENGINE set/unset
 //
 // Covers FR-1 (mode detection), NFR-4 (determinism), FR-4 (proxy rejection),
-// FR-5 (AIMUX_NO_ENGINE deprecation), EC-3 (exact flag match).
+// and EC-3 (exact flag match).
 func TestDetectMode(t *testing.T) {
 	t.Parallel()
 
@@ -36,64 +35,34 @@ func TestDetectMode(t *testing.T) {
 		wantMode Mode
 		wantErr  bool
 	}{
-		// Row 1: daemon-flag present, no MCP_MUX_SESSION_ID, no AIMUX_NO_ENGINE → ModeDaemon
+		// Row 1: daemon-flag present, no MCP_MUX_SESSION_ID → ModeDaemon
 		{
-			name:     "daemon_flag_no_session_no_no_engine",
+			name:     "daemon_flag_no_session",
 			args:     []string{"aimux", daemonFlag},
 			env:      map[string]string{},
 			wantMode: ModeDaemon,
 			wantErr:  false,
 		},
-		// Row 2: daemon-flag present, no MCP_MUX_SESSION_ID, AIMUX_NO_ENGINE=1 → ModeDaemon (deprecated env ignored)
+		// Row 2: daemon-flag present, MCP_MUX_SESSION_ID set → error (FR-4)
 		{
-			name:     "daemon_flag_no_session_with_no_engine",
-			args:     []string{"aimux", daemonFlag},
-			env:      map[string]string{"AIMUX_NO_ENGINE": "1"},
-			wantMode: ModeDaemon,
-			wantErr:  false,
-		},
-		// Row 3: daemon-flag present, MCP_MUX_SESSION_ID set, no AIMUX_NO_ENGINE → error (FR-4)
-		{
-			name:    "daemon_flag_with_session_no_no_engine",
+			name:    "daemon_flag_with_session",
 			args:    []string{"aimux", daemonFlag},
 			env:     map[string]string{"MCP_MUX_SESSION_ID": "sess-x"},
 			wantErr: true,
 		},
-		// Row 4: daemon-flag present, MCP_MUX_SESSION_ID set, AIMUX_NO_ENGINE=1 → error (FR-4, env order)
+		// Row 3: no daemon-flag, no MCP_MUX_SESSION_ID → ModeShim
 		{
-			name:    "daemon_flag_with_session_with_no_engine",
-			args:    []string{"aimux", daemonFlag},
-			env:     map[string]string{"MCP_MUX_SESSION_ID": "sess-x", "AIMUX_NO_ENGINE": "1"},
-			wantErr: true,
-		},
-		// Row 5: no daemon-flag, no MCP_MUX_SESSION_ID, no AIMUX_NO_ENGINE → ModeShim
-		{
-			name:     "no_flag_no_session_no_no_engine",
+			name:     "no_flag_no_session",
 			args:     []string{"aimux"},
 			env:      map[string]string{},
 			wantMode: ModeShim,
 			wantErr:  false,
 		},
-		// Row 6: no daemon-flag, no MCP_MUX_SESSION_ID, AIMUX_NO_ENGINE=1 → ModeShim (deprecated env ignored)
+		// Row 4: no daemon-flag, MCP_MUX_SESSION_ID set → error (FR-4)
 		{
-			name:     "no_flag_no_session_with_no_engine",
-			args:     []string{"aimux"},
-			env:      map[string]string{"AIMUX_NO_ENGINE": "1"},
-			wantMode: ModeShim,
-			wantErr:  false,
-		},
-		// Row 7: no daemon-flag, MCP_MUX_SESSION_ID set, no AIMUX_NO_ENGINE → error (FR-4)
-		{
-			name:    "no_flag_with_session_no_no_engine",
+			name:    "no_flag_with_session",
 			args:    []string{"aimux"},
 			env:     map[string]string{"MCP_MUX_SESSION_ID": "sess-x"},
-			wantErr: true,
-		},
-		// Row 8: no daemon-flag, MCP_MUX_SESSION_ID set, AIMUX_NO_ENGINE=1 → error (FR-4)
-		{
-			name:    "no_flag_with_session_with_no_engine",
-			args:    []string{"aimux"},
-			env:     map[string]string{"MCP_MUX_SESSION_ID": "sess-x", "AIMUX_NO_ENGINE": "1"},
 			wantErr: true,
 		},
 	}

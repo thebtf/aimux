@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- `AIMUX_NO_ENGINE` env var fully removed. It was deprecated in AIMUX-6 and already ignored; aimux now has no remaining env check, warning, or test branch for that legacy path.
+
 ### Added (AIMUX-10 loom-task-scoping)
 
 - **`sessions(action="list", all=true)`** — new boolean parameter on the `sessions`
