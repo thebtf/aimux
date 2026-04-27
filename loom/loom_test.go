@@ -55,11 +55,11 @@ func makeTask(id, projectID string, status TaskStatus) *Task {
 // ---- testWorker ----
 
 type testWorker struct {
-	wtype   WorkerType
-	result  string
-	err     error
-	called  atomic.Int32
-	delay   time.Duration
+	wtype  WorkerType
+	result string
+	err    error
+	called atomic.Int32
+	delay  time.Duration
 }
 
 func (w *testWorker) Execute(_ context.Context, _ *Task) (*WorkerResult, error) {

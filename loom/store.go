@@ -18,13 +18,13 @@ import (
 // MUST precede the generic legacy `sk-...` regex, which would otherwise swallow
 // them under a wrong label.
 var storeSecretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{20,}`),                   // openai-key-project
-	regexp.MustCompile(`sk-svcacct-[A-Za-z0-9_\-]{20,}`),               // openai-key-svcacct
-	regexp.MustCompile(`sk-ant-api\d{2}-[A-Za-z0-9_\-]{20,}`),          // anthropic-key
-	regexp.MustCompile(`sk-[A-Za-z0-9_\-]{20,}`),                        // openai-key-legacy (LAST of sk-*)
-	regexp.MustCompile(`AIza[A-Za-z0-9_\-]{35,}`),                       // google-ai-key
-	regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9_\-\.=]{20,}`),          // bearer-token
-	regexp.MustCompile(`(?i)Authorization:\s*[^\s]{20,}`),               // auth-header
+	regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{20,}`),         // openai-key-project
+	regexp.MustCompile(`sk-svcacct-[A-Za-z0-9_\-]{20,}`),      // openai-key-svcacct
+	regexp.MustCompile(`sk-ant-api\d{2}-[A-Za-z0-9_\-]{20,}`), // anthropic-key
+	regexp.MustCompile(`sk-[A-Za-z0-9_\-]{20,}`),              // openai-key-legacy (LAST of sk-*)
+	regexp.MustCompile(`AIza[A-Za-z0-9_\-]{35,}`),             // google-ai-key
+	regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9_\-\.=]{20,}`), // bearer-token
+	regexp.MustCompile(`(?i)Authorization:\s*[^\s]{20,}`),     // auth-header
 }
 
 // redactErrorMsg scrubs known secret patterns from an error message before
@@ -155,7 +155,7 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
 	// These PRAGMAs are idempotent — safe even if already set.
-	db.Exec("PRAGMA journal_mode=WAL")  //nolint:errcheck
+	db.Exec("PRAGMA journal_mode=WAL")   //nolint:errcheck
 	db.Exec("PRAGMA synchronous=NORMAL") //nolint:errcheck
 	return &TaskStore{db: db, engineName: engineName}, nil
 }
@@ -238,16 +238,17 @@ func (s *TaskStore) List(projectID string, statuses ...TaskStatus) ([]*Task, err
 			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
 			       engine_name
-			FROM tasks WHERE project_id = ? ORDER BY created_at ASC`, projectID)
+			FROM tasks WHERE project_id = ? AND engine_name = ? ORDER BY created_at ASC`, projectID, s.engineName)
 	} else {
 		// Build IN clause with placeholders.
-		placeholders := make([]interface{}, 0, len(statuses)+1)
+		placeholders := make([]interface{}, 0, len(statuses)+2)
 		placeholders = append(placeholders, projectID)
+		placeholders = append(placeholders, s.engineName)
 		query := `
 			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
 			       engine_name
-			FROM tasks WHERE project_id = ? AND status IN (`
+			FROM tasks WHERE project_id = ? AND engine_name = ? AND status IN (`
 		for i, st := range statuses {
 			if i > 0 {
 				query += ","
