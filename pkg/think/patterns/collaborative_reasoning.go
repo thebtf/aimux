@@ -150,6 +150,60 @@ func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessio
 		"currentStage":  currentStage,
 	})
 
+	// Extract personas list early — needed for R5-2 enforcement and participation metrics.
+	var knownPersonas []string
+	if personas, ok := validInput["personas"].([]any); ok {
+		for _, p := range personas {
+			if s, ok := p.(string); ok {
+				knownPersonas = append(knownPersonas, s)
+			}
+		}
+	}
+
+	// R5-2: block synthesis without prior per-persona contributions.
+	// Synthesis is detected by: stage=="decision" OR contribution_type=="synthesis".
+	var currentContribType string
+	if contribRaw, ok := validInput["contribution"]; ok {
+		if contrib, ok := contribRaw.(map[string]any); ok {
+			currentContribType, _ = contrib["type"].(string)
+		}
+	}
+	isSynthesisCall := currentStage == "decision" || currentContribType == "synthesis"
+	if isSynthesisCall && len(knownPersonas) > 0 {
+		// "all zeros" check: none of the known personas have contributed yet.
+		allZero := true
+		for _, persona := range knownPersonas {
+			for _, cRaw := range contributions {
+				if c, ok := cRaw.(map[string]any); ok {
+					if c["persona"] == persona {
+						allZero = false
+						break
+					}
+				}
+			}
+			if !allZero {
+				break
+			}
+		}
+		// Allow synthesis if the current contribution IS from one of the known personas.
+		var currentPersonaID string
+		if contribRaw, ok := validInput["contribution"]; ok {
+			if contrib, ok := contribRaw.(map[string]any); ok {
+				currentPersonaID, _ = contrib["persona"].(string)
+			}
+		}
+		isPersonaContrib := false
+		for _, persona := range knownPersonas {
+			if persona == currentPersonaID {
+				isPersonaContrib = true
+				break
+			}
+		}
+		if allZero && !isPersonaContrib {
+			return nil, fmt.Errorf("collaborative_reasoning: cannot synthesize without prior per-persona contributions; submit at least one contribution per persona before synthesis")
+		}
+	}
+
 	// Compute stage progress: which stages have contributions
 	stageProgress := map[string]int{}
 	for _, cRaw := range contributions {
@@ -160,15 +214,6 @@ func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessio
 		}
 	}
 
-	// Extract personas list if provided (enables silent persona detection).
-	var knownPersonas []string
-	if personas, ok := validInput["personas"].([]any); ok {
-		for _, p := range personas {
-			if s, ok := p.(string); ok {
-				knownPersonas = append(knownPersonas, s)
-			}
-		}
-	}
 	participation := computeParticipation(contributions, knownPersonas)
 
 	topic := validInput["topic"].(string)

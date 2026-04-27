@@ -2,6 +2,7 @@ package patterns
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -254,5 +255,29 @@ func TestCollaborativeReasoning_StageTypeEntropy(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'critique' in lowDiversityStages, got %v", lowDiv)
+	}
+}
+
+func TestCollabReasoning_BlocksSynthesisWithoutContributions_R5_2(t *testing.T) {
+	think.ClearSessions()
+	p := NewCollaborativeReasoningPattern()
+	// stage "decision" triggers the synthesis enforcement; contribution_type "synthesis" also triggers it.
+	in := map[string]any{
+		"topic":             "Test enforcement",
+		"personas":          []any{"alice", "bob"},
+		"stage":             "decision",
+		"contribution_type": "synthesis",
+		"contribution_text": "anything",
+	}
+	valid, err := p.Validate(in)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	_, err = p.Handle(valid, "fresh-session-r5-2")
+	if err == nil {
+		t.Fatal("R5-2: expected error, got nil — synthesis accepted without per-persona contributions")
+	}
+	if !strings.Contains(err.Error(), "per-persona contributions") {
+		t.Errorf("R5-2: error message wrong: %v", err)
 	}
 }
