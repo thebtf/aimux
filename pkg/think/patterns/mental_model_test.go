@@ -4,6 +4,7 @@ import (
 	"testing"
 )
 
+
 func TestMentalModel_CompletenessScalesByTextLength(t *testing.T) {
 	p := NewMentalModelPattern()
 
@@ -148,5 +149,40 @@ func TestMentalModel_ComplexityClassification(t *testing.T) {
 	resultHigh, _ := p.Handle(validatedHigh, "s1")
 	if resultHigh.Data["complexity"] != "high" {
 		t.Errorf("expected complexity=high, got %v", resultHigh.Data["complexity"])
+	}
+}
+
+func TestMentalModel_FirstPrinciples_ConcreteTech_R5_1(t *testing.T) {
+	p := NewMentalModelPattern()
+	in := map[string]any{
+		"modelName": "first_principles",
+		"problem":   "Hot-swap upgrade на Windows: что фундаментально нужно для атомарного binary replacement через MoveFileEx и handle release?",
+	}
+	valid, err := p.Validate(in)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	res, err := p.Handle(valid, "")
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	fit, _ := res.Data["modelFit"].(string)
+	if fit != "match" {
+		t.Errorf("R5-1: concrete-tech first_principles → modelFit=%q, want %q", fit, "match")
+	}
+}
+
+func TestMentalModel_FirstPrinciples_AbstractStillFits_R5_1_regression(t *testing.T) {
+	p := NewMentalModelPattern()
+	// "fundamental" and "assumptions" are both trigger words for first_principles → alignmentScore >= 0.3 → "strong".
+	in := map[string]any{"modelName": "first_principles", "problem": "What are the fundamental assumptions about fairness?"}
+	valid, err := p.Validate(in)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	res, _ := p.Handle(valid, "")
+	fit, _ := res.Data["modelFit"].(string)
+	if fit != "strong" {
+		t.Errorf("regression: abstract first_principles with trigger words must still give 'strong', got %q", fit)
 	}
 }

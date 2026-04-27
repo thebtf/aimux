@@ -3,6 +3,7 @@ package patterns
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 
 	think "github.com/thebtf/aimux/pkg/think"
@@ -45,6 +46,9 @@ var knownModels = map[string]string{
 	"probabilistic_thinking": "Think in probabilities and distributions, not binary outcomes",
 	"margin_of_safety":       "Build buffers between your estimates and the failure threshold",
 }
+
+// concreteTechRegex matches concrete technical terms in problem statements (R5-1).
+var concreteTechRegex = regexp.MustCompile(`(?i)\b(Windows|Linux|macOS|POSIX|kernel|syscall|HTTP|TCP|DNS|TLS|SQL|NTFS|ext4|API|OS|GPU|CPU|ABI|RPC|MCP|stdio|IPC|binary|exec|process|handle|mutex|lock|atom)\w*\b`)
 
 type mentalModelPattern struct{}
 
@@ -151,6 +155,17 @@ func (p *mentalModelPattern) Handle(validInput map[string]any, sessionID string)
 		modelFit = "strong"
 	} else if alignmentScore >= 0.1 {
 		modelFit = "weak"
+	}
+
+	// R5-1: concrete-tech override — first_principles-family models match on concrete-tech inputs
+	// even when abstract trigger words are absent.
+	concreteTechModels := map[string]bool{
+		"first_principles": true,
+		"inversion":        true,
+		"occams_razor":     true,
+	}
+	if modelFit == "mismatch" && concreteTechModels[normalizedName] && concreteTechRegex.MatchString(problem) {
+		modelFit = "match"
 	}
 
 	coherenceScore := (completenessScore + clarityScore) / 2.0
