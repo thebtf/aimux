@@ -7,4 +7,4 @@ package build
 // but is a var so tests and release builds can override it via -ldflags -X.
 // It is re-exported via pkg/server.Version for backward compatibility with
 // existing callers.
-var Version = "4.8.1"
+var Version = "5.0.2"
