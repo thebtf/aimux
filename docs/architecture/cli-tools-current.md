@@ -516,8 +516,138 @@ git checkout master                  # back to working branch
 
 ---
 
-## 11. Change Log
+## 11. Pipeline v5 Connection Map (added 2026-04-27)
+
+Audit found that the 10 CLI-launching tools are mostly NOT routed through the
+v5 pipeline (Loom + Workflow + Dialogue Controller + Swarm + Executor V2)
+that was shipped over milestones M1–M5.
+
+### NOT connected to Pipeline v5 (7 of 10)
+
+These handlers call `s.executor.Run()` directly, bypassing Swarm and Dialogue
+Controller. CLI processes are spawned fresh per call (no reuse).
+
+| Tool | Path |
+|------|------|
+| `exec` | `server_exec.go::handleExec` → `s.executor.Run()` |
+| `agent` | `server_agents.go::handleAgentRun` → `s.executor.Run()` |
+| `agents` (action=run) | same as `agent` |
+| `critique` | `server_critique.go::handleCritique` → `s.executor.Run()` |
+| `investigate` (action=auto) | `InvestigatorWorker.Execute` → `s.executor.Run()` |
+| `audit` | `orchestrator.AuditPipeline.Execute` → `executor.Run()` per stage |
+| `workflow` | `orchestrator.WorkflowStrategy.Execute` (LEGACY engine, NOT `pkg/workflow/` M4) |
+
+### Partially connected via M3 Strangler Fig (3 of 10)
+
+Handler still goes through `pkg/orchestrator/`, but the strategy body uses the
+new path when `SetDialogue(ctrl, swarm)` has been called at boot
+(`server.go:301-303`):
+
+| Tool | Strategy | Migrated path |
+|------|----------|---------------|
+| `consensus` | `ParallelConsensus` | `executeWithDialogue` → `DialogueController(ModeParallel)` → SwarmParticipants → Swarm → Executor |
+| `debate`    | `StructuredDebate`  | `executeWithDialogue` → `DialogueController(ModeStance)` → SwarmParticipants → Swarm → Executor |
+| `dialog`    | `SequentialDialog`  | `executeWithDialogue` → `DialogueController(ModeSequential)` → SwarmParticipants → Swarm → Executor |
+
+The legacy `executeLegacy` fallback in each of these three is gated by
+`if c.dialogue != nil { executeWithDialogue } else { executeLegacy }`, plus
+defensive fallbacks on swarm/dialogue errors. Both files print
+`[DEPRECATED] %s using legacy executor path — migrate to Dialogue Controller (v5.0.0 will remove this)`
+on the legacy path.
+
+### Pipeline v5 layer ownership (after purge)
+
+```
+LAYER                     PACKAGE              SHIPPED       SURVIVES PURGE
+─────────────────────────────────────────────────────────────────────────
+Layer 5 — MCP Tool        pkg/server/server.go REGISTRATION  removed (10 AddTool calls)
+Layer 4 — Workflow        pkg/workflow/        M4 v4.13.0    yes (8 workflows ready, no MCP entry)
+Layer 4 — Dialogue        pkg/dialogue/        M3 v4.12.0    yes
+Layer 3 — Swarm           pkg/swarm/           M2 v4.11.0    yes
+Layer 3 — Router          pkg/routing/         (pre-v5)      yes
+Layer 3 — Resolver        pkg/resolve/         (pre-v5)      yes
+Layer 3 — Registry        pkg/driver/          (pre-v5)      yes
+Layer 2 — Executor V2     pkg/executor/        M1 v4.10.0    yes
+Layer 2 — API Executors   pkg/executor/api/?   M5 v4.14.0    yes (location TBD)
+Layer 1 — Backends        pkg/executor/{conpty,pty,pipe}    yes
+Cross-cut — Loom          loom/                v0.1.0        yes
+Legacy strategies         pkg/orchestrator/    pre-v5        REMOVED (Strangler Fig rudiments)
+```
+
+### Big finding — pkg/workflow/ M4 not exposed
+
+`pkg/workflow/` contains 8 ready domain workflow implementations
+(`codereview.go`, `secaudit.go`, `debug.go`, `analyze.go`, `docgen.go`,
+`precommit.go`, `refactor.go`, `testgen.go`). None are registered as MCP tools.
+The current `workflow` tool routes through the LEGACY `pkg/orchestrator/workflow.go`
+(WorkflowStrategy via OrchestratorWorker), not the M4 engine.
+
+This is the redesign opportunity that motivates the v5.0.3 Layer 5 purge:
+clean Layer 5 surface, then expose M4 domain workflows as proper MCP tools
+per the wiring.md target architecture.
+
+---
+
+## 12. executeWithDialogue — what it does (added 2026-04-27)
+
+Three strategies in `pkg/orchestrator/` (`consensus.go`, `debate.go`, `dialog.go`)
+each have an `executeWithDialogue` method — the M3 Strangler Fig "new path"
+that uses Pipeline v5 instead of direct `executor.Run()`.
+
+All three follow the same shape:
+
+1. **Build SwarmParticipants** — for each requested CLI:
+   - `handle, err := c.swarm.Get(ctx, cli, swarm.Stateless)`
+   - On any swarm error → fall through to `executeLegacy`
+   - `dialogue.NewSwarmParticipant(swarm, handle, cli, role)` wraps the
+     handle as a `dialogue.Participant`
+2. **Create Dialogue session** — `c.dialogue.NewDialogue(DialogueConfig{...})`
+   with mode-specific config:
+   - consensus → `ModeParallel`, `MaxTurns: 0` (one parallel round)
+   - debate → `ModeStance`, `MaxTurns: maxTurns`, `Stances: stancesMap`
+   - dialog → `ModeSequential`, `MaxTurns: maxTurns`
+3. **Drive turns** — `c.dialogue.NextTurn(ctx, dlg)` until `dlg.Status != StatusActive`.
+   Controller picks the next participant per mode and calls its `Respond`.
+4. **Optional synthesis** — `c.dialogue.Synthesize(ctx, dlg)` produces a
+   `Synthesis` that combines all turns. Failure is non-fatal (legacy fallback
+   only on swarm/dialogue creation, NOT on synthesis).
+5. **Convert turns to StrategyResult** — flatten `dlg.Turns` to markdown,
+   append `Synthesis.Content` if present.
+
+### Why it matters
+
+The Pipeline v5 path through `executeWithDialogue` brings:
+- **Swarm-managed processes** — handles are reusable, lifecycle-tracked,
+  can survive across calls (`Stateless` here = fresh per dialogue, but
+  spawn/kill is centralised, not duplicated per turn).
+- **Dialogue Controller as turn-taking algorithm** — one piece of code
+  decides ordering, formatting, history threading. Strategies stop
+  duplicating that logic.
+- **Pluggable participants** — `dialogue.Participant` interface is what makes
+  it possible (per wiring.md target) to mix CLI executors, API executors,
+  and ThinkPattern participants in the same dialogue.
+
+### Why it still has a legacy escape hatch
+
+Every error path falls through to `executeLegacy` (the original turn-by-turn
+`executor.Run()` loop). That fallback exists because Strangler Fig migration
+is not complete:
+- swarm.Get errors aren't handled gracefully inside dialogue
+- dialogue.NewDialogue errors aren't recoverable inside the controller
+- some CLIs may not have `Stateless` swarm support fully wired
+
+After Layer 5 purge, the legacy fallback paths and the strategies themselves
+go away. Pipeline v5 (`pkg/workflow/`, `pkg/dialogue/`, `pkg/swarm/`,
+`pkg/executor/`) survives intact, and the next iteration wires the M4 domain
+workflows directly to MCP tool registrations without going through
+`pkg/orchestrator/` at all.
+
+---
+
+## 13. Change Log
 
 | Date | Change |
 |---|---|
 | 2026-04-27 | Initial capture at v5.0.3 by orchestrator pre-purge. |
+| 2026-04-27 | Added section 11 — Pipeline v5 connection map and migration status. |
+| 2026-04-27 | Added section 12 — executeWithDialogue mechanics and Strangler Fig rationale. |
