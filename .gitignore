@@ -28,6 +28,7 @@ Thumbs.db
 .claude/
 aimux.exe~
 aimux.exe.*
+*.exe~
 
 # Test artifacts
 coverage.out
