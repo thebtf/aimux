@@ -16,10 +16,9 @@ import (
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/agents"
 	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
-	"github.com/thebtf/aimux/pkg/dialogue"
-	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
+	"github.com/thebtf/aimux/pkg/dialogue"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
@@ -36,6 +35,7 @@ import (
 	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/skills"
+	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
@@ -136,16 +136,17 @@ type Server struct {
 	rateLimiter             *ratelimit.Limiter
 	authToken               string
 	projectDir              string // directory used for initial agent discovery
+	engineName              string // canonical engine name for loom task scoping (AIMUX-10 FR-7)
 	guidanceReg             *guidance.Registry
 	cooldownTracker         *executor.ModelCooldownTracker
 	sessionHandler          muxcore.SessionHandler // stored for upgrade tool routing
 	applyUpgrade            func(context.Context, *upgrade.Coordinator, upgrade.Mode, bool) (*upgrade.Result, error)
 	muxEngine               *engine.MuxEngine
-	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
-	loom                    *loom.LoomEngine         // central task mediator (LoomEngine v3)
-	dispatchHistory         *agents.DispatchHistory  // agent dispatch feedback history (T003)
-	feedbackTracker         *agents.FeedbackTracker  // BM25 score adjustment from outcomes (T004)
-	swarm                   *swarm.Swarm             // executor lifecycle manager (M2 Strangler Fig)
+	daemonControlSocketPath string                  // live engine daemon control socket path for upgrade restart seam
+	loom                    *loom.LoomEngine        // central task mediator (LoomEngine v3)
+	dispatchHistory         *agents.DispatchHistory // agent dispatch feedback history (T003)
+	feedbackTracker         *agents.FeedbackTracker // BM25 score adjustment from outcomes (T004)
+	swarm                   *swarm.Swarm            // executor lifecycle manager (M2 Strangler Fig)
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -179,6 +180,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	// CLIPipeAdapter implements LegacyAccessor, enabling Swarm.LegacyRun bridging.
 	s.swarm = swarm.New(wrapExecutorAsV2Factory(&s.executor))
 	s.metrics = metrics.New()
+	s.engineName = ResolveEngineName()
 
 	// Initialize rate limiter — per-tool token bucket.
 	s.rateLimiter = ratelimit.New(cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
@@ -232,12 +234,13 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 			// snapshot loop started below after gcCtx is created
 
 			// Initialize LoomEngine with shared SQLite DB.
-			taskStore, taskStoreErr := loom.NewTaskStore(store.DB(), "aimux") // TODO(T007): read from DaemonOptions.EngineName
+			taskStore, taskStoreErr := loom.NewTaskStore(store.DB(), s.engineName)
 			if taskStoreErr != nil {
 				log.Warn("LoomEngine unavailable: %v", taskStoreErr)
 			} else {
 				s.loom = loom.New(taskStore)
 				log.Info("LoomEngine initialized (shared SQLite)")
+				log.Info("loom task scoping: engine_name=%s", s.engineName)
 			}
 
 			// Initialize DispatchHistory + FeedbackTracker on shared SQLite (T003/T004).
