@@ -41,7 +41,7 @@ func main() {
 	}
 	defer db.Close()
 
-	engine, err := loom.NewEngine(db)
+	engine, err := loom.NewEngine(db, "custom-worker-example")
 	if err != nil {
 		log.Fatal(err)
 	}

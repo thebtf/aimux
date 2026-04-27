@@ -28,7 +28,7 @@ func TestLoomEngine_SubmitP99Bounds(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	defer db.Close()
 
-	engine, err := NewEngine(db)
+	engine, err := NewEngine(db, "test")
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
 	}

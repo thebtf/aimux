@@ -232,7 +232,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 			// snapshot loop started below after gcCtx is created
 
 			// Initialize LoomEngine with shared SQLite DB.
-			taskStore, taskStoreErr := loom.NewTaskStore(store.DB())
+			taskStore, taskStoreErr := loom.NewTaskStore(store.DB(), "aimux") // TODO(T007): read from DaemonOptions.EngineName
 			if taskStoreErr != nil {
 				log.Warn("LoomEngine unavailable: %v", taskStoreErr)
 			} else {

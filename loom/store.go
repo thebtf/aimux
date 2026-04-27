@@ -79,10 +79,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     retries INTEGER DEFAULT 0,
     created_at DATETIME NOT NULL,
     dispatched_at DATETIME,
-    completed_at DATETIME
+    completed_at DATETIME,
+    engine_name TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+-- idx_tasks_engine_status created by migrateV3Columns AFTER engine_name column lands
+-- on pre-v3 databases (AIMUX-10).
 `
 
 // migrateRequestIDColumn adds the request_id column to an existing tasks table
@@ -100,14 +103,30 @@ var migrateV2Columns = []string{
 	`ALTER TABLE tasks ADD COLUMN aborted_at TEXT`,
 }
 
+// migrateV3Columns adds engine_name column and composite index for per-daemon
+// task scoping (AIMUX-10 loom-task-scoping). Each statement is run individually;
+// errors indicating the column/index already exists are silently ignored
+// (idempotent migration pattern, matches migrateV2Columns).
+var migrateV3Columns = []string{
+	`ALTER TABLE tasks ADD COLUMN engine_name TEXT NOT NULL DEFAULT ''`,
+	`CREATE INDEX IF NOT EXISTS idx_tasks_engine_status ON tasks(engine_name, status)`,
+}
+
 // TaskStore persists tasks in SQLite.
 type TaskStore struct {
 	db         *sql.DB
 	daemonUUID string // set via SetDaemonUUID; empty string means not configured
+	engineName string // identifies owning daemon for query scoping (AIMUX-10)
 }
 
 // NewTaskStore initialises the tasks table and returns a TaskStore.
-func NewTaskStore(db *sql.DB) (*TaskStore, error) {
+// engineName identifies the owning daemon and is used to scope task queries
+// (MarkCrashed, List, Count). Returns an error if engineName is empty — silent
+// fallback to empty identity is forbidden (spec C3 / FR-7).
+func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
+	if engineName == "" {
+		return nil, fmt.Errorf("loom store: engineName must not be empty")
+	}
 	if _, err := db.Exec(createTasksTable); err != nil {
 		return nil, fmt.Errorf("loom store: create schema: %w", err)
 	}
@@ -123,11 +142,22 @@ func NewTaskStore(db *sql.DB) (*TaskStore, error) {
 			return nil, fmt.Errorf("loom store: migrate v2 columns: %w", err)
 		}
 	}
+	// AIMUX-10: add engine_name column and composite index for per-daemon task scoping.
+	// Each statement is idempotent: duplicate-column and already-exists errors are swallowed.
+	for _, stmt := range migrateV3Columns {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") ||
+				strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return nil, fmt.Errorf("loom store: migrate v3 columns: %w", err)
+		}
+	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
 	// These PRAGMAs are idempotent — safe even if already set.
 	db.Exec("PRAGMA journal_mode=WAL")  //nolint:errcheck
 	db.Exec("PRAGMA synchronous=NORMAL") //nolint:errcheck
-	return &TaskStore{db: db}, nil
+	return &TaskStore{db: db, engineName: engineName}, nil
 }
 
 // SetDaemonUUID configures the daemon-lifetime UUID to be stamped on every
@@ -155,8 +185,8 @@ func (s *TaskStore) Create(task *Task) error {
 		INSERT INTO tasks
 			(id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-			 daemon_uuid, last_seen_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)`,
+			 daemon_uuid, last_seen_at, engine_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID,
 		string(task.Status),
 		string(task.WorkerType),
@@ -177,6 +207,7 @@ func (s *TaskStore) Create(task *Task) error {
 		task.CompletedAt,
 		s.daemonUUID,
 		lastSeenAt,
+		s.engineName,
 	)
 	if err != nil {
 		return fmt.Errorf("loom store: insert task: %w", err)
@@ -188,7 +219,8 @@ func (s *TaskStore) Create(task *Task) error {
 func (s *TaskStore) Get(id string) (*Task, error) {
 	row := s.db.QueryRow(`
 		SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at
+		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+		       engine_name
 		FROM tasks WHERE id = ?`, id)
 
 	return scanTask(row)
@@ -204,7 +236,8 @@ func (s *TaskStore) List(projectID string, statuses ...TaskStatus) ([]*Task, err
 	if len(statuses) == 0 {
 		rows, err = s.db.Query(`
 			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at
+			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+			       engine_name
 			FROM tasks WHERE project_id = ? ORDER BY created_at ASC`, projectID)
 	} else {
 		// Build IN clause with placeholders.
@@ -212,7 +245,8 @@ func (s *TaskStore) List(projectID string, statuses ...TaskStatus) ([]*Task, err
 		placeholders = append(placeholders, projectID)
 		query := `
 			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at
+			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+			       engine_name
 			FROM tasks WHERE project_id = ? AND status IN (`
 		for i, st := range statuses {
 			if i > 0 {
@@ -316,7 +350,8 @@ func (s *TaskStore) IncrementRetries(id string) error {
 // silently diverge from CanTransitionTo validation.
 func (s *TaskStore) MarkCrashed() (int, error) {
 	res, err := s.db.Exec(
-		`UPDATE tasks SET status = 'failed_crash' WHERE status IN ('dispatched', 'running')`,
+		`UPDATE tasks SET status = 'failed_crash' WHERE status IN ('dispatched', 'running') AND engine_name = ?`,
+		s.engineName,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("loom store: mark crashed: %w", err)
@@ -363,6 +398,7 @@ func scanTask(s scanner) (*Task, error) {
 		&task.CreatedAt,
 		&dispatchedAt,
 		&completedAt,
+		&task.EngineName,
 	)
 	if err != nil {
 		return nil, err

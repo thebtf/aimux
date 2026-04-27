@@ -34,7 +34,7 @@ func newTestDB(t *testing.T) *sql.DB {
 func newTestStore(t *testing.T) *TaskStore {
 	t.Helper()
 	db := newTestDB(t)
-	store, err := NewTaskStore(db)
+	store, err := NewTaskStore(db, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,9 +737,9 @@ func TestLoomEngine_ExecSurvivesDisconnect(t *testing.T) {
 func TestNewEngine_ConstructsFromSqlDB(t *testing.T) {
 	// Verify NewEngine creates a usable *LoomEngine from a raw *sql.DB.
 	db := newTestDB(t)
-	engine, err := NewEngine(db)
+	engine, err := NewEngine(db, "test")
 	if err != nil {
-		t.Fatalf("NewEngine(db): %v", err)
+		t.Fatalf("NewEngine(db, \"test\"): %v", err)
 	}
 	if engine == nil {
 		t.Fatal("NewEngine returned nil engine")
@@ -750,9 +750,9 @@ func TestNewEngine_ConstructsFromSqlDB(t *testing.T) {
 	fake := deps.NewFakeClock(frozen)
 	seq := deps.NewSequentialIDGenerator()
 
-	engine2, err := NewEngine(db, WithClock(fake), WithIDGenerator(seq))
+	engine2, err := NewEngine(db, "test", WithClock(fake), WithIDGenerator(seq))
 	if err != nil {
-		t.Fatalf("NewEngine(db, WithClock, WithIDGenerator): %v", err)
+		t.Fatalf("NewEngine(db, \"test\", WithClock, WithIDGenerator): %v", err)
 	}
 	if engine2.clock != fake {
 		t.Error("NewEngine: WithClock not applied")
@@ -781,9 +781,9 @@ func TestNewEngine_ConstructsFromSqlDB(t *testing.T) {
 		t.Fatalf("CreatedAt = %v; want %v (from FakeClock)", task.CreatedAt, frozen)
 	}
 
-	// NewEngine(nil) must return an error (NewTaskStore fails on nil db).
-	if _, err := NewEngine(nil); err == nil {
-		t.Error("NewEngine(nil) should return error; got nil")
+	// NewEngine(nil) must return an error (db is nil).
+	if _, err := NewEngine(nil, "test"); err == nil {
+		t.Error("NewEngine(nil, \"test\") should return error; got nil")
 	}
 }
 

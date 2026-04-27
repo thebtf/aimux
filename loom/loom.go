@@ -101,11 +101,14 @@ func New(store *TaskStore, opts ...Option) *LoomEngine {
 // internally and returns the engine. This is the v0.1.0-aligned constructor
 // from spec FR-6 — New(store, opts) remains for backwards compatibility with
 // aimux call sites and will be removed during Phase 3 atomic migration.
-func NewEngine(db *sql.DB, opts ...Option) (*LoomEngine, error) {
+//
+// engineName identifies the owning daemon for per-daemon task scoping (AIMUX-10).
+// It must not be empty; NewEngine returns an error if it is.
+func NewEngine(db *sql.DB, engineName string, opts ...Option) (*LoomEngine, error) {
 	if db == nil {
 		return nil, fmt.Errorf("loom: db must not be nil")
 	}
-	store, err := NewTaskStore(db)
+	store, err := NewTaskStore(db, engineName)
 	if err != nil {
 		return nil, fmt.Errorf("loom: new task store: %w", err)
 	}

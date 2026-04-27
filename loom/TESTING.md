@@ -50,7 +50,7 @@ func newTestDB(t *testing.T) *sql.DB {
 func newTestStore(t *testing.T) *loom.TaskStore {
     t.Helper()
     db := newTestDB(t)
-    store, err := loom.NewTaskStore(db)
+    store, err := loom.NewTaskStore(db, "test")
     if err != nil {
         t.Fatal(err)
     }

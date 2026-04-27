@@ -82,6 +82,7 @@ type Task struct {
 	WorkerType   WorkerType        `json:"worker_type"`
 	ProjectID    string            `json:"project_id"`
 	RequestID    string            `json:"request_id,omitempty"`
+	EngineName   string            `json:"engine_name,omitempty"`
 	Prompt       string            `json:"prompt"`
 	CWD          string            `json:"cwd,omitempty"`
 	Env          map[string]string `json:"env,omitempty"`

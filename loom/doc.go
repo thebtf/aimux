@@ -10,7 +10,7 @@
 //	db, _ := sql.Open("sqlite", "tasks.db?_pragma=journal_mode(WAL)")
 //	defer db.Close()
 //
-//	engine, err := loom.NewEngine(db,
+//	engine, err := loom.NewEngine(db, "my-daemon",
 //	    loom.WithLogger(myLogger),
 //	    loom.WithMeter(myMeter),
 //	)
