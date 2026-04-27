@@ -31,18 +31,10 @@ command:
 prompt_flag: ""
 prompt_flag_type: "positional"
 
-# Default model: gpt-5.4 is OpenAI's consolidated flagship (March-April 2026).
-# It absorbs the coding capabilities of the deprecated gpt-5.3-codex family and
-# is the primary coding+reasoning model in ChatGPT, API, and Codex CLI as of 2026-04.
-#
-# version note: bump '5.4' when OpenAI releases a new flagship; verify via
+# Default model: gpt-5.5 is OpenAI's latest flagship (April 2026).
+# version note: bump when OpenAI releases a new flagship; verify via
 # `codex --version` or the OpenAI changelog before updating.
-#
-# fallback behavior: suffix-strip below still handles explicitly-passed `-spark`
-# models (e.g. a caller that requests gpt-X-codex-spark and hits quota will fall
-# back to gpt-X-codex). For gpt-5.4 itself there is no built-in fallback; add
-# gpt-5.4-mini to model_fallback if cost-optimized degradation is desired.
-default_model: "gpt-5.4"
+default_model: "gpt-5.5"
 
 # Model flag
 model_flag: "-m"
