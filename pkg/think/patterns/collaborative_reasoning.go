@@ -114,6 +114,7 @@ func (p *collaborativeReasoningPattern) Validate(input map[string]any) (map[stri
 }
 
 func (p *collaborativeReasoningPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
+	sessionID = think.EnsureSessionID(sessionID)
 	sess := think.GetOrCreateSession(sessionID, "collaborative_reasoning", map[string]any{
 		"contributions": []any{},
 		"currentStage":  "problem-definition",

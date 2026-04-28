@@ -4,7 +4,19 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+// EnsureSessionID returns a freshly generated UUID when sid is empty, or sid
+// unchanged when the caller already holds a session identifier.
+// This prevents all cold-start callers from sharing the session store key "".
+func EnsureSessionID(sid string) string {
+	if sid == "" {
+		return uuid.NewString()
+	}
+	return sid
+}
 
 var (
 	sessionsMu sync.RWMutex

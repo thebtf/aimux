@@ -348,6 +348,7 @@ func (p *scientificMethodPattern) SchemaFields() map[string]think.FieldSchema {
 func (p *scientificMethodPattern) Category() string { return "solo" }
 
 func (p *scientificMethodPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
+	sessionID = think.EnsureSessionID(sessionID)
 	sess := think.GetOrCreateSession(sessionID, "scientific_method", map[string]any{
 		"stageHistory":      []any{},
 		"hypothesesHistory": []any{},

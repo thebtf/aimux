@@ -1,6 +1,7 @@
 package think
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -162,5 +163,32 @@ func TestGCSessions_KeepsActive(t *testing.T) {
 	}
 	if GetSessionCount() != 2 {
 		t.Errorf("count = %d, want 2", GetSessionCount())
+	}
+}
+
+func TestEnsureSessionID_EmptyGeneratesUUID(t *testing.T) {
+	got := EnsureSessionID("")
+	if got == "" {
+		t.Fatal("EnsureSessionID(\"\") returned empty string, want UUID")
+	}
+	// UUID v4 has the form xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (36 chars with hyphens)
+	if len(got) != 36 || !strings.Contains(got, "-") {
+		t.Errorf("EnsureSessionID(\"\") = %q, want UUID format (36 chars with hyphens)", got)
+	}
+}
+
+func TestEnsureSessionID_NonEmptyPassthrough(t *testing.T) {
+	sid := "my-session-123"
+	got := EnsureSessionID(sid)
+	if got != sid {
+		t.Errorf("EnsureSessionID(%q) = %q, want passthrough", sid, got)
+	}
+}
+
+func TestEnsureSessionID_TwoCallsProduceDistinctIDs(t *testing.T) {
+	id1 := EnsureSessionID("")
+	id2 := EnsureSessionID("")
+	if id1 == id2 {
+		t.Errorf("two EnsureSessionID(\"\") calls returned the same ID %q — not unique", id1)
 	}
 }

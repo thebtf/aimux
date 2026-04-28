@@ -57,6 +57,7 @@ func (p *experimentalLoopPattern) Validate(input map[string]any) (map[string]any
 }
 
 func (p *experimentalLoopPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
+	sessionID = think.EnsureSessionID(sessionID)
 	hypothesis := validInput["hypothesis"].(string)
 	observation, _ := validInput["observation"].(string)
 	result, _ := validInput["result"].(string)
