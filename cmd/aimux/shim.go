@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/thebtf/aimux/pkg/build"
@@ -54,6 +56,40 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger, ipc *l
 	if ipc != nil {
 		onInject = func(inject func([]byte) error) {
 			ipc.SetSendFunc(inject)
+		}
+	}
+
+	// AIMUX_TEST_EMIT_LINES — test-only hook for FR-10 multi-process integrity
+	// test. When set to a positive integer N, the shim chains a wrapper around
+	// the OnInject closure that emits N log entries with a per-shim sequence
+	// number after the IPC handshake completes, then signals exit. The chain
+	// preserves the original IPC wiring; in production (env unset) the closure
+	// is identical to the simple wiring above.
+	emitLines := 0
+	if v := os.Getenv("AIMUX_TEST_EMIT_LINES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			emitLines = n
+		}
+	}
+	if emitLines > 0 {
+		base := onInject
+		onInject = func(inject func([]byte) error) {
+			if base != nil {
+				base(inject)
+			}
+			go func() {
+				for i := 0; i < emitLines; i++ {
+					log.Info("test-emit %d/%d", i+1, emitLines)
+				}
+				// Allow IPCSink drainLoop + IPC writer to ship every entry to
+				// the daemon before the process dies. ringBuf default cap=100,
+				// drain rate ~thousands/sec, so 800ms is generous.
+				time.Sleep(800 * time.Millisecond)
+				// Hard-exit because StdinEOFWaitForDisconnect would otherwise
+				// keep eng.Run blocked. Test-only path; production never sets
+				// AIMUX_TEST_EMIT_LINES.
+				os.Exit(0)
+			}()
 		}
 	}
 
