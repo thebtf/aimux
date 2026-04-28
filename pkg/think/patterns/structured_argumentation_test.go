@@ -130,6 +130,61 @@ func TestStructuredArgumentation_SessionIDInData(t *testing.T) {
 	}
 }
 
+// TestStructuredArgumentation_MultiTurnAccumulation verifies that using session_id from
+// the first result in a subsequent call correctly accumulates arguments (T002 AC).
+func TestStructuredArgumentation_MultiTurnAccumulation(t *testing.T) {
+	think.ClearSessions()
+	p := NewStructuredArgumentationPattern()
+	sid := "multiturn-session-t002"
+
+	// Turn 1: add a claim, capture session_id.
+	inp1, err := p.Validate(map[string]any{
+		"topic":         "AI governance",
+		"argument_type": "claim",
+		"argument_text": "AI systems require mandatory audits",
+	})
+	if err != nil {
+		t.Fatalf("validate turn 1: %v", err)
+	}
+	r1, err := p.Handle(inp1, sid)
+	if err != nil {
+		t.Fatalf("handle turn 1: %v", err)
+	}
+	returnedSID, ok := r1.Data["session_id"].(string)
+	if !ok || returnedSID == "" {
+		t.Fatal("session_id not returned in turn 1 result")
+	}
+	if returnedSID != sid {
+		t.Errorf("session_id = %q, want %q", returnedSID, sid)
+	}
+
+	// Turn 2: use returned session_id, add evidence.
+	claimID := r1.Data["arguments"].([]any)[0].(map[string]any)["id"].(string)
+	inp2, err := p.Validate(map[string]any{
+		"topic":             "AI governance",
+		"argument_type":     "evidence",
+		"argument_text":     "EU AI Act requires conformity assessments",
+		"supports_claim_id": claimID,
+	})
+	if err != nil {
+		t.Fatalf("validate turn 2: %v", err)
+	}
+	r2, err := p.Handle(inp2, returnedSID)
+	if err != nil {
+		t.Fatalf("handle turn 2: %v", err)
+	}
+	if r2.Data["claimCount"] != 1 {
+		t.Errorf("expected claimCount=1 in turn 2, got %v", r2.Data["claimCount"])
+	}
+	if r2.Data["evidenceCount"] != 1 {
+		t.Errorf("expected evidenceCount=1 in turn 2, got %v", r2.Data["evidenceCount"])
+	}
+	args2, _ := r2.Data["arguments"].([]any)
+	if len(args2) != 2 {
+		t.Errorf("expected 2 accumulated arguments, got %d", len(args2))
+	}
+}
+
 func TestStructuredArgumentation_SingleClaimWarning_R5_3(t *testing.T) {
 	think.ClearSessions()
 	p := NewStructuredArgumentationPattern()
