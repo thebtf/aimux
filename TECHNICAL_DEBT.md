@@ -165,6 +165,33 @@ single-tenant deployment is the design target (constitution).
 
 ---
 
+### 2026-04-29: think-patterns-excellence T021 live-test deferred
+
+**What:** T021 of think-patterns-excellence requires live-testing all 23 think
+patterns with realistic input via the running MCP server, rating each EXCELLENT.
+Cannot be automated within `go test ./...` because the patterns are
+session-stateful and require a live MCP client driver.
+
+**Why:** Operator runs CC sessions throughout the day exercising patterns naturally.
+A formal 23-pattern walkthrough script before every release adds operational
+overhead with limited regression-detection value over the 270 unit + AC tests
+that already cover behaviour.
+
+**Impact:** Risk that a runtime regression invisible to unit tests (e.g.
+session-state corruption under concurrent CC sessions) ships unnoticed. Mitigated
+by the existing critical-suite (rule #10) + emulation-playbook (rule #11) gates
+which exercise the live IPC path.
+
+**Owner:** aimux-operator.
+
+**Future ticket:** before tagging `v5.0.2`, walk through 5 representative
+patterns (sequential_thinking, debugging_approach, scientific_method,
+critical_thinking, collaborative_reasoning) via live CC session. If any
+returns degraded data — open issue. Skip the formal 23-row table; this is
+a manual smoke gate, not a contract.
+
+---
+
 ### 2026-04-28: PeerCredsUnavailable counter REMOVED in CR-002 (was misleading)
 
 **What:** CR-001 introduced `PeerCredsUnavailable` counter exposed via
