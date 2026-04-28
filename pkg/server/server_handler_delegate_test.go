@@ -26,7 +26,7 @@ func makeJSONRPCRequest(id int) []byte {
 
 // TestLightweightDelegate_OnProjectConnect verifies that project IDs are recorded.
 func TestLightweightDelegate_OnProjectConnect(t *testing.T) {
-	d := newLightweightDelegate(15)
+	d := newLightweightDelegate(15, nil)
 
 	pa := makeProject("proj-a")
 	pb := makeProject("proj-b")
@@ -48,7 +48,7 @@ func TestLightweightDelegate_OnProjectConnect(t *testing.T) {
 
 // TestLightweightDelegate_OnProjectDisconnect verifies project IDs are removed.
 func TestLightweightDelegate_OnProjectDisconnect(t *testing.T) {
-	d := newLightweightDelegate(15)
+	d := newLightweightDelegate(15, nil)
 
 	d.OnProjectConnect(makeProject("proj-a"))
 	d.OnProjectConnect(makeProject("proj-b"))
@@ -67,7 +67,7 @@ func TestLightweightDelegate_OnProjectDisconnect(t *testing.T) {
 // HandleRequest returns errReadyButShouldRedispatch when the ready channel
 // closes within the grace period.
 func TestLightweightDelegate_HandleRequest_ReadyBeforeGrace(t *testing.T) {
-	d := newLightweightDelegate(5)
+	d := newLightweightDelegate(5, nil)
 
 	// Close ready after 10ms — well within the 5s grace period.
 	go func() {
@@ -89,7 +89,7 @@ func TestLightweightDelegate_HandleRequest_ReadyBeforeGrace(t *testing.T) {
 // period elapses before the ready channel closes.
 func TestLightweightDelegate_HandleRequest_GraceExpired(t *testing.T) {
 	// Grace period: 1 second; ready never closes.
-	d := newLightweightDelegate(1)
+	d := newLightweightDelegate(1, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -130,7 +130,7 @@ func TestLightweightDelegate_HandleRequest_GraceExpired(t *testing.T) {
 // TestLightweightDelegate_HandleRequest_CtxCancelled verifies that
 // HandleRequest returns ctx.Err() when the context is cancelled.
 func TestLightweightDelegate_HandleRequest_CtxCancelled(t *testing.T) {
-	d := newLightweightDelegate(30)
+	d := newLightweightDelegate(30, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// Cancel immediately.
@@ -150,7 +150,7 @@ func TestLightweightDelegate_HandleRequest_CtxCancelled(t *testing.T) {
 func TestLightweightDelegate_HandleRequest_DefaultGrace(t *testing.T) {
 	// graceSec=0 → defaults to 15. Close immediately so the call returns via
 	// the redispatch sentinel, proving the select is entered without panicking.
-	d := newLightweightDelegate(0)
+	d := newLightweightDelegate(0, nil)
 	d.closeReady() // already closed
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -166,7 +166,7 @@ func TestLightweightDelegate_HandleRequest_DefaultGrace(t *testing.T) {
 // accessible after markSwapped (markSwapped only sets the flag; HandleRequest
 // is the one that panics, which we cannot call post-swap by design).
 func TestLightweightDelegate_MarkSwapped(t *testing.T) {
-	d := newLightweightDelegate(15)
+	d := newLightweightDelegate(15, nil)
 	pa := makeProject("proj-a")
 	d.OnProjectConnect(pa)
 	d.markSwapped()
@@ -274,7 +274,7 @@ func TestIsRetryHintResponse(t *testing.T) {
 // TestLightweightDelegate_ConcurrentConnect verifies that concurrent
 // OnProjectConnect calls are safe under the race detector.
 func TestLightweightDelegate_ConcurrentConnect(t *testing.T) {
-	d := newLightweightDelegate(15)
+	d := newLightweightDelegate(15, nil)
 
 	const n = 50
 	done := make(chan struct{}, n)
@@ -289,4 +289,49 @@ func TestLightweightDelegate_ConcurrentConnect(t *testing.T) {
 	}
 	// Just verify connectedProjects doesn't race or panic.
 	_ = d.connectedProjects()
+}
+
+// --- T175: TestLightweightDelegate_RetryHint_IncrementsCounter ---
+
+// TestLightweightDelegate_RetryHint_IncrementsCounter verifies that
+// warmupDeferredCount is incremented exactly once per retry-hint emission and
+// is NOT incremented on the redispatch-sentinel path (ADR-002).
+func TestLightweightDelegate_RetryHint_IncrementsCounter(t *testing.T) {
+	srv := testServer(t)
+
+	// grace=1s so the test completes quickly; ready never closes.
+	d := newLightweightDelegate(1, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	before := srv.warmupDeferredCount.Load()
+
+	// HandleRequest will block 1s then emit retry-hint and return.
+	resp, err := d.HandleRequest(ctx, makeProject("counter-test"), makeJSONRPCRequest(99))
+	if err != nil {
+		t.Fatalf("HandleRequest returned error: %v", err)
+	}
+	if !isRetryHintResponse(resp) {
+		t.Fatalf("expected retry-hint response, got: %s", resp)
+	}
+
+	after := srv.warmupDeferredCount.Load()
+	if after-before != 1 {
+		t.Errorf("warmupDeferredCount delta = %d, want 1 (before=%d after=%d)", after-before, before, after)
+	}
+
+	// The redispatch path (ready closes) must NOT increment the counter.
+	d2 := newLightweightDelegate(15, srv)
+	baseline := srv.warmupDeferredCount.Load()
+	d2.closeReady() // trigger immediate redispatch
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel2()
+	_, err2 := d2.HandleRequest(ctx2, makeProject("no-counter-test"), makeJSONRPCRequest(1))
+	if err2 != errReadyButShouldRedispatch {
+		t.Fatalf("expected errReadyButShouldRedispatch, got err=%v", err2)
+	}
+	if got := srv.warmupDeferredCount.Load(); got != baseline {
+		t.Errorf("warmupDeferredCount changed on redispatch path: was %d, now %d", baseline, got)
+	}
 }

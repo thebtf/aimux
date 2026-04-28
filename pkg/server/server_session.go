@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -333,9 +334,14 @@ func (h *aimuxHandler) SetCancelFunc(cancel func()) {
 //  2. Store the full delegate atomically.
 //  3. Mark the lightweight stub as swapped (defensive panic guard).
 //  4. Re-fire OnProjectConnect for every project recorded during Phase A.
+//  5. Write initDurationMs and initPhase=2 so health gauges are accurate.
+//
+// startedAt is the time Phase B work began; used to compute initDurationMs.
+// Writing the gauge here (rather than in the caller) ensures any future caller
+// of swapDelegateToFull automatically gets correct observability (ADR-001).
 //
 // Safe to call from any goroutine. Must be called exactly once.
-func (s *Server) swapDelegateToFull(h *aimuxHandler) {
+func (s *Server) swapDelegateToFull(h *aimuxHandler, startedAt time.Time) {
 	// Capture the lightweight delegate before the swap.
 	old := h.delegate.Load()
 	if old == nil {
@@ -372,4 +378,10 @@ func (s *Server) swapDelegateToFull(h *aimuxHandler) {
 		pc := muxcore.ProjectContext{ID: id}
 		fd.OnProjectConnect(pc)
 	}
+
+	// Write observability gauges. Store initDurationMs before initPhase=2 so
+	// any reader that sees initPhase==2 is guaranteed to see a valid duration
+	// (ADR-001: co-located with the swap, not in the caller).
+	s.initDurationMs.Store(time.Since(startedAt).Milliseconds())
+	s.initPhase.Store(2)
 }

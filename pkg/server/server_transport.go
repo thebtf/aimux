@@ -38,7 +38,7 @@ func (s *Server) SessionHandler() muxcore.SessionHandler {
 		graceSec = 15 // default when not configured
 	}
 
-	lw := newLightweightDelegate(graceSec)
+	lw := newLightweightDelegate(graceSec, s)
 	var d handlerDelegate = lw
 	h := &aimuxHandler{srv: s}
 	h.delegate.Store(&d)

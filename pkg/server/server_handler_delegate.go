@@ -41,9 +41,14 @@ type handlerDelegate interface {
 // After the swap, lightweightDelegate is no longer reachable; a defensive panic in
 // HandleRequest guards against stale references.
 type lightweightDelegate struct {
-	readyCh  chan struct{}  // bidirectional; closed via closeReady()
+	readyCh  chan struct{}   // bidirectional; closed via closeReady()
 	ready    <-chan struct{} // receive-only alias for readyCh; used in select
 	graceSec int            // warmup_grace_seconds from config
+
+	// srv is a weak reference to the owning Server used to increment
+	// warmupDeferredCount on retry-hint emission (ADR-002). May be nil in
+	// tests that construct lightweightDelegate directly without a Server.
+	srv *Server
 
 	mu       sync.Mutex
 	projects map[string]struct{} // projects that connected during Phase A
@@ -59,12 +64,14 @@ type lightweightDelegate struct {
 // newLightweightDelegate constructs a Phase A stub.
 // Caller closes the stub via closeReady() when Phase B completes.
 // graceSec is the maximum seconds to block callers in HandleRequest.
-func newLightweightDelegate(graceSec int) *lightweightDelegate {
+// srv may be nil (standalone tests that do not need counter instrumentation).
+func newLightweightDelegate(graceSec int, srv *Server) *lightweightDelegate {
 	ch := make(chan struct{})
 	return &lightweightDelegate{
 		readyCh:  ch,
 		ready:    ch,
 		graceSec: graceSec,
+		srv:      srv,
 		projects: make(map[string]struct{}),
 	}
 }
@@ -117,6 +124,11 @@ func (d *lightweightDelegate) HandleRequest(ctx context.Context, project muxcore
 
 	case <-time.After(deadline):
 		// Grace period elapsed — return a retriable JSON-RPC error.
+		// Increment counter only here: this is the client-visible deferral path
+		// (ADR-002: redispatch sentinels are internal and do not count as deferrals).
+		if d.srv != nil {
+			d.srv.warmupDeferredCount.Add(1)
+		}
 		return buildRetryHintResponse(request, grace), nil
 
 	case <-ctx.Done():

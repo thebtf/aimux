@@ -431,15 +431,14 @@ func (s *Server) RunPhaseB(ctx context.Context) {
 	}
 
 	s.initPhase.Store(1) // Phase A active: lightweightDelegate is live
-	start := time.Now()
+	startedAt := time.Now()
 
 	doSwap := func() {
-		s.swapDelegateToFull(h)
-		elapsed := time.Since(start).Milliseconds()
-		s.initDurationMs.Store(elapsed)
-		s.initPhase.Store(2) // Phase B complete: fullDelegate is live
+		// Gauge writes (initDurationMs, initPhase=2) happen inside swapDelegateToFull
+		// so any future caller automatically gets correct observability (ADR-001).
+		s.swapDelegateToFull(h, startedAt)
 		if s.log != nil {
-			s.log.Info("phase-B complete: delegate swapped in %dms", elapsed)
+			s.log.Info("phase-B complete: delegate swapped in %dms", s.initDurationMs.Load())
 		}
 	}
 
