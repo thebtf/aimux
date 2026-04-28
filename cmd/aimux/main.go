@@ -19,6 +19,7 @@ import (
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/tenant"
 	aimuxServer "github.com/thebtf/aimux/pkg/server"
 	muxdaemon "github.com/thebtf/mcp-mux/muxcore/daemon"
 	"github.com/thebtf/mcp-mux/muxcore/engine"
@@ -48,11 +49,22 @@ func run() error {
 		return err
 	}
 
+	bootstrapUID := parseBootstrapUID(os.Args[1:])
+
 	configDir := findConfigDir()
 
 	cfg, err := config.Load(configDir)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// T012: --bootstrap-operator-uid flag support (FR-11).
+	// Runs before mode detection so bootstrapping works regardless of mode.
+	if bootstrapUID > 0 {
+		tenantsPath := tenantsYAMLPath(configDir)
+		if err := tenant.WriteBootstrapFile(tenantsPath, bootstrapUID); err != nil {
+			return fmt.Errorf("bootstrap tenants.yaml: %w", err)
+		}
 	}
 
 	mode, modeErr := detectMode(os.Args, os.Getenv)
@@ -157,6 +169,24 @@ func run() error {
 
 	srv := aimuxServer.NewDaemon(cfg, log, registry, router)
 	defer srv.Shutdown()
+
+	// T012: wire tenant registry + SIGHUP hot-reload (FR-1, FR-12 seam).
+	tenantReg := tenant.NewRegistry()
+	tenantsPath := tenantsYAMLPath(configDir)
+	if snap, loadErr := tenant.LoadFromFile(tenantsPath); loadErr == nil {
+		tenantReg.Swap(snap)
+		if tenantReg.IsMultiTenant() {
+			log.Info("tenant registry: multi-tenant mode active from %s", tenantsPath)
+		} else {
+			log.Info("tenant registry: legacy-default mode (empty tenants.yaml)")
+		}
+	} else if !errors.Is(loadErr, os.ErrNotExist) {
+		return fmt.Errorf("tenant registry: tenants.yaml present but invalid: %w", loadErr)
+	} else {
+		log.Info("tenant registry: legacy-default mode (no tenants.yaml at %s)", tenantsPath)
+	}
+	hotReloader := tenant.NewConfigHotReloader(tenantsPath, tenantReg, nil)
+	go hotReloader.Run(ctx)
 
 	transport := cfg.Server.Transport.Type
 	if envTransport := os.Getenv("MCP_TRANSPORT"); envTransport != "" {
@@ -464,4 +494,20 @@ func (r *handoffRelay) cleanup(log *logger.Logger) {
 		log.Warn("handoff token cleanup failed: %v", err)
 	}
 	_ = removePlatformHandoffRelay(r.socketPath)
+}
+
+// parseBootstrapUID extracts the --bootstrap-operator-uid flag value from args.
+// Returns 0 when the flag is absent or unparseable.
+func parseBootstrapUID(args []string) int {
+	fs := flag.NewFlagSet("aimux-bootstrap", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var uid int
+	fs.IntVar(&uid, "bootstrap-operator-uid", 0, "")
+	_ = fs.Parse(args)
+	return uid
+}
+
+// tenantsYAMLPath returns the canonical path for tenants.yaml relative to configDir.
+func tenantsYAMLPath(configDir string) string {
+	return filepath.Join(configDir, "tenants.yaml")
 }
