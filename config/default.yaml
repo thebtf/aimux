@@ -38,6 +38,14 @@ server:
   log_compress: true
   log_max_line_bytes: 4096
 
+  # Centralized logging (AIMUX-11): shim-side IPC forward buffer and send timeout.
+  # log_forward_buffer_size: ring buffer capacity for the shim IPCSink. Oldest entry
+  #   is dropped on overflow. Default: 100.
+  # log_forward_timeout_ms: per-entry send timeout (ms) before routing to StderrFallback.
+  #   Default: 100.
+  log_forward_buffer_size: 100
+  log_forward_timeout_ms: 100
+
   # Two-phase daemon init (issue #129): Phase A listens immediately via a lightweight stub;
   # Phase B swaps in the full delegate once the daemon is ready.
   # warmup_grace_seconds: max seconds HandleRequest callers block in Phase A before

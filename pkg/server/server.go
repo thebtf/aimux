@@ -102,11 +102,15 @@ type Server struct {
 	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
 	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
 
+	// logIngester receives forwarded log entries from shim peers via the
+	// "notifications/aimux/log_forward" JSON-RPC notification path (AIMUX-11 Phase 2).
+	logIngester *LogIngester
+
 	// Two-phase daemon init (issue #129): Phase A starts listening immediately via
 	// lightweightDelegate; Phase B (heavy init) runs in the background goroutine started
 	// by RunPhaseB. Fields below track progress for observability (status tool, T005).
-	initPhase          atomic.Int32  // 0=pre-init, 1=phase-A, 2=phase-B complete
-	initDurationMs     atomic.Int64  // wall-clock ms for Phase B to complete (set on swap)
+	initPhase           atomic.Int32  // 0=pre-init, 1=phase-A, 2=phase-B complete
+	initDurationMs      atomic.Int64  // wall-clock ms for Phase B to complete (set on swap)
 	warmupDeferredCount atomic.Uint64 // HandleRequest calls deferred during Phase A
 }
 
@@ -137,6 +141,12 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	}
 	s.metrics = metrics.New()
 	s.engineName = ResolveEngineName()
+
+	// Wire the log ingester — daemon-side receiver for shim log_forward notifications
+	// (AIMUX-11 Phase 2, T011). LocalSink() is non-nil in daemon mode.
+	if sink := log.LocalSink(); sink != nil {
+		s.logIngester = NewLogIngester(sink, cfg.Server.LogMaxLineBytes)
+	}
 
 	// Initialize rate limiter — per-tool token bucket.
 	s.rateLimiter = ratelimit.New(cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)

@@ -55,25 +55,45 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	logPath := config.ExpandPath(cfg.Server.LogFile)
-	log, err := logger.New(logPath, logger.ParseLevel(cfg.Server.LogLevel), logger.RotationOpts{
+	mode, modeErr := detectMode(os.Args, os.Getenv)
+	if modeErr != nil {
+		return modeErr
+	}
+
+	level := logger.ParseLevel(cfg.Server.LogLevel)
+	rotOpts := logger.RotationOpts{
 		MaxSizeMB:    cfg.Server.LogMaxSizeMB,
 		MaxBackups:   cfg.Server.LogMaxBackups,
 		MaxAgeDays:   cfg.Server.LogMaxAgeDays,
 		Compress:     cfg.Server.LogCompress,
 		MaxLineBytes: cfg.Server.LogMaxLineBytes,
-	})
-	if err != nil {
-		return fmt.Errorf("init logger: %w", err)
+	}
+
+	// Mode-aware logger construction (AIMUX-11 FR-2 sole-writer invariant).
+	// Daemon: opens the log file via lumberjack — only writer in the system.
+	// Shim: never opens the log file. Forwards to daemon via IPCSink with
+	// stderr fallback for bootstrap and transport failures.
+	var log *logger.Logger
+	if mode == ModeShim {
+		fallback := logger.NewStderrFallback()
+		ipc := logger.NewIPCSink(nil, logger.IPCSinkOpts{
+			BufferSize:         cfg.Server.LogForwardBufferSize,
+			TimeoutMs:          cfg.Server.LogForwardTimeoutMs,
+			ReconnectInitialMs: 1000,
+			ReconnectMaxMs:     5000,
+		}, fallback)
+		log = logger.NewShim(level, ipc, fallback)
+	} else {
+		logPath := config.ExpandPath(cfg.Server.LogFile)
+		var err error
+		log, err = logger.NewDaemon(logPath, level, rotOpts)
+		if err != nil {
+			return fmt.Errorf("init logger: %w", err)
+		}
 	}
 	defer log.Close()
 
 	log.Info("aimux v%s starting", aimuxServer.Version)
-
-	mode, modeErr := detectMode(os.Args, os.Getenv)
-	if modeErr != nil {
-		return modeErr
-	}
 
 	modeSignal := "default"
 	if mode == ModeDaemon {
@@ -167,6 +187,15 @@ func run() error {
 		}
 		srv.SetMuxEngine(eng)
 		srv.SetDaemonControlSocketPath(eng.ControlSocketPath())
+
+		// FR-11: graceful drain on signal — best-effort flush remaining queue
+		// entries to lumberjack with a 500 ms hard deadline before Shutdown
+		// reaps the goroutine. SIGKILL bypasses this path (acceptable per EC-10).
+		defer func() {
+			if drained, lost := log.DrainWithDeadline(500 * time.Millisecond); lost > 0 || drained > 0 {
+				_, _ = fmt.Fprintf(os.Stderr, "aimux: graceful drain: drained=%d lost=%d\n", drained, lost)
+			}
+		}()
 		// Phase B: swap lightweightDelegate → fullDelegate in the background so the
 		// engine can begin accepting connections immediately (issue #129).
 		srv.RunPhaseB(ctx)

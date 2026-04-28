@@ -63,6 +63,15 @@ type ServerConfig struct {
 	LogCompress     bool `yaml:"log_compress"`       // true — gzip rotated backups
 	LogMaxLineBytes int  `yaml:"log_max_line_bytes"` // 4096 — truncate lines longer than this
 
+	// LogForwardBufferSize is the ring buffer capacity for shim-side IPCSink.
+	// Entries in excess of this limit drop the oldest entry. Default: 100.
+	LogForwardBufferSize int `yaml:"log_forward_buffer_size"`
+
+	// LogForwardTimeoutMs is the per-entry send timeout (milliseconds) for the
+	// IPCSink send goroutine. On timeout the entry is routed to StderrFallback.
+	// Default: 100.
+	LogForwardTimeoutMs int `yaml:"log_forward_timeout_ms"`
+
 	RateLimitRPS   float64 `yaml:"rate_limit_rps"`
 	RateLimitBurst int     `yaml:"rate_limit_burst"`
 	// AuthToken is the bearer token for HTTP/SSE transport authentication.
@@ -366,6 +375,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if s.LogMaxLineBytes == 0 {
 		s.LogMaxLineBytes = 4096
+	}
+	if s.LogForwardBufferSize == 0 {
+		s.LogForwardBufferSize = 100
+	}
+	if s.LogForwardTimeoutMs == 0 {
+		s.LogForwardTimeoutMs = 100
 	}
 
 	cb := &cfg.CircuitBreaker

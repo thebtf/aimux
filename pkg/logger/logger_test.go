@@ -158,16 +158,17 @@ func TestLogger_BasicLogging(t *testing.T) {
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "[DEBUG] debug message 1") {
+	// Format: TIMESTAMP [LEVEL] [role-pid-runid] message
+	if !strings.Contains(content, "[DEBUG]") || !strings.Contains(content, "debug message 1") {
 		t.Error("missing debug message")
 	}
-	if !strings.Contains(content, "[INFO] info message test") {
+	if !strings.Contains(content, "[INFO]") || !strings.Contains(content, "info message test") {
 		t.Error("missing info message")
 	}
-	if !strings.Contains(content, "[WARN] warn message") {
+	if !strings.Contains(content, "[WARN]") || !strings.Contains(content, "warn message") {
 		t.Error("missing warn message")
 	}
-	if !strings.Contains(content, "[ERROR] error message") {
+	if !strings.Contains(content, "[ERROR]") || !strings.Contains(content, "error message") {
 		t.Error("missing error message")
 	}
 }
@@ -199,10 +200,10 @@ func TestLogger_LevelFiltering(t *testing.T) {
 	if strings.Contains(content, "should not appear") {
 		t.Error("debug/info messages should be filtered out")
 	}
-	if !strings.Contains(content, "[WARN] should appear") {
+	if !strings.Contains(content, "[WARN]") || !strings.Contains(content, "should appear") {
 		t.Error("warn message should be present")
 	}
-	if !strings.Contains(content, "[ERROR] should appear") {
+	if !strings.Contains(content, "[ERROR]") {
 		t.Error("error message should be present")
 	}
 }

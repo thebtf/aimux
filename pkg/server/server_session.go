@@ -9,6 +9,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
@@ -249,6 +250,7 @@ type aimuxHandler struct {
 var _ muxcore.SessionHandler = (*aimuxHandler)(nil)
 var _ muxcore.ProjectLifecycle = (*aimuxHandler)(nil)
 var _ muxcore.NotifierAware = (*aimuxHandler)(nil)
+var _ muxcore.NotificationHandler = (*aimuxHandler)(nil)
 
 // currentDelegate returns the active delegate. Panics if unset (misconfiguration).
 func (h *aimuxHandler) currentDelegate() handlerDelegate {
@@ -323,6 +325,84 @@ func (h *aimuxHandler) SetUpdatePending() {
 // Called during server initialization with the engine's context cancel.
 func (h *aimuxHandler) SetCancelFunc(cancel func()) {
 	h.cancelFunc = cancel
+}
+
+// logForwardNotification is the wire format for the "notifications/aimux/log_forward"
+// JSON-RPC notification dispatched by shim processes (AIMUX-11 Phase 3).
+type logForwardNotification struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+// HandleNotification implements muxcore.NotificationHandler.
+// muxcore owner dispatches this in a goroutine for every JSON-RPC message that
+// has no "id" field (i.e. notifications). We intercept "notifications/aimux/log_forward"
+// and route it to the LogIngester; all other notification methods are ignored.
+//
+// Peer PID cannot be obtained here — the notification path receives a ProjectContext,
+// not a net.Conn. Per FR-12 the pid field is set to "?{project.ID[:8]}" and
+// PeerCredsUnavailable is incremented on the ingester.
+func (h *aimuxHandler) HandleNotification(ctx context.Context, project muxcore.ProjectContext, notification []byte) {
+	const method = "notifications/aimux/log_forward"
+
+	// Fast parse: only extract method field to decide routing.
+	var n logForwardNotification
+	if err := json.Unmarshal(notification, &n); err != nil {
+		// Unparseable JSON — not our concern; muxcore should not forward garbage.
+		return
+	}
+
+	if n.Method != method {
+		// Not a log-forward notification; ignore (other MCP notification types handled elsewhere).
+		return
+	}
+
+	ingester := h.srv.logIngester
+	if ingester == nil {
+		// Ingester not wired (shim mode or test without sink) — drop silently.
+		return
+	}
+
+	// Decode LogEntry from params.
+	var entry logger.LogEntry
+	if err := json.Unmarshal(n.Params, &entry); err != nil {
+		ingester.EnvelopeMalformed.Add(1)
+		return
+	}
+
+	// Derive session tag: CLAUDE_SESSION_ID (first 8 chars) → project.ID (first 8 chars) → "anon".
+	sess := sessionTagFromProject(project)
+
+	// Peer PID is unavailable in the notification path (no net.Conn accessible).
+	// Use a "?<id[:8]>" marker per FR-12 and count the event for observability (NFR-8).
+	ingester.PeerCredsUnavailable.Add(1)
+	pidMarker := "?" + idPrefix(string(project.ID))
+
+	_ = ingester.ReceiveNotification(entry, pidMarker, sess)
+}
+
+// sessionTagFromProject derives a short session tag for log lines.
+// Priority: CLAUDE_SESSION_ID env var (first 8 chars) → project.ID (first 8 chars) → "anon".
+func sessionTagFromProject(project muxcore.ProjectContext) string {
+	if sessID, ok := project.Env["CLAUDE_SESSION_ID"]; ok && len(sessID) >= 8 {
+		return sessID[:8]
+	}
+	if len(project.ID) >= 8 {
+		return string(project.ID)[:8]
+	}
+	if len(project.ID) > 0 {
+		return string(project.ID)
+	}
+	return "anon"
+}
+
+// idPrefix returns the first 8 characters of a project ID string, or the full
+// string if shorter. Used to build the "?<prefix>" peer-creds fallback marker.
+func idPrefix(id string) string {
+	if len(id) >= 8 {
+		return id[:8]
+	}
+	return id
 }
 
 // swapDelegateToFull atomically replaces the lightweightDelegate with a
