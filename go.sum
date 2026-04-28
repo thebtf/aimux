@@ -142,8 +142,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/thebtf/aimux/loom v0.2.0 h1:G9SoMHh64S1XsQovrDnysATNgrNGgS8P6Q9wcfofRYg=
 github.com/thebtf/aimux/loom v0.2.0/go.mod h1:RhaAm49BssZqO4Ziqt0LJgV2WUpMim7V/xnZaimCpWk=
-github.com/thebtf/mcp-mux/muxcore v0.22.0 h1:eS2clKreW58zwJ71NCeVwi1/mMgIj+VLiCN//1W6t0E=
-github.com/thebtf/mcp-mux/muxcore v0.22.0/go.mod h1:tC/9aFAgj/ESYYLjohqT17mDucbYZH8uKNqBQCWMH/8=
+github.com/thebtf/mcp-mux/muxcore v0.23.0-alpha.1 h1:rFVAC2he4J5idwlaI33CkUIsvGY6DV5SRannfW2kVco=
+github.com/thebtf/mcp-mux/muxcore v0.23.0-alpha.1/go.mod h1:tC/9aFAgj/ESYYLjohqT17mDucbYZH8uKNqBQCWMH/8=
 github.com/thejerf/suture/v4 v4.0.6 h1:QsuCEsCqb03xF9tPAsWAj8QOAJBgQI1c0VqJNaingg8=
 github.com/thejerf/suture/v4 v4.0.6/go.mod h1:gu9Y4dXNUWFrByqRt30Rm9/UZ0wzRSt9AJS6xu/ZGxU=
 github.com/tidwall/gjson v1.14.2/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
