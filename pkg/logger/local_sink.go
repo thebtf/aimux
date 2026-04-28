@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
@@ -34,7 +35,7 @@ func isNullDevice(path string) bool {
 //   - Daemon mode: LocalSink is created via newLocalSink with a lumberjack.Logger.
 //   - Tests: pass path="" to get an io.Discard sink.
 type LocalSink struct {
-	ch      chan entry  // buffered: 1024 in production, small in tests (see newLocalSink)
+	ch      chan entry // buffered: 4096 in production (FR-6 hard lower bound), small in tests
 	writer  io.Writer  // lumberjack.Logger or io.Discard
 	closer  io.Closer  // non-nil when writer owns a file
 	writeMu sync.Mutex // serializes concurrent goroutine writes within the daemon
@@ -44,8 +45,17 @@ type LocalSink struct {
 	roleTag      string
 	daemonRunID  string
 
+	drainSaturated atomic.Uint64 // NFR-8 counter — incremented on send() overflow drop (CR-002 T005)
+
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+// DrainSaturated returns the total number of entries dropped because the central
+// drain channel was full at Send() time. NFR-8 observability — exposed via
+// sessions(action=health). Monotonic; reset only on daemon restart.
+func (s *LocalSink) DrainSaturated() uint64 {
+	return s.drainSaturated.Load()
 }
 
 // newLocalSink creates a LocalSink backed by the given writer (typically lumberjack or
@@ -71,7 +81,7 @@ func newLocalSink(writer io.Writer, closer io.Closer, channelBuf int, maxLineByt
 // lumberjack.Logger, the directory if needed, and wraps it in a LocalSink.
 func newLumberjackSink(path string, opts RotationOpts, roleTag, daemonRunID string) (*LocalSink, error) {
 	if path == "" || isNullDevice(path) {
-		return newLocalSink(io.Discard, nil, 1024, opts.MaxLineBytes, roleTag, daemonRunID), nil
+		return newLocalSink(io.Discard, nil, 4096, opts.MaxLineBytes, roleTag, daemonRunID), nil
 	}
 
 	dir := filepath.Dir(path)
@@ -87,14 +97,16 @@ func newLumberjackSink(path string, opts RotationOpts, roleTag, daemonRunID stri
 		Compress:   opts.Compress,
 		LocalTime:  true,
 	}
-	return newLocalSink(lj, lj, 1024, opts.MaxLineBytes, roleTag, daemonRunID), nil
+	return newLocalSink(lj, lj, 4096, opts.MaxLineBytes, roleTag, daemonRunID), nil
 }
 
-// send enqueues an entry to the drain channel. Non-blocking: drops on full.
+// send enqueues an entry to the drain channel. Non-blocking: drops on full
+// and increments DrainSaturated (NFR-8 observability — CR-002 T005).
 func (s *LocalSink) send(e entry) {
 	select {
 	case s.ch <- e:
 	default:
+		s.drainSaturated.Add(1)
 		_, _ = fmt.Fprintf(os.Stderr, "aimux: log channel full, dropping: %s\n", e.message)
 	}
 }
