@@ -72,45 +72,45 @@ func cwdFromRequestOrContext(request mcp.CallToolRequest, ctx context.Context) s
 type projectState struct {
 	id       string
 	session  *mcpserver.InProcessSession
-	refcount atomic.Int32    // number of CC sessions sharing this project
-	ready    chan struct{}   // closed after session registered; HandleRequest waits on this
+	refcount atomic.Int32 // number of CC sessions sharing this project
+	ready    chan struct{} // closed after session registered; HandleRequest waits on this
 }
 
-// aimuxHandler implements muxcore.SessionHandler and muxcore.ProjectLifecycle.
-// It dispatches MCP JSON-RPC requests to MCPServer.HandleMessage with per-project
-// session isolation via InProcessSession.
-type aimuxHandler struct {
-	srv           *Server
-	projects      sync.Map // map[string]*projectState keyed by ProjectContext.ID
-	notifier      muxcore.Notifier
-	updatePending atomic.Bool // set after successful binary update; daemon exits on last disconnect
-	cancelFunc    func()      // cancels the engine context to stop daemon
+// fullDelegate is the Phase B live handler. It owns per-project MCP sessions,
+// handles JSON-RPC dispatch, and manages project connect/disconnect lifecycle.
+// After the Phase A → Phase B delegate swap, aimuxHandler forwards all muxcore
+// calls to the fullDelegate loaded from its atomic.Pointer[handlerDelegate].
+type fullDelegate struct {
+	srv      *Server
+	projects sync.Map // map[string]*projectState keyed by ProjectContext.ID
+
+	mu       sync.Mutex
+	notifier muxcore.Notifier
 }
 
-// Compile-time interface assertions.
-var _ muxcore.SessionHandler = (*aimuxHandler)(nil)
-var _ muxcore.ProjectLifecycle = (*aimuxHandler)(nil)
-var _ muxcore.NotifierAware = (*aimuxHandler)(nil)
-
-// SetNotifier satisfies muxcore.NotifierAware. Called once by the owner before
-// the first HandleRequest. Stored for use in OnProjectConnect broadcasts.
-func (h *aimuxHandler) SetNotifier(n muxcore.Notifier) {
-	h.notifier = n
+// SetNotifier stores the notifier for broadcast use.
+func (d *fullDelegate) SetNotifier(n muxcore.Notifier) {
+	d.mu.Lock()
+	d.notifier = n
+	d.mu.Unlock()
 }
 
 // broadcastToolsListChanged sends a tools/list_changed notification to all
 // connected CC sessions. No-op when no Notifier is configured (direct stdio mode).
-func (h *aimuxHandler) broadcastToolsListChanged() {
-	if h.notifier != nil {
-		h.notifier.Broadcast([]byte(toolsListChangedNotification))
+func (d *fullDelegate) broadcastToolsListChanged() {
+	d.mu.Lock()
+	n := d.notifier
+	d.mu.Unlock()
+	if n != nil {
+		n.Broadcast([]byte(toolsListChangedNotification))
 	}
 }
 
 // HandleRequest processes one MCP JSON-RPC request with project context.
 // Called concurrently from multiple goroutines by the muxcore engine owner.
-func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.ProjectContext, request []byte) ([]byte, error) {
+func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.ProjectContext, request []byte) ([]byte, error) {
 	// Get or wait for project state.
-	val, ok := h.projects.Load(project.ID)
+	val, ok := d.projects.Load(project.ID)
 	if !ok {
 		// Project not yet connected — should not happen in normal flow,
 		// but handle gracefully by returning a JSON-RPC error.
@@ -130,11 +130,11 @@ func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.Projec
 	ctx = context.WithValue(ctx, projectContextKey{}, project)
 
 	// Inject the project's MCP session into context for HandleMessage.
-	ctx = h.srv.mcp.WithContext(ctx, state.session)
+	ctx = d.srv.mcp.WithContext(ctx, state.session)
 
 	// Dispatch to MCPServer — direct JSON-RPC, no stdio transport.
 	var msg json.RawMessage = request
-	response := h.srv.mcp.HandleMessage(ctx, msg)
+	response := d.srv.mcp.HandleMessage(ctx, msg)
 
 	// nil response = notification or server-initiated request ack — no bytes to return.
 	if response == nil {
@@ -146,7 +146,7 @@ func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.Projec
 
 // OnProjectConnect is called when a CC session connects to the daemon.
 // Creates or increments refcount for the project's state.
-func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
+func (d *fullDelegate) OnProjectConnect(project muxcore.ProjectContext) {
 	// Create a candidate state for LoadOrStore. If another goroutine already
 	// stored a state for this project ID, we discard this candidate and only
 	// increment the existing refcount — avoiding a duplicate session registration.
@@ -157,14 +157,14 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 	newState.refcount.Store(1)
 
 	// Atomically load existing state or store the new candidate.
-	val, loaded := h.projects.LoadOrStore(project.ID, newState)
+	val, loaded := d.projects.LoadOrStore(project.ID, newState)
 	if loaded {
 		// Another session already connected — increment refcount on the winner.
 		state := val.(*projectState)
 		state.refcount.Add(1)
-		h.srv.log.Info("session-handler: project %s reconnected (refcount=%d, cwd=%s)",
+		d.srv.log.Info("session-handler: project %s reconnected (refcount=%d, cwd=%s)",
 			project.ID, state.refcount.Load(), project.Cwd)
-		h.broadcastToolsListChanged()
+		d.broadcastToolsListChanged()
 		return
 	}
 
@@ -175,55 +175,138 @@ func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
 	state.session = mcpserver.NewInProcessSession(project.ID, nil)
 
 	// Register session with MCPServer (enables per-project tool/resource scoping).
-	if err := h.srv.mcp.RegisterSession(context.Background(), state.session); err != nil {
-		h.srv.log.Warn("session-handler: failed to register session for project %s: %v", project.ID, err)
+	if err := d.srv.mcp.RegisterSession(context.Background(), state.session); err != nil {
+		d.srv.log.Warn("session-handler: failed to register session for project %s: %v", project.ID, err)
 	}
 
 	// Broadcast tools/list_changed so connected CC sessions refresh against the
 	// per-project MCP session state.
-	h.broadcastToolsListChanged()
+	d.broadcastToolsListChanged()
 
 	// Signal ready — HandleRequest waiters unblock after this.
 	close(state.ready)
 
-	h.srv.log.Info("session-handler: project %s connected (cwd=%s)",
+	d.srv.log.Info("session-handler: project %s connected (cwd=%s)",
 		project.ID, project.Cwd)
 }
 
-// OnProjectDisconnect is called when a CC session disconnects.
-// Decrements refcount; cleans up when no sessions remain.
-func (h *aimuxHandler) OnProjectDisconnect(projectID string) {
-	val, ok := h.projects.Load(projectID)
+// disconnectProject decrements the refcount for the given project and cleans up
+// when no sessions remain. Returns true when the last session disconnected and
+// cleanup was performed. Called by aimuxHandler.OnProjectDisconnect which needs
+// the bool to decide whether to trigger deferred restart.
+func (d *fullDelegate) disconnectProject(projectID string) bool {
+	val, ok := d.projects.Load(projectID)
 	if !ok {
-		h.srv.log.Warn("session-handler: disconnect for unknown project %s", projectID)
-		return
+		d.srv.log.Warn("session-handler: disconnect for unknown project %s", projectID)
+		return false
 	}
 	state := val.(*projectState)
 
 	remaining := state.refcount.Add(-1)
 	if remaining > 0 {
-		h.srv.log.Info("session-handler: project %s disconnected (refcount=%d)", projectID, remaining)
-		return
+		d.srv.log.Info("session-handler: project %s disconnected (refcount=%d)", projectID, remaining)
+		return false // not last
 	}
 
 	// Last session disconnected — clean up.
-	h.srv.mcp.UnregisterSession(context.Background(), state.session.SessionID())
-	h.projects.Delete(projectID)
+	d.srv.mcp.UnregisterSession(context.Background(), state.session.SessionID())
+	d.projects.Delete(projectID)
 
-	h.srv.log.Info("session-handler: project %s fully disconnected, session unregistered", projectID)
+	d.srv.log.Info("session-handler: project %s fully disconnected, session unregistered", projectID)
+	return true // last session cleaned up
+}
 
-	// Deferred restart: if an update is pending and all projects have disconnected,
-	// stop the daemon so the next shim invocation starts the updated binary.
-	if h.updatePending.Load() {
-		anyActive := false
-		h.projects.Range(func(_, _ any) bool {
-			anyActive = true
-			return false // stop iteration
-		})
-		if !anyActive && h.cancelFunc != nil {
-			h.srv.log.Info("session-handler: update pending, no active sessions — stopping daemon for restart")
-			h.cancelFunc()
+// OnProjectDisconnect satisfies the handlerDelegate interface.
+// Delegates to disconnectProject; the bool result is not exposed here.
+func (d *fullDelegate) OnProjectDisconnect(projectID string) {
+	d.disconnectProject(projectID)
+}
+
+// anyActiveProjects returns true if at least one project remains in the map.
+func (d *fullDelegate) anyActiveProjects() bool {
+	found := false
+	d.projects.Range(func(_, _ any) bool {
+		found = true
+		return false // stop after first
+	})
+	return found
+}
+
+// aimuxHandler implements muxcore.SessionHandler and muxcore.ProjectLifecycle.
+// During Phase A it holds a lightweightDelegate; after Phase B completes, the
+// atomic pointer is swapped to a fullDelegate. All muxcore-facing method calls
+// are forwarded to whichever delegate is current.
+type aimuxHandler struct {
+	srv      *Server
+	delegate atomic.Pointer[handlerDelegate] // swapped from lightweight → full on Phase B
+
+	updatePending atomic.Bool // set after successful binary update; daemon exits on last disconnect
+	cancelFunc    func()      // cancels the engine context to stop daemon
+}
+
+// Compile-time interface assertions.
+var _ muxcore.SessionHandler = (*aimuxHandler)(nil)
+var _ muxcore.ProjectLifecycle = (*aimuxHandler)(nil)
+var _ muxcore.NotifierAware = (*aimuxHandler)(nil)
+
+// currentDelegate returns the active delegate. Panics if unset (misconfiguration).
+func (h *aimuxHandler) currentDelegate() handlerDelegate {
+	d := h.delegate.Load()
+	if d == nil {
+		panic("aimuxHandler: delegate not initialized")
+	}
+	return *d
+}
+
+// SetNotifier satisfies muxcore.NotifierAware. Called once by the muxcore engine
+// before the first HandleRequest. Forwarded to the current delegate so the
+// lightweightDelegate can store it for the swap broadcast, and the fullDelegate
+// receives it directly when it becomes active.
+func (h *aimuxHandler) SetNotifier(n muxcore.Notifier) {
+	h.currentDelegate().SetNotifier(n)
+}
+
+// HandleRequest dispatches the request to the current delegate.
+//
+// During Phase A the lightweightDelegate blocks until the ready channel closes
+// (within the grace period) or returns a -32001 retry-hint error. When it
+// returns errReadyButShouldRedispatch, HandleRequest re-loads the delegate (now
+// fullDelegate) and dispatches again — one extra atomic load per first-time call
+// during the transition, negligible overhead thereafter.
+func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.ProjectContext, request []byte) ([]byte, error) {
+	for {
+		resp, err := h.currentDelegate().HandleRequest(ctx, project, request)
+		if err == errReadyButShouldRedispatch {
+			// Phase B swap completed; re-dispatch through the full delegate.
+			continue
 		}
+		return resp, err
+	}
+}
+
+// OnProjectConnect forwards to the current delegate.
+func (h *aimuxHandler) OnProjectConnect(project muxcore.ProjectContext) {
+	h.currentDelegate().OnProjectConnect(project)
+}
+
+// OnProjectDisconnect forwards to the current delegate and performs the
+// deferred-restart check when the last session disconnects.
+func (h *aimuxHandler) OnProjectDisconnect(projectID string) {
+	d := h.currentDelegate()
+
+	// fullDelegate.OnProjectDisconnect returns true when the last session cleaned up.
+	// lightweightDelegate.OnProjectDisconnect always returns.
+	var lastSessionGone bool
+	if fd, ok := d.(*fullDelegate); ok {
+		lastSessionGone = fd.disconnectProject(projectID)
+		if lastSessionGone && h.updatePending.Load() {
+			if !fd.anyActiveProjects() && h.cancelFunc != nil {
+				h.srv.log.Info("session-handler: update pending, no active sessions — stopping daemon for restart")
+				h.cancelFunc()
+			}
+		}
+	} else {
+		d.OnProjectDisconnect(projectID)
 	}
 }
 
@@ -239,4 +322,54 @@ func (h *aimuxHandler) SetUpdatePending() {
 // Called during server initialization with the engine's context cancel.
 func (h *aimuxHandler) SetCancelFunc(cancel func()) {
 	h.cancelFunc = cancel
+}
+
+// swapDelegateToFull atomically replaces the lightweightDelegate with a
+// fullDelegate. All projects that connected during Phase A are re-fired through
+// OnProjectConnect on the full delegate so their MCP sessions are created.
+//
+// Steps:
+//  1. Create fullDelegate, transfer the notifier from the lightweight stub.
+//  2. Store the full delegate atomically.
+//  3. Mark the lightweight stub as swapped (defensive panic guard).
+//  4. Re-fire OnProjectConnect for every project recorded during Phase A.
+//
+// Safe to call from any goroutine. Must be called exactly once.
+func (s *Server) swapDelegateToFull(h *aimuxHandler) {
+	// Capture the lightweight delegate before the swap.
+	old := h.delegate.Load()
+	if old == nil {
+		panic("swapDelegateToFull: no delegate installed")
+	}
+	lw, ok := (*old).(*lightweightDelegate)
+	if !ok {
+		// Already swapped — this is a bug.
+		panic("swapDelegateToFull: current delegate is not a lightweightDelegate")
+	}
+
+	// Build the full delegate, inheriting the notifier from the lightweight stub.
+	fd := &fullDelegate{srv: s}
+	fd.notifier = lw.notifier
+
+	// Atomically install the full delegate.
+	var dFull handlerDelegate = fd
+	h.delegate.Store(&dFull)
+
+	// Signal Phase B completion — unblocks any HandleRequest callers waiting on ready.
+	// Must happen AFTER the new delegate is stored so re-dispatched requests go to fullDelegate.
+	lw.closeReady()
+
+	// Prevent stale references from calling into the old stub.
+	lw.markSwapped()
+
+	if s.log != nil {
+		s.log.Info("session-handler: Phase B delegate swap complete")
+	}
+
+	// Re-fire OnProjectConnect for every project that attached during Phase A.
+	// The lightweight stub recorded these without creating MCP sessions.
+	for _, id := range lw.connectedProjects() {
+		pc := muxcore.ProjectContext{ID: id}
+		fd.OnProjectConnect(pc)
+	}
 }

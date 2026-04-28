@@ -214,6 +214,10 @@ func TestOnProjectConnect_BroadcastsOnNewState(t *testing.T) {
 	srv := testServer(t)
 	handler := srv.SessionHandler()
 
+	// Advance to Phase B so OnProjectConnect goes to fullDelegate (which broadcasts).
+	h := handler.(*aimuxHandler)
+	srv.swapDelegateToFull(h)
+
 	notifier := &mockNotifier{}
 	aware := handler.(muxcore.NotifierAware)
 	aware.SetNotifier(notifier)
@@ -250,6 +254,10 @@ func TestOnProjectConnect_BroadcastsOnNewState(t *testing.T) {
 func TestOnProjectConnect_BroadcastsOnReconnect(t *testing.T) {
 	srv := testServer(t)
 	handler := srv.SessionHandler()
+
+	// Advance to Phase B so OnProjectConnect goes to fullDelegate (which broadcasts).
+	h := handler.(*aimuxHandler)
+	srv.swapDelegateToFull(h)
 
 	notifier := &mockNotifier{}
 	aware := handler.(muxcore.NotifierAware)

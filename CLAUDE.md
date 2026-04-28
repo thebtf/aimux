@@ -98,6 +98,32 @@ CC session → .mcp.json → aimux.exe (shim) → IPC socket → aimux daemon
 - Handler kept alongside SessionHandler for proxy mode (behind mcp-mux)
 - Pipeline v5 packages (`workflow`, `dialogue`, `swarm`, `executor`, `resolve`, `driver`, `routing`) remain in-repo as dormant seams pending the Layer 5 redesign
 
+## Two-Phase Daemon Init (issue #129)
+
+Daemon starts in two phases to eliminate the 30s gap before shims can connect:
+
+**Phase A** (~100ms): `lightweightDelegate` installed immediately. Shims that connect
+during Phase A receive either:
+- `-32001` JSON-RPC retry-hint (if `warmup_grace_seconds` expires before Phase B)
+- Seamless re-dispatch to Phase B (if Phase B completes within grace window — common case)
+
+**Phase B** (heavy init — warmup probes, registry, router): runs in a background goroutine
+(`async_init: true`, default). On completion, `swapDelegateToFull` atomically replaces the
+lightweight delegate and closes the ready channel, triggering re-dispatch for any waiting shims.
+
+Config knobs (`config/default.yaml`):
+- `warmup_grace_seconds: 15` — how long Phase A blocks before returning `-32001`
+- `async_init: true` — set `false` for synchronous Phase B (tests, single-process mode)
+
+Observability (`sessions` tool, `action: health`):
+- `init_phase`: 0=Phase A, 1=Phase B in progress, 2=Phase B complete
+- `init_duration_ms`: wall-clock time Phase A→B swap took
+- `warmup_deferred_count`: number of requests that hit Phase A and waited
+
+Files: `pkg/server/server_handler_delegate.go` (Phase A), `pkg/server/server_session.go`
+(swap logic, `aimuxHandler`), `pkg/server/server.go` (`RunPhaseB`),
+`test/e2e/cold_start_attach_test.go` (NFR gate: p99 ≤ 1s, 5 concurrent shims).
+
 ## CLI Profiles (12)
 
 Each CLI has a profile in `config/cli.d/{name}/profile.yaml` defining:

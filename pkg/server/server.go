@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -98,8 +99,15 @@ type Server struct {
 	sessionHandler          muxcore.SessionHandler // stored for upgrade tool routing
 	applyUpgrade            func(context.Context, *upgrade.Coordinator, upgrade.Mode, bool) (*upgrade.Result, error)
 	muxEngine               *engine.MuxEngine
-	daemonControlSocketPath string                  // live engine daemon control socket path for upgrade restart seam
-	loom                    *loom.LoomEngine        // central task mediator (LoomEngine v3)
+	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
+	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
+
+	// Two-phase daemon init (issue #129): Phase A starts listening immediately via
+	// lightweightDelegate; Phase B (heavy init) runs in the background goroutine started
+	// by RunPhaseB. Fields below track progress for observability (status tool, T005).
+	initPhase          atomic.Int32  // 0=pre-init, 1=phase-A, 2=phase-B complete
+	initDurationMs     atomic.Int64  // wall-clock ms for Phase B to complete (set on swap)
+	warmupDeferredCount atomic.Uint64 // HandleRequest calls deferred during Phase A
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -404,6 +412,46 @@ func (s *Server) Shutdown() {
 	}
 
 	// Shutdown Swarm — closes all managed ExecutorV2 handles.
+}
+
+// RunPhaseB transitions the daemon from Phase A (lightweightDelegate) to Phase B
+// (fullDelegate). It must be called exactly once after SessionHandler() returns.
+//
+// If async_init is false, RunPhaseB blocks until the delegate swap completes.
+// If async_init is nil or true (the default), the swap runs in a background goroutine
+// and RunPhaseB returns immediately.
+//
+// The method is a no-op when s.sessionHandler is not an *aimuxHandler (e.g. proxy /
+// stdio / SSE / HTTP transport paths that do not use the delegate machinery).
+func (s *Server) RunPhaseB(ctx context.Context) {
+	h, ok := s.sessionHandler.(*aimuxHandler)
+	if !ok || h == nil {
+		// Not in engine mode — no delegate swap needed.
+		return
+	}
+
+	s.initPhase.Store(1) // Phase A active: lightweightDelegate is live
+	start := time.Now()
+
+	doSwap := func() {
+		s.swapDelegateToFull(h)
+		elapsed := time.Since(start).Milliseconds()
+		s.initDurationMs.Store(elapsed)
+		s.initPhase.Store(2) // Phase B complete: fullDelegate is live
+		if s.log != nil {
+			s.log.Info("phase-B complete: delegate swapped in %dms", elapsed)
+		}
+	}
+
+	asyncInit := s.cfg.Server.AsyncInit
+	if asyncInit != nil && !*asyncInit {
+		// Synchronous fallback (async_init: false in config).
+		doSwap()
+		return
+	}
+	// Default: swap in a background goroutine so RunPhaseB returns immediately
+	// and the engine can begin serving requests via the lightweightDelegate.
+	go doSwap()
 }
 
 // --- Tool Registration ---
@@ -905,6 +953,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		} else {
 			s.log.Debug("sessions health: F2 metrics unavailable: %v", err)
 		}
+		// Two-phase init observability (issue #129).
+		health["init_phase"] = s.initPhase.Load()
+		health["init_duration_ms"] = s.initDurationMs.Load()
+		health["warmup_deferred_count"] = s.warmupDeferredCount.Load()
 		return marshalToolResult(health)
 
 	case "cancel":

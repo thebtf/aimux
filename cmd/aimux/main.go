@@ -175,6 +175,9 @@ func run() error {
 		}
 		srv.SetMuxEngine(eng)
 		srv.SetDaemonControlSocketPath(eng.ControlSocketPath())
+		// Phase B: swap lightweightDelegate → fullDelegate in the background so the
+		// engine can begin accepting connections immediately (issue #129).
+		srv.RunPhaseB(ctx)
 		if runErr := eng.Run(ctx); runErr != nil && !errors.Is(runErr, context.Canceled) {
 			return fmt.Errorf("engine: %w", runErr)
 		}

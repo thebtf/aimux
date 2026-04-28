@@ -25,6 +25,16 @@ server:
   warmup_enabled: true
   warmup_timeout_seconds: 15
 
+  # Two-phase daemon init (issue #129): Phase A listens immediately via a lightweight stub;
+  # Phase B swaps in the full delegate once the daemon is ready.
+  # warmup_grace_seconds: max seconds HandleRequest callers block in Phase A before
+  # receiving a JSON-RPC -32001 retry hint (default 15s).
+  # async_init: true (default) swaps the delegate in a background goroutine so the
+  # engine starts accepting connections immediately. Set to false for synchronous init
+  # (useful in tests or single-process environments).
+  warmup_grace_seconds: 15
+  async_init: true
+
   # Audit pipeline configuration
   audit:
     scanner_role: codereview

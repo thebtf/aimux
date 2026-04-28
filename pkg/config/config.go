@@ -42,6 +42,19 @@ type ServerConfig struct {
 	// Per-profile warmup_timeout_seconds overrides this for individual CLIs.
 	WarmupTimeoutSeconds int `yaml:"warmup_timeout_seconds"`
 
+	// WarmupGraceSeconds is the maximum seconds HandleRequest callers in Phase A
+	// will block waiting for Phase B (heavy init) to complete. When the grace
+	// period expires before Phase B finishes, callers receive a JSON-RPC -32001
+	// retry-hint response with retry_after_seconds set to this value.
+	// Default: 15. Set async_init: false to skip Phase A entirely.
+	WarmupGraceSeconds int `yaml:"warmup_grace_seconds"`
+
+	// AsyncInit enables two-phase daemon startup (Phase A fast listen + Phase B
+	// async heavy init). Set to false to revert to synchronous bootstrap where
+	// SessionHandler() is not called until heavy init completes.
+	// Default: true.
+	AsyncInit *bool `yaml:"async_init"`
+
 	RateLimitRPS   float64 `yaml:"rate_limit_rps"`
 	RateLimitBurst int     `yaml:"rate_limit_burst"`
 	// AuthToken is the bearer token for HTTP/SSE transport authentication.

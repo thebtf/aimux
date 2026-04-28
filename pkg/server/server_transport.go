@@ -28,12 +28,25 @@ func (s *Server) ServeStdio() error {
 // SessionHandler returns a muxcore.SessionHandler that dispatches MCP requests
 // via MCPServer.HandleMessage with per-project session isolation.
 // Used by muxcore engine daemon mode for direct JSON-RPC dispatch.
+//
+// The returned handler starts in Phase A (lightweightDelegate). Heavy init runs
+// in the background via Server.runPhaseB; when it completes, Server.swapDelegateToFull
+// atomically replaces the stub with a fullDelegate.
 func (s *Server) SessionHandler() muxcore.SessionHandler {
+	graceSec := s.cfg.Server.WarmupGraceSeconds
+	if graceSec <= 0 {
+		graceSec = 15 // default when not configured
+	}
+
+	lw := newLightweightDelegate(graceSec)
+	var d handlerDelegate = lw
 	h := &aimuxHandler{srv: s}
+	h.delegate.Store(&d)
+
 	s.sessionHandler = h
 	// Diagnostic: track set-site for engram issue #174 (hot-swap false-deferred).
 	if s.log != nil {
-		s.log.Info("upgrade-diag: SessionHandler() called, s.sessionHandler now set on Server=%p", s)
+		s.log.Info("upgrade-diag: SessionHandler() called, Phase A delegate installed, Server=%p", s)
 	}
 	return h
 }
