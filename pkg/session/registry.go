@@ -20,6 +20,9 @@ type Session struct {
 	Turns        int                 `json:"turns"`
 	CWD          string              `json:"cwd"`
 	Metadata     map[string]any      `json:"metadata,omitempty"`
+	// TenantID identifies the owning tenant for multi-tenant isolation.
+	// Defaults to tenant.LegacyDefault when operating in single-tenant mode.
+	TenantID     string              `json:"tenant_id,omitempty"`
 	CreatedAt    time.Time           `json:"created_at"`
 	LastActiveAt time.Time           `json:"last_active_at"`
 }

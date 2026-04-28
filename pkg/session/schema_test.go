@@ -86,9 +86,9 @@ func TestMigrateV2_FreshDB(t *testing.T) {
 		}
 	}
 
-	// schema version must be 3 (v2 + v3 aborted_job_ids migration)
-	if v := schemaVersion(t, db); v != 3 {
-		t.Errorf("schema_version = %d, want 3", v)
+	// schema version must be 4 (v2 + v3 aborted_job_ids + v4 tenant_id migration)
+	if v := schemaVersion(t, db); v != 4 {
+		t.Errorf("schema_version = %d, want 4", v)
 	}
 }
 
@@ -189,9 +189,9 @@ func TestMigrateV2_V1DB(t *testing.T) {
 		}
 	}
 
-	// schema version must be 3 (v2 + v3 aborted_job_ids migration)
-	if v := schemaVersion(t, db); v != 3 {
-		t.Errorf("schema_version = %d, want 3", v)
+	// schema version must be 4 (v2 + v3 aborted_job_ids + v4 tenant_id migration)
+	if v := schemaVersion(t, db); v != 4 {
+		t.Errorf("schema_version = %d, want 4", v)
 	}
 
 	// Existing rows must have NULL in the new columns (not an error, just NULL).

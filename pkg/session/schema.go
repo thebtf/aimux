@@ -59,3 +59,53 @@ func migrateV2point1(tx *sql.Tx) error {
 	}
 	return nil
 }
+
+// migrateV4 applies schema migration v3 → v4:
+//   - sessions: ADD tenant_id TEXT NOT NULL DEFAULT 'legacy-default'
+//   - jobs:     ADD tenant_id TEXT NOT NULL DEFAULT 'legacy-default'
+//
+// The DEFAULT ensures pre-migration rows are automatically owned by the legacy-default
+// tenant, preserving backward compatibility without a data backfill step.
+// Both columns use NOT NULL to enforce the invariant at the DB level; the DEFAULT
+// value is tenant.LegacyDefault ("legacy-default").
+//
+// Callers: migrate() in sqlite.go calls this when version < 4.
+func migrateV4(tx *sql.Tx) error {
+	alters := []struct {
+		stmt string
+		desc string
+	}{
+		{
+			`ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'legacy-default'`,
+			"sessions.tenant_id",
+		},
+		{
+			`ALTER TABLE jobs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'legacy-default'`,
+			"jobs.tenant_id",
+		},
+	}
+
+	for _, a := range alters {
+		if _, err := tx.Exec(a.stmt); err != nil {
+			// "duplicate column name" means the column already exists — safe to skip.
+			// Matches the skip pattern used in migrateV2 and migrateV2point1.
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
+			return fmt.Errorf("migrateV4: %s: %w", a.desc, err)
+		}
+	}
+
+	// Index on tenant_id enables efficient per-tenant filtering in TenantScopedStore queries.
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id)`); err != nil {
+		return fmt.Errorf("migrateV4: idx_sessions_tenant: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_jobs_tenant ON jobs(tenant_id)`); err != nil {
+		return fmt.Errorf("migrateV4: idx_jobs_tenant: %w", err)
+	}
+
+	if _, err := tx.Exec(`INSERT INTO schema_version (version) VALUES (4)`); err != nil {
+		return fmt.Errorf("migrateV4: bump schema_version to 4: %w", err)
+	}
+	return nil
+}
