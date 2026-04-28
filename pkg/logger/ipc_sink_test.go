@@ -4,12 +4,71 @@ package logger
 import (
 	"bytes"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// TestSendWithTimeoutVia_NoLeakUnderTimeout — CR-002 T002 P0 fix gate (BUG-001).
+//
+// Validates that sendWithTimeoutVia does not leak goroutines when SendFunc takes
+// longer than the timeout but eventually returns. The buffered done channel
+// (capacity 1) guarantees the late goroutine completes its write without blocking.
+//
+// Failure scenario (would fail if done was unbuffered): each timeout leaks one
+// goroutine that is forever blocked on `done <- send(...)`.
+func TestSendWithTimeoutVia_NoLeakUnderTimeout(t *testing.T) {
+	fb := newStderrFallbackWith(&bytes.Buffer{})
+	sink := NewIPCSink(nil, IPCSinkOpts{
+		BufferSize:         10,
+		TimeoutMs:          10,
+		ReconnectInitialMs: 10000,
+		ReconnectMaxMs:     10000,
+	}, fb)
+	defer sink.Close()
+
+	// SendFunc that sleeps timeout+grace then returns. Forces sendWithTimeoutVia
+	// into the timeout branch every time, but does not leak — the goroutine
+	// completes its buffered write after waking up.
+	slowSend := func(notification []byte) error {
+		time.Sleep(40 * time.Millisecond) // > 10 ms timeout
+		return nil
+	}
+
+	const iterations = 100
+	timeout := 10 * time.Millisecond
+
+	// Baseline: stabilise + measure.
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	for i := 0; i < iterations; i++ {
+		err := sink.sendWithTimeoutVia(slowSend, []byte("test"), timeout)
+		if err == nil || !strings.Contains(err.Error(), "send timeout") {
+			t.Fatalf("iteration %d: expected timeout error, got %v", i, err)
+		}
+	}
+
+	// Wait for all spawned goroutines to drain (slowSend completes after 40ms).
+	time.Sleep(200 * time.Millisecond)
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+
+	final := runtime.NumGoroutine()
+	growth := final - baseline
+
+	// Allow small noise (test framework, GC). Catastrophic leak (one per iter)
+	// would show growth ≈ iterations = 100.
+	if growth > 10 {
+		t.Fatalf("goroutine leak detected: baseline=%d final=%d growth=%d (allowed ≤10)",
+			baseline, final, growth)
+	}
+	t.Logf("OK: %d sendWithTimeoutVia calls, goroutine growth=%d (≤10 allowed)", iterations, growth)
+}
 
 func TestIPCSink_RingBufferOverflow(t *testing.T) {
 	var fbBuf bytes.Buffer

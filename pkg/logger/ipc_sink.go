@@ -270,11 +270,28 @@ func (s *IPCSink) drainLoop() {
 // sendWithTimeoutVia invokes the supplied SendFunc on a separate goroutine and
 // waits up to the timeout. Returns the SendFunc's error or a timeout error.
 // Caller passes the snapshot to avoid re-acquiring sendMu in the drain loop hot path.
+//
+// Non-blocking SendFunc contract (CR-002 P0 fix — BUG-001):
+//
+// SendFunc MUST be non-blocking — it MUST return within a bounded short interval
+// (microseconds) regardless of remote-endpoint state. The OnInject inject closure
+// produced by muxcore satisfies this: it writes to msgFromCC channel using
+// `select { case msgFromCC <- b: default: return ErrInjectFull }`. No blocking
+// fallback path exists upstream as of muxcore v0.23.0.
+//
+// IF a future SendFunc implementation violates the contract and blocks beyond the
+// timeout, the inner goroutine here will outlive the function call: it cannot be
+// cancelled (Go does not preempt blocking syscalls), but the buffered `done`
+// channel (capacity 1) ensures the goroutine's final write `done <- send(...)`
+// is non-blocking, so the goroutine completes naturally once the underlying
+// send unblocks. No infinite-leak path exists IF send() ever returns at all;
+// a permanently-stuck send would leak one goroutine per invocation, which is a
+// muxcore-side regression and would be detectable via TestSendWithTimeoutVia_NoLeakUnderTimeout.
 func (s *IPCSink) sendWithTimeoutVia(send SendFunc, notification []byte, timeout time.Duration) error {
 	if send == nil {
 		return fmt.Errorf("ipc_sink: send func is nil")
 	}
-	done := make(chan error, 1)
+	done := make(chan error, 1) // buffered=1 — late goroutine write never blocks
 	go func() {
 		done <- send(notification)
 	}()
