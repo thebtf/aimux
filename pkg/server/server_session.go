@@ -378,7 +378,17 @@ func (h *aimuxHandler) HandleNotification(ctx context.Context, project muxcore.P
 	ingester.PeerCredsUnavailable.Add(1)
 	pidMarker := "?" + idPrefix(string(project.ID))
 
-	_ = ingester.ReceiveNotification(entry, pidMarker, sess)
+	// CR-002 T006: log malformed-envelope errors so operator sees the cause,
+	// not just a counter increment. ReceiveNotification returns an error only
+	// for oversized message payloads (FR-9 log_max_line_bytes); other reject
+	// paths (decode error, EnvelopeMalformed) are handled above and counted
+	// without per-event noise.
+	if err := ingester.ReceiveNotification(entry, pidMarker, sess); err != nil {
+		if h.srv != nil && h.srv.log != nil {
+			h.srv.log.Warn("log_forward: rejected entry from project=%s sess=%s: %v",
+				idPrefix(string(project.ID)), sess, err)
+		}
+	}
 }
 
 // sessionTagFromProject derives a short session tag for log lines.
