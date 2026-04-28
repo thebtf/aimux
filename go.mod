@@ -12,7 +12,7 @@ require (
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/openai/openai-go/v3 v3.32.0
 	github.com/thebtf/aimux/loom v0.2.0
-	github.com/thebtf/mcp-mux/muxcore v0.23.0-alpha.1
+	github.com/thebtf/mcp-mux/muxcore v0.22.0
 	golang.org/x/sys v0.43.0
 	google.golang.org/genai v1.52.1
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
