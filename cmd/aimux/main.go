@@ -73,16 +73,19 @@ func run() error {
 	// Daemon: opens the log file via lumberjack — only writer in the system.
 	// Shim: never opens the log file. Forwards to daemon via IPCSink with
 	// stderr fallback for bootstrap and transport failures.
-	var log *logger.Logger
+	var (
+		log    *logger.Logger
+		shimIPC *logger.IPCSink // non-nil only in ModeShim — passed to runShim for OnInject wiring
+	)
 	if mode == ModeShim {
 		fallback := logger.NewStderrFallback()
-		ipc := logger.NewIPCSink(nil, logger.IPCSinkOpts{
+		shimIPC = logger.NewIPCSink(nil, logger.IPCSinkOpts{
 			BufferSize:         cfg.Server.LogForwardBufferSize,
 			TimeoutMs:          cfg.Server.LogForwardTimeoutMs,
 			ReconnectInitialMs: 1000,
 			ReconnectMaxMs:     5000,
 		}, fallback)
-		log = logger.NewShim(level, ipc, fallback)
+		log = logger.NewShim(level, shimIPC, fallback)
 	} else {
 		logPath := config.ExpandPath(cfg.Server.LogFile)
 		var err error
@@ -117,7 +120,7 @@ func run() error {
 	}
 
 	if mode == ModeShim {
-		return runShim(ctx, cfg, log)
+		return runShim(ctx, cfg, log, shimIPC)
 	}
 
 	registry := driver.NewRegistry(cfg.CLIProfiles)

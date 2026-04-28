@@ -29,7 +29,11 @@ const shimErrMsg = "shim mode is not expected to serve MCP requests; this is eit
 //
 // AIMUX_ENGINE_NAME controls IPC socket discovery via pkg/server.ResolveEngineName,
 // preserving dev/prod daemon isolation (PR #71).
-func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error {
+//
+// ipc, when non-nil, is wired to engine.Config.OnInject so log entries forwarded
+// through the IPCSink ride the same IPC channel as legitimate CC traffic. The
+// shim's logger is constructed in main.go ModeShim path; ipc is the same instance.
+func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger, ipc *logger.IPCSink) error {
 	// Engine name controls IPC socket discovery — different names = isolated daemons.
 	// Shared resolution logic with cmd/aimux/main.go avoids drift in daemon naming.
 	engineName := aimuxServer.ResolveEngineName()
@@ -41,6 +45,17 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error 
 		return fmt.Errorf("resolve executable: %w", exeErr)
 	}
 
+	// OnInject closure: muxcore fires this once after the initial IPC handshake
+	// completes. We wire the inject closure to the IPCSink so subsequent
+	// log.Info/Warn/Error calls flow through the live IPC channel as
+	// "notifications/aimux/log_forward" frames.
+	var onInject func(inject func([]byte) error)
+	if ipc != nil {
+		onInject = func(inject func([]byte) error) {
+			ipc.SetSendFunc(inject)
+		}
+	}
+
 	eng, engErr := engine.New(engine.Config{
 		Name:           engineName,
 		Command:        exePath,
@@ -50,6 +65,7 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error 
 		SessionHandler: &stubSessionHandler{log: log},
 		StdinEOFPolicy: owner.StdinEOFWaitForDisconnect,
 		Logger:         log.StdLogger(),
+		OnInject:       onInject,
 	})
 	if engErr != nil {
 		return fmt.Errorf("shim engine init: %w", engErr)

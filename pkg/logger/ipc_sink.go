@@ -56,6 +56,7 @@ const (
 //   - Send() enqueues an entry (non-blocking).
 //   - Close() drains remaining buffer to fallback and stops the goroutine.
 type IPCSink struct {
+	sendMu   sync.RWMutex // protects send swap
 	send     SendFunc
 	fallback *StderrFallback
 	opts     IPCSinkOpts
@@ -70,6 +71,27 @@ type IPCSink struct {
 	fallbackUsed  atomic.Uint64 // entries routed to StderrFallback
 
 	lastWarnNanos atomic.Int64 // for rate-limited overflow warnings
+}
+
+// SetSendFunc atomically swaps the transport callback. Used to wire the muxcore
+// inject closure post-handshake (engine.Config.OnInject path). Pass nil to
+// disable transport — all entries route to fallback until the next non-nil set.
+func (s *IPCSink) SetSendFunc(send SendFunc) {
+	s.sendMu.Lock()
+	s.send = send
+	s.sendMu.Unlock()
+	if send != nil {
+		s.state.Store(ipcStateReady)
+	} else {
+		s.state.Store(ipcStateIdle)
+	}
+}
+
+// getSendFunc returns the current send function (nil-safe).
+func (s *IPCSink) getSendFunc() SendFunc {
+	s.sendMu.RLock()
+	defer s.sendMu.RUnlock()
+	return s.send
 }
 
 // NewIPCSink starts a new IPCSink with a background drain goroutine.
@@ -197,8 +219,10 @@ func (s *IPCSink) drainLoop() {
 		case <-s.closeCh:
 			return
 		case entry := <-s.ringBuf:
-			if s.send == nil {
-				// Test mode with no transport — discard via fallback.
+			send := s.getSendFunc()
+			if send == nil {
+				// Pre-handshake (SetSendFunc not yet called) or post-disconnect:
+				// route to fallback so no entry is silently dropped.
 				s.fallback.WriteEntry(entry)
 				s.fallbackUsed.Add(1)
 				continue
@@ -213,7 +237,7 @@ func (s *IPCSink) drainLoop() {
 				continue
 			}
 
-			sendErr := s.sendWithTimeout(notification, timeout)
+			sendErr := s.sendWithTimeoutVia(send, notification, timeout)
 			if sendErr != nil {
 				// Send failed — fallback + degraded + backoff.
 				s.fallback.WriteEntry(entry)
@@ -243,12 +267,16 @@ func (s *IPCSink) drainLoop() {
 	}
 }
 
-// sendWithTimeout invokes the SendFunc on a separate goroutine and waits up to
-// the timeout. Returns the SendFunc's error or a timeout error.
-func (s *IPCSink) sendWithTimeout(notification []byte, timeout time.Duration) error {
+// sendWithTimeoutVia invokes the supplied SendFunc on a separate goroutine and
+// waits up to the timeout. Returns the SendFunc's error or a timeout error.
+// Caller passes the snapshot to avoid re-acquiring sendMu in the drain loop hot path.
+func (s *IPCSink) sendWithTimeoutVia(send SendFunc, notification []byte, timeout time.Duration) error {
+	if send == nil {
+		return fmt.Errorf("ipc_sink: send func is nil")
+	}
 	done := make(chan error, 1)
 	go func() {
-		done <- s.send(notification)
+		done <- send(notification)
 	}()
 	select {
 	case err := <-done:
