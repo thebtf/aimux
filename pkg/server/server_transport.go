@@ -18,13 +18,6 @@ import (
 	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
-// ServeStdio starts the MCP server on stdio transport using os.Stdin/os.Stdout.
-func (s *Server) ServeStdio() error {
-	s.log.Info("MCP server starting on stdio (aimux v%s)", Version)
-	s.configureMuxCompatibility()
-	return server.ServeStdio(s.mcp)
-}
-
 // SessionHandler returns a muxcore.SessionHandler that dispatches MCP requests
 // via MCPServer.HandleMessage with per-project session isolation.
 // Used by muxcore engine daemon mode for direct JSON-RPC dispatch.

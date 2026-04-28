@@ -156,6 +156,49 @@ func TestDetectMode_DaemonFlagExactMatch(t *testing.T) {
 
 }
 
+// TestDetectMode_DirectUpstreamRejected verifies that AIMUX_DIRECT_UPSTREAM=1
+// is rejected with an explicit error after ModeDirect was removed in v5.1.
+// The error message must name the env var and state it is no longer supported.
+func TestDetectMode_DirectUpstreamRejected(t *testing.T) {
+	t.Parallel()
+
+	env := map[string]string{
+		"AIMUX_DIRECT_UPSTREAM": "1",
+	}
+	envFn := func(k string) string { return env[k] }
+
+	_, err := detectMode([]string{"aimux"}, envFn)
+	if err == nil {
+		t.Fatal("expected error when AIMUX_DIRECT_UPSTREAM=1, got nil")
+	}
+	if !strings.Contains(err.Error(), "AIMUX_DIRECT_UPSTREAM") {
+		t.Errorf("error %q does not contain \"AIMUX_DIRECT_UPSTREAM\"", err.Error())
+	}
+	if !strings.Contains(err.Error(), "no longer supported") {
+		t.Errorf("error %q does not contain \"no longer supported\"", err.Error())
+	}
+}
+
+// TestDetectMode_DirectUpstreamDaemonFlagWins verifies ADR-001 priority rule:
+// when AIMUX_DIRECT_UPSTREAM=1 AND a daemon flag is present, daemon flag wins
+// (the env var check is after the daemon flag check, so no error is returned).
+func TestDetectMode_DirectUpstreamDaemonFlagWins(t *testing.T) {
+	t.Parallel()
+
+	env := map[string]string{
+		"AIMUX_DIRECT_UPSTREAM": "1",
+	}
+	envFn := func(k string) string { return env[k] }
+
+	got, err := detectMode([]string{"aimux", "--muxcore-daemon"}, envFn)
+	if err != nil {
+		t.Fatalf("unexpected error when daemon flag present: %v", err)
+	}
+	if got != ModeDaemon {
+		t.Errorf("mode = %d, want ModeDaemon (%d)", got, ModeDaemon)
+	}
+}
+
 func TestParseHandoffFlags(t *testing.T) {
 	t.Parallel()
 

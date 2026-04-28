@@ -77,9 +77,6 @@ func run() error {
 	if mode == ModeDaemon {
 		modeName = "daemon"
 	}
-	if mode == ModeDirect {
-		modeName = "direct"
-	}
 	log.Info("aimux v%s mode=%s signal=%s", aimuxServer.Version, modeName, modeSignal)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -95,17 +92,6 @@ func run() error {
 
 	if mode == ModeShim {
 		return runShim(ctx, cfg, log)
-	}
-
-	if mode == ModeDirect {
-		registry := driver.NewRegistry(cfg.CLIProfiles)
-		registry.Probe()
-		afterWarmup := registry.EnabledCLIs()
-		router := routing.NewRouterWithPriority(cfg.Roles, afterWarmup, cfg.CLIProfiles, cfg.Server.CLIPriority)
-		srv := aimuxServer.NewDaemon(cfg, log, registry, router)
-		defer srv.Shutdown()
-		log.Info("aimux v%s ready — serving MCP on direct stdio upstream", aimuxServer.Version)
-		return srv.ServeStdio()
 	}
 
 	registry := driver.NewRegistry(cfg.CLIProfiles)

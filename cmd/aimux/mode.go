@@ -14,10 +14,6 @@ const (
 	// ModeDaemon is the long-lived daemon that serves MCP requests and manages
 	// LoomEngine, SQLite, skills, and the orchestrator.
 	ModeDaemon
-	// ModeDirect serves MCP directly on stdio without muxcore engine ownership.
-	// Used only for daemon-spawned child upstreams so the owner has a real process
-	// that can be detached during graceful-restart handoff.
-	ModeDirect
 )
 
 // detectMode returns the runtime mode of this aimux.exe invocation, mirroring
@@ -51,32 +47,26 @@ func detectMode(args []string, env func(string) string) (Mode, error) {
 	// aimux starts daemon mode with "--muxcore-daemon", while muxcore graceful-
 	// restart currently re-execs the successor with "--daemon".
 	// Prefix matches like "--muxcore-daemon-debug" still do NOT trigger daemon mode.
-	//
-	// Priority matters: daemon re-exec inherits the shim environment, including
-	// AIMUX_DIRECT_UPSTREAM=1 used for owner-spawned child upstreams. A daemon flag
-	// must win so the long-lived daemon does not accidentally boot in direct child mode.
 	if slices.Contains(args, daemonFlag) || slices.Contains(args, "--daemon") {
 		return ModeDaemon, nil
 	}
 
-	// Direct-child mode is an internal daemon→upstream execution path.
-	// It bypasses muxcore entirely and serves MCP on stdio so the daemon owner
-	// manages a real child process that supports ShutdownForHandoff().
+	// ModeDirect (AIMUX_DIRECT_UPSTREAM=1) was removed in v5.1.
+	// Upstream-child spawning is no longer used; the in-process SessionHandler
+	// (via engine.Config.SessionHandler) replaces that execution path.
+	// Detect the legacy env var and fail explicitly so operators receive a clear
+	// diagnostic instead of silently falling through to shim mode.
 	if env("AIMUX_DIRECT_UPSTREAM") == "1" {
-		return ModeDirect, nil
+		return 0, fmt.Errorf(
+			"aimux: AIMUX_DIRECT_UPSTREAM=1 is no longer supported (ModeDirect removed in v5.1).\n" +
+				"       The upstream-child execution path has been replaced by the in-process\n" +
+				"       SessionHandler. Remove AIMUX_DIRECT_UPSTREAM from your environment.",
+		)
 	}
 
 	return ModeShim, nil
 }
 
-// daemonFlagValue returns the muxcore daemon flag with the same fallback as
-// detectMode uses. Factored out so cmd/aimux/shim.go can share the exact
-// same value without drift.
-//
-// engine.Config{}.DaemonFlag is the zero value of the struct field (empty string
-// in a literal); engine.New applies the "--muxcore-daemon" default only when
-// constructing. We replicate that fallback here so both pre- and post-v0.21.4
-// muxcore behave identically.
 // daemonFlagValue returns the muxcore daemon flag with the same fallback as
 // detectMode uses. Factored out so cmd/aimux/shim.go can share the exact
 // same value without drift.

@@ -95,7 +95,7 @@ CC session → .mcp.json → aimux.exe (shim) → IPC socket → aimux daemon
 - `ProjectContext`: ID (hash of worktree root), Cwd, Env (per-session API keys)
 - `ProjectLifecycle`: OnProjectConnect/OnProjectDisconnect manage per-project MCP sessions
 - `ProjectContext.Env` injected into spawned CLI process environment
-- Handler kept alongside SessionHandler for proxy mode (behind mcp-mux)
+- Two runtime modes: ModeShim (stdio↔IPC bridge) and ModeDaemon (in-process SessionHandler). ModeDirect was removed in v5.1.
 - Pipeline v5 packages (`workflow`, `dialogue`, `swarm`, `executor`, `resolve`, `driver`, `routing`) remain in-repo as dormant seams pending the Layer 5 redesign
 
 ## Two-Phase Daemon Init (issue #129)
