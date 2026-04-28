@@ -21,6 +21,10 @@ func (w *ThinkerWorker) Type() loom.WorkerType { return loom.WorkerTypeThinker }
 func (w *ThinkerWorker) Execute(_ context.Context, task *loom.Task) (*loom.WorkerResult, error) {
 	start := time.Now()
 
+	// task.TenantID is populated by LoomEngine.Submit from TaskRequest.TenantID
+	// (AIMUX-12 T022). It is available here for any future tenant-aware logging
+	// or routing without additional plumbing.
+
 	// Extract pattern name from metadata.
 	patternName, _ := task.Metadata["pattern"].(string)
 	if patternName == "" {

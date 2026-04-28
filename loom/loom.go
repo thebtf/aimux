@@ -21,6 +21,22 @@ import (
 // errors.Is to distinguish graceful shutdown from other failures.
 var ErrEngineClosed = errors.New("loom: engine closed")
 
+// ErrTaskNotFound is returned by tenant-scoped Get/Cancel when the task does
+// not exist OR belongs to a different tenant. Both cases return 404 semantics
+// (CHK079 fix: never reveal task existence to a foreign tenant via 403 distinction).
+var ErrTaskNotFound = errors.New("loom: task not found")
+
+// ErrLoomQuotaExceeded is returned by TenantScopedLoomEngine.Submit when the
+// tenant's in-flight task count (pending+dispatched+running) reaches the
+// configured MaxLoomTasksQueued limit (T060 / FR-17).
+var ErrLoomQuotaExceeded = errors.New("loom: quota exceeded: too many in-flight tasks for tenant")
+
+// LegacyTenantID is the tenant_id value used for tasks created before AIMUX-12
+// multi-tenant isolation was deployed, or when no tenants.yaml is present
+// (single-tenant legacy mode). This constant matches the SQL column default
+// '__legacy__' in migrateV4Columns (ADR-011).
+const LegacyTenantID = "__legacy__"
+
 // Option configures LoomEngine.
 type Option func(*LoomEngine)
 
@@ -158,12 +174,17 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 
 	taskID := l.idGen.NewID()
 	now := l.clock.Now().UTC()
+	tenantID := req.TenantID
+	if tenantID == "" {
+		tenantID = LegacyTenantID
+	}
 	task := &Task{
 		ID:         taskID,
 		Status:     TaskStatusPending,
 		WorkerType: req.WorkerType,
 		ProjectID:  req.ProjectID,
 		RequestID:  reqID,
+		TenantID:   tenantID,
 		Prompt:     req.Prompt,
 		CWD:        req.CWD,
 		Env:        req.Env,
