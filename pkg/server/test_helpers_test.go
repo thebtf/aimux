@@ -47,7 +47,7 @@ func testServer(t *testing.T) *Server {
 		},
 	}
 
-	log, err := logger.New(cfg.Server.LogFile, logger.LevelError)
+	log, err := logger.New(cfg.Server.LogFile, logger.LevelError, logger.RotationOpts{})
 	if err != nil {
 		t.Fatalf("logger.New: %v", err)
 	}

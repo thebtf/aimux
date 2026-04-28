@@ -67,7 +67,7 @@ func buildRefreshWarmupServer(t *testing.T) (*Server, *driver.Registry) {
 		ConfigDir: t.TempDir(),
 	}
 
-	log, err := logger.New(cfg.Server.LogFile, logger.LevelError)
+	log, err := logger.New(cfg.Server.LogFile, logger.LevelError, logger.RotationOpts{})
 	if err != nil {
 		t.Fatalf("logger: %v", err)
 	}

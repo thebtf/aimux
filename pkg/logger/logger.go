@@ -1,4 +1,5 @@
-// Package logger provides an async file logger with channel-based writes.
+// Package logger provides an async file logger with channel-based writes
+// and lumberjack-based log rotation.
 // Inspired by ccg-workflow's async logger pattern (ADR-014 Decision 16).
 package logger
 
@@ -12,6 +13,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 // Level represents log severity.
@@ -56,6 +59,28 @@ func ParseLevel(s string) Level {
 	}
 }
 
+// RotationOpts configures log file rotation. Zero values disable rotation
+// for that dimension (matches lumberjack semantics).
+type RotationOpts struct {
+	// MaxSizeMB is the maximum size in megabytes before rotation.
+	// Zero means lumberjack's default (100 MB); pass -1 is not meaningful —
+	// use zero or a positive value. Lumberjack rotates when the file reaches this size.
+	MaxSizeMB int
+	// MaxBackups is the maximum number of old log files to retain.
+	// Zero means retain all old files.
+	MaxBackups int
+	// MaxAgeDays is the maximum number of days to retain old log files.
+	// Zero means no age-based deletion.
+	MaxAgeDays int
+	// Compress enables gzip compression of rotated backups.
+	Compress bool
+	// MaxLineBytes caps individual log lines. Zero means no cap.
+	// When a formatted line exceeds this limit it is truncated to
+	// (MaxLineBytes - 30) bytes and the marker "...[truncated NNN bytes]\n"
+	// is appended, keeping the total at or below MaxLineBytes.
+	MaxLineBytes int
+}
+
 type entry struct {
 	level   Level
 	message string
@@ -64,15 +89,16 @@ type entry struct {
 
 // Logger is an async file logger that writes via a buffered channel.
 type Logger struct {
-	level   Level
-	ch      chan entry
-	file    *os.File // nil when writing to discard writer
-	writer  io.Writer
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	mu      sync.RWMutex // protects level changes
-	writeMu sync.Mutex   // serializes writes from drain goroutine and sync callers
+	level        Level
+	ch           chan entry
+	writer       io.Writer  // destination: lumberjack.Logger or io.Discard
+	closer       io.Closer  // non-nil when writer owns a file (lumberjack); nil for Discard
+	maxLineBytes int
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	mu           sync.RWMutex // protects level changes
+	writeMu      sync.Mutex   // serializes writes from drain goroutine and sync callers
 }
 
 // isNullDevice returns true if path refers to the OS null device.
@@ -87,18 +113,21 @@ func isNullDevice(path string) bool {
 	return false
 }
 
-// New creates a logger writing to the specified file path.
+// New creates a logger writing to the specified file path with optional rotation.
 // If path is empty or refers to the null device (/dev/null, NUL), log output
 // is discarded. This allows cross-platform test configs that use /dev/null.
 // Channel buffer size controls backpressure (default 1024).
-func New(path string, level Level) (*Logger, error) {
+//
+// Pass RotationOpts{} (zero value) to match the old no-rotation behavior for tests.
+func New(path string, level Level, opts RotationOpts) (*Logger, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	l := &Logger{
-		level:  level,
-		ch:     make(chan entry, 1024),
-		ctx:    ctx,
-		cancel: cancel,
+		level:        level,
+		ch:           make(chan entry, 1024),
+		ctx:          ctx,
+		cancel:       cancel,
+		maxLineBytes: opts.MaxLineBytes,
 	}
 
 	if path == "" || isNullDevice(path) {
@@ -111,13 +140,16 @@ func New(path string, level Level) (*Logger, error) {
 			return nil, fmt.Errorf("create log directory %s: %w", dir, err)
 		}
 
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			cancel()
-			return nil, fmt.Errorf("open log file %s: %w", path, err)
+		lj := &lumberjack.Logger{
+			Filename:   path,
+			MaxSize:    opts.MaxSizeMB,
+			MaxBackups: opts.MaxBackups,
+			MaxAge:     opts.MaxAgeDays,
+			Compress:   opts.Compress,
+			LocalTime:  true,
 		}
-		l.file = f
-		l.writer = f
+		l.writer = lj
+		l.closer = lj
 	}
 
 	l.wg.Add(1)
@@ -160,12 +192,12 @@ func (l *Logger) Error(format string, args ...any) {
 	l.log(LevelError, format, args...)
 }
 
-// Close flushes pending entries and closes the file.
+// Close flushes pending entries and closes the underlying writer.
 func (l *Logger) Close() error {
 	l.cancel()
 	l.wg.Wait()
-	if l.file != nil {
-		return l.file.Close()
+	if l.closer != nil {
+		return l.closer.Close()
 	}
 	return nil
 }
@@ -253,6 +285,17 @@ func (l *Logger) writeEntry(e entry) {
 		e.level.String(),
 		e.message,
 	)
+
+	if l.maxLineBytes > 0 && len(line) > l.maxLineBytes {
+		orig := len(line)
+		// Truncate to leave room for the marker; marker is at most ~30 bytes.
+		keep := l.maxLineBytes - 30
+		if keep < 1 {
+			keep = 1
+		}
+		line = line[:keep] + fmt.Sprintf("...[truncated %d bytes]\n", orig)
+	}
+
 	l.writeMu.Lock()
 	_, _ = fmt.Fprint(l.writer, line)
 	l.writeMu.Unlock()

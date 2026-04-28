@@ -25,6 +25,19 @@ server:
   warmup_enabled: true
   warmup_timeout_seconds: 15
 
+  # Log rotation (lumberjack, engram#176). Log grew to 146 GB with no rotation.
+  # log_max_size_mb:  rotate the active log file once it reaches this size (megabytes).
+  # log_max_backups:  maximum number of rotated backup files to keep (oldest deleted first).
+  # log_max_age_days: delete backup files older than this many days (0 = keep forever).
+  # log_compress:     gzip-compress rotated backups to reduce disk usage.
+  # log_max_line_bytes: truncate any single log line that exceeds this byte length and
+  #                     append "...[truncated NNN bytes]" — guards against 200 KB+ payload dumps.
+  log_max_size_mb: 100
+  log_max_backups: 5
+  log_max_age_days: 14
+  log_compress: true
+  log_max_line_bytes: 4096
+
   # Two-phase daemon init (issue #129): Phase A listens immediately via a lightweight stub;
   # Phase B swaps in the full delegate once the daemon is ready.
   # warmup_grace_seconds: max seconds HandleRequest callers block in Phase A before

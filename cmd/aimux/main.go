@@ -56,7 +56,13 @@ func run() error {
 	}
 
 	logPath := config.ExpandPath(cfg.Server.LogFile)
-	log, err := logger.New(logPath, logger.ParseLevel(cfg.Server.LogLevel))
+	log, err := logger.New(logPath, logger.ParseLevel(cfg.Server.LogLevel), logger.RotationOpts{
+		MaxSizeMB:    cfg.Server.LogMaxSizeMB,
+		MaxBackups:   cfg.Server.LogMaxBackups,
+		MaxAgeDays:   cfg.Server.LogMaxAgeDays,
+		Compress:     cfg.Server.LogCompress,
+		MaxLineBytes: cfg.Server.LogMaxLineBytes,
+	})
 	if err != nil {
 		return fmt.Errorf("init logger: %w", err)
 	}

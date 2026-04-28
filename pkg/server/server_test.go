@@ -48,7 +48,7 @@ func newTestServer(t *testing.T) *aimuxServer.Server {
 		},
 	}
 
-	log, err := logger.New(cfg.Server.LogFile, logger.LevelError)
+	log, err := logger.New(cfg.Server.LogFile, logger.LevelError, logger.RotationOpts{})
 	if err != nil {
 		t.Fatalf("logger: %v", err)
 	}

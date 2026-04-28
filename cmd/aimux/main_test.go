@@ -489,7 +489,7 @@ func TestBootstrapSuccessorHandoff_RelaysIntoMuxcoreRestorePath(t *testing.T) {
 
 func mustTestLogger(t *testing.T) *logger.Logger {
 	t.Helper()
-	l, err := logger.New("", logger.LevelDebug)
+	l, err := logger.New("", logger.LevelDebug, logger.RotationOpts{})
 	if err != nil {
 		t.Fatalf("logger.New(): %v", err)
 	}
