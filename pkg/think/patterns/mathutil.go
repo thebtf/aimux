@@ -52,10 +52,10 @@ func LinearSlope(values []float64) float64 {
 }
 
 // MeanStdDev computes mean and population standard deviation of a float64 slice.
-// Returns (0, 0) for empty slices.
+// Returns (0, 0) for slices with fewer than 2 elements.
 func MeanStdDev(values []float64) (mean, stddev float64) {
 	n := len(values)
-	if n == 0 {
+	if n < 2 {
 		return 0, 0
 	}
 	sum := 0.0
@@ -74,9 +74,12 @@ func MeanStdDev(values []float64) (mean, stddev float64) {
 }
 
 // NgramExtract extracts n-grams from text and returns top-k by frequency.
-// Words are lowercased and split on non-letter characters.
-// n=2 for bigrams, n=3 for trigrams. topK=0 returns all.
+// Words are lowercased and split on non-alphanumeric characters; pure-numeric tokens
+// are filtered out. Ties broken alphabetically. Returns empty slice for n < 1 or topK < 1.
 func NgramExtract(text string, n, topK int) []string {
+	if n < 1 || topK < 1 {
+		return []string{}
+	}
 	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
 		return !('a' <= r && r <= 'z') && !('0' <= r && r <= '9')
 	})
