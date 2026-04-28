@@ -176,6 +176,35 @@ func (s *LocalSink) WriteEntryWithRole(e LogEntry, sanitizedMessage, role string
 	s.WriteEntryWithRoleStr(e, sanitizedMessage, role, fmt.Sprintf("%d", pid), sess)
 }
 
+// sanitizeTag strips characters that could break the [role-pid-sess] envelope
+// or inject fake log structure when an attacker controls the source string
+// (e.g. via CLAUDE_SESSION_ID environment variable). Replaces forbidden chars
+// with '?'; empty input becomes "anon" (matches FR-5 fallback semantics).
+//
+// Forbidden: '[', ']', '\n', '\r', '\t', and any rune below 0x20 (control).
+// CR-002 T007 closes S3 HIGH-1: pre-fix sanitizeMessage was applied only to
+// envelope.Message, leaving role/pidStr/sess unsanitised — a hostile shim
+// could spoof a daemon-tagged log line via a crafted CLAUDE_SESSION_ID.
+func sanitizeTag(s string) string {
+	if s == "" {
+		return "anon"
+	}
+	out := make([]rune, 0, len(s))
+	changed := false
+	for _, r := range s {
+		if r == '[' || r == ']' || r == '\n' || r == '\r' || r == '\t' || r < 0x20 {
+			out = append(out, '?')
+			changed = true
+			continue
+		}
+		out = append(out, r)
+	}
+	if !changed {
+		return s
+	}
+	return string(out)
+}
+
 // WriteEntryWithRoleStr is like WriteEntryWithRole but accepts pidStr as a string.
 // Used when the pid field is a fallback marker (e.g. "?abc12345") rather than a
 // numeric OS peer credential (FR-12: PeerCredsUnavailable path).
@@ -183,9 +212,9 @@ func (s *LocalSink) WriteEntryWithRoleStr(e LogEntry, sanitizedMessage, role, pi
 	line := fmt.Sprintf("%s [%s] [%s-%s-%s] %s\n",
 		e.Time.Format("2006-01-02T15:04:05.000Z07:00"),
 		e.Level.String(),
-		role,
-		pidStr,
-		sess,
+		sanitizeTag(role),
+		sanitizeTag(pidStr),
+		sanitizeTag(sess),
 		sanitizedMessage,
 	)
 

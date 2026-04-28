@@ -67,6 +67,65 @@ func TestLocalSink_DrainSaturated_Increments(t *testing.T) {
 	t.Logf("OK: DrainSaturated=%d after 10-entry burst with full channel", got)
 }
 
+// TestSanitizeTag — CR-002 T007 S3 HIGH-1 gate.
+//
+// Validates sanitizeTag rejects characters that could break the [role-pid-sess]
+// envelope or spoof a daemon-tagged log line via a crafted CLAUDE_SESSION_ID
+// (or any other metadata source). Closes the cross-tenant role spoofing vector
+// reported in PRC 2026-04-28 security review.
+func TestSanitizeTag(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", "anon"},
+		{"normal_ascii", "abc12345", "abc12345"},
+		{"close_bracket", "]fake", "?fake"},
+		{"open_bracket", "[fake", "?fake"},
+		{"newline", "abc\nDEF", "abc?DEF"},
+		{"carriage_return", "abc\rDEF", "abc?DEF"},
+		{"tab", "abc\tDEF", "abc?DEF"},
+		{"control_char_low", "abc\x01DEF", "abc?DEF"},
+		{"injection_attempt", "] [INFO] [daemon-0-fake", "? ?INFO? ?daemon-0-fake"},
+		{"mixed_normal", "shim-12345-abc", "shim-12345-abc"},
+		{"unicode_ok", "ёлка12", "ёлка12"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeTag(tc.in)
+			if got != tc.want {
+				t.Fatalf("sanitizeTag(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWriteEntryWithRoleStr_AppliesSanitizeTag — integration check that the
+// role/pid/sess metadata in the formatted log line passes through sanitizeTag.
+func TestWriteEntryWithRoleStr_AppliesSanitizeTag(t *testing.T) {
+	var buf bytes.Buffer
+	sink := newLocalSink(&buf, nil, 4, 4096, "daemon", "test")
+	defer func() { _ = sink.close() }()
+
+	hostile := "] [INFO] [daemon-fake"
+	entry := LogEntry{Level: LevelInfo, Time: time.Now(), Message: "payload"}
+	sink.WriteEntryWithRoleStr(entry, "payload", "shim", "?abc12345", hostile)
+
+	got := buf.String()
+	if got == "" {
+		t.Fatal("no output written")
+	}
+	// Hostile input must not appear verbatim — `]` and `[` must be replaced.
+	if bytes.Contains(buf.Bytes(), []byte("] [INFO] [daemon-fake")) {
+		t.Fatalf("unsanitised injection survived: %q", got)
+	}
+	// Sanitised form should contain `?` replacements.
+	if !bytes.Contains(buf.Bytes(), []byte("? ?INFO? ?daemon-fake")) {
+		t.Fatalf("expected sanitised form '? ?INFO? ?daemon-fake' in output, got %q", got)
+	}
+}
+
 // blockingWriter blocks on Write until released. Used to keep drain goroutine
 // busy so the channel can be observably saturated.
 type blockingWriter struct {
