@@ -372,6 +372,29 @@ func TestCritical_SamplingFailureFallback(t *testing.T) {
 	}
 }
 
+// TestCriticalThinking_CanonicalT003 tests the exact canonical input from T003 spec:
+// "CTO estimates 6 months for the rewrite that will eliminate all bugs because the team scaled"
+// → biasCount ≥ 2 (planning_fallacy + overconfidence + correlation_not_causation).
+func TestCriticalThinking_CanonicalT003(t *testing.T) {
+	p := NewCriticalThinkingPattern()
+	input := map[string]any{
+		"issue": "CTO estimates 6 months for the rewrite that will eliminate all bugs because the team scaled",
+	}
+	validated, err := p.Validate(input)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	result, err := p.Handle(validated, "")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	biasCount, _ := result.Data["biasCount"].(int)
+	if biasCount < 2 {
+		t.Errorf("canonical T003 test: biasCount = %d, want >= 2 (biases: %v)",
+			biasCount, result.Data["detectedBiases"])
+	}
+}
+
 func TestCriticalThinking_TimeOptimism(t *testing.T) {
 	p := NewCriticalThinkingPattern()
 	tests := []struct {
