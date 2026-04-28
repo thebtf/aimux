@@ -65,6 +65,9 @@ type IPCSink struct {
 	closeCh chan struct{}
 	wg      sync.WaitGroup
 
+	closeOnce sync.Once   // ensures Close() body executes exactly once (CR-002 BUG-002)
+	closed    atomic.Bool // visible to Send() so post-Close emits route to fallback (CR-002 BUG-003)
+
 	state         atomic.Int32
 	dropped       atomic.Uint64 // ring buffer overflow drops
 	sendFailures  atomic.Uint64 // send call returned error
@@ -132,7 +135,17 @@ func NewIPCSink(send SendFunc, opts IPCSinkOpts, fallback *StderrFallback) *IPCS
 
 // Send enqueues an entry for forwarding. Non-blocking; on ring-buffer overflow
 // the oldest entry is dropped and a rate-limited stderr warning is emitted.
+//
+// Post-Close behavior (CR-002 BUG-003 fix): once Close() has marked the sink as
+// closed, every subsequent Send routes to fallback synchronously instead of
+// enqueueing into ringBuf — the drain goroutine has already exited and any new
+// entry would otherwise sit in ringBuf until process exit and silently disappear.
 func (s *IPCSink) Send(entry LogEntry) {
+	if s.closed.Load() {
+		s.fallback.WriteEntry(entry)
+		s.fallbackUsed.Add(1)
+		return
+	}
 	select {
 	case s.ringBuf <- entry:
 		return
@@ -174,14 +187,14 @@ func (s *IPCSink) warnOverflow() {
 }
 
 // Close drains remaining entries to fallback and stops the background goroutine.
-// Safe to call multiple times.
+// Safe to call concurrently and multiple times — sync.Once guards both the
+// closed-flag store and the channel close (CR-002 BUG-002 fix; the prior
+// non-atomic select+close pattern panicked under concurrent invocation).
 func (s *IPCSink) Close() error {
-	select {
-	case <-s.closeCh:
-		return nil
-	default:
-	}
-	close(s.closeCh)
+	s.closeOnce.Do(func() {
+		s.closed.Store(true) // visible to Send() before drain starts
+		close(s.closeCh)
+	})
 	s.wg.Wait()
 
 	// Final drain — anything still in the buffer goes to fallback.

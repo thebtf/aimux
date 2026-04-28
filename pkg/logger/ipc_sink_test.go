@@ -12,6 +12,71 @@ import (
 	"time"
 )
 
+// TestIPCSink_CloseConcurrent_NoPanic — CR-002 T003 P1 race fix gate (BUG-002).
+//
+// Validates that Close() is safe under concurrent invocation. The pre-fix code
+// used a non-atomic `select { case <-closeCh: } / close(closeCh)` pattern that
+// panicked with "close of closed channel" when two goroutines both passed the
+// select before either reached close. sync.Once eliminates the race.
+func TestIPCSink_CloseConcurrent_NoPanic(t *testing.T) {
+	fb := newStderrFallbackWith(&bytes.Buffer{})
+	sink := NewIPCSink(nil, IPCSinkOpts{
+		BufferSize:         10,
+		TimeoutMs:          10,
+		ReconnectInitialMs: 10000,
+		ReconnectMaxMs:     10000,
+	}, fb)
+
+	const concurrency = 100
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("Close() panic under concurrency: %v", r)
+				}
+			}()
+			_ = sink.Close()
+		}()
+	}
+	wg.Wait()
+}
+
+// TestIPCSink_SendAfterClose_RoutesToFallback — CR-002 T003 P1 race fix gate (BUG-003).
+//
+// Validates that Send() called AFTER Close() does not silently lose the entry —
+// it routes to StderrFallback instead. The pre-fix code enqueued into ringBuf
+// after Close() drained it, so the entry sat there until process exit (lost).
+func TestIPCSink_SendAfterClose_RoutesToFallback(t *testing.T) {
+	var fbBuf bytes.Buffer
+	fb := newStderrFallbackWith(&fbBuf)
+	sink := NewIPCSink(nil, IPCSinkOpts{
+		BufferSize:         10,
+		TimeoutMs:          10,
+		ReconnectInitialMs: 10000,
+		ReconnectMaxMs:     10000,
+	}, fb)
+	_ = sink.Close()
+
+	preStats0, _, preFallback := sink.Stats()
+	_ = preStats0
+
+	sink.Send(LogEntry{Level: LevelInfo, Time: time.Now(), Message: "post-close-entry"})
+
+	// Allow synchronous fallback write to complete.
+	time.Sleep(20 * time.Millisecond)
+
+	_, _, postFallback := sink.Stats()
+	if postFallback != preFallback+1 {
+		t.Fatalf("expected fallbackUsed to grow by 1, baseline=%d after=%d", preFallback, postFallback)
+	}
+	if !strings.Contains(fbBuf.String(), "post-close-entry") {
+		t.Fatalf("expected entry text in fallback buffer, got %q", fbBuf.String())
+	}
+}
+
 // TestSendWithTimeoutVia_NoLeakUnderTimeout — CR-002 T002 P0 fix gate (BUG-001).
 //
 // Validates that sendWithTimeoutVia does not leak goroutines when SendFunc takes
