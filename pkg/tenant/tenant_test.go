@@ -38,7 +38,7 @@ func TestTenantContext_IsValueType(t *testing.T) {
 	// Assigning a TenantContext to a new variable must produce an independent copy.
 	a := tenant.TenantContext{
 		TenantID:         "alice",
-		PeerUid:          1001,
+		PeerUID:          1001,
 		SessionID:        "sess-1",
 		RequestStartedAt: time.Now(),
 	}

@@ -91,8 +91,8 @@ func TestDispatch_TenantAResolved(t *testing.T) {
 	if tc.TenantID != "tenantA" {
 		t.Errorf("expected TenantID=%q, got %q", "tenantA", tc.TenantID)
 	}
-	if tc.PeerUid != 1001 {
-		t.Errorf("expected PeerUid=1001, got %d", tc.PeerUid)
+	if tc.PeerUID != 1001 {
+		t.Errorf("expected PeerUid=1001, got %d", tc.PeerUID)
 	}
 	if tc.SessionID != "session-A" {
 		t.Errorf("expected SessionID=%q, got %q", "session-A", tc.SessionID)

@@ -105,7 +105,7 @@ func (m *DispatchMiddleware) ResolveContext(sessionID string, peerUID int) (tena
 
 	return tenant.TenantContext{
 		TenantID:         cfg.Name,
-		PeerUid:          peerUID,
+		PeerUID:          peerUID,
 		SessionID:        sessionID,
 		RequestStartedAt: time.Now(),
 	}, nil
@@ -131,7 +131,7 @@ func (m *DispatchMiddleware) EmitAllow(tc tenant.TenantContext, toolName string)
 		Timestamp:   time.Now(),
 		EventType:   audit.EventAllow,
 		TenantID:    tc.TenantID,
-		OperatorUID: tc.PeerUid,
+		OperatorUID: tc.PeerUID,
 		ToolName:    toolName,
 		Result:      "ok",
 	})
@@ -144,7 +144,7 @@ func (m *DispatchMiddleware) EmitCrossTenantBlocked(tc tenant.TenantContext, res
 		Timestamp:   time.Now(),
 		EventType:   audit.EventCrossTenantBlocked,
 		TenantID:    tc.TenantID,
-		OperatorUID: tc.PeerUid,
+		OperatorUID: tc.PeerUID,
 		ResourceID:  resourceID,
 		ToolName:    toolName,
 		Result:      "denied",

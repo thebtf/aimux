@@ -23,9 +23,9 @@ type TenantContext struct {
 	// Use LegacyDefault when operating in single-tenant mode.
 	TenantID string
 
-	// PeerUid is the OS UID of the connecting peer (from SO_PEERCRED / getpeereid).
+	// PeerUID is the OS UID of the connecting peer (from SO_PEERCRED / getpeereid).
 	// Zero value (0) is treated as unenrolled on non-Windows platforms.
-	PeerUid int
+	PeerUID int
 
 	// SessionID is the muxcore session identifier that opened this context.
 	SessionID string
