@@ -11,6 +11,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/thebtf/aimux/pkg/audit"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/upgrade"
 	"github.com/thebtf/mcp-mux/muxcore"
@@ -18,20 +19,38 @@ import (
 	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
-// ServeStdio starts the MCP server on stdio transport using os.Stdin/os.Stdout.
-func (s *Server) ServeStdio() error {
-	s.log.Info("MCP server starting on stdio (aimux v%s)", Version)
-	s.configureMuxCompatibility()
-	return server.ServeStdio(s.mcp)
-}
-
 // SessionHandler returns a muxcore.SessionHandler that dispatches MCP requests
 // via MCPServer.HandleMessage with per-project session isolation.
 // Used by muxcore engine daemon mode for direct JSON-RPC dispatch.
+//
+// The returned handler starts in Phase A (lightweightDelegate). Heavy init runs
+// in the background via Server.runPhaseB; when it completes, Server.swapDelegateToFull
+// atomically replaces the stub with a fullDelegate.
 func (s *Server) SessionHandler() muxcore.SessionHandler {
+	graceSec := s.cfg.Server.WarmupGraceSeconds
+	if graceSec <= 0 {
+		graceSec = 15 // default when not configured
+	}
+
+	lw := newLightweightDelegate(graceSec, s)
+	var d handlerDelegate = lw
 	h := &aimuxHandler{srv: s}
+	h.delegate.Store(&d)
+
 	s.sessionHandler = h
+	// Diagnostic: track set-site for engram issue #174 (hot-swap false-deferred).
+	if s.log != nil {
+		s.log.Info("upgrade-diag: SessionHandler() called, Phase A delegate installed, Server=%p", s)
+	}
 	return h
+}
+
+// AuditLog returns the audit.AuditLog shared by DispatchMiddleware and
+// AuthorizeSessionAdapter. Always non-nil after NewDaemon returns.
+// Used by main.go to wire NewAuthorizeSessionAdapter without duplicating
+// the audit-log construction logic.
+func (s *Server) AuditLog() audit.AuditLog {
+	return s.auditLog
 }
 
 // SetDaemonControlSocketPath stores the live muxcore daemon control socket path.

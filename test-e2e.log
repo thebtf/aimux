@@ -1,0 +1,6 @@
+--- FAIL: TestE2E_Think_AllPatterns (3.02s)
+    all_tools_test.go:109: startDaemonAndShim: engine=aimux-e2e-60945aec test=TestE2E_Think_AllPatterns
+    all_tools_test.go:144: tool response not JSON: invalid character 'v' looking for beginning of value (text: validation error: missing required field: stage (or provide entry_type for auto-detection))
+FAIL
+FAIL	github.com/thebtf/aimux/test/e2e	49.648s
+FAIL

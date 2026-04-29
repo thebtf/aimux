@@ -486,3 +486,28 @@ func TestExperimentalLoop_MetricTrend(t *testing.T) {
 		t.Errorf("trendDirection = %v, want 'improving'", dir)
 	}
 }
+
+// TestExperimentalLoop_MetricTrend_TooFew: fewer than 3 metrics → metricTrendSlope and trendDirection absent.
+func TestExperimentalLoop_MetricTrend_TooFew(t *testing.T) {
+	think.ClearSessions()
+	p := NewExperimentalLoopPattern()
+	sid := "test-trend-toofew"
+
+	// Only 2 metric observations — not enough to compute slope
+	for i, m := range []float64{10, 20} {
+		input, _ := p.Validate(map[string]any{
+			"hypothesis": fmt.Sprintf("Iteration %d", i+1),
+			"metric":     m,
+		})
+		result, err := p.Handle(input, sid)
+		if err != nil {
+			t.Fatalf("Handle iteration %d: %v", i+1, err)
+		}
+		if _, present := result.Data["metricTrendSlope"]; present {
+			t.Errorf("iteration %d: metricTrendSlope should be absent with < 3 metrics", i+1)
+		}
+		if _, present := result.Data["trendDirection"]; present {
+			t.Errorf("iteration %d: trendDirection should be absent with < 3 metrics", i+1)
+		}
+	}
+}

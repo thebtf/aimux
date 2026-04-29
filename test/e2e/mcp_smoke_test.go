@@ -183,6 +183,11 @@ func copyFileForTest(t *testing.T, srcPath string, dstPath string) {
 	if err := dst.Close(); err != nil {
 		t.Fatalf("close test binary %s: %v", dstPath, err)
 	}
+	// os.Create writes mode 0o644 — restore +x so fork/exec works on Unix.
+	// On Windows this is a no-op; NTFS infers executability from extension.
+	if err := os.Chmod(dstPath, 0o755); err != nil {
+		t.Fatalf("chmod +x test binary %s: %v", dstPath, err)
+	}
 }
 
 func serveMockRelease(t *testing.T, currentVersion string, nextVersion string, binaryPath string) string {
@@ -381,7 +386,7 @@ func TestE2E_ToolsList(t *testing.T) {
 		t.Fatal("expected tools/list to return at least one tool")
 	}
 
-	requiredTools := []string{"exec", "status", "sessions", "think", "investigate", "consensus", "debate", "dialog", "agents", "agent", "audit", "deepresearch", "workflow"}
+	requiredTools := []string{"status", "sessions", "think", "deepresearch", "upgrade"}
 	toolNames := make(map[string]bool, len(tools))
 	var architectureAnalysis map[string]any
 	for _, tool := range tools {
@@ -397,6 +402,12 @@ func TestE2E_ToolsList(t *testing.T) {
 			architectureAnalysis = tm
 		}
 	}
+	// Diagnostic: log all registered tools so an unexpected count surfaces here.
+	allNames := make([]string, 0, len(toolNames))
+	for n := range toolNames {
+		allNames = append(allNames, n)
+	}
+	t.Logf("tools/list returned %d tools: %v", len(tools), allNames)
 	for _, name := range requiredTools {
 		if !toolNames[name] {
 			t.Fatalf("tools/list missing required tool: %s", name)
@@ -456,106 +467,6 @@ func TestE2E_ToolsList(t *testing.T) {
 		if !foundObject {
 			t.Fatalf("architecture_analysis components.items.oneOf missing object schema with properties: %v", oneOf)
 		}
-	}
-}
-
-func TestE2E_ExecSync(t *testing.T) {
-	stdin, reader := initTestCLIServer(t)
-
-	// Call exec tool — should return CLI output
-	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
-		"name": "exec",
-		"arguments": map[string]any{
-			"prompt": "e2e test payload",
-			"cli":    "codex",
-			"async":  false,
-		},
-	}))
-
-	resp, err := readResponse(reader, 10*time.Second)
-	if err != nil {
-		t.Fatalf("exec response: %v", err)
-	}
-
-	result, ok := resp["result"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected result, got %v", resp)
-	}
-
-	// Result should have content array with text
-	content, ok := result["content"].([]any)
-	if !ok || len(content) == 0 {
-		t.Fatalf("expected content array, got %v", result)
-	}
-
-	firstContent, _ := content[0].(map[string]any)
-	text, _ := firstContent["text"].(string)
-	if text == "" {
-		t.Fatal("expected non-empty text in response")
-	}
-
-	// Parse the JSON text to verify structure
-	var execResult map[string]any
-	if err := json.Unmarshal([]byte(text), &execResult); err != nil {
-		t.Fatalf("exec result not JSON: %v (text: %s)", err, text)
-	}
-
-	if execResult["session_id"] == nil {
-		t.Error("missing session_id in exec result")
-	}
-	if execResult["status"] != "completed" {
-		t.Errorf("status = %v, want completed", execResult["status"])
-	}
-	// Budget policy: default-brief omits content; content_length + truncated hint appear instead.
-	// This assertion validates the brief contract rather than the old full-payload shape.
-	if execResult["content_length"] == nil {
-		t.Error("missing content_length in exec result (brief default)")
-	}
-}
-
-func TestE2E_SessionsList(t *testing.T) {
-	stdin, reader := initTestCLIServer(t)
-
-	// Run an exec first to create a session
-	fmt.Fprint(stdin, jsonRPCRequest(2, "tools/call", map[string]any{
-		"name":      "exec",
-		"arguments": map[string]any{"prompt": "create session", "cli": "codex"},
-	}))
-	if _, err := readResponse(reader, 10*time.Second); err != nil {
-		t.Fatalf("exec: %v", err)
-	}
-
-	// List sessions — should have at least 1
-	fmt.Fprint(stdin, jsonRPCRequest(3, "tools/call", map[string]any{
-		"name":      "sessions",
-		"arguments": map[string]any{"action": "list"},
-	}))
-
-	resp, err := readResponse(reader, 5*time.Second)
-	if err != nil {
-		t.Fatalf("sessions list: %v", err)
-	}
-
-	result, _ := resp["result"].(map[string]any)
-	content, _ := result["content"].([]any)
-	if len(content) == 0 {
-		t.Fatal("expected content in sessions response")
-	}
-
-	firstContent, _ := content[0].(map[string]any)
-	text, _ := firstContent["text"].(string)
-
-	var sessResult map[string]any
-	json.Unmarshal([]byte(text), &sessResult)
-
-	sessions, _ := sessResult["sessions"].([]any)
-	if len(sessions) < 1 {
-		t.Errorf("expected at least 1 session in sessions array, got %d", len(sessions))
-	}
-	sessionsPage, _ := sessResult["sessions_pagination"].(map[string]any)
-	total, _ := sessionsPage["total"].(float64)
-	if total < 1 {
-		t.Errorf("expected sessions_pagination.total >= 1, got %v", total)
 	}
 }
 

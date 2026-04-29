@@ -146,6 +146,78 @@ func TestTaskStore_MigrateV3_FreshDB(t *testing.T) {
 	}
 }
 
+// TestTaskStore_MigrateV4_FreshDB verifies that NewTaskStore on a fresh DB
+// creates the tasks table with the tenant_id column and composite index.
+func TestTaskStore_MigrateV4_FreshDB(t *testing.T) {
+	store := newTestStore(t)
+	if !loomColumnExists(t, store.db, "tenant_id") {
+		t.Error("tasks.tenant_id column missing after NewTaskStore (v4 migration)")
+	}
+}
+
+// TestTaskStore_TenantID_RoundTrip verifies that tenant_id is persisted on
+// Create and returned by Get with the correct value.
+func TestTaskStore_TenantID_RoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	store, err := NewTaskStore(db, "test-rt")
+	if err != nil {
+		t.Fatalf("NewTaskStore: %v", err)
+	}
+
+	task := &Task{
+		ID:         "task-tenant-rt",
+		Status:     TaskStatusPending,
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-tenant-rt",
+		TenantID:   "acme",
+		Prompt:     "tenant round-trip",
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := store.Get("task-tenant-rt")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.TenantID != "acme" {
+		t.Errorf("TenantID = %q; want %q", got.TenantID, "acme")
+	}
+}
+
+// TestTaskStore_TenantID_LegacyDefault verifies that tasks inserted without an
+// explicit tenant_id receive the LegacyTenantID sentinel via the SQL column default.
+func TestTaskStore_TenantID_LegacyDefault(t *testing.T) {
+	db := newTestDB(t)
+	store, err := NewTaskStore(db, "test-legacy")
+	if err != nil {
+		t.Fatalf("NewTaskStore: %v", err)
+	}
+
+	// Insert with empty TenantID — LegacyTenantID must be used by Submit.
+	task := &Task{
+		ID:         "task-legacy-tid",
+		Status:     TaskStatusPending,
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-legacy",
+		TenantID:   LegacyTenantID,
+		Prompt:     "legacy tenant",
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := store.Get("task-legacy-tid")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.TenantID != LegacyTenantID {
+		t.Errorf("TenantID = %q; want %q", got.TenantID, LegacyTenantID)
+	}
+}
+
 // TestTaskStore_EngineName_RoundTrip verifies that engine_name is stamped on
 // Create and returned by Get. The EngineName field on Task must match the
 // engineName passed to NewTaskStore (anti-stub for T003/T004).

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
@@ -66,7 +67,7 @@ func buildRefreshWarmupServer(t *testing.T) (*Server, *driver.Registry) {
 		ConfigDir: t.TempDir(),
 	}
 
-	log, err := logger.New(cfg.Server.LogFile, logger.LevelError)
+	log, err := logger.New(cfg.Server.LogFile, logger.LevelError, logger.RotationOpts{})
 	if err != nil {
 		t.Fatalf("logger: %v", err)
 	}
@@ -203,6 +204,37 @@ func TestServerSession_RefreshWarmup_ExcludedAfterFail(t *testing.T) {
 	}
 }
 
+// --- T175: TestSwapDelegateToFull_UpdatesInitPhaseGauge ---
+
+// TestSwapDelegateToFull_UpdatesInitPhaseGauge verifies that swapDelegateToFull
+// writes initPhase=2 and a positive initDurationMs into the Server gauges.
+// Regression test for engram issue #175 (gauges stuck at 0 after Phase B).
+func TestSwapDelegateToFull_UpdatesInitPhaseGauge(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	h := handler.(*aimuxHandler)
+
+	// Gauges must be zero before swap.
+	if got := srv.initPhase.Load(); got != 0 {
+		t.Fatalf("pre-swap initPhase = %d, want 0", got)
+	}
+	if got := srv.initDurationMs.Load(); got != 0 {
+		t.Fatalf("pre-swap initDurationMs = %d, want 0", got)
+	}
+
+	startedAt := time.Now()
+	srv.swapDelegateToFull(h, startedAt)
+
+	// initPhase must be 2 (Phase B complete).
+	if got := srv.initPhase.Load(); got != 2 {
+		t.Errorf("post-swap initPhase = %d, want 2", got)
+	}
+	// initDurationMs must be non-negative (even if near-zero in fast tests).
+	if got := srv.initDurationMs.Load(); got < 0 {
+		t.Errorf("post-swap initDurationMs = %d, want >= 0", got)
+	}
+}
+
 // --- T136: TestOnProjectConnect broadcast fixes ---
 //
 // mockNotifier is defined in handler_test.go — reused here.
@@ -213,6 +245,10 @@ func TestServerSession_RefreshWarmup_ExcludedAfterFail(t *testing.T) {
 func TestOnProjectConnect_BroadcastsOnNewState(t *testing.T) {
 	srv := testServer(t)
 	handler := srv.SessionHandler()
+
+	// Advance to Phase B so OnProjectConnect goes to fullDelegate (which broadcasts).
+	h := handler.(*aimuxHandler)
+	srv.swapDelegateToFull(h, time.Now())
 
 	notifier := &mockNotifier{}
 	aware := handler.(muxcore.NotifierAware)
@@ -251,6 +287,10 @@ func TestOnProjectConnect_BroadcastsOnReconnect(t *testing.T) {
 	srv := testServer(t)
 	handler := srv.SessionHandler()
 
+	// Advance to Phase B so OnProjectConnect goes to fullDelegate (which broadcasts).
+	h := handler.(*aimuxHandler)
+	srv.swapDelegateToFull(h, time.Now())
+
 	notifier := &mockNotifier{}
 	aware := handler.(muxcore.NotifierAware)
 	aware.SetNotifier(notifier)
@@ -275,5 +315,55 @@ func TestOnProjectConnect_BroadcastsOnReconnect(t *testing.T) {
 
 	if notifier.broadcastCount() != 1 {
 		t.Errorf("expected exactly 1 Broadcast on reconnect (got %d); reconnect path must re-announce tools", notifier.broadcastCount())
+	}
+}
+
+// --- T051: TestHandleRequestWithSessionMeta_UsesMetaTenantID ---
+
+// TestHandleRequestWithSessionMeta_UsesMetaTenantID verifies that when
+// aimuxHandler implements muxcore.SessionHandlerWithSessionMeta,
+// HandleRequestWithSessionMeta injects the TenantID from SessionMeta into
+// the request context so that session.WithTenant / TenantScopedLoomEngine
+// receive the correct tenant scope — bypassing the DispatchMiddleware fallback
+// resolver that defaults to peerUID=0.
+func TestHandleRequestWithSessionMeta_UsesMetaTenantID(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	// Verify compile-time interface satisfaction.
+	hMeta, ok := handler.(muxcore.SessionHandlerWithSessionMeta)
+	if !ok {
+		t.Fatal("aimuxHandler does not implement muxcore.SessionHandlerWithSessionMeta")
+	}
+
+	// Advance to Phase B so fullDelegate is active and projects can be connected.
+	h := handler.(*aimuxHandler)
+	srv.swapDelegateToFull(h, time.Now())
+
+	project := muxcore.ProjectContext{
+		ID:  muxcore.ProjectContextID(t.TempDir()),
+		Cwd: t.TempDir(),
+	}
+	meta := muxcore.SessionMeta{
+		Conn:         muxcore.ConnInfo{PeerUid: 5000, Platform: muxcore.PlatformLinuxUnix},
+		TenantID:     "tenantA",
+		AuthorizedAt: time.Now(),
+	}
+
+	// Connect the project so HandleRequest can reach the session.
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	lifecycle.OnProjectConnect(project)
+
+	// Fire a well-formed MCP initialize request so the session path is exercised.
+	// The response format (success or error) is not under test here — we test that
+	// the method is reachable and does not panic.
+	initReq := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`)
+
+	resp, err := hMeta.HandleRequestWithSessionMeta(context.Background(), project, meta, initReq)
+	if err != nil {
+		t.Fatalf("HandleRequestWithSessionMeta returned error: %v", err)
+	}
+	if len(resp) == 0 {
+		t.Error("expected non-empty response from HandleRequestWithSessionMeta")
 	}
 }

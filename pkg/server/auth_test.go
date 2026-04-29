@@ -14,7 +14,7 @@ import (
 func newTestLogger(t *testing.T) *logger.Logger {
 	t.Helper()
 	dir := t.TempDir()
-	log, err := logger.New(filepath.Join(dir, "test.log"), logger.LevelDebug)
+	log, err := logger.New(filepath.Join(dir, "test.log"), logger.LevelDebug, logger.RotationOpts{})
 	if err != nil {
 		t.Fatalf("create test logger: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestAuthMiddleware_EmptyConfig(t *testing.T) {
 func TestAuthMiddleware_LogsOnMissingHeader(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "auth.log")
-	log, err := logger.New(logPath, logger.LevelDebug)
+	log, err := logger.New(logPath, logger.LevelDebug, logger.RotationOpts{})
 	if err != nil {
 		t.Fatalf("create logger: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestAuthMiddleware_LogsOnMissingHeader(t *testing.T) {
 func TestAuthMiddleware_LogsOnMismatch(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "auth.log")
-	log, err := logger.New(logPath, logger.LevelDebug)
+	log, err := logger.New(logPath, logger.LevelDebug, logger.RotationOpts{})
 	if err != nil {
 		t.Fatalf("create logger: %v", err)
 	}

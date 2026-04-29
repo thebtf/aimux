@@ -1,0 +1,44 @@
+FAIL	./loom/... [setup failed]
+# ./loom/...
+pattern ./loom/...: directory prefix loom does not contain main module or its selected dependencies
+?   	github.com/thebtf/aimux/pkg/aimuxworkers	[no test files]
+?   	github.com/thebtf/aimux/pkg/build	[no test files]
+ok  	github.com/thebtf/aimux/pkg/config	(cached)
+ok  	github.com/thebtf/aimux/pkg/dialogue	(cached)
+ok  	github.com/thebtf/aimux/pkg/driver	(cached)
+ok  	github.com/thebtf/aimux/pkg/executor	(cached)
+ok  	github.com/thebtf/aimux/pkg/executor/api	(cached)
+ok  	github.com/thebtf/aimux/pkg/executor/conpty	(cached)
+ok  	github.com/thebtf/aimux/pkg/executor/pipe	(cached)
+ok  	github.com/thebtf/aimux/pkg/executor/pipeline	(cached)
+ok  	github.com/thebtf/aimux/pkg/executor/pty	(cached)
+ok  	github.com/thebtf/aimux/pkg/executor/redact	(cached)
+ok  	github.com/thebtf/aimux/pkg/executor/session	(cached)
+ok  	github.com/thebtf/aimux/pkg/guidance	(cached)
+ok  	github.com/thebtf/aimux/pkg/guidance/policies	(cached)
+ok  	github.com/thebtf/aimux/pkg/hooks	(cached)
+ok  	github.com/thebtf/aimux/pkg/logger	(cached)
+ok  	github.com/thebtf/aimux/pkg/metrics	(cached)
+ok  	github.com/thebtf/aimux/pkg/parser	(cached)
+ok  	github.com/thebtf/aimux/pkg/prompt	(cached)
+ok  	github.com/thebtf/aimux/pkg/ratelimit	(cached)
+ok  	github.com/thebtf/aimux/pkg/resolve	(cached)
+ok  	github.com/thebtf/aimux/pkg/routing	(cached)
+ok  	github.com/thebtf/aimux/pkg/server	0.256s
+ok  	github.com/thebtf/aimux/pkg/server/budget	(cached)
+ok  	github.com/thebtf/aimux/pkg/session	(cached)
+ok  	github.com/thebtf/aimux/pkg/skills	(cached)
+ok  	github.com/thebtf/aimux/pkg/swarm	(cached)
+ok  	github.com/thebtf/aimux/pkg/think	(cached)
+ok  	github.com/thebtf/aimux/pkg/think/patterns	(cached)
+ok  	github.com/thebtf/aimux/pkg/tools/deepresearch	(cached)
+ok  	github.com/thebtf/aimux/pkg/types	(cached)
+ok  	github.com/thebtf/aimux/pkg/updater	(cached)
+ok  	github.com/thebtf/aimux/pkg/upgrade	(cached)
+ok  	github.com/thebtf/aimux/pkg/util	(cached)
+ok  	github.com/thebtf/aimux/pkg/workflow	(cached)
+ok  	github.com/thebtf/aimux/cmd/aimux	0.157s
+?   	github.com/thebtf/aimux/cmd/ctl	[no test files]
+?   	github.com/thebtf/aimux/cmd/testcli	[no test files]
+ok  	github.com/thebtf/aimux/tools/loomlint	0.453s
+FAIL

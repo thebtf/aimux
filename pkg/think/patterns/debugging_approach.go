@@ -251,6 +251,7 @@ func (p *debuggingApproachPattern) SchemaFields() map[string]think.FieldSchema {
 func (p *debuggingApproachPattern) Category() string { return "solo" }
 
 func (p *debuggingApproachPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
+	sessionID = think.EnsureSessionID(sessionID)
 	sess := think.GetOrCreateSession(sessionID, "debugging_approach", map[string]any{
 		"hypotheses": []any{},
 		"steps":      []any{},

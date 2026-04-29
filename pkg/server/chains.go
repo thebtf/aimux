@@ -12,29 +12,19 @@ type SkillChain struct {
 func DefaultChains() []SkillChain {
 	return []SkillChain{
 		{
-			CurrentTool: "exec",
+			CurrentTool: "sessions",
 			NextTools:   []string{"status"},
-			Condition:   "async=true",
-		},
-		{
-			CurrentTool: "audit",
-			NextTools:   []string{"investigate"},
-			Condition:   "mode=deep AND high_findings>0",
-		},
-		{
-			CurrentTool: "investigate",
-			NextTools:   []string{"exec"},
-			Condition:   "convergence>=1.0",
+			Condition:   "when inspecting a specific async job from session output",
 		},
 		{
 			CurrentTool: "think",
-			NextTools:   []string{"consensus", "exec"},
-			Condition:   "complexity>=60",
+			NextTools:   []string{"deepresearch"},
+			Condition:   "when reasoning identifies an external knowledge gap",
 		},
 		{
-			CurrentTool: "consensus",
-			NextTools:   []string{"exec"},
-			Condition:   "synthesize=true",
+			CurrentTool: "deepresearch",
+			NextTools:   []string{"think"},
+			Condition:   "when the report needs synthesis or decision framing",
 		},
 	}
 }

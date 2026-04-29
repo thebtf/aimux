@@ -86,6 +86,7 @@ func (p *structuredArgumentationPattern) SchemaFields() map[string]think.FieldSc
 func (p *structuredArgumentationPattern) Category() string { return "solo" }
 
 func (p *structuredArgumentationPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
+	sessionID = think.EnsureSessionID(sessionID)
 	sess := think.GetOrCreateSession(sessionID, "structured_argumentation", map[string]any{
 		"arguments": []any{},
 	})

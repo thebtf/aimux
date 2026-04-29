@@ -3,6 +3,7 @@ package loom
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -80,12 +81,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at DATETIME NOT NULL,
     dispatched_at DATETIME,
     completed_at DATETIME,
-    engine_name TEXT NOT NULL DEFAULT ''
+    engine_name TEXT NOT NULL DEFAULT '',
+    tenant_id TEXT NOT NULL DEFAULT '__legacy__'
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 -- idx_tasks_engine_status created by migrateV3Columns AFTER engine_name column lands
 -- on pre-v3 databases (AIMUX-10).
+-- idx_tasks_tenant_id created by migrateV4Columns AFTER tenant_id column lands
+-- on pre-AIMUX-12 databases.
 `
 
 // migrateRequestIDColumn adds the request_id column to an existing tasks table
@@ -110,6 +114,16 @@ var migrateV2Columns = []string{
 var migrateV3Columns = []string{
 	`ALTER TABLE tasks ADD COLUMN engine_name TEXT NOT NULL DEFAULT ''`,
 	`CREATE INDEX IF NOT EXISTS idx_tasks_engine_status ON tasks(engine_name, status)`,
+}
+
+// migrateV4Columns adds tenant_id column and composite index for per-tenant
+// task scoping (AIMUX-12 multi-tenant isolation). Each statement is run individually;
+// duplicate-column and already-exists errors are silently ignored (idempotent).
+// The default value '__legacy__' (LegacyTenantIDValue) ensures existing rows are
+// attributed to the legacy-default tenant for single-tenant compat (ADR-011).
+var migrateV4Columns = []string{
+	`ALTER TABLE tasks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '__legacy__'`,
+	`CREATE INDEX IF NOT EXISTS idx_tasks_tenant_id ON tasks(tenant_id, status)`,
 }
 
 // TaskStore persists tasks in SQLite.
@@ -153,6 +167,17 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 			return nil, fmt.Errorf("loom store: migrate v3 columns: %w", err)
 		}
 	}
+	// AIMUX-12: add tenant_id column and composite index for per-tenant task scoping.
+	// Existing rows receive the default '__legacy__' sentinel (ADR-011).
+	for _, stmt := range migrateV4Columns {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") ||
+				strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return nil, fmt.Errorf("loom store: migrate v4 columns: %w", err)
+		}
+	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
 	// These PRAGMAs are idempotent — safe even if already set.
 	db.Exec("PRAGMA journal_mode=WAL")   //nolint:errcheck
@@ -185,8 +210,8 @@ func (s *TaskStore) Create(task *Task) error {
 		INSERT INTO tasks
 			(id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-			 daemon_uuid, last_seen_at, engine_name)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)`,
+			 daemon_uuid, last_seen_at, engine_name, tenant_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID,
 		string(task.Status),
 		string(task.WorkerType),
@@ -208,6 +233,7 @@ func (s *TaskStore) Create(task *Task) error {
 		s.daemonUUID,
 		lastSeenAt,
 		s.engineName,
+		task.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("loom store: insert task: %w", err)
@@ -215,40 +241,76 @@ func (s *TaskStore) Create(task *Task) error {
 	return nil
 }
 
-// Get retrieves a task by ID.
+// Get retrieves a task by ID (cross-tenant — use GetForTenant for scoped access).
 func (s *TaskStore) Get(id string) (*Task, error) {
 	row := s.db.QueryRow(`
 		SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-		       engine_name
+		       engine_name, tenant_id
 		FROM tasks WHERE id = ?`, id)
 
 	return scanTask(row)
 }
 
+// GetForTenant retrieves a task by ID only if it belongs to the given tenantID.
+// Returns ErrTaskNotFound when the task does not exist OR belongs to a different tenant
+// (defence-in-depth: NEVER reveal task existence to a foreign tenant via 403).
+func (s *TaskStore) GetForTenant(id, tenantID string) (*Task, error) {
+	row := s.db.QueryRow(`
+		SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
+		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+		       engine_name, tenant_id
+		FROM tasks WHERE id = ? AND tenant_id = ?`, id, tenantID)
+
+	task, err := scanTask(row)
+	if err != nil {
+		// sql.ErrNoRows means task not found OR belongs to a different tenant.
+		// Both cases must return ErrTaskNotFound (CHK079 fix: no 403 disclosure).
+		if isNoRows(err) {
+			return nil, ErrTaskNotFound
+		}
+		return nil, err
+	}
+	return task, nil
+}
+
 // List returns tasks for a project, optionally filtered by status values.
+// Scoped by engine_name only — use ListForTenant for tenant-scoped access.
 func (s *TaskStore) List(projectID string, statuses ...TaskStatus) ([]*Task, error) {
+	return s.listInternal(projectID, "", statuses...)
+}
+
+// ListForTenant returns tasks for a project scoped to the given tenantID,
+// optionally filtered by status values. Only tasks owned by tenantID are returned.
+func (s *TaskStore) ListForTenant(projectID, tenantID string, statuses ...TaskStatus) ([]*Task, error) {
+	return s.listInternal(projectID, tenantID, statuses...)
+}
+
+// listInternal is the shared implementation for List and ListForTenant.
+// When tenantID is non-empty, results are additionally filtered by tenant_id.
+func (s *TaskStore) listInternal(projectID, tenantID string, statuses ...TaskStatus) ([]*Task, error) {
 	var (
 		rows *sql.Rows
 		err  error
 	)
 
+	base := `
+		SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
+		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+		       engine_name, tenant_id
+		FROM tasks WHERE project_id = ? AND engine_name = ?`
+
+	placeholders := []interface{}{projectID, s.engineName}
+
+	if tenantID != "" {
+		base += ` AND tenant_id = ?`
+		placeholders = append(placeholders, tenantID)
+	}
+
 	if len(statuses) == 0 {
-		rows, err = s.db.Query(`
-			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-			       engine_name
-			FROM tasks WHERE project_id = ? AND engine_name = ? ORDER BY created_at ASC`, projectID, s.engineName)
+		rows, err = s.db.Query(base+` ORDER BY created_at ASC`, placeholders...)
 	} else {
-		// Build IN clause with placeholders.
-		placeholders := make([]interface{}, 0, len(statuses)+2)
-		placeholders = append(placeholders, projectID)
-		placeholders = append(placeholders, s.engineName)
-		query := `
-			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-			       engine_name
-			FROM tasks WHERE project_id = ? AND engine_name = ? AND status IN (`
+		query := base + ` AND status IN (`
 		for i, st := range statuses {
 			if i > 0 {
 				query += ","
@@ -288,13 +350,13 @@ func (s *TaskStore) ListAll(statuses ...TaskStatus) ([]*Task, error) {
 		rows, err = s.db.Query(`
 			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-			       engine_name
+			       engine_name, tenant_id
 			FROM tasks ORDER BY created_at ASC`)
 	} else {
 		query := `
 			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
 			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-			       engine_name
+			       engine_name, tenant_id
 			FROM tasks WHERE status IN (`
 		placeholders := make([]interface{}, 0, len(statuses))
 		for i, st := range statuses {
@@ -321,6 +383,22 @@ func (s *TaskStore) ListAll(statuses ...TaskStatus) ([]*Task, error) {
 		tasks = append(tasks, task)
 	}
 	return tasks, rows.Err()
+}
+
+// CountForTenant returns the number of in-flight tasks (pending, dispatched, running)
+// for the given tenantID. Used by TenantScopedLoomEngine for quota enforcement (T060).
+// This query uses live SQL count (not cached) to avoid race window issues per IF-WRONG directive.
+func (s *TaskStore) CountForTenant(tenantID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM tasks
+		WHERE tenant_id = ? AND engine_name = ? AND status IN ('pending', 'dispatched', 'running')`,
+		tenantID, s.engineName,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("loom store: count for tenant: %w", err)
+	}
+	return count, nil
 }
 
 // UpdateStatus transitions a task from `from` to `to`, enforcing state machine rules.
@@ -448,6 +526,7 @@ func scanTask(s scanner) (*Task, error) {
 		&dispatchedAt,
 		&completedAt,
 		&task.EngineName,
+		&task.TenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -488,4 +567,9 @@ func unmarshalJSON(s string, v any) error {
 		return nil
 	}
 	return json.Unmarshal([]byte(s), v)
+}
+
+// isNoRows returns true when err wraps sql.ErrNoRows.
+func isNoRows(err error) bool {
+	return errors.Is(err, sql.ErrNoRows)
 }

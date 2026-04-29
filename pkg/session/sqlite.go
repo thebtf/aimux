@@ -164,6 +164,26 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Migration 4: add tenant_id column to sessions and jobs (AIMUX-12 multi-tenant isolation).
+	// Re-read version so we pick up version=3 just committed above.
+	row = db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`)
+	if err := row.Scan(&version); err != nil {
+		return fmt.Errorf("re-read schema_version before migration 4: %w", err)
+	}
+	if version < 4 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration 4: %w", err)
+		}
+		if err := migrateV4(tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration 4: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration 4: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -174,11 +194,16 @@ func migrate(db *sql.DB) error {
 // preserve reconciliation metadata (aborted_at, aborted_job_ids) set by
 // ReconcileOnStartup. INSERT OR REPLACE deletes and reinserts the row, wiping
 // those columns; ON CONFLICT DO UPDATE only touches the listed mutable fields.
+//
+// tenant_id is written from sess.TenantID; callers should set this field before
+// calling SnapshotSession. An empty TenantID is stored as-is (the DB column has a
+// DEFAULT of 'legacy-default' for rows inserted without a tenant_id value, but the
+// ON CONFLICT path always writes the explicit value from sess.TenantID).
 func (s *Store) SnapshotSession(sess *Session) error {
 	metadataJSON, _ := json.Marshal(sess.Metadata)
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid, tenant_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			cli            = excluded.cli,
 			mode           = excluded.mode,
@@ -190,12 +215,14 @@ func (s *Store) SnapshotSession(sess *Session) error {
 			metadata_json  = excluded.metadata_json,
 			created_at     = excluded.created_at,
 			last_active_at = excluded.last_active_at,
-			daemon_uuid    = excluded.daemon_uuid`,
+			daemon_uuid    = excluded.daemon_uuid,
+			tenant_id      = excluded.tenant_id`,
 		sess.ID, sess.CLI, sess.Mode, sess.CLISessionID, sess.PID,
 		sess.Status, sess.Turns, sess.CWD, string(metadataJSON),
 		sess.CreatedAt.Format(time.RFC3339),
 		sess.LastActiveAt.Format(time.RFC3339),
 		GetDaemonUUID(),
+		sess.TenantID,
 	)
 	return err
 }
@@ -275,8 +302,8 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	for _, sess := range sessions.List("") {
 		metadataJSON, _ := json.Marshal(sess.Metadata)
 		if _, execErr := tx.Exec(`
-			INSERT INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO sessions (id, cli, mode, cli_session_id, pid, status, turns, cwd, metadata_json, created_at, last_active_at, daemon_uuid, tenant_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				cli            = excluded.cli,
 				mode           = excluded.mode,
@@ -288,12 +315,14 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 				metadata_json  = excluded.metadata_json,
 				created_at     = excluded.created_at,
 				last_active_at = excluded.last_active_at,
-				daemon_uuid    = excluded.daemon_uuid`,
+				daemon_uuid    = excluded.daemon_uuid,
+				tenant_id      = excluded.tenant_id`,
 			sess.ID, sess.CLI, sess.Mode, sess.CLISessionID, sess.PID,
 			sess.Status, sess.Turns, sess.CWD, string(metadataJSON),
 			sess.CreatedAt.Format(time.RFC3339),
 			sess.LastActiveAt.Format(time.RFC3339),
 			uuid,
+			sess.TenantID,
 		); execErr != nil {
 			return execErr
 		}

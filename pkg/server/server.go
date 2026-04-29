@@ -8,17 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/thebtf/aimux/loom"
-	"github.com/thebtf/aimux/pkg/agents"
 	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
+	"github.com/thebtf/aimux/pkg/audit"
 	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
-	"github.com/thebtf/aimux/pkg/dialogue"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
@@ -27,15 +27,13 @@ import (
 	"github.com/thebtf/aimux/pkg/hooks"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/metrics"
-	orch "github.com/thebtf/aimux/pkg/orchestrator"
 	"github.com/thebtf/aimux/pkg/prompt"
 	"github.com/thebtf/aimux/pkg/ratelimit"
-	"github.com/thebtf/aimux/pkg/resolve"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/skills"
-	"github.com/thebtf/aimux/pkg/swarm"
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
@@ -55,64 +53,29 @@ import (
 var Version = build.Version
 
 // legacyInstructions is kept as fallback for proxy/shim mode where live state is unavailable.
-const legacyInstructions = `aimux — AI CLI Multiplexer (13 MCP tools, 12 CLIs, 23 think patterns)
+const legacyInstructions = `aimux — AI CLI Multiplexer (4 MCP tools + 23 think patterns, post Layer 5 purge)
 
-One MCP server that routes prompts to 12 AI coding CLIs with role-based routing,
-multi-model orchestration, structured reasoning, and deep investigation.
-
-## Skill-Based Workflows (MCP Prompts)
-
-aimux provides deep workflow skills as MCP prompts. Each skill is a multi-phase
-orchestration guide with hard gates, exact tool parameters, and cross-skill routing.
-
-| Skill Prompt | Purpose |
-|---|---|
-| debug | 5-phase debug: reproduce → investigate → root-cause → fix → verify |
-| review | Code review with CLI-adaptive consensus/peer_review fallback |
-| audit | Codebase audit with P0-P3 triage routing to debug/security/review |
-| security | 10-category security checklist with investigate integration |
-| research | 4-phase pipeline: literature → comparison → adversarial → synthesis |
-| consensus | Multi-model consensus with "consensus ≠ correctness" warning |
-| investigate | Investigation protocol with domain auto-detect and convergence |
-| delegate | Delegation decision tree: task size → routing (direct/exec/agent) |
-| tdd | TDD workflow: RED gate → GREEN gate → IMPROVE → coverage |
-| workflow | Declarative multi-step pipeline builder |
-| agent-exec | Agent-first execution: match task → agent, exec as fallback |
-| guide | Complete reference: tools, roles, patterns |
-| background | Background async execution with role routing |
-
-Use these prompts for structured guidance. Each injects live data (your CLIs, metrics,
-past reports) and adapts to your environment.
+Reduced MCP surface: server state management, deep research via Gemini SDK,
+and structured reasoning via 23 dedicated think pattern tools.
 
 ## Tool Selection — "I need to..."
 
 | I need to... | Tool | Key params |
 |---|---|---|
-| Run a prompt on an AI CLI | exec | prompt, role, cli, async |
-| Get consensus from multiple models | consensus | topic, synthesize |
-| Have models debate a decision | debate | topic, max_turns |
-| Multi-turn discussion between CLIs | dialog | prompt, max_turns |
-| Structured reasoning/analysis | think | pattern (23 options) |
-| Deep investigation with tracking | investigate | action, topic, domain |
-| Run a codebase audit | audit | cwd, mode (quick/standard/deep) |
-| Execute a project agent | agent | agent (name), prompt |
-| Chain multiple steps declaratively | workflow | steps (JSON), input |
 | Check async job status | status | job_id |
-| Manage sessions | sessions | action (list/health/gc/cancel) |
-| Discover available agents | agents | action (list/find) |
-| Deep research via Gemini | deepresearch | topic |
+| Manage sessions | sessions | action (list/health/gc/cancel/kill/info/refresh-warmup) |
+| Structured reasoning / analysis | <pattern_name> | 23 individual think pattern tools |
+| Deep research via Gemini API | deepresearch | topic |
+| Check / apply binary updates | upgrade | action (check/apply) |
 
-## Roles (exec tool) — don't pick CLI manually, use role=
-coding → codex | codereview → gemini | debug → codex | secaudit → codex
-analyze → gemini | refactor → codex | testgen → codex | planner → codex
-If a CLI fails (rate limit, timeout), aimux auto-retries with the next capable CLI.
+## Notes
+- Layer 5 CLI-launching tools (exec/agent/agents/critique/investigate/consensus/debate/dialog/audit/workflow) were removed at v5.0.3.
+- Pipeline v5 packages (workflow, dialogue, swarm, executor, resolve, driver, routing, loom) remain in-repo as dormant seams pending the next Layer 5 design.
+- Skill prompts archived under archive/v5.0.3/skills.d/ — prompts/list returns the reduced legacy set.
 
 ## Anti-Patterns
-- Don't specify cli= when role= is enough — let routing pick the best CLI
-- Don't use sync exec for tasks >30s — use async=true
-- Don't skip investigate for complex bugs — jumping to fix wastes time
-- Don't run consensus with 1 CLI — needs 2+ for comparison
-- Don't call exec for tasks an agent can handle — use agent-exec first`
+- Don't expect exec/agent/workflow tools — they were removed in the Layer 5 purge
+- Don't assume dormant pipeline packages are reachable from MCP — they are isolated until rewired`
 
 // Server holds all dependencies for the MCP server.
 type Server struct {
@@ -123,10 +86,7 @@ type Server struct {
 	sessions                *session.Registry
 	jobs                    *session.JobManager
 	breakers                *executor.BreakerRegistry
-	executor                types.Executor
 	mcp                     *server.MCPServer
-	orchestrator            *orch.Orchestrator
-	agentReg                *agents.Registry
 	promptEng               *prompt.Engine
 	hooks                   *hooks.Registry
 	metrics                 *metrics.Collector
@@ -135,18 +95,38 @@ type Server struct {
 	skillEngine             *skills.Engine
 	rateLimiter             *ratelimit.Limiter
 	authToken               string
-	projectDir              string // directory used for initial agent discovery
 	engineName              string // canonical engine name for loom task scoping (AIMUX-10 FR-7)
 	guidanceReg             *guidance.Registry
 	cooldownTracker         *executor.ModelCooldownTracker
 	sessionHandler          muxcore.SessionHandler // stored for upgrade tool routing
 	applyUpgrade            func(context.Context, *upgrade.Coordinator, upgrade.Mode, bool) (*upgrade.Result, error)
 	muxEngine               *engine.MuxEngine
-	daemonControlSocketPath string                  // live engine daemon control socket path for upgrade restart seam
-	loom                    *loom.LoomEngine        // central task mediator (LoomEngine v3)
-	dispatchHistory         *agents.DispatchHistory // agent dispatch feedback history (T003)
-	feedbackTracker         *agents.FeedbackTracker // BM25 score adjustment from outcomes (T004)
-	swarm                   *swarm.Swarm            // executor lifecycle manager (M2 Strangler Fig)
+	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
+	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
+
+	// dispatchMW resolves TenantContext at the MCP tool dispatch entry point
+	// and emits audit events (AIMUX-12 Phase 5, T031).
+	dispatchMW *DispatchMiddleware
+
+	// auditLog is the audit event sink shared by dispatchMW and AuthorizeSessionAdapter.
+	// Always non-nil after NewDaemon returns (discardAuditLog is used as fallback).
+	auditLog audit.AuditLog
+
+	// logIngester receives forwarded log entries from shim peers via the
+	// "notifications/aimux/log_forward" JSON-RPC notification path (AIMUX-11 Phase 2).
+	logIngester *LogIngester
+
+	// logPartitioner routes forwarded log entries to per-tenant log files when
+	// muxcore provides SessionMeta with a non-empty TenantID (AIMUX-12 Phase 6, T039).
+	// Nil in single-tenant / legacy mode — HandleNotification falls back to the shared log.
+	logPartitioner logger.LogPartitionerWriter
+
+	// Two-phase daemon init (issue #129): Phase A starts listening immediately via
+	// lightweightDelegate; Phase B (heavy init) runs in the background goroutine started
+	// by RunPhaseB. Fields below track progress for observability (status tool, T005).
+	initPhase           atomic.Int32  // 0=pre-init, 1=phase-A, 2=phase-B complete
+	initDurationMs      atomic.Int64  // wall-clock ms for Phase B to complete (set on swap)
+	warmupDeferredCount atomic.Uint64 // HandleRequest calls deferred during Phase A
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -154,7 +134,7 @@ var deprecationOnce sync.Once
 
 // NewDaemon creates a fully-initialised daemon-mode Server. This is the ONLY
 // constructor that performs heavy init (SQLite open, migrate, reconcile,
-// LoomEngine, skill engine, orchestrator wiring, periodic snapshot loop).
+// LoomEngine, skill engine, periodic snapshot loop).
 //
 // Callers MUST invoke NewDaemon only after detectMode() has confirmed daemon
 // mode. Calling it from shim or legacy-proxy context will corrupt daemon
@@ -172,15 +152,16 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 			CooldownSeconds:  cfg.CircuitBreaker.CooldownSeconds,
 			HalfOpenMaxCalls: cfg.CircuitBreaker.HalfOpenMaxCalls,
 		}),
-		executor:        selectBestExecutor(), // ConPTY > PTY > Pipe (Constitution P4)
 		cooldownTracker: executor.NewModelCooldownTracker(),
 	}
-	// M2 Strangler Fig: initialize Swarm, wrapping s.executor via an indirection
-	// pointer so the factory always sees the current executor (including test swaps).
-	// CLIPipeAdapter implements LegacyAccessor, enabling Swarm.LegacyRun bridging.
-	s.swarm = swarm.New(wrapExecutorAsV2Factory(&s.executor))
 	s.metrics = metrics.New()
 	s.engineName = ResolveEngineName()
+
+	// Wire the log ingester — daemon-side receiver for shim log_forward notifications
+	// (AIMUX-11 Phase 2, T011). LocalSink() is non-nil in daemon mode.
+	if sink := log.LocalSink(); sink != nil {
+		s.logIngester = NewLogIngester(sink, cfg.Server.LogMaxLineBytes)
+	}
 
 	// Initialize rate limiter — per-tool token bucket.
 	s.rateLimiter = ratelimit.New(cfg.Server.RateLimitRPS, cfg.Server.RateLimitBurst)
@@ -243,14 +224,33 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 				log.Info("loom task scoping: engine_name=%s", s.engineName)
 			}
 
-			// Initialize DispatchHistory + FeedbackTracker on shared SQLite (T003/T004).
-			if dh, dhErr := agents.NewDispatchHistory(store.DB()); dhErr != nil {
-				log.Warn("DispatchHistory unavailable: %v", dhErr)
-			} else {
-				s.dispatchHistory = dh
-				s.feedbackTracker = agents.NewFeedbackTracker(dh)
-				log.Info("DispatchHistory initialized (shared SQLite)")
-			}
+		}
+	}
+
+	// Initialize DispatchMiddleware — wires tenant context resolution into every
+	// MCP tool dispatch (AIMUX-12 Phase 5, T031). The middleware is always
+	// constructed; in legacy-default mode (no tenants.yaml) it is a no-op pass-through.
+	tenantReg := tenant.NewRegistry()
+	auditLogPath := filepath.Join(filepath.Dir(config.ExpandPath(cfg.Server.DBPath)), ".aimux", "audit.log")
+	if cfg.Server.DBPath == "" {
+		// Fallback when db_path not configured (e.g. memory-only mode):
+		// use a temp-dir-relative path that will not persist across restarts.
+		auditLogPath = filepath.Join(os.TempDir(), "aimux-audit.log")
+	}
+	if mkdirErr := os.MkdirAll(filepath.Dir(auditLogPath), 0700); mkdirErr != nil {
+		log.Warn("audit: could not create audit log directory: %v (audit events will be discarded)", mkdirErr)
+		s.auditLog = &discardAuditLog{}
+		s.dispatchMW = NewDispatchMiddleware(tenantReg, s.auditLog)
+	} else {
+		fileAudit, auditErr := audit.NewFileAuditLog(auditLogPath)
+		if auditErr != nil {
+			log.Warn("audit: could not open audit log %s: %v (audit events will be discarded)", auditLogPath, auditErr)
+			s.auditLog = &discardAuditLog{}
+			s.dispatchMW = NewDispatchMiddleware(tenantReg, s.auditLog)
+		} else {
+			s.auditLog = fileAudit
+			s.dispatchMW = NewDispatchMiddleware(tenantReg, s.auditLog)
+			log.Info("audit log: %s", auditLogPath)
 		}
 	}
 
@@ -290,32 +290,9 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		}
 	}()
 
-	// Initialize CLI resolver for profile-aware command resolution
-	cliResolver := resolve.NewProfileResolver(cfg.CLIProfiles)
-
-	// Initialize orchestrator with all strategies
-	dlgStrategy := orch.NewSequentialDialog(s.executor, cliResolver)
-	consensusStrategy := orch.NewParallelConsensus(s.executor, cliResolver)
-	debateStrategy := orch.NewStructuredDebate(s.executor, cliResolver)
-	dlgCtrl := dialogue.New()
-	dlgStrategy.SetDialogue(dlgCtrl, s.swarm)
-	consensusStrategy.SetDialogue(dlgCtrl, s.swarm)
-	debateStrategy.SetDialogue(dlgCtrl, s.swarm)
-	s.orchestrator = orch.New(log,
-		orch.NewPairCoding(s.executor, s.executor, cliResolver),
-		dlgStrategy,
-		consensusStrategy,
-		debateStrategy,
-		orch.NewAuditPipeline(s.executor, cliResolver),
-		orch.NewWorkflowStrategy(s.executor, cliResolver),
-	)
-
-	// Register LoomEngine workers (after executor + orchestrator are ready).
+	// Register LoomEngine workers for the reduced surface.
 	if s.loom != nil {
-		s.loom.RegisterWorker(loom.WorkerTypeCLI, loomworkers.NewCLIWorker(s.executor, cliResolver))
 		s.loom.RegisterWorker(loom.WorkerTypeThinker, loomworkers.NewThinkerWorker())
-		s.loom.RegisterWorker(loom.WorkerTypeInvestigator, loomworkers.NewInvestigatorWorker(s.executor, cliResolver))
-		s.loom.RegisterWorker(loom.WorkerTypeOrchestrator, loomworkers.NewOrchestratorWorker(s.orchestrator))
 
 		// Recover tasks that were dispatched/running when daemon last crashed.
 		if n, err := s.loom.RecoverCrashed(); err != nil {
@@ -337,39 +314,17 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 
 	// Initialize guidance policy registry — extensible, registry-driven policy resolution.
 	s.guidanceReg = guidance.NewRegistry()
-	if err := s.guidanceReg.Register(policies.NewInvestigatePolicy()); err != nil {
-		log.Warn("guidance: failed to register investigate policy: %v", err)
-	}
+	// Only the think policy is wired into a live MCP tool. Consensus/debate/dialog/workflow
+	// policies were Layer 5 dispatch-time guidance for tools removed in the v5.0.3 purge.
+	// They remain as dormant Pipeline v5 seams in pkg/guidance/policies/ but are not
+	// registered with the runtime registry.
 	if err := s.guidanceReg.Register(policies.NewThinkPolicy()); err != nil {
 		log.Warn("guidance: failed to register think policy: %v", err)
-	}
-	if err := s.guidanceReg.Register(policies.NewConsensusPolicy()); err != nil {
-		log.Warn("guidance: failed to register consensus policy: %v", err)
-	}
-	if err := s.guidanceReg.Register(policies.NewDebatePolicy()); err != nil {
-		log.Warn("guidance: failed to register debate policy: %v", err)
-	}
-	if err := s.guidanceReg.Register(policies.NewDialogPolicy()); err != nil {
-		log.Warn("guidance: failed to register dialog policy: %v", err)
-	}
-	if err := s.guidanceReg.Register(policies.NewWorkflowPolicy()); err != nil {
-		log.Warn("guidance: failed to register workflow policy: %v", err)
 	}
 
 	// Initialize hooks registry with built-in telemetry
 	s.hooks = hooks.NewRegistry()
 	s.hooks.RegisterAfter("builtin:telemetry", hooks.NewTelemetryHook())
-
-	// Initialize agent registry
-	s.agentReg = agents.NewRegistry()
-	// Discover agents from project and user directories
-	if cwd, err := os.Getwd(); err == nil {
-		s.projectDir = cwd
-		home, _ := os.UserHomeDir()
-		s.agentReg.Discover(cwd, home)
-	}
-	// Register built-in generic agents (shadowed by project/user agents with same name)
-	agents.RegisterBuiltins(s.agentReg)
 
 	// Initialize skill engine — embedded skills from config/skills.d, with optional disk overlay.
 	s.skillEngine = skills.NewEngine()
@@ -405,7 +360,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 			s.registry.EnabledCLIs(),
 			false, // warmup runs in background — not yet complete at construction time
 			s.registry.AllCLIs(),
-			len(s.agentReg.List()),
+			0,
 			buildRoleMap(s.router),
 		)),
 	)
@@ -509,74 +464,50 @@ func (s *Server) Shutdown() {
 	}
 
 	// Shutdown Swarm — closes all managed ExecutorV2 handles.
-	if s.swarm != nil {
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.swarm.Shutdown(shutCtx); err != nil && s.log != nil {
-			s.log.Warn("swarm shutdown: %v", err)
+}
+
+// RunPhaseB transitions the daemon from Phase A (lightweightDelegate) to Phase B
+// (fullDelegate). It must be called exactly once after SessionHandler() returns.
+//
+// If async_init is false, RunPhaseB blocks until the delegate swap completes.
+// If async_init is nil or true (the default), the swap runs in a background goroutine
+// and RunPhaseB returns immediately.
+//
+// The method is a no-op when s.sessionHandler is not an *aimuxHandler (e.g. proxy /
+// stdio / SSE / HTTP transport paths that do not use the delegate machinery).
+func (s *Server) RunPhaseB(ctx context.Context) {
+	h, ok := s.sessionHandler.(*aimuxHandler)
+	if !ok || h == nil {
+		// Not in engine mode — no delegate swap needed.
+		return
+	}
+
+	s.initPhase.Store(1) // Phase A active: lightweightDelegate is live
+	startedAt := time.Now()
+
+	doSwap := func() {
+		// Gauge writes (initDurationMs, initPhase=2) happen inside swapDelegateToFull
+		// so any future caller automatically gets correct observability (ADR-001).
+		s.swapDelegateToFull(h, startedAt)
+		if s.log != nil {
+			s.log.Info("phase-B complete: delegate swapped in %dms", s.initDurationMs.Load())
 		}
 	}
+
+	asyncInit := s.cfg.Server.AsyncInit
+	if asyncInit != nil && !*asyncInit {
+		// Synchronous fallback (async_init: false in config).
+		doSwap()
+		return
+	}
+	// Default: swap in a background goroutine so RunPhaseB returns immediately
+	// and the engine can begin serving requests via the lightweightDelegate.
+	go doSwap()
 }
 
 // --- Tool Registration ---
 
 func (s *Server) registerTools() {
-	// exec tool
-	s.mcp.AddTool(
-		mcp.NewTool("exec",
-			mcp.WithDescription("[delegate — external CLI, free for you] Execute a raw prompt on a specific CLI. "+
-				"Use agent tool instead for task-based work — it auto-selects the best agent. "+
-				"Use exec only when you need a specific CLI or low-level control. "+
-				"Use role= for task routing — CLI selection is driven by config (default.yaml roles section), not hardcoded mappings. "+
-				"Unknown role names return a validation error immediately — no CLI is spawned. "+
-				"Routing uses operator-configured priority from config cli_priority, not alphabetical order. "+
-				"When async=true: returns job_id immediately; the CLI runs in the background. "+
-				"To collect results: spawn a Sonnet subagent wrapper — see aimux guide skill (poll-wrapper-subagent pattern). "+
-				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full output."),
-			mcp.WithString("prompt",
-				mcp.Required(),
-				mcp.Description("The prompt to send to the CLI"),
-			),
-			mcp.WithString("cli",
-				mcp.Description("CLI override (auto-resolved from role)"),
-			),
-			mcp.WithString("role",
-				mcp.Description("Task type: coding, codereview, thinkdeep, secaudit, debug, planner, analyze, refactor, testgen, docgen"),
-			),
-			mcp.WithString("model",
-				mcp.Description("Model override"),
-			),
-			mcp.WithString("reasoning_effort",
-				mcp.Description("Reasoning effort: low/medium/high/xhigh"),
-			),
-			mcp.WithString("cwd",
-				mcp.Description("Working directory for the CLI process"),
-			),
-			mcp.WithString("session_id",
-				mcp.Description("Resume session by ID"),
-			),
-			mcp.WithBoolean("async",
-				mcp.Description("Return job_id immediately for background execution"),
-			),
-			mcp.WithBoolean("read_only",
-				mcp.Description("Execute in read-only sandbox mode"),
-			),
-			mcp.WithNumber("timeout_seconds",
-				mcp.Description("Timeout override in seconds"),
-			),
-			mcp.WithBoolean("include_content",
-				mcp.Description("Sync mode: return full CLI output instead of brief metadata (default false)"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(false),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(false),
-				OpenWorldHint:   mcp.ToBoolPtr(true),
-			}),
-		),
-		s.handleExec,
-	)
-
 	// status tool
 	s.mcp.AddTool(
 		mcp.NewTool("status",
@@ -672,297 +603,9 @@ func (s *Server) registerTools() {
 		s.handleSessions,
 	)
 
-	// audit tool
-	s.mcp.AddTool(
-		mcp.NewTool("audit",
-			mcp.WithDescription("[delegate — external CLI, free for you] Run multi-agent codebase audit: scan→validate→investigate. "+
-				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full audit output."),
-			mcp.WithString("cwd",
-				mcp.Description("Working directory to audit"),
-			),
-			mcp.WithString("mode",
-				mcp.Description("Audit mode: quick (scan only), standard (scan+validate), deep (scan+validate+investigate)"),
-				mcp.Enum("quick", "standard", "deep"),
-			),
-			mcp.WithString("scope",
-				mcp.Description("Scope: full or changed"),
-				mcp.Enum("full", "changed"),
-			),
-			mcp.WithBoolean("async",
-				mcp.Description("Run in background"),
-			),
-			mcp.WithBoolean("include_content",
-				mcp.Description("Sync mode: return full audit output instead of brief metadata (default false)"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(true),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(false),
-				OpenWorldHint:   mcp.ToBoolPtr(true),
-			}),
-		),
-		s.handleAudit,
-	)
-
 	// Pattern tools: 23 individual MCP tools, one per think pattern.
 	// Replaces the single "think" tool with per-pattern tools.
 	s.registerPatternTools()
-
-	// investigate tool
-	s.mcp.AddTool(
-		mcp.NewTool("investigate",
-			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("investigate")+" "+
-				"action=list: returns brief rows (fits ~4k chars); supports limit (default 20, max 100) and offset. "+
-				"action=status: returns brief metadata (fits ~4k chars). "+
-				"action=recall: default omits full report; add include_content=true to retrieve it."),
-			mcp.WithString("action",
-				mcp.Required(),
-				mcp.Description("Action: start, finding, assess, report, auto, status, list, recall"),
-				mcp.Enum("start", "finding", "assess", "report", "auto", "status", "list", "recall"),
-			),
-			mcp.WithString("topic",
-				mcp.Description("Investigation topic (required for start, recall)"),
-			),
-			mcp.WithString("session_id",
-				mcp.Description("Investigation session ID (required for finding, assess, report, status)"),
-			),
-			mcp.WithString("domain",
-				mcp.Description("Domain: generic, debugging. Loads domain-specific coverage areas and methods."),
-			),
-			mcp.WithString("description",
-				mcp.Description("Finding description (required for action=finding)"),
-			),
-			mcp.WithString("source",
-				mcp.Description("Finding source — tool + location (required for action=finding)"),
-			),
-			mcp.WithString("severity",
-				mcp.Description("Finding severity (required for action=finding)"),
-				mcp.Enum("P0", "P1", "P2", "P3"),
-			),
-			mcp.WithString("confidence",
-				mcp.Description("Finding confidence level (optional, default VERIFIED)"),
-				mcp.Enum("VERIFIED", "INFERRED", "STALE", "BLOCKED", "UNKNOWN"),
-			),
-			mcp.WithString("coverage_area",
-				mcp.Description("Which coverage area this finding covers (optional for action=finding)"),
-			),
-			mcp.WithString("corrects",
-				mcp.Description("Finding ID this corrects — creates a Correction chain (optional for action=finding)"),
-			),
-			mcp.WithString("cwd",
-				mcp.Description("Working directory for report file save (optional for action=report, auto)"),
-			),
-			mcp.WithString("cli",
-				mcp.Description("Delegate CLI override (optional for action=auto)"),
-			),
-			mcp.WithBoolean("force",
-				mcp.Description("Generate report even when evidence is incomplete (optional for action=report)"),
-			),
-			mcp.WithBoolean("include_content",
-				mcp.Description("action=recall: return full saved report instead of brief (default false)"),
-			),
-			mcp.WithNumber("limit",
-				mcp.Description("action=list: max rows returned (default 20, max 100)"),
-			),
-			mcp.WithNumber("offset",
-				mcp.Description("action=list: zero-based pagination offset"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(false),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(false),
-				OpenWorldHint:   mcp.ToBoolPtr(true),
-			}),
-		),
-		s.handleInvestigate,
-	)
-
-	// consensus tool
-	s.mcp.AddTool(
-		mcp.NewTool("consensus",
-			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("consensus")+" "+
-				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full transcript."),
-			mcp.WithString("topic",
-				mcp.Required(),
-				mcp.Description("Topic for consensus"),
-			),
-			mcp.WithBoolean("synthesize",
-				mcp.Description("Generate synthesis of opinions (default false)"),
-			),
-			mcp.WithBoolean("blinded",
-				mcp.Description("Participants cannot see each other (default true)"),
-			),
-			mcp.WithNumber("max_turns",
-				mcp.Description("Maximum turns"),
-			),
-			mcp.WithBoolean("async",
-				mcp.Description("Run in background"),
-			),
-			mcp.WithBoolean("include_content",
-				mcp.Description("Sync mode: return full consensus transcript instead of brief metadata (default false)"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(true),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(false),
-				OpenWorldHint:   mcp.ToBoolPtr(true),
-			}),
-		),
-		s.handleConsensus,
-	)
-
-	// debate tool
-	s.mcp.AddTool(
-		mcp.NewTool("debate",
-			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("debate")+" "+
-				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full transcript."),
-			mcp.WithString("topic",
-				mcp.Required(),
-				mcp.Description("Topic for debate"),
-			),
-			mcp.WithBoolean("synthesize",
-				mcp.Description("Generate verdict (default true)"),
-			),
-			mcp.WithNumber("max_turns",
-				mcp.Description("Maximum turns (default 6)"),
-			),
-			mcp.WithBoolean("async",
-				mcp.Description("Run in background"),
-			),
-			mcp.WithBoolean("include_content",
-				mcp.Description("Sync mode: return full debate transcript instead of brief metadata (default false)"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(true),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(false),
-				OpenWorldHint:   mcp.ToBoolPtr(true),
-			}),
-		),
-		s.handleDebate,
-	)
-
-	// dialog tool
-	s.mcp.AddTool(
-		mcp.NewTool("dialog",
-			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("dialog")+" "+
-				"Default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full transcript."),
-			mcp.WithString("prompt",
-				mcp.Required(),
-				mcp.Description("Dialog topic or initial prompt"),
-			),
-			mcp.WithNumber("max_turns",
-				mcp.Description("Maximum turns (default 6)"),
-			),
-			mcp.WithBoolean("async",
-				mcp.Description("Run in background"),
-			),
-			mcp.WithBoolean("include_content",
-				mcp.Description("Sync mode: return full dialog transcript instead of brief metadata (default false)"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(false),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(false),
-				OpenWorldHint:   mcp.ToBoolPtr(true),
-			}),
-		),
-		s.handleDialog,
-	)
-
-	// agents tool
-	s.mcp.AddTool(
-		mcp.NewTool("agents",
-			mcp.WithDescription("[manage — server state, no cost] PRIMARY tool for task execution. "+
-				"Actions: run (execute task with agent=<name>), list (show agents), find (search agents), info (agent details). "+
-				"For run: specify agent=<name> to select the agent. If omitted, returns a candidate list for you to choose from. "+
-				"Use find(prompt=<query>) to search agents by keyword, or list to see all available agents with descriptions. "+
-				"action=list/find: default returns brief rows (fits ~4k chars); supports limit (default 20, max 100) and offset. "+
-				"action=info: default omits system prompt (can be 500KB+); add include_content=true to retrieve it. "+
-				"Prefer agents(action=run) over exec when you want an agent with a pre-built system prompt and role — "+
-				"exec is for raw prompt dispatch when no matching agent exists or you need low-level CLI control. "+
-				"Dispatch policy: "+agentsListHint+
-				" Example of the name-match trap: codex-self-delegate is an experimental probe, not a codex-dispatch wrapper."),
-			mcp.WithString("action",
-				mcp.Required(),
-				mcp.Description("Action: list, run, info, find"),
-				mcp.Enum("list", "run", "info", "find"),
-			),
-			mcp.WithString("agent",
-				mcp.Description("Agent name (required for run/info)"),
-			),
-			mcp.WithString("prompt",
-				mcp.Description("Prompt for run, or search query for find"),
-			),
-			mcp.WithString("cwd",
-				mcp.Description("Working directory (required for action=run)"),
-			),
-			mcp.WithBoolean("include_content",
-				mcp.Description("action=info: return full agent system prompt (default false)"),
-			),
-			mcp.WithNumber("limit",
-				mcp.Description("action=list/find: max rows returned (default 20, max 100)"),
-			),
-			mcp.WithNumber("offset",
-				mcp.Description("action=list/find: zero-based pagination offset"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(true),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(true),
-				OpenWorldHint:   mcp.ToBoolPtr(false),
-			}),
-		),
-		s.handleAgents,
-	)
-
-	// agent tool — deprecated in favour of agents(action=run).
-	// Kept for backwards compatibility; routes internally through agents(action=run).
-	s.mcp.AddTool(
-		mcp.NewTool("agent",
-			mcp.WithDescription("[DEPRECATED — use agents(action=run) instead] Run a named project agent through any CLI. "+
-				"Prefer agents(action=run) which uses BM25 semantic selection, feedback-adjusted scoring, "+
-				"and selection_rationale transparency. "+
-				"This tool is preserved for backwards compatibility only. "+
-				"Loads agent definition, injects system prompt, delegates to CLI in autonomous mode. "+
-				"The CLI IS the agent — it reads files, runs commands, edits code. "+
-				"When async=true: returns job_id immediately; use the status tool to poll for completion. "+
-				"For long-running agents, spawn a Sonnet subagent wrapper rather than polling in the main context — "+
-				"see aimux guide skill (poll-wrapper-subagent pattern). "+
-				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full output."),
-			mcp.WithString("agent",
-				mcp.Required(),
-				mcp.Description("Agent name from registry"),
-			),
-			mcp.WithString("prompt",
-				mcp.Required(),
-				mcp.Description("Task for the agent"),
-			),
-			mcp.WithString("cli",
-				mcp.Description("CLI override (default: from agent definition or role routing)"),
-			),
-			mcp.WithString("cwd",
-				mcp.Required(),
-				mcp.Description("Working directory (required)"),
-			),
-			mcp.WithBoolean("async",
-				mcp.Description("Run in background"),
-			),
-			mcp.WithNumber("timeout_seconds",
-				mcp.Description("Timeout override in seconds"),
-			),
-			mcp.WithBoolean("include_content",
-				mcp.Description("Sync mode: return full agent output instead of brief metadata (default false)"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(false),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(false),
-				OpenWorldHint:   mcp.ToBoolPtr(true),
-			}),
-		),
-		s.handleAgentRun,
-	)
 
 	// deepresearch tool
 	s.mcp.AddTool(
@@ -993,69 +636,6 @@ func (s *Server) registerTools() {
 			}),
 		),
 		s.handleDeepresearch,
-	)
-
-	// workflow tool
-	s.mcp.AddTool(
-		mcp.NewTool("workflow",
-			mcp.WithDescription("[delegate — external CLI, free for you] "+mustStatefulToolDescription("workflow")+" "+
-				"Sync mode: default returns brief metadata (fits ~4k chars) with content_length. Add include_content=true for full output."),
-			mcp.WithString("name",
-				mcp.Description("Workflow name (for logging)"),
-			),
-			mcp.WithString("steps",
-				mcp.Required(),
-				mcp.Description("JSON array of step definitions: [{id, tool, params, condition?, on_error?}]. Steps with async=true in their params produce job_id fields in the step result rather than blocking."),
-			),
-			mcp.WithString("input",
-				mcp.Description("Initial input text (available as {{input}} in templates)"),
-			),
-			mcp.WithBoolean("async",
-				mcp.Description("Run in background"),
-			),
-			mcp.WithBoolean("include_content",
-				mcp.Description("Sync mode: return full workflow output instead of brief metadata (default false)"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(false),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(false),
-				OpenWorldHint:   mcp.ToBoolPtr(true),
-			}),
-		),
-		s.handleWorkflow,
-	)
-
-	// critique tool — semantic artifact review via a named lens
-	s.mcp.AddTool(
-		mcp.NewTool("critique",
-			mcp.WithDescription("[delegate — external CLI, free for you] Review an artifact (code, spec, plan, API design) through a named lens. "+
-				"Produces structured findings with severity, location, issue, and suggested_fix. "+
-				"Use for semantic critique (security, API design, spec compliance, adversarial stress-test). "+
-				"For structural analysis without LLM inference, use think patterns instead. "+
-				"Returns findings array + summary; CLI is auto-selected via critic role (falls back to default)."),
-			mcp.WithString("artifact",
-				mcp.Required(),
-				mcp.Description("The artifact to critique (code, spec text, plan, API definition, etc.)"),
-			),
-			mcp.WithString("lens",
-				mcp.Description("Review lens: security, api-design, spec-compliance, adversarial"),
-				mcp.Enum("security", "api-design", "spec-compliance", "adversarial"),
-			),
-			mcp.WithString("cli",
-				mcp.Description("CLI override (default: auto-resolved via critic role)"),
-			),
-			mcp.WithNumber("max_findings",
-				mcp.Description("Maximum number of findings to return (default 10)"),
-			),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    mcp.ToBoolPtr(true),
-				DestructiveHint: mcp.ToBoolPtr(false),
-				IdempotentHint:  mcp.ToBoolPtr(false),
-				OpenWorldHint:   mcp.ToBoolPtr(true),
-			}),
-		),
-		s.handleCritique,
 	)
 
 	// upgrade tool — binary self-update from GitHub releases or local binary
@@ -1424,6 +1004,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		} else {
 			s.log.Debug("sessions health: F2 metrics unavailable: %v", err)
 		}
+		// Two-phase init observability (issue #129).
+		health["init_phase"] = s.initPhase.Load()
+		health["init_duration_ms"] = s.initDurationMs.Load()
+		health["warmup_deferred_count"] = s.warmupDeferredCount.Load()
 		return marshalToolResult(health)
 
 	case "cancel":
@@ -1529,10 +1113,6 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		})
 
 	default:
-		// Delegate cooldown sub-actions before returning an error for truly unknown actions.
-		if result, err := s.handleCooldown(ctx, request, action); result != nil || err != nil {
-			return result, err
-		}
 		return mcp.NewToolResultError(fmt.Sprintf("unknown action %q", action)), nil
 	}
 }
@@ -1667,6 +1247,11 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		// in that mode per clarification C2. aimuxHandler.SetUpdatePending() satisfies
 		// the upgrade.SessionHandler interface directly.
 		h, engineMode := s.sessionHandler.(*aimuxHandler)
+		// Diagnostic: log actual runtime state of the type assertion. Tracks engram
+		// issue #174 (hot-swap second-apply false-deferred). Remove once root cause
+		// is verified.
+		s.log.Info("upgrade-diag: handleUpgrade entered on Server=%p sessionHandler=%T (nil=%t) ctrlSocket=%q muxEngine!=nil=%t engineMode=%t",
+			s, s.sessionHandler, s.sessionHandler == nil, s.daemonControlSocketPath, s.muxEngine != nil, engineMode)
 		var sh upgrade.SessionHandler
 		if engineMode {
 			sh = h

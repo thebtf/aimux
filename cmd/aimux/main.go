@@ -18,7 +18,9 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/logger"
+	"github.com/thebtf/aimux/pkg/ratelimit"
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/tenant"
 	aimuxServer "github.com/thebtf/aimux/pkg/server"
 	muxdaemon "github.com/thebtf/mcp-mux/muxcore/daemon"
 	"github.com/thebtf/mcp-mux/muxcore/engine"
@@ -48,6 +50,8 @@ func run() error {
 		return err
 	}
 
+	bootstrapUID := parseBootstrapUID(os.Args[1:])
+
 	configDir := findConfigDir()
 
 	cfg, err := config.Load(configDir)
@@ -55,19 +59,57 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	logPath := config.ExpandPath(cfg.Server.LogFile)
-	log, err := logger.New(logPath, logger.ParseLevel(cfg.Server.LogLevel))
-	if err != nil {
-		return fmt.Errorf("init logger: %w", err)
+	// T012: --bootstrap-operator-uid flag support (FR-11).
+	// Runs before mode detection so bootstrapping works regardless of mode.
+	if bootstrapUID > 0 {
+		tenantsPath := tenantsYAMLPath(configDir)
+		if err := tenant.WriteBootstrapFile(tenantsPath, bootstrapUID); err != nil {
+			return fmt.Errorf("bootstrap tenants.yaml: %w", err)
+		}
 	}
-	defer log.Close()
-
-	log.Info("aimux v%s starting", aimuxServer.Version)
 
 	mode, modeErr := detectMode(os.Args, os.Getenv)
 	if modeErr != nil {
 		return modeErr
 	}
+
+	level := logger.ParseLevel(cfg.Server.LogLevel)
+	rotOpts := logger.RotationOpts{
+		MaxSizeMB:    cfg.Server.LogMaxSizeMB,
+		MaxBackups:   cfg.Server.LogMaxBackups,
+		MaxAgeDays:   cfg.Server.LogMaxAgeDays,
+		Compress:     cfg.Server.LogCompress,
+		MaxLineBytes: cfg.Server.LogMaxLineBytes,
+	}
+
+	// Mode-aware logger construction (AIMUX-11 FR-2 sole-writer invariant).
+	// Daemon: opens the log file via lumberjack — only writer in the system.
+	// Shim: never opens the log file. Forwards to daemon via IPCSink with
+	// stderr fallback for bootstrap and transport failures.
+	var (
+		log    *logger.Logger
+		shimIPC *logger.IPCSink // non-nil only in ModeShim — passed to runShim for OnInject wiring
+	)
+	if mode == ModeShim {
+		fallback := logger.NewStderrFallback()
+		shimIPC = logger.NewIPCSink(nil, logger.IPCSinkOpts{
+			BufferSize:         cfg.Server.LogForwardBufferSize,
+			TimeoutMs:          cfg.Server.LogForwardTimeoutMs,
+			ReconnectInitialMs: 1000,
+			ReconnectMaxMs:     5000,
+		}, fallback)
+		log = logger.NewShim(level, shimIPC, fallback)
+	} else {
+		logPath := config.ExpandPath(cfg.Server.LogFile)
+		var err error
+		log, err = logger.NewDaemon(logPath, level, rotOpts)
+		if err != nil {
+			return fmt.Errorf("init logger: %w", err)
+		}
+	}
+	defer log.Close()
+
+	log.Info("aimux v%s starting", aimuxServer.Version)
 
 	modeSignal := "default"
 	if mode == ModeDaemon {
@@ -76,9 +118,6 @@ func run() error {
 	modeName := "shim"
 	if mode == ModeDaemon {
 		modeName = "daemon"
-	}
-	if mode == ModeDirect {
-		modeName = "direct"
 	}
 	log.Info("aimux v%s mode=%s signal=%s", aimuxServer.Version, modeName, modeSignal)
 
@@ -94,18 +133,7 @@ func run() error {
 	}
 
 	if mode == ModeShim {
-		return runShim(ctx, cfg, log)
-	}
-
-	if mode == ModeDirect {
-		registry := driver.NewRegistry(cfg.CLIProfiles)
-		registry.Probe()
-		afterWarmup := registry.EnabledCLIs()
-		router := routing.NewRouterWithPriority(cfg.Roles, afterWarmup, cfg.CLIProfiles, cfg.Server.CLIPriority)
-		srv := aimuxServer.NewDaemon(cfg, log, registry, router)
-		defer srv.Shutdown()
-		log.Info("aimux v%s ready — serving MCP on direct stdio upstream", aimuxServer.Version)
-		return srv.ServeStdio()
+		return runShim(ctx, cfg, log, shimIPC)
 	}
 
 	registry := driver.NewRegistry(cfg.CLIProfiles)
@@ -143,6 +171,24 @@ func run() error {
 	srv := aimuxServer.NewDaemon(cfg, log, registry, router)
 	defer srv.Shutdown()
 
+	// T012: wire tenant registry + SIGHUP hot-reload (FR-1, FR-12 seam).
+	tenantReg := tenant.NewRegistry()
+	tenantsPath := tenantsYAMLPath(configDir)
+	if snap, loadErr := tenant.LoadFromFile(tenantsPath); loadErr == nil {
+		tenantReg.Swap(snap)
+		if tenantReg.IsMultiTenant() {
+			log.Info("tenant registry: multi-tenant mode active from %s", tenantsPath)
+		} else {
+			log.Info("tenant registry: legacy-default mode (empty tenants.yaml)")
+		}
+	} else if !errors.Is(loadErr, os.ErrNotExist) {
+		return fmt.Errorf("tenant registry: tenants.yaml present but invalid: %w", loadErr)
+	} else {
+		log.Info("tenant registry: legacy-default mode (no tenants.yaml at %s)", tenantsPath)
+	}
+	hotReloader := tenant.NewConfigHotReloader(tenantsPath, tenantReg, nil)
+	go hotReloader.Run(ctx)
+
 	transport := cfg.Server.Transport.Type
 	if envTransport := os.Getenv("MCP_TRANSPORT"); envTransport != "" {
 		transport = envTransport
@@ -164,17 +210,36 @@ func run() error {
 		engineName := aimuxServer.ResolveEngineName()
 
 		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
+		frameLimiter := ratelimit.NewTenantRateLimiter()
+		frameLimiter.SetRegistry(tenantReg)
+		// Wire the hot-reload drain controller so AuthorizeSession refuses new
+		// admissions for tenants in their drain window (FR-12, PRC v3 B2/B6).
+		authAdapter := aimuxServer.NewAuthorizeSessionAdapter(tenantReg, srv.AuditLog(), frameLimiter, hotReloader.DrainController())
 		eng, engErr := engine.New(engine.Config{
-			Name:           engineName,
-			Persistent:     true,
-			SessionHandler: srv.SessionHandler(),
-			Logger:         log.StdLogger(),
+			Name:             engineName,
+			Persistent:       true,
+			SessionHandler:   srv.SessionHandler(),
+			Logger:           log.StdLogger(),
+			OnFrameReceived:  frameLimiter.OnFrameReceived,
+			AuthorizeSession: authAdapter.Authorize,
 		})
 		if engErr != nil {
 			return fmt.Errorf("engine init: %w", engErr)
 		}
 		srv.SetMuxEngine(eng)
 		srv.SetDaemonControlSocketPath(eng.ControlSocketPath())
+
+		// FR-11: graceful drain on signal — best-effort flush remaining queue
+		// entries to lumberjack with a 500 ms hard deadline before Shutdown
+		// reaps the goroutine. SIGKILL bypasses this path (acceptable per EC-10).
+		defer func() {
+			if drained, lost := log.DrainWithDeadline(500 * time.Millisecond); lost > 0 || drained > 0 {
+				_, _ = fmt.Fprintf(os.Stderr, "aimux: graceful drain: drained=%d lost=%d\n", drained, lost)
+			}
+		}()
+		// Phase B: swap lightweightDelegate → fullDelegate in the background so the
+		// engine can begin accepting connections immediately (issue #129).
+		srv.RunPhaseB(ctx)
 		if runErr := eng.Run(ctx); runErr != nil && !errors.Is(runErr, context.Canceled) {
 			return fmt.Errorf("engine: %w", runErr)
 		}
@@ -437,4 +502,20 @@ func (r *handoffRelay) cleanup(log *logger.Logger) {
 		log.Warn("handoff token cleanup failed: %v", err)
 	}
 	_ = removePlatformHandoffRelay(r.socketPath)
+}
+
+// parseBootstrapUID extracts the --bootstrap-operator-uid flag value from args.
+// Returns 0 when the flag is absent or unparseable.
+func parseBootstrapUID(args []string) int {
+	fs := flag.NewFlagSet("aimux-bootstrap", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var uid int
+	fs.IntVar(&uid, "bootstrap-operator-uid", 0, "")
+	_ = fs.Parse(args)
+	return uid
+}
+
+// tenantsYAMLPath returns the canonical path for tenants.yaml relative to configDir.
+func tenantsYAMLPath(configDir string) string {
+	return filepath.Join(configDir, "tenants.yaml")
 }

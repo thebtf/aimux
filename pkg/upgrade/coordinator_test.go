@@ -665,7 +665,7 @@ func runApplyAndReadSingleLogLine(t *testing.T, buildCoordinator func(*logger.Lo
 	t.Helper()
 
 	logPath := filepath.Join(t.TempDir(), "upgrade.log")
-	upgradeLogger, err := logger.New(logPath, logger.LevelDebug)
+	upgradeLogger, err := logger.New(logPath, logger.LevelDebug, logger.RotationOpts{})
 	if err != nil {
 		t.Fatalf("logger.New: %v", err)
 	}
@@ -755,4 +755,8 @@ func (m *mockControlHandler) HandleRefreshSessionToken(prevToken string) (newTok
 
 func (m *mockControlHandler) HandleReconnectGiveUp(reason string) error {
 	return nil
+}
+
+func (m *mockControlHandler) HandleListOwners(req control.Request) (control.ListOwnersResponse, error) {
+	return control.ListOwnersResponse{}, nil
 }

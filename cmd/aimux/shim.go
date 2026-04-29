@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/thebtf/aimux/pkg/build"
@@ -29,7 +31,12 @@ const shimErrMsg = "shim mode is not expected to serve MCP requests; this is eit
 //
 // AIMUX_ENGINE_NAME controls IPC socket discovery via pkg/server.ResolveEngineName,
 // preserving dev/prod daemon isolation (PR #71).
-func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error {
+//
+// ipc, when non-nil, is wired to engine.Config.OnInject so log entries forwarded
+// through the IPCSink ride the same IPC channel as legitimate CC traffic. The
+// shim's logger is constructed in main.go ModeShim path; ipc is the same instance.
+// Pre-handshake entries route to StderrFallback per FR-4.
+func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger, ipc *logger.IPCSink) error {
 	// Engine name controls IPC socket discovery — different names = isolated daemons.
 	// Shared resolution logic with cmd/aimux/main.go avoids drift in daemon naming.
 	engineName := aimuxServer.ResolveEngineName()
@@ -40,21 +47,51 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error 
 	if exeErr != nil {
 		return fmt.Errorf("resolve executable: %w", exeErr)
 	}
-	hadDirectUpstream := false
-	previousDirectUpstream := os.Getenv("AIMUX_DIRECT_UPSTREAM")
-	if previousDirectUpstream != "" {
-		hadDirectUpstream = true
-	}
-	if err := os.Setenv("AIMUX_DIRECT_UPSTREAM", "1"); err != nil {
-		return fmt.Errorf("set AIMUX_DIRECT_UPSTREAM: %w", err)
-	}
-	defer func() {
-		if hadDirectUpstream {
-			_ = os.Setenv("AIMUX_DIRECT_UPSTREAM", previousDirectUpstream)
-			return
+
+	// OnInject closure: muxcore fires this once after the initial IPC handshake
+	// completes. Wires the inject closure to the IPCSink so subsequent
+	// log.Info/Warn/Error calls flow through the live IPC channel as
+	// notifications/aimux/log_forward frames (engram#178, mcp-mux#107).
+	var onInject func(inject func([]byte) error)
+	if ipc != nil {
+		onInject = func(inject func([]byte) error) {
+			ipc.SetSendFunc(inject)
 		}
-		_ = os.Unsetenv("AIMUX_DIRECT_UPSTREAM")
-	}()
+	}
+
+	// AIMUX_TEST_EMIT_LINES — test-only hook for FR-10 multi-process integrity
+	// test. When set to a positive integer N, the shim chains a wrapper around
+	// the OnInject closure that emits N log entries with a per-shim sequence
+	// number after the IPC handshake completes, then signals exit. The chain
+	// preserves the original IPC wiring; in production (env unset) the closure
+	// is identical to the simple wiring above.
+	emitLines := 0
+	if v := os.Getenv("AIMUX_TEST_EMIT_LINES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			emitLines = n
+		}
+	}
+	if emitLines > 0 {
+		base := onInject
+		onInject = func(inject func([]byte) error) {
+			if base != nil {
+				base(inject)
+			}
+			go func() {
+				for i := 0; i < emitLines; i++ {
+					log.Info("test-emit %d/%d", i+1, emitLines)
+				}
+				// Allow IPCSink drainLoop + IPC writer to ship every entry to
+				// the daemon before the process dies. ringBuf default cap=100,
+				// drain rate ~thousands/sec, so 800ms is generous.
+				time.Sleep(800 * time.Millisecond)
+				// Hard-exit because StdinEOFWaitForDisconnect would otherwise
+				// keep eng.Run blocked. Test-only path; production never sets
+				// AIMUX_TEST_EMIT_LINES.
+				os.Exit(0)
+			}()
+		}
+	}
 
 	eng, engErr := engine.New(engine.Config{
 		Name:           engineName,
@@ -65,6 +102,7 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger) error 
 		SessionHandler: &stubSessionHandler{log: log},
 		StdinEOFPolicy: owner.StdinEOFWaitForDisconnect,
 		Logger:         log.StdLogger(),
+		OnInject:       onInject,
 	})
 	if engErr != nil {
 		return fmt.Errorf("shim engine init: %w", engErr)

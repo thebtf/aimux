@@ -1,0 +1,7 @@
+ok  	github.com/thebtf/aimux/loom	2.863s
+ok  	github.com/thebtf/aimux/loom/deps	0.270s
+?   	github.com/thebtf/aimux/loom/examples/custom_worker	[no test files]
+?   	github.com/thebtf/aimux/loom/examples/hello	[no test files]
+?   	github.com/thebtf/aimux/loom/examples/http	[no test files]
+?   	github.com/thebtf/aimux/loom/examples/subprocess	[no test files]
+ok  	github.com/thebtf/aimux/loom/workers	1.866s

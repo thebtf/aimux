@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.0] — 2026-04-29 — AIMUX-12 multi-tenant isolation
+
+### Added (AIMUX-12 multi-tenant-isolation, 9 phases P0-P8)
+
+- **In-process tenant isolation within ONE daemon** — public multi-tenant production target. Drop separate-daemons-per-tenant pattern.
+- **`pkg/tenant/`** — TenantContext (immutable), TenantConfig (UID/Role/RateLimit/Quota), TenantRegistry (atomic.Pointer hot path per NFR-1), loader (yaml.v3 with duplicate detection), bootstrap (`--bootstrap-operator-uid` flag, mode 0600), hot-reload (SIGHUP coalesce + atomic Swap), legacy-default fallback.
+- **`pkg/audit/`** — non-blocking AuditLog + FileAuditLog (4096 buffer, atomic dropped counter, mode 0600). 6 event types: allow, deny, rate_limited, cross_tenant_blocked, tenant_config_change, loom_submit_rejected.
+- **`pkg/session/repo.go`** — TenantScopedStore + sessions.db tenant_id V4 migration. Cross-tenant Get returns ErrNotFound (NEVER 403) per CHK079.
+- **`loom/tenant_engine.go`** — TenantScopedLoomEngine + loom.tasks tenant_id column. Cross-tenant Get/Cancel returns ErrTaskNotFound. FR-17 quota enforcement via live SQL CountForTenant.
+- **`pkg/server/dispatch_middleware.go`** — DispatchMiddleware с ResolveContext возвращает ErrTenantUnenrolled в multi-tenant mode (NEVER LegacyDefault privilege escalation). NFR-10 dispatch overhead 44-49 ns/op (1000× под 50 µs target).
+- **`pkg/logger/log_partitioner.go`** — per-tenant log routing via NotificationHandlerWithSessionMeta. sanitizeTenantID rejects path traversal payloads (route to fallback).
+- **`pkg/ratelimit/tenant_limiter.go`** — atomic.Int64 token buckets, CAS double-refill protection, OnFrameReceived hook (<50 ns/op, well под 1 ms muxcore budget).
+- **`pkg/server/authorize_session.go`** — AuthorizeSession callback adapter. Single-shot per-session admission gate. Drain check (FR-12) wired live.
+- **`docs/PRODUCTION-TESTING-PLAYBOOK.md`** — 20 customer-mode scenarios across 7 phases (rule #11).
+- **`tests/critical/`** — 15 @critical tests covering session/loom/log/authZ/rate-limit/dispatch isolation (rule #10).
+
+### Changed
+
+- **muxcore v0.23.0-alpha.1 → v0.24.0** — multi-tenant extensions ConnInfo, SessionMeta, AuthorizeSession, OnFrameReceived. Backward-compat byte-identical via nil-default. Closes upstream issues #109/#110/#111/#112.
+- **`go.mod`** — `replace github.com/thebtf/aimux/loom => ./loom` for local dev.
+
+### Fixed
+
+- **CR-002 (11 blockers)** — earlier in day, sendWithTimeoutVia leak, IPCSink Close race, channelBuf 1024→4096, DrainSaturated counter, sanitizeTag injection prevention, FR-12 honesty rewrite.
+- **engram#180** — EnsureSessionID UUID generation for empty input в 6 stateful think patterns.
+- **AIMUX-12 PRC v3 blockers (8 findings, 6 fix commits)**: B1 priv-esc (ResolveContext multi-tenant denial), B2 drain bypass (IsDraining wired), B3 sigCh footgun, B4 token bucket CAS starvation, B5 ctx stub removal, B6 drain TODO contract violation, B7 div-zero panic, B8 BeginDrain leak.
+
+### Resolved (engram issues)
+
+- **#173** progress_tail loom regression — works-as-designed for post-purge surface.
+- **#174** hot-swap structurally impossible from child upstream — path-3 honest-deferred.
+- **#176** log rotation 146 GB OOM — lumberjack + sole-writer FR-2 + per-line cap shipped.
+- **#180** structured_argumentation session_id="" collision — UUID helper applied across 6 patterns.
+
+### Fixed (PRC v5 W-warnings — все closed в v5.1.0, не deferred)
+
+- **W1 [S3]** `pkg/logger/log_partitioner.go` — sanitizeTenantID NFC normalization + strict ASCII allowlist `[a-zA-Z0-9_-]`. Closes Unicode visual-spoof: Cyrillic homoglyphs (`аcme` U+0430), RTL override (U+202E), zero-width joiner, denormalized combining marks. Path traversal stays blocked. (commit 6461258)
+- **W2 [S3]** `loom/loom.go` + `loom/tenant_engine.go` — per-tenant submit lock (sync.Map[tenantID]→sync.Mutex) closes quota TOCTOU. N concurrent Submits no longer all pass depth=cap-1 check. Test: TestLoomSubmit_BurstConcurrentSubmits_RespectsQuota PASS на 5 repeats. (commit 70b9a7c)
+- **W3 [S4]** `pkg/tenant/hotreload.go` — Swap snapshot before BeginDrain (was inverted). Closes sub-ms admission window for removed tenants. (commit 0b38c38)
+- **W4 [P2]** `pkg/ratelimit/tenant_limiter.go::SetAuditLog` — reflect-based typed-nil guard. `var x *FileAuditLog; SetAuditLog(x)` no longer panics in Emit. (commit 188be7f)
+- **W5 [MINOR]** `pkg/server/authorize_session.go::Authorize` — negative PeerUid → AuthDeny before uint32 cast. Closes Windows edge-case wraparound. (commit 2872f22)
+- **W6 [MINOR]** `pkg/tenant/tenant.go` — `PeerUid` field → `PeerUID` (Go initialism convention). Cross-package rename via Serena. (commit 223ba99)
+- **N1 [P3]** `pkg/server/server_session.go` — explicit deny via `EmitUnenrolledBlocked` + JSON-RPC -32000 on unknown ResolveContext error class. Was log.Warn fallthrough — defense-by-default violation. (commit 550dde0)
+
 ### Removed
 
 - `AIMUX_NO_ENGINE` env var fully removed. It was deprecated in AIMUX-6 and already ignored; aimux now has no remaining env check, warning, or test branch for that legacy path.

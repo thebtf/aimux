@@ -124,6 +124,7 @@ func (p *sequentialThinkingPattern) SchemaFields() map[string]think.FieldSchema 
 func (p *sequentialThinkingPattern) Category() string { return "solo" }
 
 func (p *sequentialThinkingPattern) Handle(validInput map[string]any, sessionID string) (*think.ThinkResult, error) {
+	sessionID = think.EnsureSessionID(sessionID)
 	sess := think.GetOrCreateSession(sessionID, "sequential_thinking", map[string]any{
 		"thoughts": []any{},
 		"branches": map[string]any{},

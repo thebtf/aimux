@@ -18,7 +18,13 @@ func ResolveEngineName() string {
 		return name
 	}
 	if len(os.Args) > 0 && os.Args[0] != "" {
-		base := filepath.Base(os.Args[0])
+		// Normalize both separators so Windows-style paths produce a correct
+		// basename when this binary is invoked under a Unix runtime (e.g.
+		// CI test runners that fake os.Args). filepath.Base on Linux does
+		// NOT treat '\' as a separator, so a path like "C:\\tools\\aimux-dev.exe"
+		// would yield the entire string. Convert to forward slashes first.
+		raw := strings.ReplaceAll(os.Args[0], `\`, `/`)
+		base := filepath.Base(raw)
 		base = strings.TrimSuffix(base, ".exe")
 		base = strings.TrimSuffix(base, ".EXE")
 		if trimmed := strings.TrimSpace(base); trimmed != "" {

@@ -42,6 +42,36 @@ type ServerConfig struct {
 	// Per-profile warmup_timeout_seconds overrides this for individual CLIs.
 	WarmupTimeoutSeconds int `yaml:"warmup_timeout_seconds"`
 
+	// WarmupGraceSeconds is the maximum seconds HandleRequest callers in Phase A
+	// will block waiting for Phase B (heavy init) to complete. When the grace
+	// period expires before Phase B finishes, callers receive a JSON-RPC -32001
+	// retry-hint response with retry_after_seconds set to this value.
+	// Default: 15. Set async_init: false to skip Phase A entirely.
+	WarmupGraceSeconds int `yaml:"warmup_grace_seconds"`
+
+	// AsyncInit enables two-phase daemon startup (Phase A fast listen + Phase B
+	// async heavy init). Set to false to revert to synchronous bootstrap where
+	// SessionHandler() is not called until heavy init completes.
+	// Default: true.
+	AsyncInit *bool `yaml:"async_init"`
+
+	// Log rotation settings (lumberjack). All fields are optional; zero value
+	// preserves lumberjack defaults (100 MB rotation, keep all backups, no age limit).
+	LogMaxSizeMB    int  `yaml:"log_max_size_mb"`    // 100 — rotate when file reaches this many MB
+	LogMaxBackups   int  `yaml:"log_max_backups"`    // 5 — max number of rotated files to keep
+	LogMaxAgeDays   int  `yaml:"log_max_age_days"`   // 14 — delete backups older than this many days
+	LogCompress     bool `yaml:"log_compress"`       // true — gzip rotated backups
+	LogMaxLineBytes int  `yaml:"log_max_line_bytes"` // 4096 — truncate lines longer than this
+
+	// LogForwardBufferSize is the ring buffer capacity for shim-side IPCSink.
+	// Entries in excess of this limit drop the oldest entry. Default: 100.
+	LogForwardBufferSize int `yaml:"log_forward_buffer_size"`
+
+	// LogForwardTimeoutMs is the per-entry send timeout (milliseconds) for the
+	// IPCSink send goroutine. On timeout the entry is routed to StderrFallback.
+	// Default: 100.
+	LogForwardTimeoutMs int `yaml:"log_forward_timeout_ms"`
+
 	RateLimitRPS   float64 `yaml:"rate_limit_rps"`
 	RateLimitBurst int     `yaml:"rate_limit_burst"`
 	// AuthToken is the bearer token for HTTP/SSE transport authentication.
@@ -328,6 +358,29 @@ func applyDefaults(cfg *Config) {
 	// No override needed here — preserve the YAML value as-is.
 	if s.WarmupTimeoutSeconds == 0 {
 		s.WarmupTimeoutSeconds = 15
+	}
+
+	// Log rotation defaults. LogCompress is a bool — its default (true) is expressed
+	// in default.yaml so operators can override it with log_compress: false. We do not
+	// set it here because applyDefaults runs after YAML unmarshal and cannot distinguish
+	// "user explicitly set false" from "struct zero value false".
+	if s.LogMaxSizeMB == 0 {
+		s.LogMaxSizeMB = 100
+	}
+	if s.LogMaxBackups == 0 {
+		s.LogMaxBackups = 5
+	}
+	if s.LogMaxAgeDays == 0 {
+		s.LogMaxAgeDays = 14
+	}
+	if s.LogMaxLineBytes == 0 {
+		s.LogMaxLineBytes = 4096
+	}
+	if s.LogForwardBufferSize == 0 {
+		s.LogForwardBufferSize = 100
+	}
+	if s.LogForwardTimeoutMs == 0 {
+		s.LogForwardTimeoutMs = 100
 	}
 
 	cb := &cfg.CircuitBreaker

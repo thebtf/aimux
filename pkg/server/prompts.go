@@ -10,7 +10,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	inv "github.com/thebtf/aimux/pkg/investigate"
 	"github.com/thebtf/aimux/pkg/skills"
 	"github.com/thebtf/aimux/pkg/think"
 )
@@ -90,30 +89,6 @@ func (s *Server) buildSkillData(req mcp.GetPromptRequest) *skills.SkillData {
 	// Metrics snapshot.
 	snap := s.metrics.Snapshot()
 
-	// Past investigation reports from cwd.
-	var pastReports []skills.ReportInfo
-	if cwd, err := os.Getwd(); err == nil {
-		if entries, err := inv.ListReports(cwd); err == nil {
-			for _, e := range entries {
-				pastReports = append(pastReports, skills.ReportInfo{
-					Topic:    e.Topic,
-					Date:     e.Date,
-					Filename: e.Filename,
-				})
-			}
-		}
-	}
-
-	// Agent list.
-	var agentInfos []skills.AgentInfo
-	for _, a := range s.agentReg.List() {
-		agentInfos = append(agentInfos, skills.AgentInfo{
-			Name:        a.Name,
-			Description: a.Description,
-			Role:        a.Role,
-		})
-	}
-
 	// Think patterns.
 	thinkPatterns := think.GetAllPatterns()
 
@@ -152,8 +127,8 @@ func (s *Server) buildSkillData(req mcp.GetPromptRequest) *skills.SkillData {
 		RoleRouting:     roleRouting,
 		TotalRequests:   snap.TotalRequests,
 		ErrorRate:       snap.ErrorRate,
-		PastReports:     pastReports,
-		Agents:          agentInfos,
+		PastReports:     nil,
+		Agents:          nil,
 		ThinkPatterns:   thinkPatterns,
 		CallerSkills:    callerSkills,
 		RelatedSkills:   relatedSkills,

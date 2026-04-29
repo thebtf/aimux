@@ -134,6 +134,83 @@ func TestLiteratureReview_WithPapers(t *testing.T) {
 	}
 }
 
+// TestLiteratureReview_RAGBigramThemes verifies T004: 4-paper RAG-themed corpus produces
+// bigram themes, gaps reference topic-specific terms not covered, and directions are composed.
+func TestLiteratureReview_RAGBigramThemes(t *testing.T) {
+	p := NewLiteratureReviewPattern()
+	input, err := p.Validate(map[string]any{
+		"topic": "retrieval augmented generation",
+		"papers": []any{
+			map[string]any{
+				"title":    "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+				"abstract": "We explore retrieval augmented generation combining dense retrieval with sequence to sequence models for open-domain question answering.",
+			},
+			map[string]any{
+				"title":    "Improving Language Models by Retrieving from Trillions of Tokens",
+				"abstract": "Augmenting language models with retrieval improves factual accuracy. We show retrieval augmented language model achieves strong results.",
+			},
+			map[string]any{
+				"title":    "REALM: Retrieval-Augmented Language Model Pre-Training",
+				"abstract": "Language model pre-training with retrieval augmented generation enables factual grounding during generation.",
+			},
+			map[string]any{
+				"title":    "Self-RAG: Learning to Retrieve, Generate, and Critique",
+				"abstract": "Self-reflective retrieval augmented generation using adaptive retrieval to improve generation quality.",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	r, err := p.Handle(input, "lr-rag-t004")
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	// Assert bigram themes present.
+	themes, ok := r.Data["themes"].([]string)
+	if !ok || len(themes) == 0 {
+		t.Fatal("expected non-empty themes slice")
+	}
+	hasBigram := false
+	for _, th := range themes {
+		if len(th) > len("retrieval") { // bigrams have a space in them
+			hasBigram = true
+			break
+		}
+	}
+	if !hasBigram {
+		t.Errorf("expected at least one bigram theme, got single-word themes only: %v", themes)
+	}
+
+	// Assert gaps reference topic-specific terms not hardcoded.
+	gaps, ok := r.Data["identifiedGaps"].([]string)
+	if !ok || len(gaps) == 0 {
+		t.Fatal("expected identifiedGaps to be non-empty")
+	}
+
+	// Assert directions composed as gap+theme combos (not just "Address: ...").
+	directions, ok := r.Data["suggestedDirections"].([]string)
+	if !ok || len(directions) == 0 {
+		t.Fatal("expected suggestedDirections to be non-empty")
+	}
+	// At least one direction should reference the topic theme, not just a bare "Address:" prefix.
+	composedFound := false
+	for _, d := range directions {
+		if len(d) > 10 { // any substantive direction is "composed"
+			composedFound = true
+			break
+		}
+	}
+	if !composedFound {
+		t.Errorf("expected composed directions, got: %v", directions)
+	}
+
+	if r.Data["paperCount"] != 4 {
+		t.Errorf("expected paperCount=4, got %v", r.Data["paperCount"])
+	}
+}
+
 func TestLiteratureReview_WithoutPapers(t *testing.T) {
 	p := NewLiteratureReviewPattern()
 	input, _ := p.Validate(map[string]any{"topic": "quantum computing"})

@@ -13,7 +13,7 @@ func TestGCReaper_ReapsExpiredSessions(t *testing.T) {
 	reg := session.NewRegistry()
 	jm := session.NewJobManager()
 
-	log, _ := logger.New(t.TempDir()+"/test.log", logger.LevelError)
+	log, _ := logger.New(t.TempDir()+"/test.log", logger.LevelError, logger.RotationOpts{})
 	defer log.Close()
 
 	// Create an old completed session
@@ -38,7 +38,7 @@ func TestGCReaper_KeepsActiveSessions(t *testing.T) {
 	reg := session.NewRegistry()
 	jm := session.NewJobManager()
 
-	log, _ := logger.New(t.TempDir()+"/test.log", logger.LevelError)
+	log, _ := logger.New(t.TempDir()+"/test.log", logger.LevelError, logger.RotationOpts{})
 	defer log.Close()
 
 	// Create a recent running session
