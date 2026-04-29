@@ -212,12 +212,14 @@ func run() error {
 		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
 		frameLimiter := ratelimit.NewTenantRateLimiter()
 		frameLimiter.SetRegistry(tenantReg)
+		authAdapter := aimuxServer.NewAuthorizeSessionAdapter(tenantReg, srv.AuditLog(), frameLimiter)
 		eng, engErr := engine.New(engine.Config{
-			Name:            engineName,
-			Persistent:      true,
-			SessionHandler:  srv.SessionHandler(),
-			Logger:          log.StdLogger(),
-			OnFrameReceived: frameLimiter.OnFrameReceived,
+			Name:             engineName,
+			Persistent:       true,
+			SessionHandler:   srv.SessionHandler(),
+			Logger:           log.StdLogger(),
+			OnFrameReceived:  frameLimiter.OnFrameReceived,
+			AuthorizeSession: authAdapter.Authorize,
 		})
 		if engErr != nil {
 			return fmt.Errorf("engine init: %w", engErr)

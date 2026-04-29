@@ -5,6 +5,11 @@ import "sync/atomic"
 // Snapshot is an immutable point-in-time view of all enrolled tenants,
 // keyed by OS UID. Snapshots are replaced atomically on SIGHUP hot-reload;
 // they are never mutated after construction.
+//
+// The byUID map uses int as the key type (matching the OS uid_t range on all
+// supported platforms). ResolveByUID accepts uint32 (the wire format from
+// muxcore ConnInfo.PeerUid) and casts it to int for the lookup, which is safe
+// on all 32-bit and 64-bit platforms where uid_t fits in int.
 type Snapshot struct {
 	byUID map[int]TenantConfig
 }
@@ -76,6 +81,22 @@ func (r *TenantRegistry) ResolveByName(name string) (TenantConfig, bool) {
 		}
 	}
 	return TenantConfig{}, false
+}
+
+// ResolveByUID looks up a tenant by OS UID (uint32 wire format from muxcore ConnInfo).
+// It returns the TenantConfig and true on success, or (TenantConfig{}, false) when the
+// UID is not enrolled.
+//
+// ResolveByUID is O(1) — it performs one atomic pointer load on the snapshot, then a
+// direct map lookup by the cast int key. This is the hot-path method called by
+// AuthorizeSession on every session open.
+func (r *TenantRegistry) ResolveByUID(uid uint32) (TenantConfig, bool) {
+	snap := r.snapshot.Load()
+	if snap == nil {
+		return TenantConfig{}, false
+	}
+	cfg, ok := snap.byUID[int(uid)]
+	return cfg, ok
 }
 
 // IsMultiTenant returns true when the registry contains at least one enrolled tenant.

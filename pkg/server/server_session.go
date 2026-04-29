@@ -13,6 +13,7 @@ import (
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/session"
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
@@ -301,6 +302,7 @@ var _ muxcore.ProjectLifecycle = (*aimuxHandler)(nil)
 var _ muxcore.NotifierAware = (*aimuxHandler)(nil)
 var _ muxcore.NotificationHandler = (*aimuxHandler)(nil)
 var _ muxcore.NotificationHandlerWithSessionMeta = (*aimuxHandler)(nil)
+var _ muxcore.SessionHandlerWithSessionMeta = (*aimuxHandler)(nil)
 
 // currentDelegate returns the active delegate. Panics if unset (misconfiguration).
 func (h *aimuxHandler) currentDelegate() handlerDelegate {
@@ -335,6 +337,58 @@ func (h *aimuxHandler) HandleRequest(ctx context.Context, project muxcore.Projec
 		}
 		return resp, err
 	}
+}
+
+// HandleRequestWithSessionMeta implements muxcore.SessionHandlerWithSessionMeta.
+// When muxcore has already resolved peer identity via AuthorizeSession, it calls
+// this method instead of HandleRequest, providing the pre-resolved SessionMeta.
+//
+// The key difference from HandleRequest: meta.TenantID is already authoritative —
+// it was set by AuthorizeSessionAdapter.Authorize at session-accept time. We
+// construct the TenantContext directly from meta rather than falling back to the
+// peerUID=0 placeholder path in dispatchMW.ResolveContext.
+//
+// If meta.TenantID is empty (legacy mode or no AuthorizeSession callback configured),
+// we fall through to HandleRequest which uses ResolveContext with the peerUID=0
+// fallback — preserving backward compatibility.
+func (h *aimuxHandler) HandleRequestWithSessionMeta(
+	ctx context.Context,
+	project muxcore.ProjectContext,
+	meta muxcore.SessionMeta,
+	req []byte,
+) ([]byte, error) {
+	// Phase 8 hot path: TenantID was resolved at session-accept time by AuthorizeSession.
+	// Construct TenantContext directly from meta — no registry lookup needed.
+	if meta.TenantID != "" && h.srv.dispatchMW != nil {
+		tc := tenant.TenantContext{
+			TenantID:         meta.TenantID,
+			PeerUid:          meta.Conn.PeerUid,
+			SessionID:        project.ID,
+			RequestStartedAt: time.Now(),
+		}
+		ctx = h.srv.dispatchMW.WithContext(ctx, tc)
+		ctx = session.WithTenant(ctx, tc)
+		if h.srv.loom != nil {
+			ctx = context.WithValue(ctx, tenantScopedLoomKey{},
+				loom.NewTenantScopedEngine(h.srv.loom, tc.TenantID, nil))
+		}
+		// Emit allow audit event for multi-tenant dispatch (mirrors T034 in HandleRequest).
+		if h.srv.dispatchMW.IsMultiTenant() {
+			h.srv.dispatchMW.EmitAllow(tc, "")
+		}
+		// Delegate to current (full) delegate with the pre-populated context.
+		// The redispatch loop handles the Phase A → Phase B transition edge case.
+		for {
+			resp, err := h.currentDelegate().HandleRequest(ctx, project, req)
+			if err == errReadyButShouldRedispatch {
+				continue
+			}
+			return resp, err
+		}
+	}
+
+	// Fallback: legacy mode (empty TenantID) → standard HandleRequest path.
+	return h.HandleRequest(ctx, project, req)
 }
 
 // OnProjectConnect forwards to the current delegate.

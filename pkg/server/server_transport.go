@@ -11,6 +11,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/thebtf/aimux/pkg/audit"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/upgrade"
 	"github.com/thebtf/mcp-mux/muxcore"
@@ -42,6 +43,14 @@ func (s *Server) SessionHandler() muxcore.SessionHandler {
 		s.log.Info("upgrade-diag: SessionHandler() called, Phase A delegate installed, Server=%p", s)
 	}
 	return h
+}
+
+// AuditLog returns the audit.AuditLog shared by DispatchMiddleware and
+// AuthorizeSessionAdapter. Always non-nil after NewDaemon returns.
+// Used by main.go to wire NewAuthorizeSessionAdapter without duplicating
+// the audit-log construction logic.
+func (s *Server) AuditLog() audit.AuditLog {
+	return s.auditLog
 }
 
 // SetDaemonControlSocketPath stores the live muxcore daemon control socket path.

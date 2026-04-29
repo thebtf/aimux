@@ -108,6 +108,10 @@ type Server struct {
 	// and emits audit events (AIMUX-12 Phase 5, T031).
 	dispatchMW *DispatchMiddleware
 
+	// auditLog is the audit event sink shared by dispatchMW and AuthorizeSessionAdapter.
+	// Always non-nil after NewDaemon returns (discardAuditLog is used as fallback).
+	auditLog audit.AuditLog
+
 	// logIngester receives forwarded log entries from shim peers via the
 	// "notifications/aimux/log_forward" JSON-RPC notification path (AIMUX-11 Phase 2).
 	logIngester *LogIngester
@@ -235,14 +239,17 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	}
 	if mkdirErr := os.MkdirAll(filepath.Dir(auditLogPath), 0700); mkdirErr != nil {
 		log.Warn("audit: could not create audit log directory: %v (audit events will be discarded)", mkdirErr)
-		s.dispatchMW = NewDispatchMiddleware(tenantReg, &discardAuditLog{})
+		s.auditLog = &discardAuditLog{}
+		s.dispatchMW = NewDispatchMiddleware(tenantReg, s.auditLog)
 	} else {
 		fileAudit, auditErr := audit.NewFileAuditLog(auditLogPath)
 		if auditErr != nil {
 			log.Warn("audit: could not open audit log %s: %v (audit events will be discarded)", auditLogPath, auditErr)
-			s.dispatchMW = NewDispatchMiddleware(tenantReg, &discardAuditLog{})
+			s.auditLog = &discardAuditLog{}
+			s.dispatchMW = NewDispatchMiddleware(tenantReg, s.auditLog)
 		} else {
-			s.dispatchMW = NewDispatchMiddleware(tenantReg, fileAudit)
+			s.auditLog = fileAudit
+			s.dispatchMW = NewDispatchMiddleware(tenantReg, s.auditLog)
 			log.Info("audit log: %s", auditLogPath)
 		}
 	}
