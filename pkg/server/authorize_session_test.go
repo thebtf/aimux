@@ -378,5 +378,47 @@ func (p *panicRegistryWrapper) ResolveByUID(_ uint32) (tenant.TenantConfig, bool
 }
 func (p *panicRegistryWrapper) IsMultiTenant() bool { return true }
 
+// TestAuthorize_NegativePeerUID_Denies verifies W5 (AIMUX-12 v5.1.0):
+// a connection arriving with conn.PeerUid < 0 (out-of-band sentinel from a
+// probing or malformed handshake) is rejected explicitly with AuthDeny + a
+// cross_tenant_blocked audit event whose Reason cites the negative UID.
+//
+// Without the W5 guard, the fallthrough cast `uint32(conn.PeerUid)` wraps
+// negative ints to a huge unsigned value (e.g. -1 → 4294967295) which then
+// fails ResolveByUID and produces a misleading audit reason "tenant resolution
+// failed for uid=-1" — the wrap is invisible to operators reading the trail.
+func TestAuthorize_NegativePeerUID_Denies(t *testing.T) {
+	reg := buildRegistry(map[uint32]tenant.TenantConfig{
+		1000: {Name: "tenantA", UID: 1000, Role: tenant.RoleOperator},
+	})
+	al := &mockAuditLog{}
+	rl := newSessionTenantRecorder()
+
+	adapter := NewAuthorizeSessionAdapter(reg, al, rl, nil)
+
+	conn := muxcore.ConnInfo{PeerPid: 1, PeerUid: -1, Platform: muxcore.PlatformWindowsNamedPipe}
+	project := muxcore.ProjectContext{ID: "proj-negative-uid"}
+	result := adapter.Authorize(context.Background(), conn, project)
+
+	if result.Decision != muxcore.AuthDeny {
+		t.Fatalf("expected AuthDeny for negative PeerUid, got %v (reason=%q)", result.Decision, result.Reason)
+	}
+	if result.Reason == "" {
+		t.Error("expected non-empty Reason on negative-UID deny")
+	}
+
+	events := al.Events()
+	var foundNegBlock bool
+	for _, ev := range events {
+		if ev.EventType == audit.EventCrossTenantBlocked && ev.OperatorUID == -1 {
+			foundNegBlock = true
+			break
+		}
+	}
+	if !foundNegBlock {
+		t.Errorf("expected cross_tenant_blocked audit event with OperatorUID=-1, got %v", events)
+	}
+}
+
 // Compile-time: verify time package is imported (used in events).
 var _ = time.Now

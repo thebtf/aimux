@@ -104,6 +104,29 @@ func (a *AuthorizeSessionAdapter) Authorize(
 		}
 	}
 
+	// W5 (AIMUX-12 v5.1.0): negative PeerUid sentinel guard. The Unix UID
+	// space is unsigned; muxcore exposes PeerUid as `int` to accommodate the
+	// platform-agnostic signature, but a negative value is an out-of-band
+	// sentinel (e.g. -1 from a probing or malformed handshake). Casting it to
+	// uint32 wraps to a huge value that can never be in tenants.yaml, so the
+	// downstream ResolveByUID would deny anyway — but the audit trail would
+	// record a confusing "uid=4294967295" entry. Reject explicitly here so the
+	// audit reason is honest and ResolveByUID never sees the wrap.
+	if conn.PeerUid < 0 {
+		a.auditLog.Emit(audit.AuditEvent{
+			Timestamp:   time.Now(),
+			EventType:   audit.EventCrossTenantBlocked,
+			OperatorUID: conn.PeerUid,
+			ResourceID:  project.ID,
+			Result:      "denied",
+			Reason:      fmt.Sprintf("negative peer UID rejected (uid=%d)", conn.PeerUid),
+		})
+		return muxcore.SessionAuth{
+			Decision: muxcore.AuthDeny,
+			Reason:   "negative peer UID",
+		}
+	}
+
 	// Step 2: multi-tenant mode — resolve PeerUid → TenantConfig.
 	uid := uint32(conn.PeerUid) // safe cast: PeerUid is a Unix UID (≤2^32-1)
 	cfg, found := a.registry.ResolveByUID(uid)
