@@ -223,6 +223,49 @@ func TestBeginDrain_AfterTimeoutRemovesFromMap(t *testing.T) {
 	})
 }
 
+// TestReload_SwapBeforeDrain_NoStaleAdmissionWindow verifies W3 (AIMUX-12 v5.1.0):
+// reload() must call registry.Swap BEFORE BeginDrain so that the moment a tenant
+// disappears from tenants.yaml, ResolveByUID returns false IMMEDIATELY for any
+// concurrent admission attempt. Prior to W3 the order was BeginDrain → Swap, which
+// left a stale-admission window where new sessions for the removed tenant could
+// still resolve on the OLD snapshot before the swap committed.
+//
+// Strategy: load alice+bob, then reload with bob removed, and immediately query
+// ResolveByUID for bob's UID. Post-W3 the lookup MUST return false on the very
+// first call after reload returns (no polling, no race window).
+func TestReload_SwapBeforeDrain_NoStaleAdmissionWindow(t *testing.T) {
+	dir := t.TempDir()
+	path := makeYAMLFile(t, dir, validYAML2)
+
+	reg := NewRegistry()
+	reloader := NewConfigHotReloader(path, reg, nil)
+
+	// Initial load: alice + bob both enrolled.
+	reloader.reload(context.Background())
+	if _, ok := reg.ResolveByUID(1002); !ok {
+		t.Fatal("setup: bob (uid=1002) must be enrolled before removal test")
+	}
+
+	// Remove bob from file and reload.
+	if err := os.WriteFile(path, []byte(validYAML1), 0o600); err != nil {
+		t.Fatalf("write reduced yaml: %v", err)
+	}
+	reloader.reload(context.Background())
+
+	// W3 invariant: after reload returns, ResolveByUID for the removed UID
+	// MUST return false IMMEDIATELY — Swap committed before BeginDrain. If
+	// the order is reversed (pre-W3), this lookup may still succeed against
+	// the old snapshot.
+	if _, ok := reg.ResolveByUID(1002); ok {
+		t.Fatal("W3 regression: ResolveByUID(1002) returned true immediately after reload — Swap did not commit before BeginDrain (stale-admission window present)")
+	}
+
+	// Companion check: drain SHOULD be active for bob (drain still runs after swap).
+	if !reloader.DrainController().IsDraining("bob") {
+		t.Fatal("W3 invariant: BeginDrain must still fire after Swap — bob should be draining")
+	}
+}
+
 func TestDrainController_TenantRemovedFlagged(t *testing.T) {
 	dir := t.TempDir()
 

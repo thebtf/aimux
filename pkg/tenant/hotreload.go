@@ -155,6 +155,16 @@ func (h *ConfigHotReloader) reload(ctx context.Context) {
 		return
 	}
 
+	// W3 (AIMUX-12 v5.1.0): swap FIRST, then begin drains. Pre-W3 ordering
+	// (BeginDrain → Swap) opened a window where new sessions for a removed
+	// tenant could still admit on the OLD snapshot via ResolveByUID, even
+	// though that tenant had already entered the drain countdown. After the
+	// swap, ResolveByUID for the disappeared UID returns false, so any
+	// concurrent AuthorizeSession deny path fires immediately. BeginDrain on
+	// the disappeared tenants then closes existing in-flight sessions per
+	// FR-12. Order matters; never swap these two steps back.
+	h.registry.Swap(newSnap)
+
 	// Compute removed tenants: UIDs present in oldSnap but absent in newSnap.
 	if oldSnap != nil {
 		for uid, cfg := range oldSnap.byUID {
@@ -165,7 +175,6 @@ func (h *ConfigHotReloader) reload(ctx context.Context) {
 		}
 	}
 
-	h.registry.Swap(newSnap)
 	log.Printf("tenant hot-reload: reloaded %q — %d tenant(s) enrolled", h.path, len(newSnap.byUID))
 }
 
