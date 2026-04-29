@@ -75,7 +75,7 @@ func TestHotReloader_ValidReload(t *testing.T) {
 	// Wait past coalesce window before second signal.
 	reloader.drain = newDrainController() // reset drain to avoid test pollution
 	// Directly call reload to bypass coalesce timing in unit tests.
-	reloader.reload()
+	reloader.reload(context.Background())
 
 	if _, ok := reg.Resolve(1002); !ok {
 		t.Error("bob (uid 1002) should appear after second reload")
@@ -108,7 +108,7 @@ func TestHotReloader_InvalidReloadRetainsPrevious(t *testing.T) {
 	if err := os.WriteFile(path, []byte("tenants: [{{invalid"), 0o600); err != nil {
 		t.Fatalf("write bad yaml: %v", err)
 	}
-	reloader.reload() // call directly to bypass coalesce
+	reloader.reload(context.Background()) // call directly to bypass coalesce
 
 	// Previous config must still be intact.
 	cfg, ok = reg.Resolve(1001)
@@ -170,6 +170,59 @@ func TestNewConfigHotReloader_SigChWiredIntoStruct(t *testing.T) {
 	}
 }
 
+// TestBeginDrain_AfterTimeoutRemovesFromMap verifies that the BeginDrain
+// goroutine cleans up the draining map entry after the drain window expires
+// (and on context cancellation). PRC v3 B8 — prior implementation leaked the
+// map entry indefinitely, so a re-enrolled tenant inherited the stale flag.
+func TestBeginDrain_AfterTimeoutRemovesFromMap(t *testing.T) {
+	t.Run("timeout path removes entry", func(t *testing.T) {
+		d := newDrainController()
+		ctx := context.Background()
+
+		// Pass drainSeconds=1 so the timeout fires inside the test window.
+		d.BeginDrain(ctx, "tenantA", 1)
+
+		// Immediately after BeginDrain, IsDraining should be true.
+		if !d.IsDraining("tenantA") {
+			t.Fatal("expected IsDraining(tenantA)=true immediately after BeginDrain")
+		}
+
+		// Wait past the drain window (+ small slack for goroutine scheduling).
+		// Poll for cleanup; max wait 3s to avoid a fragile sleep.
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if !d.IsDraining("tenantA") {
+				return // success — entry cleaned up
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatal("expected draining map entry to be removed after drain window expired (B8 leak regression)")
+	})
+
+	t.Run("ctx cancel path removes entry", func(t *testing.T) {
+		d := newDrainController()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Use a long drain so only ctx cancel can release the goroutine.
+		d.BeginDrain(ctx, "tenantB", 3600)
+
+		if !d.IsDraining("tenantB") {
+			t.Fatal("expected IsDraining(tenantB)=true immediately after BeginDrain")
+		}
+
+		cancel()
+
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if !d.IsDraining("tenantB") {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatal("expected draining map entry to be removed after ctx cancel (B8 leak regression)")
+	})
+}
+
 func TestDrainController_TenantRemovedFlagged(t *testing.T) {
 	dir := t.TempDir()
 
@@ -180,7 +233,7 @@ func TestDrainController_TenantRemovedFlagged(t *testing.T) {
 	reloader := NewConfigHotReloader(path, reg, nil)
 
 	// Load alice + bob.
-	reloader.reload()
+	reloader.reload(context.Background())
 	if _, ok := reg.Resolve(1001); !ok {
 		t.Fatal("alice not in registry")
 	}
@@ -192,7 +245,7 @@ func TestDrainController_TenantRemovedFlagged(t *testing.T) {
 	if err := os.WriteFile(path, []byte(validYAML1), 0o600); err != nil {
 		t.Fatalf("write reduced yaml: %v", err)
 	}
-	reloader.reload()
+	reloader.reload(context.Background())
 
 	// alice still enrolled; bob removed.
 	if _, ok := reg.Resolve(1002); ok {

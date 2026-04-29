@@ -27,8 +27,20 @@ func newDrainController() *TenantDrainController {
 }
 
 // BeginDrain marks the named tenant as draining and starts a countdown timer.
-// When the timer expires it emits a TenantDrained log entry (Phase 8: event bus).
-func (d *TenantDrainController) BeginDrain(tenantName string, drainSeconds int) {
+// When the timer expires the entry is removed from the draining map (so the
+// next time the same tenant name re-enrolls it is not stuck draining) and a
+// TenantDrained log entry is emitted (Phase 8: event bus).
+//
+// ctx is honoured for cancellation: when the daemon shuts down before the
+// drain window expires, the goroutine exits without emitting the timeout log
+// and still removes the map entry so the controller is safe for re-use in
+// tests that share a controller across reloads.
+//
+// PRC v3 B8 — prior implementation leaked one goroutine + map entry per drain
+// cycle (no context, no map cleanup). Repeated SIGHUP add/remove churn on
+// the same UID held the tenant in "draining" forever from the POV of the
+// adapter's IsDraining check, denying admission indefinitely.
+func (d *TenantDrainController) BeginDrain(ctx context.Context, tenantName string, drainSeconds int) {
 	d.mu.Lock()
 	d.draining[tenantName] = true
 	d.mu.Unlock()
@@ -37,9 +49,22 @@ func (d *TenantDrainController) BeginDrain(tenantName string, drainSeconds int) 
 		drainSeconds = defaultRemovalDrainSeconds
 	}
 	go func() {
-		time.Sleep(time.Duration(drainSeconds) * time.Second)
-		// Phase 8: emit TenantDrained event here to force-close sessions.
-		log.Printf("tenant drain: %q drain window expired after %ds — sessions may be force-closed in Phase 8", tenantName, drainSeconds)
+		timer := time.NewTimer(time.Duration(drainSeconds) * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			// Phase 8: emit TenantDrained event here to force-close sessions.
+			log.Printf("tenant drain: %q drain window expired after %ds — sessions may be force-closed in Phase 8", tenantName, drainSeconds)
+		case <-ctx.Done():
+			// Daemon shutting down — exit without the timeout log.
+		}
+
+		// Map cleanup runs on both paths so that a re-enrolled tenant
+		// (same name) does not inherit the draining flag from a previous
+		// cycle.
+		d.mu.Lock()
+		delete(d.draining, tenantName)
+		d.mu.Unlock()
 	}()
 }
 
@@ -84,6 +109,9 @@ func (h *ConfigHotReloader) DrainController() *TenantDrainController {
 // (SIGHUP on Unix). When h.sigCh is non-nil, Run consumes signals from the
 // injected channel — used for unit tests to avoid sending real SIGHUP to the
 // test process.
+//
+// ctx is propagated to drain goroutines started by reload() via BeginDrain so
+// they exit cleanly on daemon shutdown.
 func (h *ConfigHotReloader) Run(ctx context.Context) {
 	ch := h.sigCh
 	if ch == nil {
@@ -107,7 +135,7 @@ func (h *ConfigHotReloader) Run(ctx context.Context) {
 				log.Printf("tenant hot-reload: SIGHUP coalesced (last reload %s ago, window %s)", now.Sub(lastReload).Round(time.Millisecond), reloadCoalesceWindow)
 				continue
 			}
-			h.reload()
+			h.reload(ctx)
 			lastReload = time.Now()
 		}
 	}
@@ -115,7 +143,10 @@ func (h *ConfigHotReloader) Run(ctx context.Context) {
 
 // reload reads tenants.yaml, validates it, and swaps the registry snapshot.
 // On failure the existing snapshot is retained and the error is logged.
-func (h *ConfigHotReloader) reload() {
+//
+// ctx is forwarded to BeginDrain for any tenant that disappears between
+// snapshots so the drain goroutine exits cleanly when the daemon shuts down.
+func (h *ConfigHotReloader) reload(ctx context.Context) {
 	oldSnap := h.registry.snapshot.Load()
 
 	newSnap, err := LoadFromFile(h.path)
@@ -129,7 +160,7 @@ func (h *ConfigHotReloader) reload() {
 		for uid, cfg := range oldSnap.byUID {
 			if _, stillPresent := newSnap.byUID[uid]; !stillPresent {
 				log.Printf("tenant hot-reload: tenant %q (uid=%d) removed — starting drain window (%ds)", cfg.Name, uid, cfg.RemovalDrainSeconds)
-				h.drain.BeginDrain(cfg.Name, cfg.RemovalDrainSeconds)
+				h.drain.BeginDrain(ctx, cfg.Name, cfg.RemovalDrainSeconds)
 			}
 		}
 	}
