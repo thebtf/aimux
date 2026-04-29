@@ -44,7 +44,7 @@ func TestHotReloader_ValidReload(t *testing.T) {
 
 	reg := NewRegistry()
 	sigCh := make(chan os.Signal, 1)
-	reloader := NewConfigHotReloaderWithChan(path, reg, sigCh)
+	reloader := NewConfigHotReloader(path, reg, sigCh)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -88,7 +88,7 @@ func TestHotReloader_InvalidReloadRetainsPrevious(t *testing.T) {
 
 	reg := NewRegistry()
 	sigCh := make(chan os.Signal, 1)
-	reloader := NewConfigHotReloaderWithChan(path, reg, sigCh)
+	reloader := NewConfigHotReloader(path, reg, sigCh)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -126,7 +126,7 @@ func TestHotReloader_CoalescedSignals(t *testing.T) {
 
 	reg := NewRegistry()
 	sigCh := make(chan os.Signal, 3)
-	reloader := NewConfigHotReloaderWithChan(path, reg, sigCh)
+	reloader := NewConfigHotReloader(path, reg, sigCh)
 
 	// Intercept reload calls by wrapping the signal channel.
 	// We send 3 signals rapidly; only the first should trigger a reload within
@@ -153,6 +153,23 @@ func TestHotReloader_CoalescedSignals(t *testing.T) {
 	// catch concurrent map writes if coalescing is broken.
 }
 
+// TestNewConfigHotReloader_SigChWiredIntoStruct guards against the constructor
+// silently dropping the sigCh parameter. Prior to the v3 PRC fix the canonical
+// constructor accepted sigCh but did not assign it, causing every production
+// caller to receive a reloader that ignored the injected signal channel.
+func TestNewConfigHotReloader_SigChWiredIntoStruct(t *testing.T) {
+	reg := NewRegistry()
+	sigCh := make(chan os.Signal, 1)
+	r := NewConfigHotReloader("/tmp/none.yaml", reg, sigCh)
+	if r.sigCh == nil {
+		t.Fatal("NewConfigHotReloader: sigCh dropped — constructor footgun regression (B3)")
+	}
+	rNil := NewConfigHotReloader("/tmp/none.yaml", reg, nil)
+	if rNil.sigCh != nil {
+		t.Fatal("NewConfigHotReloader: nil sigCh became non-nil — unexpected mutation")
+	}
+}
+
 func TestDrainController_TenantRemovedFlagged(t *testing.T) {
 	dir := t.TempDir()
 
@@ -160,7 +177,7 @@ func TestDrainController_TenantRemovedFlagged(t *testing.T) {
 	path := makeYAMLFile(t, dir, validYAML2)
 
 	reg := NewRegistry()
-	reloader := NewConfigHotReloaderWithChan(path, reg, nil)
+	reloader := NewConfigHotReloader(path, reg, nil)
 
 	// Load alice + bob.
 	reloader.reload()

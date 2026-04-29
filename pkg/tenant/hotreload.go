@@ -60,14 +60,16 @@ type ConfigHotReloader struct {
 	sigCh    <-chan os.Signal // injected for testability; nil means use SIGHUP
 }
 
-// NewConfigHotReloader constructs a ConfigHotReloader for the given file path
-// and registry. Pass a non-nil sigCh to inject a test signal channel instead of
-// the real SIGHUP notification; pass nil for production use.
+// NewConfigHotReloader is the canonical constructor for ConfigHotReloader.
+// Pass a non-nil sigCh to inject a test signal channel instead of the real
+// SIGHUP notification; pass nil for production use (Run will register for
+// the platform-specific signal).
 func NewConfigHotReloader(path string, registry *TenantRegistry, sigCh <-chan os.Signal) *ConfigHotReloader {
 	return &ConfigHotReloader{
 		path:     path,
 		registry: registry,
 		drain:    newDrainController(),
+		sigCh:    sigCh,
 	}
 }
 
@@ -78,8 +80,10 @@ func (h *ConfigHotReloader) DrainController() *TenantDrainController {
 }
 
 // Run starts the hot-reload loop. It blocks until ctx is cancelled.
-// In production, wire a real SIGHUP channel by setting h.sigCh before calling Run.
-// In tests, inject a mock channel via NewConfigHotReloaderWithChan.
+// When h.sigCh is nil, Run registers for the platform-specific reload signal
+// (SIGHUP on Unix). When h.sigCh is non-nil, Run consumes signals from the
+// injected channel — used for unit tests to avoid sending real SIGHUP to the
+// test process.
 func (h *ConfigHotReloader) Run(ctx context.Context) {
 	ch := h.sigCh
 	if ch == nil {
@@ -134,14 +138,3 @@ func (h *ConfigHotReloader) reload() {
 	log.Printf("tenant hot-reload: reloaded %q — %d tenant(s) enrolled", h.path, len(newSnap.byUID))
 }
 
-// NewConfigHotReloaderWithChan is the testable constructor. sigCh receives
-// injected signals instead of OS SIGHUP; this avoids sending real SIGHUP
-// to the process in unit tests.
-func NewConfigHotReloaderWithChan(path string, registry *TenantRegistry, sigCh <-chan os.Signal) *ConfigHotReloader {
-	return &ConfigHotReloader{
-		path:     path,
-		registry: registry,
-		drain:    newDrainController(),
-		sigCh:    sigCh,
-	}
-}
