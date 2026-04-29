@@ -183,6 +183,11 @@ func copyFileForTest(t *testing.T, srcPath string, dstPath string) {
 	if err := dst.Close(); err != nil {
 		t.Fatalf("close test binary %s: %v", dstPath, err)
 	}
+	// os.Create writes mode 0o644 — restore +x so fork/exec works on Unix.
+	// On Windows this is a no-op; NTFS infers executability from extension.
+	if err := os.Chmod(dstPath, 0o755); err != nil {
+		t.Fatalf("chmod +x test binary %s: %v", dstPath, err)
+	}
 }
 
 func serveMockRelease(t *testing.T, currentVersion string, nextVersion string, binaryPath string) string {
