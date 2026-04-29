@@ -137,11 +137,13 @@ func (a *AuthorizeSessionAdapter) Authorize(
 			OperatorUID: conn.PeerUid,
 			ResourceID:  project.ID,
 			Result:      "denied",
-			Reason:      fmt.Sprintf("tenant resolution failed for uid=%d", conn.PeerUid),
+			Reason:      fmt.Sprintf("tenant resolution failed for uid=%d", conn.PeerUid), // audit: full context for operator forensics
 		})
+		// DEF-10/FR-3: shim-visible Reason must NOT contain UID digits (enumeration oracle).
+		// UID stays in the audit log above; peer sees only a generic denial.
 		return muxcore.SessionAuth{
 			Decision: muxcore.AuthDeny,
-			Reason:   fmt.Sprintf("tenant resolution failed for uid=%d", conn.PeerUid),
+			Reason:   "access denied",
 		}
 	}
 

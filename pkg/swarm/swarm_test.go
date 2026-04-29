@@ -660,3 +660,109 @@ func TestSwarm_Get_DeadPersistent_Respawns(t *testing.T) {
 		t.Errorf("Send on h2: %v", err)
 	}
 }
+
+// --- DEF-8 / FR-2 per-key lock tests (T001/T002/T003) ---
+
+// TestSwarm_ParallelKeysFactoryNonBlocking proves that Get on DISTINCT
+// registry keys runs factoryFn in parallel — the per-key sync.Map mutex
+// added in T001 must not serialise unrelated keys (DEF-8 latency-bomb fix).
+//
+// Anti-stub: replacing factoryFn with an instant return would NOT exercise
+// the parallelism guarantee — the sleep is load-bearing.
+func TestSwarm_ParallelKeysFactoryNonBlocking(t *testing.T) {
+	t.Parallel()
+
+	const factoryDelay = 100 * time.Millisecond
+	// Parallel-execution budget: both factories run concurrently → ~factoryDelay
+	// wall-clock plus scheduler/lock overhead. Serial execution would yield
+	// ≥ 2 × factoryDelay (200ms). Threshold from tasks.md AC: ≤ 130ms.
+	const parallelBudget = 130 * time.Millisecond
+
+	factory := func(name string) (types.ExecutorV2, error) {
+		time.Sleep(factoryDelay)
+		return &mockExecutorV2{alive: types.HealthAlive}, nil
+	}
+
+	s := swarm.New(factory, nil)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	start := time.Now()
+
+	for _, name := range []string{"codex", "gemini"} {
+		wg.Add(1)
+		go func(n string) {
+			defer wg.Done()
+			if _, err := s.Get(ctx, n, swarm.Stateful); err != nil {
+				t.Errorf("Get(%s): %v", n, err)
+			}
+		}(name)
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	if elapsed > parallelBudget {
+		t.Errorf("DEF-8: distinct-key Gets serialised — wall-clock %v exceeds parallel budget %v "+
+			"(factory delay %v, serial would be ≥%v); per-key lock not preventing cross-key "+
+			"factoryFn blocking", elapsed, parallelBudget, factoryDelay, 2*factoryDelay)
+	}
+}
+
+// TestSwarm_SameKeyConcurrentSerialFactory verifies that the per-key mutex
+// preserves same-key TOCTOU prevention (BUG-003) post-DEF-8 refactor: 50
+// concurrent Gets on the SAME key must result in exactly ONE factoryFn call
+// and ONE handle ID returned to all goroutines.
+//
+// Anti-stub: removing the per-key mutex (or LoadOrStore-without-Lock pattern)
+// causes counter > 1 — test fails immediately.
+func TestSwarm_SameKeyConcurrentSerialFactory(t *testing.T) {
+	t.Parallel()
+
+	var spawnCount atomic.Int32
+	factory := func(name string) (types.ExecutorV2, error) {
+		spawnCount.Add(1)
+		// Small sleep encourages goroutine interleaving inside the per-key
+		// critical section — without the mutex, multiple goroutines would
+		// observe an empty registry and race into spawnLocked.
+		time.Sleep(time.Millisecond)
+		return &mockExecutorV2{alive: types.HealthAlive}, nil
+	}
+
+	s := swarm.New(factory, nil)
+	ctx := context.Background()
+
+	const goroutines = 50
+	handles := make(chan *swarm.Handle, goroutines)
+	var wg sync.WaitGroup
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h, err := s.Get(ctx, "codex", swarm.Stateful)
+			if err != nil {
+				t.Errorf("Get: %v", err)
+				return
+			}
+			handles <- h
+		}()
+	}
+
+	wg.Wait()
+	close(handles)
+
+	seen := make(map[string]struct{})
+	for h := range handles {
+		seen[h.ID] = struct{}{}
+	}
+
+	if got := spawnCount.Load(); got != 1 {
+		t.Errorf("BUG-003 regression: expected exactly 1 factory call, got %d "+
+			"(per-key mutex not serialising same-key Gets)", got)
+	}
+	if len(seen) != 1 {
+		t.Errorf("BUG-003 regression: expected 1 unique handle ID, got %d "+
+			"(double-spawn detected)", len(seen))
+	}
+}

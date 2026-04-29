@@ -132,6 +132,65 @@ type Server struct {
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
 var deprecationOnce sync.Once
 
+// auditFatalfFn is the fatal-error hook invoked when audit log initialisation
+// fails in multi-tenant mode. It defaults to writing to stderr and calling
+// os.Exit(1) — identical to log.Fatalf behaviour without importing the stdlib
+// "log" package. Tests swap this to a panic-stub to exercise the fatal path
+// without terminating the test process. (DEF-11 / FR-4)
+var auditFatalfFn = func(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "FATAL: "+format+"\n", args...)
+	os.Exit(1)
+}
+
+// initAuditLog initialises the daemon audit log and constructs the DispatchMiddleware
+// for the given tenant registry. It is extracted from NewDaemon so tests can inject
+// a pre-populated TenantRegistry and exercise the fail-closed path without subprocess
+// invocation.
+//
+// Failure handling (DEF-11 / FR-4):
+//   - Single-tenant mode (reg.IsMultiTenant() == false): warn + fall back to
+//     discardAuditLog (EC-5 — preserves dev-iteration path when audit dir is
+//     temporarily missing).
+//   - Multi-tenant mode (reg.IsMultiTenant() == true): call auditFatalfFn
+//     (defaults to os.Exit(1)) because silently dropping cross_tenant_blocked
+//     events is unsafe on a shared-host deployment.
+//
+// Returns a non-nil AuditLog and a non-nil DispatchMiddleware in every path
+// that does not call auditFatalfFn.
+func initAuditLog(cfg *config.Config, log *logger.Logger, reg *tenant.TenantRegistry) (audit.AuditLog, *DispatchMiddleware) {
+	auditLogPath := filepath.Join(filepath.Dir(config.ExpandPath(cfg.Server.DBPath)), ".aimux", "audit.log")
+	if cfg.Server.DBPath == "" {
+		// Fallback when db_path not configured (e.g. memory-only mode):
+		// use a temp-dir-relative path that will not persist across restarts.
+		auditLogPath = filepath.Join(os.TempDir(), "aimux-audit.log")
+	}
+
+	newDiscard := func() (audit.AuditLog, *DispatchMiddleware) {
+		al := &discardAuditLog{}
+		return al, NewDispatchMiddleware(reg, al)
+	}
+
+	if mkdirErr := os.MkdirAll(filepath.Dir(auditLogPath), 0700); mkdirErr != nil {
+		if reg.IsMultiTenant() {
+			auditFatalfFn("audit log init failed in multi-tenant mode: could not create audit directory: %v", mkdirErr)
+		}
+		log.Warn("audit: could not create audit log directory: %v (audit events will be discarded)", mkdirErr)
+		return newDiscard()
+	}
+
+	fileAudit, auditErr := audit.NewFileAuditLog(auditLogPath)
+	if auditErr != nil {
+		if reg.IsMultiTenant() {
+			auditFatalfFn("audit log init failed in multi-tenant mode: could not open %s: %v", auditLogPath, auditErr)
+		}
+		log.Warn("audit: could not open audit log %s: %v (audit events will be discarded)", auditLogPath, auditErr)
+		return newDiscard()
+	}
+
+	log.Info("audit log: %s", auditLogPath)
+	return fileAudit, NewDispatchMiddleware(reg, fileAudit)
+}
+
 // NewDaemon creates a fully-initialised daemon-mode Server. This is the ONLY
 // constructor that performs heavy init (SQLite open, migrate, reconcile,
 // LoomEngine, skill engine, periodic snapshot loop).
@@ -139,7 +198,12 @@ var deprecationOnce sync.Once
 // Callers MUST invoke NewDaemon only after detectMode() has confirmed daemon
 // mode. Calling it from shim or legacy-proxy context will corrupt daemon
 // persistent state (spec FR-3, NFR-3, architecture doc §2.3 anti-pattern).
-func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *routing.Router) *Server {
+//
+// tenantReg is the pre-populated TenantRegistry. Pass nil to get legacy-default
+// mode (empty registry, IsMultiTenant() == false). cmd/aimux/main.go passes the
+// registry AFTER loading tenants.yaml so initAuditLog sees the correct multi-tenant
+// state at daemon construction time (DEF-11 / FR-4 fix).
+func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *routing.Router, tenantReg *tenant.TenantRegistry) *Server {
 	s := &Server{
 		cfg:      cfg,
 		log:      log,
@@ -230,29 +294,11 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	// Initialize DispatchMiddleware — wires tenant context resolution into every
 	// MCP tool dispatch (AIMUX-12 Phase 5, T031). The middleware is always
 	// constructed; in legacy-default mode (no tenants.yaml) it is a no-op pass-through.
-	tenantReg := tenant.NewRegistry()
-	auditLogPath := filepath.Join(filepath.Dir(config.ExpandPath(cfg.Server.DBPath)), ".aimux", "audit.log")
-	if cfg.Server.DBPath == "" {
-		// Fallback when db_path not configured (e.g. memory-only mode):
-		// use a temp-dir-relative path that will not persist across restarts.
-		auditLogPath = filepath.Join(os.TempDir(), "aimux-audit.log")
+	// In multi-tenant mode, audit log init failure is fatal (DEF-11 / FR-4).
+	if tenantReg == nil {
+		tenantReg = tenant.NewRegistry()
 	}
-	if mkdirErr := os.MkdirAll(filepath.Dir(auditLogPath), 0700); mkdirErr != nil {
-		log.Warn("audit: could not create audit log directory: %v (audit events will be discarded)", mkdirErr)
-		s.auditLog = &discardAuditLog{}
-		s.dispatchMW = NewDispatchMiddleware(tenantReg, s.auditLog)
-	} else {
-		fileAudit, auditErr := audit.NewFileAuditLog(auditLogPath)
-		if auditErr != nil {
-			log.Warn("audit: could not open audit log %s: %v (audit events will be discarded)", auditLogPath, auditErr)
-			s.auditLog = &discardAuditLog{}
-			s.dispatchMW = NewDispatchMiddleware(tenantReg, s.auditLog)
-		} else {
-			s.auditLog = fileAudit
-			s.dispatchMW = NewDispatchMiddleware(tenantReg, s.auditLog)
-			log.Info("audit log: %s", auditLogPath)
-		}
-	}
+	s.auditLog, s.dispatchMW = initAuditLog(cfg, log, tenantReg)
 
 	// Start GC reaper for expired sessions
 	gcCtx, gcCancel := context.WithCancel(context.Background())
@@ -384,7 +430,7 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	deprecationOnce.Do(func() {
 		log.Warn("aimuxServer.New is deprecated; use NewDaemon. See AIMUX-6 spec.")
 	})
-	return NewDaemon(cfg, log, reg, router)
+	return NewDaemon(cfg, log, reg, router, nil)
 }
 
 // runSnapshotLoop periodically saves in-memory state to SQLite.

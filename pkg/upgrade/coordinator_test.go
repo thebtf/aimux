@@ -710,6 +710,24 @@ func controlSocketTestPath(t *testing.T) string {
 	if runtime.GOOS == "windows" {
 		return filepath.Join(os.TempDir(), "aimux-gr.sock")
 	}
+	// macOS sun_path is 104 bytes (struct sockaddr_un); Linux is 108. Go's
+	// t.TempDir() roots under /var/folders/<short-hash>/T/<test-name>NNN/...
+	// which combined with the test name + "aimux-gr.sock" (13 bytes) can push
+	// the address past 104 on darwin and yield EINVAL intermittently when
+	// other goroutines (race detector / parallel tests) claim the same path.
+	// Use a short unique suffix under TMPDIR that fits in sun_path even
+	// under deepest-name test cases.
+	//
+	// DEF-12 root cause: t.TempDir() name length × race scheduling × sun_path
+	// limit produced the macOS pkg/upgrade flake on CI.
+	if runtime.GOOS == "darwin" {
+		// /tmp/amx-<pid>-<nano>.sock — typically ≤ 40 bytes, safe within 104.
+		// Hardcode /tmp (not os.TempDir()): on macOS os.TempDir() resolves to
+		// /var/folders/... which can exceed the 104-byte sun_path limit.
+		path := filepath.Join("/tmp", fmt.Sprintf("amx-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+		t.Cleanup(func() { _ = os.Remove(path) })
+		return path
+	}
 	return filepath.Join(t.TempDir(), "aimux-gr.sock")
 }
 

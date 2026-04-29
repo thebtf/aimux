@@ -151,6 +151,13 @@ type Swarm struct {
 	mu       sync.RWMutex
 	registry map[string][]*Handle // keyed by registryKey(tenantID, scope, name)
 	nextID   uint64
+
+	// keyLocks holds a *sync.Mutex per registry key (DEF-8 / FR-2).
+	// Per-key locking allows concurrent Gets on distinct keys to run their
+	// factoryFn in parallel while still serialising same-key Gets to prevent
+	// TOCTOU double-spawn (BUG-003). The value type is *sync.Mutex; LoadOrStore
+	// ensures exactly one mutex is created per key even under concurrent Gets.
+	keyLocks sync.Map
 }
 
 // New creates a Swarm. factoryFn is called whenever a new ExecutorV2 is needed
@@ -216,19 +223,25 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 	}
 	key := registryKey(tenantID, o.scope, name)
 
-	// Stateful/Persistent: find-or-spawn under write lock to prevent TOCTOU
-	// (BUG-003). Two concurrent goroutines must not both observe an empty
-	// registry and both spawn separate handles for the same key.
+	// Stateful/Persistent: per-key mutex prevents TOCTOU double-spawn (BUG-003)
+	// while allowing concurrent Gets on DISTINCT keys to run their factoryFn in
+	// parallel (DEF-8 / FR-2 latency-bomb fix). Only same-key Gets are serialised.
 	//
-	// PRC v7 BUG-004: prune dead handles inline to prevent unbounded slice
-	// growth under flapping-executor / Persistent-mode workloads. Without
-	// pruning, repeated executor death-and-restart cycles for the same
-	// (tenantID, scope, name) accumulate dead *Handle values forever.
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Lock topology (order must be respected everywhere to avoid deadlock):
+	//   1. per-key mutex (keyLocks)  — held for the full find-or-spawn sequence
+	//   2. s.mu (RLock or Lock)      — held only for registry read / write
+	//
+	// PRC v7 BUG-004: dead handles are pruned inline (under the per-key mutex
+	// + Swarm write lock) to prevent unbounded slice growth.
+	mu := s.getKeyMutex(key)
+	mu.Lock()
+	defer mu.Unlock()
 
+	// Step 1: check registry for an existing alive handle (read lock only).
+	s.mu.RLock()
 	existing := s.registry[key]
-	alive := existing[:0]
+	// Build alive slice without mutating the registry while holding RLock.
+	var alive []*Handle
 	for _, h := range existing {
 		h.mu.Lock()
 		isAlive := h.executor != nil && h.executor.IsAlive() == types.HealthAlive
@@ -237,19 +250,33 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 			alive = append(alive, h)
 		}
 	}
-	if len(alive) != len(existing) {
-		s.registry[key] = alive
-	}
+	s.mu.RUnlock()
+
 	if len(alive) > 0 {
+		// Prune dead handles from the registry if any were found dead.
+		if len(alive) != len(existing) {
+			s.mu.Lock()
+			s.registry[key] = alive
+			s.mu.Unlock()
+		}
 		return alive[0], nil
 	}
 
-	// No alive handle — spawn a new one (still under write lock).
+	// Step 2: no alive handle — run factoryFn OUTSIDE s.mu (DEF-8 fix).
+	// The per-key mutex above serialises concurrent same-key Gets, so exactly
+	// one goroutine reaches here per key at a time (TOCTOU prevention preserved).
 	h, err := s.spawnLocked(ctx, name, mode)
 	if err != nil {
 		return nil, err
 	}
-	s.registry[key] = append(s.registry[key], h)
+
+	// Step 3: re-acquire write lock only for registry insertion.
+	// Use alive (the already-pruned slice) as the base, not s.registry[key],
+	// so dead handles that were pruned in Step 1 are not re-added here.
+	s.mu.Lock()
+	s.registry[key] = append(alive, h)
+	s.mu.Unlock()
+
 	s.emitSpawn(h)
 	return h, nil
 }
@@ -406,6 +433,14 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 	s.registry = make(map[string][]*Handle)
 	s.mu.Unlock()
 
+	// Release all per-key mutexes so they can be GC'd. This prevents the
+	// keyLocks sync.Map from accumulating unbounded entries across repeated
+	// Shutdown+reinit cycles (DEF-8 follow-up — keyLocks memory leak fix).
+	s.keyLocks.Range(func(k, _ any) bool {
+		s.keyLocks.Delete(k)
+		return true
+	})
+
 	var errs []error
 	for _, h := range all {
 		select {
@@ -422,6 +457,14 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 }
 
 // --- internal helpers ---
+
+// getKeyMutex returns the per-key *sync.Mutex for the given registry key,
+// creating it on first access. LoadOrStore guarantees exactly one mutex per
+// key even when multiple goroutines race on first access (DEF-8 / FR-2).
+func (s *Swarm) getKeyMutex(key string) *sync.Mutex {
+	actual, _ := s.keyLocks.LoadOrStore(key, &sync.Mutex{})
+	return actual.(*sync.Mutex)
+}
 
 // checkTenant verifies that the tenant in ctx matches h.TenantID. Returns
 // ErrHandleNotFound on mismatch and emits an audit cross_tenant_blocked event.
@@ -540,20 +583,25 @@ func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle
 	return makeHandle(ctx, id, name, mode, exec), nil
 }
 
-// spawnLocked is identical to spawn but must be called with s.mu already held
-// (write lock). Used by Get to avoid a second lock acquisition while the
-// find-or-spawn critical section is in progress (BUG-003 fix).
+// spawnLocked creates a new executor via the factory and wraps it in a Handle.
+// It does NOT register the handle in the registry (caller is responsible).
+// It must be called while holding the per-key mutex (s.keyLocks entry) but NOT
+// s.mu — factoryFn runs outside s.mu to resolve DEF-8 (FR-2 latency bomb).
+// s.mu is acquired briefly only to increment nextID.
 //
 // TenantID is extracted from ctx and set once on the returned Handle (FR-1).
 func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode) (*Handle, error) {
-	// factoryFn must be safe to call without holding s.mu — documented in New.
+	// factoryFn is called without holding s.mu (DEF-8 fix). The per-key mutex
+	// held by the caller serialises same-key spawns; distinct keys run concurrently.
 	exec, err := s.factoryFn(name)
 	if err != nil {
 		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
 	}
 
+	s.mu.Lock()
 	s.nextID++
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
+	s.mu.Unlock()
 
 	return makeHandle(ctx, id, name, mode, exec), nil
 }
