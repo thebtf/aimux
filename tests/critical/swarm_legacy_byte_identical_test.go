@@ -53,6 +53,13 @@ func TestCritical_Swarm_LegacyMode_ByteIdentical(t *testing.T) {
 		t.Errorf("CRITICAL: legacy mode Get returned different handles (%q vs %q); "+
 			"expected same handle (byte-identical pre-AIMUX-13 behavior)", h1.ID, h2.ID)
 	}
+	// Stable-field regression guard: TenantID and Mode must be preserved across reuse.
+	if h2.TenantID != h1.TenantID {
+		t.Errorf("CRITICAL: legacy mode reused handle has different TenantID (%q vs %q)", h2.TenantID, h1.TenantID)
+	}
+	if h2.Mode != h1.Mode {
+		t.Errorf("CRITICAL: legacy mode reused handle has different Mode (%v vs %v)", h2.Mode, h1.Mode)
+	}
 
 	// Send must succeed on the legacy handle.
 	_, sendErr := s.Send(ctx, h1, types.Message{Content: "legacy ping"})

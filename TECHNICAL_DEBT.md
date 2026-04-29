@@ -37,7 +37,7 @@ Format reference for future deferral entries (5 mandatory fields per entry):
 Items here are NOT bugs (file as engram issues instead) — they are conscious tradeoffs documented for future refactor planning.
 
 If you find yourself adding an entry, ask FIRST:
-1. Can this be fixed inline в current PR? → Fix it now.
+1. Can this be fixed inline in current PR? → Fix it now.
 2. Is it covered by an active spec roadmap entry already? → Add cross-reference in commit message, do NOT duplicate here.
 3. Is it truly blocked by external dependency (upstream library, infrastructure decision)? → Add to `.agent/specs/aimux-v5-roadmap/architecture.md` §Deferred Items as DEF-N.
 

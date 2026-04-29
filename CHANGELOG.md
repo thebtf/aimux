@@ -44,7 +44,7 @@ reactivation Layer 3-4 dormant code post-purge.
 
 - **`pkg/swarm.New` constructor signature** — `New(factoryFn FactoryFn) *Swarm` →
   `New(factoryFn FactoryFn, auditLog audit.AuditLog) *Swarm`. nil-auditLog falls through to
-  internal discardAuditLog. ALL existing callers (pkg/swarm/swarm_test.go — 17 sites) migrated.
+  audit.DiscardLog{}. ALL existing callers (pkg/swarm/swarm_test.go — 17 sites) migrated.
 - **`pkg/swarm.registryKey`** — internal helper now keyed `(tenantID, scope, name)` triple.
   Separator `|`. Collision impossibility cross-referenced to AIMUX-12 W1 sanitizeTenantID
   ASCII allowlist.
