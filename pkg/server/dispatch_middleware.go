@@ -59,11 +59,20 @@ type DispatchMiddleware struct {
 
 // NewDispatchMiddleware creates a DispatchMiddleware.
 //
-//   - registry: the live TenantRegistry (may be empty — triggers legacy-default mode).
+//   - registry: the live TenantRegistry (may be empty — triggers legacy-default mode). REQUIRED.
 //   - auditLog: the audit event sink; receives allow/deny/cross_tenant_blocked events.
+//     If nil, falls through to a no-op audit.DiscardLog (parity with swarm.New nil-guard
+//     pattern, PRC v7 BUG-005). Single-tenant deployments may legitimately pass nil.
 //
-// Both arguments are required. Passing nil for either will cause panics at call sites.
+// registry is REQUIRED — passing nil panics eagerly with a clear error message rather
+// than at first .Resolve() call.
 func NewDispatchMiddleware(registry *tenant.TenantRegistry, auditLog audit.AuditLog) *DispatchMiddleware {
+	if registry == nil {
+		panic("server: NewDispatchMiddleware requires a non-nil TenantRegistry; pass tenant.NewTenantRegistry() for legacy-default mode")
+	}
+	if auditLog == nil {
+		auditLog = audit.DiscardLog{}
+	}
 	return &DispatchMiddleware{
 		registry: registry,
 		auditLog: auditLog,
