@@ -110,7 +110,7 @@ func TestSwarm_Get_Stateless(t *testing.T) {
 		return &mockExecutorV2{alive: types.HealthAlive}, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	h1, err := s.Get(ctx, "codex", swarm.Stateless)
@@ -139,7 +139,7 @@ func TestSwarm_Get_Persistent(t *testing.T) {
 		return &mockExecutorV2{alive: types.HealthAlive}, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	h1, err := s.Get(ctx, "claude", swarm.Persistent)
@@ -162,7 +162,7 @@ func TestSwarm_Get_Persistent(t *testing.T) {
 func TestSwarm_Get_EmptyName(t *testing.T) {
 	t.Parallel()
 
-	s := swarm.New(singleFactory(&mockExecutorV2{alive: types.HealthAlive}))
+	s := swarm.New(singleFactory(&mockExecutorV2{alive: types.HealthAlive}), nil)
 	_, err := s.Get(context.Background(), "", swarm.Stateless)
 	if err == nil {
 		t.Fatal("expected error for empty executor name, got nil")
@@ -180,7 +180,7 @@ func TestSwarm_Send_Success(t *testing.T) {
 		},
 	}
 
-	s := swarm.New(singleFactory(mock))
+	s := swarm.New(singleFactory(mock), nil)
 	ctx := context.Background()
 
 	// Use Stateful so handle lifetime outlives Send.
@@ -202,7 +202,7 @@ func TestSwarm_Send_Stateless_ClosesExecutor(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockExecutorV2{alive: types.HealthAlive}
-	s := swarm.New(singleFactory(mock))
+	s := swarm.New(singleFactory(mock), nil)
 	ctx := context.Background()
 
 	h, err := s.Get(ctx, "aider", swarm.Stateless)
@@ -230,7 +230,7 @@ func TestSwarm_Send_DeadExecutor_Restart(t *testing.T) {
 		},
 	}
 
-	s := swarm.New(sequenceFactory(dead, fresh))
+	s := swarm.New(sequenceFactory(dead, fresh), nil)
 	ctx := context.Background()
 
 	// First Get registers the dead executor.
@@ -264,7 +264,7 @@ func TestSwarm_Send_RestartFails(t *testing.T) {
 		return nil, errors.New("factory unavailable")
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	h, err := s.Get(ctx, "goose", swarm.Stateful)
@@ -288,7 +288,7 @@ func TestSwarm_SendStream_Success(t *testing.T) {
 		},
 	}
 
-	s := swarm.New(singleFactory(mock))
+	s := swarm.New(singleFactory(mock), nil)
 	ctx := context.Background()
 
 	h, err := s.Get(ctx, "claude", swarm.Stateful)
@@ -329,7 +329,7 @@ func TestSwarm_Shutdown(t *testing.T) {
 		return m, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	if _, err := s.Get(ctx, "codex", swarm.Persistent); err != nil {
@@ -353,7 +353,7 @@ func TestSwarm_Shutdown(t *testing.T) {
 func TestSwarm_Shutdown_CancelledContext(t *testing.T) {
 	t.Parallel()
 
-	s := swarm.New(singleFactory(&mockExecutorV2{alive: types.HealthAlive}))
+	s := swarm.New(singleFactory(&mockExecutorV2{alive: types.HealthAlive}), nil)
 	ctx := context.Background()
 
 	if _, err := s.Get(ctx, "codex", swarm.Persistent); err != nil {
@@ -385,7 +385,7 @@ func TestSwarm_Health(t *testing.T) {
 		return dead, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	if _, err := s.Get(ctx, "codex", swarm.Persistent); err != nil {
@@ -420,7 +420,7 @@ func TestSwarm_Concurrent(t *testing.T) {
 		}, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	const goroutines = 20
@@ -489,7 +489,7 @@ func TestSwarm_Get_DifferentScopes_DifferentHandles(t *testing.T) {
 		return &mockExecutorV2{alive: types.HealthAlive}, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	h1, err := s.Get(ctx, "claude", swarm.Stateful, swarm.WithScope("session-A"))
@@ -518,7 +518,7 @@ func TestSwarm_Get_SameScope_SameHandle(t *testing.T) {
 		return &mockExecutorV2{alive: types.HealthAlive}, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	h1, err := s.Get(ctx, "claude", swarm.Stateful, swarm.WithScope("session-X"))
@@ -547,7 +547,7 @@ func TestSwarm_Get_NoScope_BackwardCompat(t *testing.T) {
 		return &mockExecutorV2{alive: types.HealthAlive}, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	// Two calls without scope share the same global handle (backward compat).
@@ -581,7 +581,7 @@ func TestSwarm_Get_Concurrent_NoDoubleSpawn(t *testing.T) {
 		return &mockExecutorV2{alive: types.HealthAlive}, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	const goroutines = 50
@@ -635,7 +635,7 @@ func TestSwarm_Get_DeadPersistent_Respawns(t *testing.T) {
 		return second, nil
 	}
 
-	s := swarm.New(factory)
+	s := swarm.New(factory, nil)
 	ctx := context.Background()
 
 	h1, err := s.Get(ctx, "codex", swarm.Persistent)
