@@ -108,6 +108,42 @@ func BenchmarkSwarm_Get_Concurrent_100Tenants(b *testing.B) {
 	}
 }
 
+// TestSwarm_DistinctTenantsDistinctHandles verifies the registry partition
+// invariant: tenant-A and tenant-B requesting the same executor name MUST
+// receive distinct Handle IDs (PRC v7 BUG-007 — benchmark didn't assert this,
+// so a regression collapsing registryKey back to two-arg form would pass).
+//
+// Anti-stub check: collapsing registryKey to (scope, name) merges all tenants
+// into one partition, producing identical Handle IDs across distinct tenants
+// and failing this test.
+func TestSwarm_DistinctTenantsDistinctHandles(t *testing.T) {
+	t.Parallel()
+
+	s := swarm.New(aliveFactory(), nil)
+	const tenantCount = 10
+
+	idsByTenant := make(map[string]string, tenantCount)
+	for i := 0; i < tenantCount; i++ {
+		tenantID := fmt.Sprintf("tenant-%02d", i)
+		tc := tenant.TenantContext{TenantID: tenantID, RequestStartedAt: time.Now()}
+		ctx := tenant.WithContext(context.Background(), tc)
+		h, err := s.Get(ctx, "codex", swarm.Stateful)
+		if err != nil {
+			t.Fatalf("Get for %q failed: %v", tenantID, err)
+		}
+		idsByTenant[tenantID] = h.ID
+	}
+
+	uniqueIDs := make(map[string]struct{}, tenantCount)
+	for _, id := range idsByTenant {
+		uniqueIDs[id] = struct{}{}
+	}
+	if len(uniqueIDs) != tenantCount {
+		t.Fatalf("partition broken: expected %d distinct Handle IDs across tenants, got %d (registryKey not partitioning by tenantID)",
+			tenantCount, len(uniqueIDs))
+	}
+}
+
 // TestSwarm_SameTenantConcurrentGet verifies that 50 goroutines of the same
 // tenant concurrently calling Get(Stateful) on the same name receive exactly
 // one cached Handle — no double-spawn TOCTOU race (BUG-003 protection preserved

@@ -61,10 +61,18 @@ func TestCritical_Swarm_LegacyMode_ByteIdentical(t *testing.T) {
 		t.Errorf("CRITICAL: legacy mode reused handle has different Mode (%v vs %v)", h2.Mode, h1.Mode)
 	}
 
-	// Send must succeed on the legacy handle.
-	_, sendErr := s.Send(ctx, h1, types.Message{Content: "legacy ping"})
+	// Send must succeed on the legacy handle and return a non-nil, non-empty
+	// response (anti-stub: catches the case where executor returns (nil, nil)
+	// silently, which would pass an err-only assertion).
+	resp, sendErr := s.Send(ctx, h1, types.Message{Content: "legacy ping"})
 	if sendErr != nil {
 		t.Fatalf("CRITICAL: legacy mode Send failed: %v", sendErr)
+	}
+	if resp == nil {
+		t.Fatal("CRITICAL: legacy mode Send returned nil response — executor stub probable")
+	}
+	if resp.Content == "" {
+		t.Fatal("CRITICAL: legacy mode Send returned empty response content — executor stub probable")
 	}
 
 	// Shutdown must not error.

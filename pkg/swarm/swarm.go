@@ -219,16 +219,29 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 	// Stateful/Persistent: find-or-spawn under write lock to prevent TOCTOU
 	// (BUG-003). Two concurrent goroutines must not both observe an empty
 	// registry and both spawn separate handles for the same key.
+	//
+	// PRC v7 BUG-004: prune dead handles inline to prevent unbounded slice
+	// growth under flapping-executor / Persistent-mode workloads. Without
+	// pruning, repeated executor death-and-restart cycles for the same
+	// (tenantID, scope, name) accumulate dead *Handle values forever.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, h := range s.registry[key] {
+	existing := s.registry[key]
+	alive := existing[:0]
+	for _, h := range existing {
 		h.mu.Lock()
-		alive := h.executor != nil && h.executor.IsAlive() == types.HealthAlive
+		isAlive := h.executor != nil && h.executor.IsAlive() == types.HealthAlive
 		h.mu.Unlock()
-		if alive {
-			return h, nil
+		if isAlive {
+			alive = append(alive, h)
 		}
+	}
+	if len(alive) != len(existing) {
+		s.registry[key] = alive
+	}
+	if len(alive) > 0 {
+		return alive[0], nil
 	}
 
 	// No alive handle — spawn a new one (still under write lock).
@@ -348,11 +361,12 @@ func (s *Swarm) LegacyRun(ctx context.Context, h *Handle, args types.SpawnArgs) 
 
 // Health returns a snapshot of the health status of all registered executors.
 // The returned map is keyed by executor name (h.Name); the value is the status
-// of the first registered handle for that name (representative sample).
+// of the FIRST registered handle for that name (first-write-wins).
 //
 // Note: when multiple tenants hold handles for the same executor name the map
-// carries only one status entry (last-write-wins across tenants). This is a
-// coarse-grained health view — per-tenant health breakdown is out of scope.
+// carries only one status entry — first-write-wins across tenants, NOT
+// last-write-wins. The loop short-circuits on the first hit per name. This is
+// a coarse-grained health view — per-tenant health breakdown is out of scope.
 func (s *Swarm) Health() map[string]types.HealthStatus {
 	s.mu.RLock()
 	snapshot := make([]*Handle, 0, len(s.registry))
@@ -397,14 +411,14 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			errs = append(errs, ctx.Err())
-			return joinErrors(errs)
+			return errors.Join(errs...)
 		default:
 		}
 		if err := s.closeHandle(h, "shutdown"); err != nil {
 			errs = append(errs, fmt.Errorf("swarm: close %s (%s): %w", h.Name, h.ID, err))
 		}
 	}
-	return joinErrors(errs)
+	return errors.Join(errs...)
 }
 
 // --- internal helpers ---
@@ -431,7 +445,7 @@ func (s *Swarm) checkTenant(ctx context.Context, h *Handle) error {
 		ResourceID: h.ID,
 		ToolName:   h.Name,
 		Result:     "denied",
-		Reason:     "cross-tenant handle access blocked",
+		Reason:     "swarm: cross-tenant handle access blocked at executor boundary",
 	})
 
 	return ErrHandleNotFound
@@ -446,7 +460,7 @@ func (s *Swarm) emitSpawn(h *Handle) {
 	s.auditLog.Emit(audit.AuditEvent{
 		Timestamp:  time.Now(),
 		EventType:  audit.EventSwarmSpawn,
-		TenantID:   h.TenantID,
+		TenantID:   canonicalTenantID(h.TenantID),
 		ResourceID: h.ID,
 		ToolName:   h.Name,
 		Result:     "ok",
@@ -463,7 +477,7 @@ func (s *Swarm) emitClose(h *Handle, reason string) {
 	s.auditLog.Emit(audit.AuditEvent{
 		Timestamp:  time.Now(),
 		EventType:  audit.EventSwarmClose,
-		TenantID:   h.TenantID,
+		TenantID:   canonicalTenantID(h.TenantID),
 		ResourceID: h.ID,
 		ToolName:   h.Name,
 		Result:     "closed",
@@ -478,12 +492,31 @@ func (s *Swarm) emitRestart(h *Handle) {
 	s.auditLog.Emit(audit.AuditEvent{
 		Timestamp:  time.Now(),
 		EventType:  audit.EventSwarmRestart,
-		TenantID:   h.TenantID,
+		TenantID:   canonicalTenantID(h.TenantID),
 		ResourceID: h.ID,
 		ToolName:   h.Name,
 		Result:     "restarted",
 		Reason:     "health-failure",
 	})
+}
+
+// makeHandle constructs a Handle from (exec, ctx, id, name, mode). Pure factory
+// — no lock acquisition, no registry side-effect. Both spawn and spawnLocked
+// delegate to this helper to eliminate field-list duplication (PRC v7 HIGH-3).
+//
+// TenantID is canonicalized once at construction; FR-1 immutability holds for
+// the lifetime of the returned Handle.
+func makeHandle(ctx context.Context, id, name string, mode SpawnMode, exec types.ExecutorV2) *Handle {
+	now := time.Now()
+	return &Handle{
+		ID:         id,
+		TenantID:   tenantIDFromContext(ctx),
+		Name:       name,
+		Mode:       mode,
+		executor:   exec,
+		startedAt:  now,
+		lastUsedAt: now,
+	}
 }
 
 // spawn creates a new executor via the factory and wraps it in a Handle.
@@ -499,23 +532,12 @@ func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle
 		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
 	}
 
-	tenantID := tenantIDFromContext(ctx)
-
 	s.mu.Lock()
 	s.nextID++
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
 	s.mu.Unlock()
 
-	now := time.Now()
-	return &Handle{
-		ID:         id,
-		TenantID:   tenantID,
-		Name:       name,
-		Mode:       mode,
-		executor:   exec,
-		startedAt:  now,
-		lastUsedAt: now,
-	}, nil
+	return makeHandle(ctx, id, name, mode, exec), nil
 }
 
 // spawnLocked is identical to spawn but must be called with s.mu already held
@@ -530,21 +552,10 @@ func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode) (*
 		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
 	}
 
-	tenantID := tenantIDFromContext(ctx)
-
 	s.nextID++
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
 
-	now := time.Now()
-	return &Handle{
-		ID:         id,
-		TenantID:   tenantID,
-		Name:       name,
-		Mode:       mode,
-		executor:   exec,
-		startedAt:  now,
-		lastUsedAt: now,
-	}, nil
+	return makeHandle(ctx, id, name, mode, exec), nil
 }
 
 // ensureAlive checks h.executor health and restarts once if not alive.
@@ -611,10 +622,3 @@ func (s *Swarm) closeHandle(h *Handle, reason string) error {
 	return err
 }
 
-// joinErrors combines multiple errors into one preserving the unwrappable
-// error chain. Returns nil if errs is empty. PRC v6 P3-1 — replaced manual
-// string concat with errors.Join (Go 1.20+) so callers can use errors.Is /
-// errors.As against individual errors.
-func joinErrors(errs []error) error {
-	return errors.Join(errs...)
-}

@@ -80,6 +80,13 @@ func LoadFromFile(path string) (*Snapshot, error) {
 		if e.Role != RoleOperator && e.Role != RolePlain {
 			return nil, fmt.Errorf("LoadFromFile: entry[%d] %q: unknown role %q (must be %q or %q)", i, e.Name, e.Role, RoleOperator, RolePlain)
 		}
+		// Reserved sentinel name. canonicalTenantID in pkg/swarm collapses
+		// "legacy-default" to "" for partition unity (PRC v7 F2 S3); allowing
+		// a tenant literally named "legacy-default" would alias them into the
+		// legacy partition and silently break cross-tenant isolation.
+		if e.Name == LegacyDefault {
+			return nil, fmt.Errorf("LoadFromFile: entry[%d]: tenant name %q is reserved (collides with legacy-default sentinel)", i, e.Name)
+		}
 
 		if prev, dup := seenUIDs[e.UID]; dup {
 			return nil, fmt.Errorf("LoadFromFile: duplicate uid %d (tenants %q and %q)", e.UID, prev, e.Name)
