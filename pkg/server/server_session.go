@@ -9,7 +9,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/logger"
+	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
@@ -23,6 +25,10 @@ type projectContextKey struct{}
 
 // callToolRequestKey stores the active CallToolRequest for direct-stdio child upstreams.
 type callToolRequestKey struct{}
+
+// tenantScopedLoomKey is the context key for TenantScopedLoomEngine injected at dispatch
+// (AIMUX-12 Phase 5, T033). Tool handlers retrieve it via TenantScopedLoomFromContext.
+type tenantScopedLoomKey struct{}
 
 // ProjectContextFromContext retrieves the muxcore.ProjectContext from the request context.
 // Falls back to muxcore-injected _meta fields in direct-stdio child-upstream mode.
@@ -52,6 +58,17 @@ func ProjectContextFromContext(ctx context.Context) (muxcore.ProjectContext, boo
 		}
 	}
 	return muxcore.ProjectContext{}, false
+}
+
+// TenantScopedLoomFromContext retrieves the *loom.TenantScopedLoomEngine injected by
+// HandleRequest. Returns (engine, true) when the scoped engine is present, (nil, false)
+// when absent (e.g. unit tests that don't go through the full dispatch path).
+//
+// Tool handlers that need tenant-isolated loom access MUST use this instead of the
+// raw s.loom field to ensure cross-tenant 404 semantics (CHK079, AIMUX-12 T033).
+func TenantScopedLoomFromContext(ctx context.Context) (*loom.TenantScopedLoomEngine, bool) {
+	v, ok := ctx.Value(tenantScopedLoomKey{}).(*loom.TenantScopedLoomEngine)
+	return v, ok
 }
 
 // cwdFromRequestOrContext returns the working directory from either the MCP
@@ -130,6 +147,37 @@ func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.Projec
 
 	// Inject ProjectContext into request context for tool handlers.
 	ctx = context.WithValue(ctx, projectContextKey{}, project)
+
+	// Resolve and inject TenantContext (AIMUX-12 Phase 5, T031).
+	// peerUID=0 is the placeholder until muxcore #110 provides SO_PEERCRED/peer auth.
+	// In legacy-default mode (no tenants.yaml) this is always LegacyDefault — no cost.
+	if d.srv.dispatchMW != nil {
+		tc, tcErr := d.srv.dispatchMW.ResolveContext(ctx, project.ID, 0)
+		if tcErr == nil {
+			ctx = d.srv.dispatchMW.WithContext(ctx, tc)
+
+			// T032: inject TenantContext into session.WithTenant so TenantScopedStore
+			// methods work without an explicit ctx stamp at each call site.
+			ctx = session.WithTenant(ctx, tc)
+
+			// T033: inject TenantScopedLoomEngine so tool handlers can access loom
+			// with per-tenant isolation (CHK076/CHK079) via TenantScopedLoomFromContext.
+			// nil loom (memory-only mode, no SQLite) → no scoped engine injected.
+			if d.srv.loom != nil {
+				ctx = context.WithValue(ctx, tenantScopedLoomKey{},
+					loom.NewTenantScopedEngine(d.srv.loom, tc.TenantID, nil))
+			}
+
+			// T034: emit allow audit event for every multi-tenant dispatch.
+			// toolName is empty at this layer (pre-routing); Phase 8 / tool-level
+			// wrappers will carry the resolved tool name. Legacy-default mode
+			// (IsMultiTenant() == false) skips audit emission to avoid log noise
+			// on single-tenant deployments — fail-open preserves NFR-4.
+			if d.srv.dispatchMW.IsMultiTenant() {
+				d.srv.dispatchMW.EmitAllow(tc, "")
+			}
+		}
+	}
 
 	// Inject the project's MCP session into context for HandleMessage.
 	ctx = d.srv.mcp.WithContext(ctx, state.session)

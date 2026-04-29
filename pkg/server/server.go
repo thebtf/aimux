@@ -16,6 +16,7 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
+	"github.com/thebtf/aimux/pkg/audit"
 	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
@@ -32,6 +33,7 @@ import (
 	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/skills"
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
@@ -101,6 +103,10 @@ type Server struct {
 	muxEngine               *engine.MuxEngine
 	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
 	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
+
+	// dispatchMW resolves TenantContext at the MCP tool dispatch entry point
+	// and emits audit events (AIMUX-12 Phase 5, T031).
+	dispatchMW *DispatchMiddleware
 
 	// logIngester receives forwarded log entries from shim peers via the
 	// "notifications/aimux/log_forward" JSON-RPC notification path (AIMUX-11 Phase 2).
@@ -209,6 +215,30 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 				log.Info("loom task scoping: engine_name=%s", s.engineName)
 			}
 
+		}
+	}
+
+	// Initialize DispatchMiddleware — wires tenant context resolution into every
+	// MCP tool dispatch (AIMUX-12 Phase 5, T031). The middleware is always
+	// constructed; in legacy-default mode (no tenants.yaml) it is a no-op pass-through.
+	tenantReg := tenant.NewRegistry()
+	auditLogPath := filepath.Join(filepath.Dir(config.ExpandPath(cfg.Server.DBPath)), ".aimux", "audit.log")
+	if cfg.Server.DBPath == "" {
+		// Fallback when db_path not configured (e.g. memory-only mode):
+		// use a temp-dir-relative path that will not persist across restarts.
+		auditLogPath = filepath.Join(os.TempDir(), "aimux-audit.log")
+	}
+	if mkdirErr := os.MkdirAll(filepath.Dir(auditLogPath), 0700); mkdirErr != nil {
+		log.Warn("audit: could not create audit log directory: %v (audit events will be discarded)", mkdirErr)
+		s.dispatchMW = NewDispatchMiddleware(tenantReg, &discardAuditLog{})
+	} else {
+		fileAudit, auditErr := audit.NewFileAuditLog(auditLogPath)
+		if auditErr != nil {
+			log.Warn("audit: could not open audit log %s: %v (audit events will be discarded)", auditLogPath, auditErr)
+			s.dispatchMW = NewDispatchMiddleware(tenantReg, &discardAuditLog{})
+		} else {
+			s.dispatchMW = NewDispatchMiddleware(tenantReg, fileAudit)
+			log.Info("audit log: %s", auditLogPath)
 		}
 	}
 
