@@ -41,14 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#176** log rotation 146 GB OOM — lumberjack + sole-writer FR-2 + per-line cap shipped.
 - **#180** structured_argumentation session_id="" collision — UUID helper applied across 6 patterns.
 
-### Deferred to v5.1.1 (NOT blocking v5.1.0)
+### Fixed (PRC v5 W-warnings — все closed в v5.1.0, не deferred)
 
-- W1 sanitizeTenantID Unicode visual-spoof.
-- W2 Loom quota TOCTOU (atomic INSERT...WHERE COUNT).
-- W3 hot-reload swap-order sub-ms race.
-- W4 SetAuditLog typed-nil guard.
-- W5 PeerUid<0 negative cast guard.
-- W6 PeerUid → PeerUID rename.
+- **W1 [S3]** `pkg/logger/log_partitioner.go` — sanitizeTenantID NFC normalization + strict ASCII allowlist `[a-zA-Z0-9_-]`. Closes Unicode visual-spoof: Cyrillic homoglyphs (`аcme` U+0430), RTL override (U+202E), zero-width joiner, denormalized combining marks. Path traversal stays blocked. (commit 6461258)
+- **W2 [S3]** `loom/loom.go` + `loom/tenant_engine.go` — per-tenant submit lock (sync.Map[tenantID]→sync.Mutex) closes quota TOCTOU. N concurrent Submits no longer all pass depth=cap-1 check. Test: TestLoomSubmit_BurstConcurrentSubmits_RespectsQuota PASS на 5 repeats. (commit 70b9a7c)
+- **W3 [S4]** `pkg/tenant/hotreload.go` — Swap snapshot before BeginDrain (was inverted). Closes sub-ms admission window for removed tenants. (commit 0b38c38)
+- **W4 [P2]** `pkg/ratelimit/tenant_limiter.go::SetAuditLog` — reflect-based typed-nil guard. `var x *FileAuditLog; SetAuditLog(x)` no longer panics in Emit. (commit 188be7f)
+- **W5 [MINOR]** `pkg/server/authorize_session.go::Authorize` — negative PeerUid → AuthDeny before uint32 cast. Closes Windows edge-case wraparound. (commit 2872f22)
+- **W6 [MINOR]** `pkg/tenant/tenant.go` — `PeerUid` field → `PeerUID` (Go initialism convention). Cross-package rename via Serena. (commit 223ba99)
+- **N1 [P3]** `pkg/server/server_session.go` — explicit deny via `EmitUnenrolledBlocked` + JSON-RPC -32000 on unknown ResolveContext error class. Was log.Warn fallthrough — defense-by-default violation. (commit 550dde0)
 
 ### Removed
 
