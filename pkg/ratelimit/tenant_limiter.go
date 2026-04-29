@@ -12,6 +12,7 @@
 package ratelimit
 
 import (
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -171,6 +172,19 @@ func (l *TenantRateLimiter) SetRegistry(reg *tenant.TenantRegistry) {
 // and satisfies this requirement). Calling SetAuditLog is optional; when nil
 // (the default), audit events are silently dropped.
 func (l *TenantRateLimiter) SetAuditLog(log audit.AuditLog) {
+	// Plain nil interface → store nil pointer.
+	if log == nil {
+		l.auditLog.Store(nil)
+		return
+	}
+	// Detect typed-nil concrete (e.g., `var x *FileAuditLog; SetAuditLog(x)`).
+	// The interface header is non-nil but its dynamic value is nil — calling
+	// Emit on it would panic when dereferencing the receiver. Treat as no-op.
+	v := reflect.ValueOf(log)
+	if (v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface) && v.IsNil() {
+		l.auditLog.Store(nil)
+		return
+	}
 	l.auditLog.Store(&log)
 }
 
