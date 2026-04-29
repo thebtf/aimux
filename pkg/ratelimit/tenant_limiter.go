@@ -43,7 +43,23 @@ type tokenBucket struct {
 }
 
 // newTokenBucket creates a full bucket with the given capacity and refill rate.
+//
+// Guards against the divide-by-zero panic on the hot path: when refillPerSec is
+// zero or negative, the bucket falls back to refillPerSec=capacity (one full
+// refill per second). WithDefaults on TenantConfig protects YAML-driven values,
+// but legacy snapshots and direct callers (LegacyDefaultSnapshot, future API
+// surfaces) may still hand us an unset rate; this guard makes the constructor
+// robust without requiring every caller to remember the contract.
 func newTokenBucket(capacity, refillPerSec int64) *tokenBucket {
+	if refillPerSec <= 0 {
+		// Fallback: refill the bucket fully once per second. capacity may also
+		// be zero on misconfigured input; guard that too so tokens.Store(0) is
+		// safe and the first allow() call denies cleanly without panicking.
+		if capacity <= 0 {
+			capacity = 1
+		}
+		refillPerSec = capacity
+	}
 	b := &tokenBucket{
 		capacity:     capacity,
 		refillPerSec: refillPerSec,

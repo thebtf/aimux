@@ -67,6 +67,41 @@ func TestTenantRateLimiter_Allow_RefillRestores(t *testing.T) {
 	}
 }
 
+// TestNewTokenBucket_ZeroRefillRate_DoesNotPanic guards against the
+// divide-by-zero panic in allow() when refillPerSec is zero. The previous
+// implementation computed `nsPerToken := int64(time.Second) / refillPerSec`
+// on the hot path; a tenant with refill=0 would crash the daemon on the
+// first frame received. The constructor now clamps refillPerSec≤0 to
+// refillPerSec=capacity (one full refill per second). PRC v3 B7.
+func TestNewTokenBucket_ZeroRefillRate_DoesNotPanic(t *testing.T) {
+	cases := []struct {
+		name         string
+		capacity     int64
+		refillPerSec int64
+	}{
+		{"refill=0", 5, 0},
+		{"refill=negative", 5, -10},
+		{"refill=0_capacity=0", 0, 0},
+		{"refill=negative_capacity=negative", -1, -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("newTokenBucket panicked on capacity=%d refillPerSec=%d: %v",
+						tc.capacity, tc.refillPerSec, r)
+				}
+			}()
+			b := newTokenBucket(tc.capacity, tc.refillPerSec)
+			if b == nil {
+				t.Fatal("newTokenBucket returned nil")
+			}
+			// First allow() call must not panic either.
+			_ = b.allow()
+		})
+	}
+}
+
 func TestTenantRateLimiter_PerTenantIsolation(t *testing.T) {
 	reg := buildTestRegistry([]tenant.TenantConfig{
 		{Name: "tenantA", UID: 2001, Role: tenant.RolePlain, RateLimitPerSec: 1, RefillRatePerSec: 1},
