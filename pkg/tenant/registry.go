@@ -58,6 +58,26 @@ func (r *TenantRegistry) Resolve(uid int) (TenantConfig, bool) {
 	return cfg, ok
 }
 
+// ResolveByName looks up a tenant by its human-readable name. It returns the
+// TenantConfig and true on success, or (TenantConfig{}, false) when no tenant
+// with that name is enrolled.
+//
+// ResolveByName performs a linear scan over the snapshot (O(n) where n is the
+// number of enrolled tenants). Tenant counts are expected to be small (≤1000),
+// so this is acceptable. For UID-based hot-path lookups use Resolve instead.
+func (r *TenantRegistry) ResolveByName(name string) (TenantConfig, bool) {
+	snap := r.snapshot.Load()
+	if snap == nil {
+		return TenantConfig{}, false
+	}
+	for _, cfg := range snap.byUID {
+		if cfg.Name == name {
+			return cfg, true
+		}
+	}
+	return TenantConfig{}, false
+}
+
 // IsMultiTenant returns true when the registry contains at least one enrolled tenant.
 // It returns false when operating in legacy single-tenant mode (no tenants.yaml).
 func (r *TenantRegistry) IsMultiTenant() bool {

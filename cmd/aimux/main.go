@@ -18,6 +18,7 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/logger"
+	"github.com/thebtf/aimux/pkg/ratelimit"
 	"github.com/thebtf/aimux/pkg/routing"
 	"github.com/thebtf/aimux/pkg/tenant"
 	aimuxServer "github.com/thebtf/aimux/pkg/server"
@@ -209,11 +210,14 @@ func run() error {
 		engineName := aimuxServer.ResolveEngineName()
 
 		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
+		frameLimiter := ratelimit.NewTenantRateLimiter()
+		frameLimiter.SetRegistry(tenantReg)
 		eng, engErr := engine.New(engine.Config{
-			Name:           engineName,
-			Persistent:     true,
-			SessionHandler: srv.SessionHandler(),
-			Logger:         log.StdLogger(),
+			Name:            engineName,
+			Persistent:      true,
+			SessionHandler:  srv.SessionHandler(),
+			Logger:          log.StdLogger(),
+			OnFrameReceived: frameLimiter.OnFrameReceived,
 		})
 		if engErr != nil {
 			return fmt.Errorf("engine init: %w", engErr)
