@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -48,8 +49,7 @@ func newTestMiddleware(t *testing.T) (*DispatchMiddleware, *fakeAuditLog) {
 func TestDispatch_LegacyMode_NoTenantsFile(t *testing.T) {
 	mw, fal := newTestMiddleware(t)
 
-	ctx := context.Background()
-	tc, err := mw.ResolveContext(ctx, "test-session-1", 0)
+	tc, err := mw.ResolveContext("test-session-1", 0)
 	if err != nil {
 		t.Fatalf("ResolveContext: unexpected error in legacy mode: %v", err)
 	}
@@ -84,8 +84,7 @@ func TestDispatch_TenantAResolved(t *testing.T) {
 	fal := &fakeAuditLog{}
 	mw := NewDispatchMiddleware(reg, fal)
 
-	ctx := context.Background()
-	tc, err := mw.ResolveContext(ctx, "session-A", 1001)
+	tc, err := mw.ResolveContext("session-A", 1001)
 	if err != nil {
 		t.Fatalf("ResolveContext: unexpected error: %v", err)
 	}
@@ -145,6 +144,64 @@ func TestDispatch_CrossTenantStatusReturnsNotFound(t *testing.T) {
 	}
 }
 
+// TestResolveContext_MultiTenantMode_UnenrolledUIDDeniedNotLegacyDefault is the
+// PRC v3 B1 regression. Prior to the fix, ResolveContext in multi-tenant mode
+// silently mapped any unenrolled UID to LegacyDefault, which carries
+// RoleOperator on the legacy snapshot. A hostile co-tenant whose UID was not
+// in tenants.yaml therefore obtained operator privileges on every dispatch.
+//
+// Post-fix: ResolveContext returns ErrTenantUnenrolled for unenrolled UIDs in
+// multi-tenant mode. Legacy mode (empty registry) still returns LegacyDefault.
+func TestResolveContext_MultiTenantMode_UnenrolledUIDDeniedNotLegacyDefault(t *testing.T) {
+	reg := tenant.NewRegistry()
+	snap := tenant.NewSnapshot(map[int]tenant.TenantConfig{
+		1001: {Name: "tenantA", UID: 1001, Role: tenant.RoleOperator},
+	})
+	reg.Swap(snap)
+
+	fal := &fakeAuditLog{}
+	mw := NewDispatchMiddleware(reg, fal)
+
+	// Unenrolled UID in multi-tenant mode → must be denied with ErrTenantUnenrolled.
+	tc, err := mw.ResolveContext("hostile-session", 9999)
+	if !errors.Is(err, ErrTenantUnenrolled) {
+		t.Fatalf("expected ErrTenantUnenrolled for unenrolled UID, got err=%v tc=%+v", err, tc)
+	}
+	if tc.TenantID != "" {
+		t.Errorf("expected zero-value TenantContext on deny, got TenantID=%q", tc.TenantID)
+	}
+	if tc.TenantID == tenant.LegacyDefault {
+		t.Errorf("CRITICAL: unenrolled UID mapped to LegacyDefault — privilege escalation regression (B1)")
+	}
+
+	// Legacy mode (empty registry) — same UID 9999 must still resolve to LegacyDefault
+	// because there is no enrolled tenant to compare against.
+	regEmpty := tenant.NewRegistry()
+	mwLegacy := NewDispatchMiddleware(regEmpty, &fakeAuditLog{})
+	tcLegacy, errLegacy := mwLegacy.ResolveContext("legacy-session", 9999)
+	if errLegacy != nil {
+		t.Fatalf("legacy mode: expected no error for any UID, got %v", errLegacy)
+	}
+	if tcLegacy.TenantID != tenant.LegacyDefault {
+		t.Errorf("legacy mode: expected LegacyDefault, got %q", tcLegacy.TenantID)
+	}
+
+	// EmitUnenrolledBlocked must produce a cross_tenant_blocked event with the
+	// offending peerUID populated.
+	mw.EmitUnenrolledBlocked(9999, "hostile-session", "think")
+	events := fal.snapshot()
+	var found bool
+	for _, ev := range events {
+		if ev.EventType == audit.EventCrossTenantBlocked && ev.OperatorUID == 9999 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected cross_tenant_blocked event with OperatorUID=9999, got %+v", events)
+	}
+}
+
 // TestDispatch_AuditEmitsAllow verifies that a successful dispatch emits an allow
 // audit event with the correct tenant_id and tool_name fields.
 func TestDispatch_AuditEmitsAllow(t *testing.T) {
@@ -157,8 +214,7 @@ func TestDispatch_AuditEmitsAllow(t *testing.T) {
 	fal := &fakeAuditLog{}
 	mw := NewDispatchMiddleware(reg, fal)
 
-	ctx := context.Background()
-	tc, err := mw.ResolveContext(ctx, "session-B", 2001)
+	tc, err := mw.ResolveContext("session-B", 2001)
 	if err != nil {
 		t.Fatalf("ResolveContext: %v", err)
 	}

@@ -2,11 +2,19 @@ package server
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/audit"
 	"github.com/thebtf/aimux/pkg/tenant"
 )
+
+// ErrTenantUnenrolled is returned by DispatchMiddleware.ResolveContext (and
+// the dispatch path in HandleRequest) when the connecting UID is absent from
+// an enrolled multi-tenant registry. The caller MUST treat this as a deny
+// decision: emit a cross_tenant_blocked audit event and return a JSON-RPC
+// error to the client, NEVER fall back to LegacyDefault. PRC v3 B1.
+var ErrTenantUnenrolled = errors.New("tenant unenrolled — multi-tenant registry rejects unknown UID")
 
 // discardAuditLog is a no-op AuditLog used when the audit file cannot be opened
 // at daemon startup. Events are silently dropped; a startup warning is logged
@@ -33,16 +41,19 @@ func TenantContextFromContext(ctx context.Context) (tenant.TenantContext, bool) 
 // DispatchMiddleware resolves a TenantContext at the entry point of every MCP tool
 // dispatch and emits audit events for allow/deny decisions.
 //
-// Until muxcore #109/#110 lands (Phase 8), the middleware operates in one of two modes:
+// The middleware operates in one of two modes:
 //
 //  1. Legacy-default mode (tenants.yaml absent / registry has no tenants):
 //     Every request receives tenant.LegacyDefault context; single-tenant behaviour is
-//     preserved byte-identically. No deny events are emitted. This is fail-open per the
-//     Phase 5 plan.md annotation.
+//     preserved byte-identically. No deny events are emitted. This is the legitimate
+//     single-tenant deployment path.
 //
 //  2. Multi-tenant mode (registry has ≥1 enrolled tenants):
-//     The connecting UID is looked up in the registry. Known UIDs get the matching config;
-//     unknown UIDs fall back to LegacyDefault (muxcore #110 will harden this to a deny).
+//     The connecting UID is looked up in the registry. Known UIDs get the matching config.
+//     UNKNOWN UIDs in this mode are rejected with ErrTenantUnenrolled — the caller emits
+//     a cross_tenant_blocked audit event and refuses the request. Mapping unknown UIDs
+//     to LegacyDefault (which carries RoleOperator) would be a privilege escalation in
+//     a multi-tenant deployment; PRC v3 B1 closes this fail-open hole.
 //
 // DispatchMiddleware is safe for concurrent use.
 type DispatchMiddleware struct {
@@ -66,19 +77,18 @@ func NewDispatchMiddleware(registry *tenant.TenantRegistry, auditLog audit.Audit
 // ResolveContext resolves a TenantContext for the incoming connection identified by
 // sessionID and peerUID.
 //
-// Fail-open contract (legacy-default mode):
-//   - When the registry is empty (IsMultiTenant() == false), returns
-//     tenant.NewLegacyDefaultContext(sessionID). No deny audit event is emitted.
-//   - When the registry has tenants but peerUID is not enrolled, returns
-//     tenant.NewLegacyDefaultContext(sessionID). This is the pre-muxcore-#110 gap;
-//     Phase 8 will convert this path into a deny.
+// Behaviour:
+//   - Legacy-default mode (registry has no enrolled tenants):
+//     returns tenant.NewLegacyDefaultContext(sessionID). No deny audit event is emitted.
+//   - Multi-tenant mode, known peerUID:
+//     returns a TenantContext with TenantID == TenantConfig.Name.
+//   - Multi-tenant mode, UNKNOWN peerUID:
+//     returns ErrTenantUnenrolled. Caller MUST emit a cross_tenant_blocked
+//     audit event and reject the request — a hostile UID is attempting to
+//     connect against an enrolled registry. PRC v3 B1.
 //
-// Multi-tenant mode:
-//   - Known peerUID → TenantContext with TenantID == TenantConfig.Name.
-//   - RequestStartedAt is always set to time.Now().
-func (m *DispatchMiddleware) ResolveContext(ctx context.Context, sessionID string, peerUID int) (tenant.TenantContext, error) {
-	_ = ctx // reserved for Phase 8 ConnInfo lookup
-
+// RequestStartedAt is set to time.Now() on every successful resolution.
+func (m *DispatchMiddleware) ResolveContext(sessionID string, peerUID int) (tenant.TenantContext, error) {
 	// Legacy-default mode: registry has no enrolled tenants.
 	if !m.registry.IsMultiTenant() {
 		return tenant.NewLegacyDefaultContext(sessionID), nil
@@ -87,9 +97,10 @@ func (m *DispatchMiddleware) ResolveContext(ctx context.Context, sessionID strin
 	// Multi-tenant mode: look up the connecting peer's UID.
 	cfg, ok := m.registry.Resolve(peerUID)
 	if !ok {
-		// Unknown UID — fail-open until muxcore #110 provides reliable auth.
-		// Phase 8 will replace this with a deny + EventCrossTenantBlocked.
-		return tenant.NewLegacyDefaultContext(sessionID), nil
+		// Unknown UID against an enrolled registry — privilege escalation
+		// path. Refuse to map to LegacyDefault (which carries RoleOperator)
+		// and let the caller emit cross_tenant_blocked + reject the request.
+		return tenant.TenantContext{}, ErrTenantUnenrolled
 	}
 
 	return tenant.TenantContext{
@@ -138,5 +149,22 @@ func (m *DispatchMiddleware) EmitCrossTenantBlocked(tc tenant.TenantContext, res
 		ToolName:    toolName,
 		Result:      "denied",
 		Reason:      "cross-tenant access blocked",
+	})
+}
+
+// EmitUnenrolledBlocked records a cross_tenant_blocked audit event for a UID
+// that is not present in the multi-tenant registry. There is no resolved
+// TenantContext at this point — the deny happens BEFORE the request is mapped
+// to a tenant — so the event carries only the offending peerUID and an
+// explanatory reason. PRC v3 B1.
+func (m *DispatchMiddleware) EmitUnenrolledBlocked(peerUID int, sessionID, toolName string) {
+	m.auditLog.Emit(audit.AuditEvent{
+		Timestamp:   time.Now(),
+		EventType:   audit.EventCrossTenantBlocked,
+		OperatorUID: peerUID,
+		ResourceID:  sessionID,
+		ToolName:    toolName,
+		Result:      "denied",
+		Reason:      "unenrolled UID against multi-tenant registry",
 	})
 }

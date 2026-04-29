@@ -24,7 +24,7 @@ func BenchmarkDispatchMiddlewareOverhead(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		tc, err := mw.ResolveContext(ctx, "bench-session", 0)
+		tc, err := mw.ResolveContext("bench-session", 0)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -50,7 +50,7 @@ func BenchmarkDispatchMiddlewareOverhead_MultiTenant(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		tc, err := mw.ResolveContext(ctx, "bench-session", 9999)
+		tc, err := mw.ResolveContext("bench-session", 9999)
 		if err != nil {
 			b.Fatal(err)
 		}

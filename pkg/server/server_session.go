@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -153,9 +154,26 @@ func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.Projec
 	// Resolve and inject TenantContext (AIMUX-12 Phase 5, T031).
 	// peerUID=0 is the placeholder until muxcore #110 provides SO_PEERCRED/peer auth.
 	// In legacy-default mode (no tenants.yaml) this is always LegacyDefault — no cost.
+	//
+	// In multi-tenant mode, the legitimate path is HandleRequestWithSessionMeta
+	// which receives meta.TenantID pre-resolved by AuthorizeSession at session-accept.
+	// Reaching this code path against an enrolled registry means AuthorizeSession was
+	// either bypassed or absent; ErrTenantUnenrolled rejects the request to prevent
+	// privilege escalation via the LegacyDefault operator-role fallback (PRC v3 B1).
 	if d.srv.dispatchMW != nil {
-		tc, tcErr := d.srv.dispatchMW.ResolveContext(ctx, project.ID, 0)
-		if tcErr == nil {
+		tc, tcErr := d.srv.dispatchMW.ResolveContext(project.ID, 0)
+		if tcErr != nil {
+			if errors.Is(tcErr, ErrTenantUnenrolled) {
+				d.srv.dispatchMW.EmitUnenrolledBlocked(0, project.ID, "")
+				errResp := mcp.NewJSONRPCError(mcp.NewRequestId(0), -32000,
+					"tenant unenrolled: connecting UID is not registered in the multi-tenant registry",
+					nil)
+				return json.Marshal(errResp)
+			}
+			// Unknown error class — log and fall through to dispatch without
+			// tenant context. Production should never hit this branch.
+			d.srv.log.Warn("dispatch: ResolveContext returned unexpected error: %v", tcErr)
+		} else {
 			ctx = d.srv.dispatchMW.WithContext(ctx, tc)
 
 			// T032: inject TenantContext into session.WithTenant so TenantScopedStore
