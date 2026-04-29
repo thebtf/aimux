@@ -16,13 +16,11 @@ import (
 // error to the client, NEVER fall back to LegacyDefault. PRC v3 B1.
 var ErrTenantUnenrolled = errors.New("tenant unenrolled — multi-tenant registry rejects unknown UID")
 
-// discardAuditLog is a no-op AuditLog used when the audit file cannot be opened
-// at daemon startup. Events are silently dropped; a startup warning is logged
-// by the caller. It satisfies the audit.AuditLog interface.
-type discardAuditLog struct{}
-
-func (discardAuditLog) Emit(_ audit.AuditEvent) {}
-func (discardAuditLog) Close() error             { return nil }
+// discardAuditLog is the canonical no-op AuditLog used when the audit file
+// cannot be opened at daemon startup. Events are silently dropped; a startup
+// warning is logged by the caller. Local alias to audit.DiscardLog — kept
+// for backward compatibility со существующими callsites в pkg/server/server.go.
+type discardAuditLog = audit.DiscardLog
 
 // TenantContextFromContext retrieves the TenantContext injected by DispatchMiddleware.
 // Returns (TenantContext, true) when present, (zero, false) when absent.

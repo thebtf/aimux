@@ -112,13 +112,6 @@ type Handle struct {
 	mu         sync.Mutex // protects executor and lastUsedAt
 }
 
-// discardAuditLog is a no-op AuditLog used when nil is passed to New.
-// Events are silently dropped. It satisfies the audit.AuditLog interface.
-type discardAuditLog struct{}
-
-func (discardAuditLog) Emit(_ audit.AuditEvent) {}
-func (discardAuditLog) Close() error             { return nil }
-
 // Swarm manages executor lifecycle: spawn, get, send, health check, restart,
 // and shutdown. All fields after creation are protected by mu.
 type Swarm struct {
@@ -139,7 +132,7 @@ type Swarm struct {
 func New(factoryFn func(name string) (types.ExecutorV2, error), auditLog audit.AuditLog) *Swarm {
 	al := auditLog
 	if al == nil {
-		al = discardAuditLog{}
+		al = audit.DiscardLog{}
 	}
 	return &Swarm{
 		factoryFn: factoryFn,
@@ -589,17 +582,10 @@ func (s *Swarm) closeHandle(h *Handle, reason string) error {
 	return err
 }
 
-// joinErrors combines multiple errors into one. Returns nil if errs is empty.
+// joinErrors combines multiple errors into one preserving the unwrappable
+// error chain. Returns nil if errs is empty. PRC v6 P3-1 — replaced manual
+// string concat with errors.Join (Go 1.20+) so callers can use errors.Is /
+// errors.As against individual errors.
 func joinErrors(errs []error) error {
-	if len(errs) == 0 {
-		return nil
-	}
-	if len(errs) == 1 {
-		return errs[0]
-	}
-	msg := errs[0].Error()
-	for _, e := range errs[1:] {
-		msg += "; " + e.Error()
-	}
-	return errors.New(msg)
+	return errors.Join(errs...)
 }
