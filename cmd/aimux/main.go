@@ -212,7 +212,9 @@ func run() error {
 		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
 		frameLimiter := ratelimit.NewTenantRateLimiter()
 		frameLimiter.SetRegistry(tenantReg)
-		authAdapter := aimuxServer.NewAuthorizeSessionAdapter(tenantReg, srv.AuditLog(), frameLimiter)
+		// Wire the hot-reload drain controller so AuthorizeSession refuses new
+		// admissions for tenants in their drain window (FR-12, PRC v3 B2/B6).
+		authAdapter := aimuxServer.NewAuthorizeSessionAdapter(tenantReg, srv.AuditLog(), frameLimiter, hotReloader.DrainController())
 		eng, engErr := engine.New(engine.Config{
 			Name:             engineName,
 			Persistent:       true,

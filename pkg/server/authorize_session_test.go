@@ -103,7 +103,7 @@ func TestAuthorize_LegacyMode_AllowsAllConnections(t *testing.T) {
 	al := &mockAuditLog{}
 	rl := newSessionTenantRecorder()
 
-	adapter := NewAuthorizeSessionAdapter(reg, al, rl)
+	adapter := NewAuthorizeSessionAdapter(reg, al, rl, nil)
 
 	for _, uid := range []uint32{0, 999, 1000, 9999} {
 		conn := muxcore.ConnInfo{PeerUid: int(uid)}
@@ -127,7 +127,7 @@ func TestAuthorize_KnownUID_AllowsWithTenantID(t *testing.T) {
 	al := &mockAuditLog{}
 	rl := newSessionTenantRecorder()
 
-	adapter := NewAuthorizeSessionAdapter(reg, al, rl)
+	adapter := NewAuthorizeSessionAdapter(reg, al, rl, nil)
 
 	conn := muxcore.ConnInfo{PeerUid: 1000}
 	project := muxcore.ProjectContext{ID: "proj-known"}
@@ -150,7 +150,7 @@ func TestAuthorize_UnknownUID_Denies(t *testing.T) {
 	al := &mockAuditLog{}
 	rl := newSessionTenantRecorder()
 
-	adapter := NewAuthorizeSessionAdapter(reg, al, rl)
+	adapter := NewAuthorizeSessionAdapter(reg, al, rl, nil)
 
 	conn := muxcore.ConnInfo{PeerUid: 9999}
 	project := muxcore.ProjectContext{ID: "proj-unknown"}
@@ -219,7 +219,7 @@ func TestAuthorize_AuditEmitsAllow(t *testing.T) {
 	al := &mockAuditLog{}
 	rl := newSessionTenantRecorder()
 
-	adapter := NewAuthorizeSessionAdapter(reg, al, rl)
+	adapter := NewAuthorizeSessionAdapter(reg, al, rl, nil)
 
 	conn := muxcore.ConnInfo{PeerUid: 2000}
 	project := muxcore.ProjectContext{ID: "proj-audit-check"}
@@ -253,7 +253,7 @@ func TestAuthorize_SetsSessionTenant_ForRateLimiter(t *testing.T) {
 	al := &mockAuditLog{}
 	rl := newSessionTenantRecorder()
 
-	adapter := NewAuthorizeSessionAdapter(reg, al, rl)
+	adapter := NewAuthorizeSessionAdapter(reg, al, rl, nil)
 
 	conn := muxcore.ConnInfo{PeerUid: 3000}
 	project := muxcore.ProjectContext{ID: "proj-ratelimit"}
@@ -277,6 +277,95 @@ func TestAuthorize_SetsSessionTenant_ForRateLimiter(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("SetSessionTenant not called with (proj-ratelimit, tenantC); calls: %v", calls)
+	}
+}
+
+// fakeDrainChecker implements drainChecker for tests; reports the configured
+// set of tenants as draining.
+type fakeDrainChecker struct {
+	draining map[string]bool
+}
+
+func (f *fakeDrainChecker) IsDraining(tenantName string) bool {
+	if f == nil || f.draining == nil {
+		return false
+	}
+	return f.draining[tenantName]
+}
+
+// TestAuthorize_DrainingTenant_Denies verifies that when a UID enrolled in the
+// registry resolves to a tenant that is currently draining, AuthorizeSession
+// emits cross_tenant_blocked and returns AuthDeny instead of admitting the
+// session. PRC v3 B2/B6 — prior implementation had a TODO placeholder where
+// IsDraining should have been called; doc claimed enforcement but the
+// implementation never consulted the drain controller.
+func TestAuthorize_DrainingTenant_Denies(t *testing.T) {
+	reg := buildRegistry(map[uint32]tenant.TenantConfig{
+		4000: {Name: "tenantD", UID: 4000, Role: tenant.RolePlain},
+	})
+	al := &mockAuditLog{}
+	rl := newSessionTenantRecorder()
+	drain := &fakeDrainChecker{draining: map[string]bool{"tenantD": true}}
+
+	adapter := NewAuthorizeSessionAdapter(reg, al, rl, drain)
+
+	conn := muxcore.ConnInfo{PeerUid: 4000}
+	project := muxcore.ProjectContext{ID: "proj-drain-deny"}
+	result := adapter.Authorize(context.Background(), conn, project)
+
+	if result.Decision != muxcore.AuthDeny {
+		t.Fatalf("expected AuthDeny for draining tenant, got %v (reason=%q)",
+			result.Decision, result.Reason)
+	}
+	if result.Reason == "" {
+		t.Error("expected non-empty Reason on draining-tenant deny")
+	}
+
+	// Cross-tenant-blocked audit event must be emitted with the offending
+	// tenant name + operator UID.
+	events := al.Events()
+	var foundBlock bool
+	for _, ev := range events {
+		if ev.EventType == audit.EventCrossTenantBlocked &&
+			ev.TenantID == "tenantD" &&
+			ev.OperatorUID == 4000 {
+			foundBlock = true
+			break
+		}
+	}
+	if !foundBlock {
+		t.Errorf("expected cross_tenant_blocked event for draining tenant, got %v", events)
+	}
+
+	// SetSessionTenant MUST NOT be called on a denied admission.
+	if calls := rl.Calls(); len(calls) != 0 {
+		t.Errorf("SetSessionTenant called on denied admission: %v", calls)
+	}
+}
+
+// TestAuthorize_NotDrainingTenant_Allows verifies that when the drainChecker
+// reports IsDraining=false for the resolved tenant, the admission proceeds
+// normally — the drain check must not block legitimate sessions.
+func TestAuthorize_NotDrainingTenant_Allows(t *testing.T) {
+	reg := buildRegistry(map[uint32]tenant.TenantConfig{
+		5000: {Name: "tenantE", UID: 5000, Role: tenant.RolePlain},
+	})
+	al := &mockAuditLog{}
+	rl := newSessionTenantRecorder()
+	drain := &fakeDrainChecker{draining: map[string]bool{"someone-else": true}}
+
+	adapter := NewAuthorizeSessionAdapter(reg, al, rl, drain)
+
+	conn := muxcore.ConnInfo{PeerUid: 5000}
+	project := muxcore.ProjectContext{ID: "proj-not-draining"}
+	result := adapter.Authorize(context.Background(), conn, project)
+
+	if result.Decision != muxcore.AuthAllow {
+		t.Fatalf("expected AuthAllow when tenant is not draining, got %v (reason=%q)",
+			result.Decision, result.Reason)
+	}
+	if result.TenantID != "tenantE" {
+		t.Errorf("expected TenantID=tenantE, got %q", result.TenantID)
 	}
 }
 
