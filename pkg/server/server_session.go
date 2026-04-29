@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -299,6 +300,7 @@ var _ muxcore.SessionHandler = (*aimuxHandler)(nil)
 var _ muxcore.ProjectLifecycle = (*aimuxHandler)(nil)
 var _ muxcore.NotifierAware = (*aimuxHandler)(nil)
 var _ muxcore.NotificationHandler = (*aimuxHandler)(nil)
+var _ muxcore.NotificationHandlerWithSessionMeta = (*aimuxHandler)(nil)
 
 // currentDelegate returns the active delegate. Panics if unset (misconfiguration).
 func (h *aimuxHandler) currentDelegate() handlerDelegate {
@@ -437,6 +439,81 @@ func (h *aimuxHandler) HandleNotification(ctx context.Context, project muxcore.P
 				idPrefix(string(project.ID)), sess, err)
 		}
 	}
+}
+
+// HandleNotificationWithSessionMeta implements muxcore.NotificationHandlerWithSessionMeta.
+// When muxcore has peer identity available at session-open time, it calls this method
+// instead of HandleNotification, providing the SessionMeta (TenantID, ConnInfo).
+//
+// Routing logic (AIMUX-12 Phase 6, T039):
+//   - If meta.TenantID is non-empty AND srv.logPartitioner is wired, route the
+//     log_forward entry bytes to LogPartitioner.WriteFor(meta.TenantID).
+//   - Otherwise fall through to HandleNotification (legacy/fallback path) which
+//     writes to the shared daemon log file.
+//
+// This preserves FR-12 backward compat: existing sessions without TenantID continue
+// to use the PeerCredsUnavailable path in HandleNotification unchanged.
+func (h *aimuxHandler) HandleNotificationWithSessionMeta(
+	ctx context.Context,
+	project muxcore.ProjectContext,
+	meta muxcore.SessionMeta,
+	notification []byte,
+) {
+	const method = "notifications/aimux/log_forward"
+
+	// Fast path: only handle log_forward notifications.
+	var n logForwardNotification
+	if err := json.Unmarshal(notification, &n); err != nil {
+		return
+	}
+	if n.Method != method {
+		// Not a log_forward notification — nothing to do in the meta path.
+		return
+	}
+
+	// If TenantID is present and a partitioner is wired, route to the tenant file.
+	if meta.TenantID != "" && h.srv.logPartitioner != nil {
+		var entry logger.LogEntry
+		if err := json.Unmarshal(n.Params, &entry); err != nil {
+			if h.srv.logIngester != nil {
+				h.srv.logIngester.EnvelopeMalformed.Add(1)
+			}
+			return
+		}
+
+		sess := sessionTagFromProject(project)
+		pidStr := fmt.Sprintf("%d", meta.Conn.PeerPid)
+
+		// Sanitize the message using the package-level sanitizeMessage (FR-13),
+		// then format and route to the tenant log file.
+		sanitizedMsg := sanitizeMessage(entry.Message)
+		line := formatLogLine(entry, sanitizedMsg, "shim", pidStr, sess)
+		if _, err := h.srv.logPartitioner.WriteFor(meta.TenantID, []byte(line)); err != nil {
+			if h.srv.log != nil {
+				h.srv.log.Warn("log_forward(meta): partitioner write for tenant=%s failed: %v",
+					meta.TenantID, err)
+			}
+		}
+		return
+	}
+
+	// Fallback: delegate to the legacy HandleNotification path.
+	// This preserves PeerCredsUnavailable counting and existing test coverage.
+	h.HandleNotification(ctx, project, notification)
+}
+
+// formatLogLine produces a single formatted log line in the aimux envelope format.
+// Used by HandleNotificationWithSessionMeta when routing to LogPartitioner.
+// Format matches WriteEntryWithRoleStr output for cross-file grep consistency.
+func formatLogLine(entry logger.LogEntry, sanitizedMessage, role, pidStr, sess string) string {
+	return fmt.Sprintf("%s [%s] [%s-%s-%s] %s\n",
+		entry.Time.Format("2006-01-02T15:04:05.000Z07:00"),
+		entry.Level.String(),
+		role,
+		pidStr,
+		sess,
+		sanitizedMessage,
+	)
 }
 
 // sessionTagFromProject derives a short session tag for log lines.

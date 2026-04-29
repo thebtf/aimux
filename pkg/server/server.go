@@ -112,6 +112,11 @@ type Server struct {
 	// "notifications/aimux/log_forward" JSON-RPC notification path (AIMUX-11 Phase 2).
 	logIngester *LogIngester
 
+	// logPartitioner routes forwarded log entries to per-tenant log files when
+	// muxcore provides SessionMeta with a non-empty TenantID (AIMUX-12 Phase 6, T039).
+	// Nil in single-tenant / legacy mode — HandleNotification falls back to the shared log.
+	logPartitioner logger.LogPartitionerWriter
+
 	// Two-phase daemon init (issue #129): Phase A starts listening immediately via
 	// lightweightDelegate; Phase B (heavy init) runs in the background goroutine started
 	// by RunPhaseB. Fields below track progress for observability (status tool, T005).
