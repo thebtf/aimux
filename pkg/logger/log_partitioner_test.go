@@ -284,9 +284,14 @@ func TestLogPartitioner_SanitizeTenantID(t *testing.T) {
 		valid bool   // true if the sanitized ID should be used, false if fallback expected
 		want  string // expected safe name (only checked when valid=true)
 	}{
+		// Valid ASCII allowlist cases.
 		{"acme", true, "acme"},
 		{"tenant-123", true, "tenant-123"},
 		{"tenant_123", true, "tenant_123"},
+		{"ABC", true, "ABC"},
+		{"a", true, "a"},
+
+		// Pre-existing path-traversal rejections.
 		{"", false, ""},
 		{"../../etc", false, ""},
 		{"../parent", false, ""},
@@ -295,6 +300,30 @@ func TestLogPartitioner_SanitizeTenantID(t *testing.T) {
 		{"\x00null", false, ""},
 		{"foo/bar", false, ""},
 		{"foo\\bar", false, ""},
+
+		// W1 — Unicode visual-spoof rejections (AIMUX-12 v5.1.0).
+		// Cyrillic 'а' (U+0430) renders identically to Latin 'a' in operator
+		// audit logs, but produces a distinct file. Reject the entire ID.
+		{"аcme", false, ""}, // "аcme" — Cyrillic small letter a
+		// RTL override (U+202E) — reverses display direction; visually
+		// indistinguishable from "acme" in some terminals.
+		{"acme‮", false, ""},
+		// Zero-width joiner (U+200D) — invisible glyph that creates a
+		// distinct ID identical to "acme" on screen.
+		{"acme‍", false, ""},
+		// Space and punctuation outside the allowlist.
+		{"foo bar", false, ""},
+		{"foo!bar", false, ""},
+		{"foo.bar", false, ""}, // dot inside is excluded by allowlist
+		{"foo@bar", false, ""},
+		// NFC-denormalized form: 'é' as 'e' + combining acute (U+0301).
+		// IsNormalString returns false → reject.
+		{"éclair", false, ""},
+		// NFC-normalized non-ASCII: composed acute (U+00E9) passes
+		// IsNormalString but fails the strict ASCII allowlist.
+		{"éclair", false, ""},
+		// Tab (control character) — not in allowlist.
+		{"foo\tbar", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("input=%q", tc.input), func(t *testing.T) {

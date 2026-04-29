@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/thebtf/aimux/pkg/tenant"
+	"golang.org/x/text/unicode/norm"
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -158,33 +159,57 @@ func (p *LogPartitioner) openTenantLogger(safeName string) (*lumberjack.Logger, 
 // sanitizeTenantID validates that the tenantID is safe to use as a file name
 // component. Returns (safeName, true) on success or ("", false) on rejection.
 //
-// Rejected patterns (path traversal protection):
+// Security policy (W1 — AIMUX-12 v5.1.0):
+// Strict ASCII allowlist [a-zA-Z0-9_-] after NFC normalization. This defeats
+// Unicode visual-spoofing where two distinct tenant IDs render identically in
+// operator audit logs (Cyrillic homoglyphs, RTL override, zero-width joiner,
+// decomposed combining marks).
+//
+// Rejected patterns:
 //   - empty string
-//   - contains ".." (traversal)
-//   - contains "/" or "\" (directory separator)
-//   - contains null byte (\x00)
-//   - starts with "." (hidden file / relative traversal start)
-//   - contains any control character (rune < 0x20)
+//   - any character outside [a-zA-Z0-9_-]
+//   - any Unicode codepoint above U+007F (non-ASCII)
+//   - input that would change under NFC normalization (denormalized form)
+//   - leading "." (defense-in-depth — '.' already excluded by allowlist, but
+//     keep explicit for self-documenting policy)
+//   - contains ".." (defense-in-depth — '.' already excluded by allowlist)
 func sanitizeTenantID(id string) (string, bool) {
 	if id == "" {
 		return "", false
 	}
-	// Leading dot: .hidden or ..
+
+	// Reject if NFC normalization would mutate the input. A caller that
+	// passed a denormalized form (decomposed combining marks) is rejected
+	// rather than silently normalized — we want byte-identical audit trails.
+	if !norm.NFC.IsNormalString(id) {
+		return "", false
+	}
+
+	// Defense-in-depth: leading dot.
 	if id[0] == '.' {
 		return "", false
 	}
-	// Reject forbidden sequences and characters.
-	if strings.Contains(id, "..") ||
-		strings.Contains(id, "/") ||
-		strings.Contains(id, "\\") ||
-		strings.ContainsRune(id, 0) {
-		return "", false
-	}
-	// Reject control characters.
+
+	// Strict ASCII allowlist. Iterate as runes so a multi-byte non-ASCII
+	// codepoint is detected as a single illegal rune, not as multiple bytes.
 	for _, r := range id {
-		if r < 0x20 {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
 			return "", false
 		}
 	}
+
+	// Defense-in-depth: belt-and-braces against future allowlist drift.
+	// '.' is already excluded above, so ".." cannot appear — keep the check
+	// so a future maintainer who relaxes the allowlist still cannot regress
+	// path-traversal protection silently.
+	if strings.Contains(id, "..") {
+		return "", false
+	}
+
 	return id, true
 }
