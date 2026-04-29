@@ -10,10 +10,12 @@
 package session
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"sync"
 	"time"
 
@@ -24,9 +26,13 @@ import (
 )
 
 // readChunk is a single read result from the lifetime reader goroutine.
+// When completionMatched is true the chunk's data is the sentinel-matched line
+// itself — Send() flushes it into the response buffer BEFORE returning, so the
+// caller sees the matched line as the final newline-terminated row.
 type readChunk struct {
-	data []byte
-	err  error
+	data              []byte
+	err               error
+	completionMatched bool
 }
 
 // BaseSession provides common persistent-session machinery:
@@ -48,6 +54,12 @@ type BaseSession struct {
 
 	// inactivityTimeout is the duration of silence that signals end-of-response.
 	inactivityTimeout time.Duration
+
+	// completionPattern is the compiled regex for line-anchored sentinel detection
+	// (FR-3, Q-CLAR-1). Each newline-terminated line from stdout is matched against
+	// this pattern; on match, Send() is signalled complete without waiting for the
+	// inactivity timeout. Nil when no pattern was provided (idle-timeout-only fallback).
+	completionPattern *regexp.Regexp
 
 	// readCh carries chunks from the lifetime reader to Send().
 	// Buffered to absorb bursts without blocking the reader.
@@ -76,6 +88,12 @@ type BaseSession struct {
 //   - inactivityTimeout: duration of silence that marks end-of-response in Send().
 //   - handle: optional process handle for Alive()/PID()/Kill(); pass nil if not applicable.
 //   - pm: optional ProcessManager that owns handle; used for Kill/Cleanup on Close(). Pass nil if none.
+//   - completionPattern: optional line-anchored regex for sentinel-based completion detection
+//     (FR-3, Q-CLAR-1). The reader goroutine matches each newline-terminated stdout line
+//     against this pattern; on match, Send() returns immediately without waiting for the
+//     inactivity timeout. Empty string disables sentinel detection — existing idle-timeout
+//     behavior is preserved byte-identically. The pattern is compiled once at construction
+//     time; invalid patterns are silently ignored (nil regex, idle-timeout fallback).
 func New(
 	id string,
 	stdin io.WriteCloser,
@@ -83,9 +101,16 @@ func New(
 	inactivityTimeout time.Duration,
 	handle *executor.ProcessHandle,
 	pm *executor.ProcessManager,
+	completionPattern string,
 ) *BaseSession {
 	if id == "" {
 		id = uuid.NewString()
+	}
+
+	var compiled *regexp.Regexp
+	if completionPattern != "" {
+		compiled, _ = regexp.Compile(completionPattern)
+		// Ignore compile errors — invalid pattern falls back to idle-timeout behavior.
 	}
 
 	s := &BaseSession{
@@ -95,6 +120,7 @@ func New(
 		handle:            handle,
 		pm:                pm,
 		inactivityTimeout: inactivityTimeout,
+		completionPattern: compiled,
 		readCh:            make(chan readChunk, 32),
 		readerDone:        make(chan struct{}),
 		stopCh:            make(chan struct{}),
@@ -102,28 +128,36 @@ func New(
 
 	// Start the single lifetime reader goroutine.
 	// It owns stdout exclusively and forwards all data to readCh.
-	// It exits when stdout returns any error (EOF, closed pipe, etc.).
+	// It reads stdout line-by-line via bufio.Scanner; each complete line is checked
+	// against the compiled completionPattern (if set). On pattern match, completeCh
+	// is signalled so Send() can return without waiting for the inactivity timeout.
+	// The goroutine exits when stdout returns any error (EOF, closed pipe, etc.).
 	go func() {
 		defer close(s.readerDone)
-		tmp := make([]byte, 4096)
-		for {
-			n, readErr := s.stdout.Read(tmp)
-			if n > 0 {
-				cp := make([]byte, n)
-				copy(cp, tmp[:n])
-				select {
-				case s.readCh <- readChunk{data: cp}:
-				case <-s.stopCh:
-					return
-				}
-			}
-			if readErr != nil {
-				select {
-				case s.readCh <- readChunk{err: readErr}:
-				case <-s.stopCh:
-				}
+		scanner := bufio.NewScanner(s.stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			// Line-anchored sentinel detection (FR-3, Q-CLAR-1):
+			// match the complete line against the compiled pattern BEFORE sending,
+			// so completion-matched chunks atomically carry both the data and the
+			// completion flag — eliminates the race between data delivery and the
+			// completion signal previously dispatched on a separate channel.
+			matched := s.completionPattern != nil && s.completionPattern.MatchString(line)
+			cp := []byte(line + "\n")
+			select {
+			case s.readCh <- readChunk{data: cp, completionMatched: matched}:
+			case <-s.stopCh:
 				return
 			}
+		}
+		// Scanner exited: EOF or read error — signal Send() that stdout is closed.
+		err := scanner.Err()
+		if err == nil {
+			err = io.EOF
+		}
+		select {
+		case s.readCh <- readChunk{err: err}:
+		case <-s.stopCh:
 		}
 	}()
 
@@ -168,6 +202,11 @@ func (s *BaseSession) Send(ctx context.Context, prompt string) (*types.Result, e
 					}
 				}
 				timer.Reset(s.inactivityTimeout)
+			}
+			if c.completionMatched {
+				// Sentinel line matched completionPattern — line already accumulated
+				// into buf above. Response is complete; reader stays running.
+				goto done
 			}
 			if c.err != nil {
 				// stdout closed (process exited or Close was called) — done.

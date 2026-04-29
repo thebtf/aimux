@@ -201,7 +201,7 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 	// ptmx is both the writer (stdin to process) and reader (stdout from process).
 	// session.BaseSession accepts io.WriteCloser and io.ReadCloser separately;
 	// nopWriteCloser and nopReadCloser adapters share the same underlying *os.File.
-	sess := session.New("", ptmxWriter{ptmx}, ptmxReader{ptmx}, inactivity, nil, nil)
+	sess := session.New("", ptmxWriter{ptmx}, ptmxReader{ptmx}, inactivity, nil, nil, args.CompletionPattern)
 	_ = handle // lifecycle managed via ptySession wrapper below
 
 	return &ptySession{BaseSession: sess, handle: handle}, nil

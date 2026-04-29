@@ -257,7 +257,7 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 		inactivity = defaultConPTYInactivitySeconds * time.Second
 	}
 
-	sess := session.New("", stdin, handle.Stdout, inactivity, handle, conptySessionPM)
+	sess := session.New("", stdin, handle.Stdout, inactivity, handle, conptySessionPM, args.CompletionPattern)
 	return sess, nil
 }
 

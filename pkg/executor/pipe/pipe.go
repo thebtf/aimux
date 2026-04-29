@@ -192,7 +192,7 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 
 	// T001: session.New starts the lifetime reader goroutine and returns a
 	// *BaseSession that implements types.Session (ID/Send/Stream/Close/Alive/PID).
-	sess := session.New("", stdin, handle.Stdout, inactivity, handle, sessionPM)
+	sess := session.New("", stdin, handle.Stdout, inactivity, handle, sessionPM, args.CompletionPattern)
 	return sess, nil
 }
 
