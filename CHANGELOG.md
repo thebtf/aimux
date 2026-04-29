@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.2] — 2026-04-30 — AIMUX-15 tech debt batch 1
+
+5 actionable DEF entries from `aimux-v5-roadmap` graduated к active resolution.
+Patch release scope: zero new feature surface, zero behavior change for end users
+running single-operator deployment. All fixes pre-emptive hardening для multi-tenant
+deployment trigger OR pre-Layer-5 wiring readiness.
+
+### Fixed (AIMUX-15 CR-001 — 5 FRs)
+
+- **`pkg/swarm/swarm.go`** (DEF-8 / FR-2 / T001) — `spawnLocked` factoryFn ran under
+  `s.mu` write lock (latency bomb when Layer 5 wires blocking subprocess factory).
+  Replaced with per-key `sync.Map[string]*sync.Mutex` topology: factoryFn runs
+  outside `s.mu`; distinct keys execute in parallel; same-key TOCTOU prevention
+  preserved via per-key serialization. Bench 96.9 ns/op (1.67× regress, IF-WRONG
+  threshold 120 — PASS). New tests: `TestSwarm_ParallelKeysFactoryNonBlocking` (T002)
+  + `TestSwarm_SameKeyConcurrentSerialFactory` (T003).
+- **`pkg/server/authorize_session.go`** (DEF-10 / FR-3 / T004) — UID enumeration
+  oracle closed: shim-visible `SessionAuth.Reason` redacted к literal `"access denied"`
+  on tenant resolution failure. `OperatorUID` audit field preserved (UID stays
+  operator-side для forensics). New test: `TestAuthorizeSession_DenyResponseNoUID`
+  с exact-match + digit-absence regex anti-stub.
+- **`pkg/server/server.go`** (DEF-11 / FR-4 / T005) — multi-tenant audit init
+  failure now fail-closed: `os.Exit(1)` via testable `auditFatalfFn` indirection
+  instead of degrading к `discardAuditLog` (silent `cross_tenant_blocked` event drop).
+  Single-tenant (legacy default, `IsMultiTenant() == false`) preserves warn-and-
+  continue behavior — EC-5 dev-iteration unaffected. `initAuditLog` extracted
+  для test injection. New tests: `TestServer_AuditInitFatal_MultiTenant` +
+  `TestServer_AuditInitWarn_SingleTenant`.
+- **`pkg/upgrade/coordinator_test.go`** (DEF-12 / FR-5a / T006) — macOS pkg/upgrade
+  flake root cause: `sockaddr_un.sun_path` is 104 bytes; `t.TempDir()` rooted under
+  `/var/folders/<hash>/T/<test-name>NNN/...` could push test path past limit когда
+  combined с `aimux-gr.sock` suffix, yielding intermittent EINVAL. Race detector
+  amplified timing window. Fix: darwin uses short `/tmp/amx-<pid>-<nano>.sock` ≤
+  40 bytes (well within sun_path limit).
+- **`test/e2e/upgrade_diag_test.go`** (DEF-12 / FR-5b / T007) — Windows e2e
+  `TestE2E_Upgrade_HotSwap_RuntimeEngineMode` explicit `t.Skip()` с tracked engram
+  issue #183 (muxcore handoff timing на Windows MoveFileEx semantics, exceeds
+  patch budget). Reopen trigger: multi-tenant deployment OR muxcore upstream
+  deterministic handoff protocol.
+
+### Documentation
+
+- **`.agent/specs/aimux-v5-roadmap/architecture.md`** — DEF-5/8/10/11/12 entries
+  annotated с RESOLVED markers + commit references. Summary table updated. New
+  DEF-13 added для escalated worker-dependent Loom v0.2.0 gaps (FR-1 audit
+  classified 3 of 5 как worker-driven, deferred к Layer 5 worker landing).
+- **`.agent/specs/aimux-15-tech-debt-batch-1/research-loom-gap-audit.md`** —
+  T008 audit document classifying все 5 spec FR-1 gaps: 0 addressable, 3
+  escalated → DEF-13, 2 already-resolved at v0.1.0 release time.
+
+### Tests
+
+- 5 new tests, all PASS x3 locally:
+  - `TestSwarm_ParallelKeysFactoryNonBlocking` — proves DEF-8 fix (parallel-key
+    factoryFn execution within 130ms budget vs serial 200ms minimum)
+  - `TestSwarm_SameKeyConcurrentSerialFactory` — TOCTOU regression preservation
+    (50 goroutines, 1 spawn, 1 handle ID)
+  - `TestAuthorizeSession_DenyResponseNoUID` — UID-absence regex anti-stub
+  - `TestServer_AuditInitFatal_MultiTenant` — multi-tenant fail-closed path
+  - `TestServer_AuditInitWarn_SingleTenant` — EC-5 single-tenant preservation
+- AIMUX-12 + AIMUX-13 critical-suite preserved unchanged (18/18 PASS).
+
+### Release vehicle
+
+Patch release v5.2.2 per AIMUX-15 clarification C2: debt clearing ships
+separately from AIMUX-14 feature work (different test surface, different
+blast radius). Zero breaking changes; single-operator deployment unaffected.
+
 ## [5.2.0] — 2026-04-29 — AIMUX-13 tenant-aware Swarm
 
 Layer 2 (process pool manager) extended с tenant прошивкой continuing AIMUX-12 multi-tenant
