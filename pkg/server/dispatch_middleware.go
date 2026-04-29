@@ -16,26 +16,22 @@ import (
 // error to the client, NEVER fall back to LegacyDefault. PRC v3 B1.
 var ErrTenantUnenrolled = errors.New("tenant unenrolled — multi-tenant registry rejects unknown UID")
 
-// discardAuditLog is a no-op AuditLog used when the audit file cannot be opened
-// at daemon startup. Events are silently dropped; a startup warning is logged
-// by the caller. It satisfies the audit.AuditLog interface.
-type discardAuditLog struct{}
-
-func (discardAuditLog) Emit(_ audit.AuditEvent) {}
-func (discardAuditLog) Close() error             { return nil }
-
-// tenantContextKey is the unexported context key used by DispatchMiddleware to store
-// a resolved TenantContext. Using a private type prevents collisions with other packages.
-type tenantContextKey struct{}
+// discardAuditLog is the canonical no-op AuditLog used when the audit file
+// cannot be opened at daemon startup. Events are silently dropped; a startup
+// warning is logged by the caller. Local alias to audit.DiscardLog — kept
+// for backward compatibility со существующими callsites в pkg/server/server.go.
+type discardAuditLog = audit.DiscardLog
 
 // TenantContextFromContext retrieves the TenantContext injected by DispatchMiddleware.
 // Returns (TenantContext, true) when present, (zero, false) when absent.
 //
 // Tool handlers that need the tenant identity for audit, scoping, or policy decisions
 // should call this instead of relying on muxcore.ProjectContext.
+//
+// This is a thin alias for tenant.FromContext — the canonical implementation lives in
+// pkg/tenant/context.go (migrated from pkg/server in AIMUX-13 T002).
 func TenantContextFromContext(ctx context.Context) (tenant.TenantContext, bool) {
-	tc, ok := ctx.Value(tenantContextKey{}).(tenant.TenantContext)
-	return tc, ok
+	return tenant.FromContext(ctx)
 }
 
 // DispatchMiddleware resolves a TenantContext at the entry point of every MCP tool
@@ -111,10 +107,13 @@ func (m *DispatchMiddleware) ResolveContext(sessionID string, peerUID int) (tena
 	}, nil
 }
 
-// WithContext returns a new context with tc stored under the tenantContextKey.
+// WithContext returns a new context with tc stored under the tenant context key.
 // Tool handlers retrieve it via TenantContextFromContext.
+//
+// Delegates to tenant.WithContext — the canonical key type lives in pkg/tenant
+// (migrated from pkg/server in AIMUX-13 T002).
 func (m *DispatchMiddleware) WithContext(ctx context.Context, tc tenant.TenantContext) context.Context {
-	return context.WithValue(ctx, tenantContextKey{}, tc)
+	return tenant.WithContext(ctx, tc)
 }
 
 // IsMultiTenant returns true when the registry has ≥1 enrolled tenants.

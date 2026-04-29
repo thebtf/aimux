@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0] — 2026-04-29 — AIMUX-13 tenant-aware Swarm
+
+Layer 2 (process pool manager) extended с tenant прошивкой continuing AIMUX-12 multi-tenant
+foundation. Last cross-cutting layer без tenant scoping closed. Foundation для Phase C
+reactivation Layer 3-4 dormant code post-purge.
+
+### Added (AIMUX-13 tenant-aware-swarm, 5 phases T001-T015)
+
+- **`pkg/swarm/swarm.go`** — `Handle.TenantID string` field (immutable after spawn for ALL
+  SpawnMode); `Swarm.auditLog audit.AuditLog` field; `Swarm.New(factory, auditLog)` constructor;
+  `registryKey(tenantID, scope, name)` triple partition; `checkTenant(ctx, h)` cross-tenant
+  enforcement; `emitSpawn / emitClose / emitRestart` audit hooks (legacy-mode anti-flood guard
+  via `isMultiTenantID` discriminator).
+- **`pkg/swarm/swarm.go`** — `ErrHandleNotFound` exported var. Cross-tenant Send / SendStream
+  returns this error (NEVER 403) per CHK079 defense-in-depth — generic message, no tenantID
+  leak.
+- **`pkg/tenant/context.go`** — exported `tenant.FromContext(ctx) (TenantContext, bool)` and
+  `tenant.WithContext(ctx, tc) context.Context` helpers. Canonical `tenantContextKey{}` type
+  migrated from pkg/server (pkg/server.TenantContextFromContext now thin alias).
+- **`pkg/audit/types.go`** — 3 new EventType constants: `EventSwarmSpawn` (`"swarm_spawn"`),
+  `EventSwarmClose` (`"swarm_close"`), `EventSwarmRestart` (`"swarm_restart"`).
+- **`tests/critical/swarm_cross_tenant_test.go`** — `TestCritical_Swarm_CrossTenantHandleBlocked`
+  (rule #10 release blocker): Alice's Stateful Handle, Bob's Send → ErrHandleNotFound + audit
+  EventCrossTenantBlocked + no info leak in error message.
+- **`tests/critical/swarm_legacy_byte_identical_test.go`** — `TestCritical_Swarm_LegacyMode_ByteIdentical`
+  (rule #10 release blocker): empty TenantContext → byte-identical pre-AIMUX-13 behavior + zero
+  EventSwarmSpawn/EventSwarmClose emit'ы (anti-flood per FR-4).
+- **`tests/critical/swarm_legacy_canonicalization_test.go`** — `TestCritical_Swarm_LegacyCanonicalization_SamePartition`
+  (rule #10 release blocker, CodeRabbit MAJOR PR #131 regression guard): empty ctx and
+  `tenant.LegacyDefault` ctx must hit the SAME registry partition (split-brain prevention).
+- **`pkg/swarm/swarm_bench_test.go`** — `BenchmarkSwarm_Get` (NFR-1 ≤ 200 ns/op overhead target;
+  measured **57.97 ns/op** — 3.4x under budget); `BenchmarkSwarm_Get_Stateless` (reference
+  full spawn cost 112.2 ns/op); `BenchmarkSwarm_Get_Concurrent_100Tenants` (NFR-2 linear scaling
+  ~160 ns/op per Get for 1000 Gets across 100 tenants); `TestSwarm_SameTenantConcurrentGet`
+  (BUG-003 anti-TOCTOU verification — 50 goroutines, 1 cached Handle, 1 spawn).
+
+### Changed
+
+- **`pkg/swarm.New` constructor signature** — `New(factoryFn FactoryFn) *Swarm` →
+  `New(factoryFn FactoryFn, auditLog audit.AuditLog) *Swarm`. nil-auditLog falls through to
+  audit.DiscardLog{}. ALL existing callers (pkg/swarm/swarm_test.go — 17 sites) migrated.
+- **`pkg/swarm.registryKey`** — internal helper now keyed `(tenantID, scope, name)` triple.
+  Separator `|`. Collision impossibility cross-referenced to AIMUX-12 W1 sanitizeTenantID
+  ASCII allowlist.
+- **`pkg/server.TenantContextFromContext`** — refactored к thin alias of `tenant.FromContext`.
+  Canonical key type lives in pkg/tenant.
+
+### Architecture
+
+- **NFR-3-Security (trust boundary IRREVERSIBLE):** Swarm trusts in-process ctx as
+  authoritative. DispatchMiddleware = single source of truth для tenant identity resolution.
+  Forge requires system compromise already (anti-requirements documented in spec).
+- **NFR-Persistent-Honesty:** Persistent SpawnMode survives `Shutdown(ctx)` but NOT hot-swap
+  (different daemon process). FD migration handoff (`sendmsg SCM_RIGHTS` + `pidfd`) deferred to
+  future AIMUX-N when first production Persistent consumer materializes (currently zero
+  non-test consumers).
+- **Tech debt vacated** — TECHNICAL_DEBT.md formerly tracked 7 items now all migrated to
+  active spec roadmap entries (`.agent/specs/aimux-v5-roadmap/architecture.md` Phase D1 +
+  DEF-1..DEF-7). File now empty per autopilot promise discipline.
+
+### Spec / artifacts
+
+- `.agent/specs/aimux-13-tenant-aware-swarm/` — full SpecKit pipeline complete:
+  user_job_statement, spec.md (5 FRs + 5 NFRs + 3 USs + 8 edge cases + 5 clarifications),
+  plan.md (Reversibility Audit PASS, 6 ADRs, Standard parallelism gate), checklists/security.md
+  (35 items, 100% traceability), completeness-report.md (PROCEED), tasks.md
+  (CR-001 — 15 T-tasks + 5 G-gates).
+- `.agent/specs/aimux-v5-roadmap/architecture.md` updated с DEF-7 (TestShim_Latency outlier
+  upstream tracking).
+
+### Test evidence
+
+- 5 phase gates G001-G005 PASS evidence saved under `changes/CR-001-initial-scope/evidence/`.
+- Full repo `go test ./... -timeout 300s` green: 39 packages including pkg/swarm (0.234s),
+  pkg/tenant (1.822s), pkg/audit (0.250s), pkg/server (2.292s), tests/critical (0.821s),
+  test/e2e (56.0s), tools/loomlint.
+
 ## [5.1.0] — 2026-04-29 — AIMUX-12 multi-tenant isolation
 
 ### Added (AIMUX-12 multi-tenant-isolation, 9 phases P0-P8)
