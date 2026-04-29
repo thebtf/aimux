@@ -102,6 +102,45 @@ func TestNewTokenBucket_ZeroRefillRate_DoesNotPanic(t *testing.T) {
 	}
 }
 
+// TestTenantRateLimiter_BurstDenials_NoNegativeDrift verifies that under
+// concurrent burst load on an empty bucket the token count never settles
+// at a negative value. The previous implementation used a single
+// CompareAndSwap(remaining, 0) clamp; only one of N concurrent denials
+// could win the CAS, so N-1 goroutines left the bucket permanently
+// negative. PRC v3 B4 — token bucket starvation.
+func TestTenantRateLimiter_BurstDenials_NoNegativeDrift(t *testing.T) {
+	// Use a tiny capacity (1) so we are guaranteed to drive the bucket
+	// negative under burst. Keep refill at 1/sec so refill cannot mask the
+	// drift during the test window.
+	b := newTokenBucket(1, 1)
+
+	// Drain the single starting token deterministically.
+	if !b.allow() {
+		t.Fatal("first allow on full bucket should succeed")
+	}
+
+	const goroutines = 100
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			_ = b.allow() // every call should be denied; we only care that
+			// the bucket is clamped to 0 afterwards.
+		}()
+	}
+	wg.Wait()
+
+	final := b.tokens.Load()
+	if final < 0 {
+		t.Fatalf("bucket drifted negative: tokens=%d after %d concurrent denials",
+			final, goroutines)
+	}
+	if final > 1 {
+		t.Fatalf("bucket count exceeded capacity unexpectedly: tokens=%d", final)
+	}
+}
+
 func TestTenantRateLimiter_PerTenantIsolation(t *testing.T) {
 	reg := buildTestRegistry([]tenant.TenantConfig{
 		{Name: "tenantA", UID: 2001, Role: tenant.RolePlain, RateLimitPerSec: 1, RefillRatePerSec: 1},

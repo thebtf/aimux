@@ -106,10 +106,27 @@ func (b *tokenBucket) allow() bool {
 	// Consume one token atomically. AddInt64(-1) returns the new value.
 	remaining := b.tokens.Add(-1)
 	if remaining < 0 {
-		// Give the token back — we can't hold a negative balance and the
-		// caller is denied. Clamp at 0 rather than restoring exact value to
-		// avoid obscure overflow scenarios under extreme concurrency.
-		b.tokens.CompareAndSwap(remaining, 0)
+		// Bucket exhausted — caller is denied. The previous implementation
+		// did a single CompareAndSwap(remaining, 0) which only succeeds for
+		// the goroutine whose `remaining` matches the live value; other
+		// concurrent denials leak permanent negative drift. The bucket then
+		// stays starved across refill windows.
+		//
+		// Fix: CAS-loop until tokens ≥ 0. We never want to hold a negative
+		// balance; ordering across denials is irrelevant (all denials see
+		// "exhausted" and return false). The loop is bounded by concurrent
+		// goroutine count and converges in O(N) CAS iterations worst case.
+		// PRC v3 B4.
+		for {
+			cur := b.tokens.Load()
+			if cur >= 0 {
+				break
+			}
+			if b.tokens.CompareAndSwap(cur, 0) {
+				break
+			}
+			// Another goroutine raced — re-read and retry.
+		}
 		return false
 	}
 	return true
