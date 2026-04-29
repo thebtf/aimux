@@ -1,0 +1,74 @@
+# v5.2.0 — AIMUX-13 tenant-aware Swarm
+
+## Summary
+
+Layer 2 (process pool manager) extended с tenant прошивкой continuing AIMUX-12 multi-tenant foundation. Last cross-cutting layer без tenant scoping closed. Foundation для Phase C reactivation Layer 3-4 dormant code post-purge.
+
+## What landed
+
+| Component | Path | Change |
+|---|---|---|
+| Handle struct | `pkg/swarm/swarm.go` | + `TenantID string` field, immutable after spawn for ALL SpawnMode |
+| Swarm struct | `pkg/swarm/swarm.go` | + `auditLog audit.AuditLog` field; `New(factory, auditLog)` constructor |
+| registry partitioning | `pkg/swarm/swarm.go` | `registryKey(tenantID, scope, name)` triple, separator `\|` (W1 sanitization protected) |
+| cross-tenant defense | `pkg/swarm/swarm.go` | `checkTenant` + `ErrHandleNotFound` (CHK079: NEVER 403, no info leak) |
+| audit hooks | `pkg/swarm/swarm.go` | `emitSpawn / emitClose / emitRestart` w/ legacy-mode anti-flood guard |
+| canonicalization | `pkg/swarm/swarm.go` | `canonicalTenantID` + `tenantIDFromContext` helpers — eliminate `""` vs `LegacyDefault` partition split-brain (CodeRabbit MAJOR PR #131) |
+| tenant helper | `pkg/tenant/context.go` | NEW exported `FromContext` + `WithContext`; canonical `tenantContextKey{}` |
+| audit events | `pkg/audit/types.go` | + `EventSwarmSpawn`, `EventSwarmClose`, `EventSwarmRestart` |
+| critical-suite | `tests/critical/swarm_*_test.go` | 3 release-blocker tests: CrossTenantBlocked + LegacyByteIdentical + LegacyCanonicalization_SamePartition (split-brain regression guard) |
+| benchmarks | `pkg/swarm/swarm_bench_test.go` | NFR-1 + NFR-2 + anti-TOCTOU coverage |
+
+## Performance evidence
+
+| Benchmark | Result | NFR |
+|---|---|---|
+| `BenchmarkSwarm_Get` (Stateful cache-hit) | **57.97 ns/op** | NFR-1 ≤ 200 ns/op overhead — **3.4x under budget** |
+| `BenchmarkSwarm_Get_Stateless` | 112.2 ns/op | reference, no threshold |
+| `BenchmarkSwarm_Get_Concurrent_100Tenants` | 1000 Get's @ ~160 ns/op each | NFR-2 linear scaling confirmed |
+| `TestSwarm_SameTenantConcurrentGet` | 50 goroutines, 1 Handle, 1 spawn | BUG-003 anti-TOCTOU verified |
+
+## Backwards compatibility
+
+— **Single local workstation deployment** (constitution target): byte-identical с pre-AIMUX-13. Empty TenantContext → LegacyDefault partition, no spawn/close audit emit (anti-flood per FR-4). Existing 17 `swarm.New(factory)` callsites migrated to `swarm.New(factory, nil)` — nil-auditLog fallthrough к internal discardAuditLog.
+— **Multi-tenant deployment** (foundation): cross-tenant Handle access returns ErrHandleNotFound с generic message, audit `EventCrossTenantBlocked` emitted с offending tenantID + targetHandleID.
+
+## Architecture decisions (ADRs from plan.md)
+
+— **NFR-3-Security IRREVERSIBLE:** trust in-process ctx as authoritative. DispatchMiddleware = single source of truth для tenant identity. Forge requires system compromise already.
+— **NFR-Persistent-Honesty:** Persistent SpawnMode survives `Shutdown(ctx)` but NOT hot-swap (different daemon process). FD migration handoff (`sendmsg SCM_RIGHTS` + `pidfd`) deferred to future AIMUX-N when first production Persistent consumer materializes.
+
+## Tech debt
+
+`TECHNICAL_DEBT.md` vacated. All 7 prior items migrated to `.agent/specs/aimux-v5-roadmap/architecture.md`:
+— Phase D1 backlog (FR-8 hot-swap log, FR-11 SIGTERM, FR-9 config knobs, TZ standardize) — 4 fixable verification gaps
+— DEF-4 PeerCredsUnavailable counter restore (muxcore upstream blocked)
+— DEF-6 AIMUX_TEST_EMIT_LINES build-tag (trust model change deferred)
+— DEF-7 TestShim_Latency 2.017s outlier (muxcore upstream blocked)
+
+## Spec / pipeline artifacts
+
+`.agent/specs/aimux-13-tenant-aware-swarm/` — full SpecKit pipeline:
+— `user_job_statement.md` (Phase 0 P-EPI1 persona, 5 verbatim quotes)
+— `spec.md` (5 FRs + 5 NFRs + 3 USs + 8 edge cases + 5 clarifications)
+— `plan.md` (REVERSIBILITY_AUDIT PASS, 6 ADRs, Standard parallelism gate)
+— `checklists/security.md` (35 items, 100% traceability)
+— `completeness-report.md` (PROCEED, 4 HIGH gaps amended inline)
+— `clarification-report-2026-04-29.md` (5/5 resolved)
+— `changes/CR-001-initial-scope/tasks.md` (15 T-tasks + 5 G-gates, 100% complete)
+— Evidence: `changes/CR-001-initial-scope/evidence/G001..G004` saved
+
+## Test evidence
+
+Full repo `go test ./... -timeout 300s` green: 39 packages including pkg/swarm (0.234s), pkg/tenant (1.822s), pkg/audit (0.250s), pkg/server (2.292s), tests/critical (0.821s), test/e2e (56.0s), tools/loomlint.
+
+## Foundation status
+
+After v5.2.0:
+— **Layer 1 Executors:** dormant post-purge, M5/M6 ahead
+— **Layer 2 Swarm:** ✅ tenant-aware (this release)
+— **Layer 3 Dialogue + Orchestrator:** dormant, awaits Phase C reactivation
+— **Layer 4 Workflow:** dormant (8 готовых workflows pending), awaits Phase C
+— **Layer 5 MCP surface:** intentionally minimal per operator directive (`status / sessions / deepresearch / upgrade` + 23 think patterns)
+— **Cross-cutting Loom:** v0.1.0 active, tenant-scoped via AIMUX-12
+— **Cross-cutting Tenant:** AIMUX-12 + AIMUX-13 fully landed — все cross-cutting layers (audit, sessions, loom, logger, ratelimit, swarm) tenant-aware

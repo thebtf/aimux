@@ -34,6 +34,9 @@ reactivation Layer 3-4 dormant code post-purge.
 - **`tests/critical/swarm_legacy_byte_identical_test.go`** — `TestCritical_Swarm_LegacyMode_ByteIdentical`
   (rule #10 release blocker): empty TenantContext → byte-identical pre-AIMUX-13 behavior + zero
   EventSwarmSpawn/EventSwarmClose emit'ы (anti-flood per FR-4).
+- **`tests/critical/swarm_legacy_canonicalization_test.go`** — `TestCritical_Swarm_LegacyCanonicalization_SamePartition`
+  (rule #10 release blocker, CodeRabbit MAJOR PR #131 regression guard): empty ctx and
+  `tenant.LegacyDefault` ctx must hit the SAME registry partition (split-brain prevention).
 - **`pkg/swarm/swarm_bench_test.go`** — `BenchmarkSwarm_Get` (NFR-1 ≤ 200 ns/op overhead target;
   measured **57.97 ns/op** — 3.4x under budget); `BenchmarkSwarm_Get_Stateless` (reference
   full spawn cost 112.2 ns/op); `BenchmarkSwarm_Get_Concurrent_100Tenants` (NFR-2 linear scaling
