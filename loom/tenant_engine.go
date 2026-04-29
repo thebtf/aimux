@@ -89,8 +89,16 @@ func NewTenantScopedEngine(engine *LoomEngine, tenantID string, quota *TenantQuo
 // MaxLoomTasksQueued (FR-17, T060). The quota check uses a live SQL COUNT to
 // avoid race-window issues from cached state.
 func (t *TenantScopedLoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error) {
-	// T060: quota enforcement — live SQL count, NOT cached state.
+	// W2 (AIMUX-12 v5.1.0): serialize quota-check + insert per-tenant via
+	// LoomEngine's tenantSubmitLock. Closes the TOCTOU race where N concurrent
+	// Submits read depth=cap-1, all pass check, all insert → cap exceeded by
+	// goroutine count. Different tenants remain parallel.
 	if t.quota != nil && t.quota.MaxLoomTasksQueued > 0 {
+		lock := t.engine.TenantSubmitLock(t.tenantID)
+		lock.Lock()
+		defer lock.Unlock()
+
+		// T060: quota enforcement — live SQL count, NOT cached state.
 		depth, err := t.engine.store.CountForTenant(t.tenantID)
 		if err != nil {
 			return "", fmt.Errorf("loom tenant: quota check: %w", err)

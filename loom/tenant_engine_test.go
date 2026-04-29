@@ -434,6 +434,94 @@ func TestLoomSubmit_QuotaAuditEvent(t *testing.T) {
 	}
 }
 
+
+// ---- W2: TestLoomSubmit_BurstConcurrentSubmits_RespectsQuota ----
+
+// TestLoomSubmit_BurstConcurrentSubmits_RespectsQuota verifies the W2 fix:
+// N concurrent goroutines hitting the same tenant must NOT all pass through
+// the depth=cap-1 race window. Per-tenant Submit lock serializes
+// quota-check + insert; exactly cap submits succeed, the remaining N-cap
+// receive ErrLoomQuotaExceeded.
+func TestLoomSubmit_BurstConcurrentSubmits_RespectsQuota(t *testing.T) {
+	db := newTestDB(t)
+	engine, err := NewEngine(db, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doneAll := make(chan struct{})
+	worker := &blockingWorker{done: doneAll}
+	engine.RegisterWorker(WorkerTypeThinker, worker)
+
+	const quotaCap = 10
+	const burstSize = 50
+
+	tenant := NewTenantScopedEngine(engine, "burst-tenant", &TenantQuotaConfig{
+		MaxLoomTasksQueued: quotaCap,
+		AuditEmitter:       &fakeAuditEmitter{},
+	})
+
+	type result struct {
+		ok  bool
+		err error
+	}
+	results := make(chan result, burstSize)
+
+	// Spawn burstSize concurrent goroutines all calling Submit at roughly the
+	// same time. Without W2 lock, multiple goroutines would read depth=cap-1
+	// in parallel and all pass the quota check, exceeding the cap.
+	start := make(chan struct{})
+	for i := 0; i < burstSize; i++ {
+		i := i
+		go func() {
+			<-start
+			_, submitErr := tenant.Submit(context.Background(), TaskRequest{
+				WorkerType: WorkerTypeThinker,
+				ProjectID:  "proj",
+				Prompt:     fmt.Sprintf("burst task %d", i),
+			})
+			results <- result{ok: submitErr == nil, err: submitErr}
+		}()
+	}
+	close(start) // release all goroutines simultaneously
+
+	// Collect results.
+	successes := 0
+	quotaDenials := 0
+	otherErrors := 0
+	for i := 0; i < burstSize; i++ {
+		r := <-results
+		switch {
+		case r.ok:
+			successes++
+		case errors.Is(r.err, ErrLoomQuotaExceeded):
+			quotaDenials++
+		default:
+			otherErrors++
+			t.Errorf("unexpected non-quota error: %v", r.err)
+		}
+	}
+
+	// Exactly quotaCap submits must succeed.
+	if successes != quotaCap {
+		t.Errorf("burst submit: %d successes, want exactly %d (quota cap); the W2 lock failed", successes, quotaCap)
+	}
+	if quotaDenials != burstSize-quotaCap {
+		t.Errorf("burst submit: %d quota denials, want %d", quotaDenials, burstSize-quotaCap)
+	}
+	if otherErrors > 0 {
+		t.Errorf("burst submit: %d unexpected errors (non-quota, non-success)", otherErrors)
+	}
+
+	// Unblock all dispatched goroutines.
+	for i := 0; i < quotaCap*2; i++ {
+		select {
+		case doneAll <- struct{}{}:
+		default:
+		}
+	}
+}
+
 // ---- helpers ----
 
 func waitForTerminal(t *testing.T, engine *LoomEngine, taskID string, timeout time.Duration) {

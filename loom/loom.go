@@ -66,6 +66,11 @@ type LoomEngine struct {
 	// initialisation.
 	wg     sync.WaitGroup
 	closed atomic.Bool
+	// W2 (AIMUX-12 v5.1.0): per-tenant submit serialization. Closes the TOCTOU
+	// race where N concurrent Submits all read depth=cap-1, all pass quota
+	// check, all insert → cap exceeded by goroutine count. The lock serializes
+	// quota-check + insert per tenant. Different tenants remain parallel.
+	tenantSubmitLocks sync.Map // tenantID string → *sync.Mutex
 	// T030 instruments — initialised in New() after options are applied.
 	taskSubmittedCounter otelmetric.Int64Counter
 	taskCompletedCounter otelmetric.Int64Counter
@@ -136,6 +141,16 @@ func (l *LoomEngine) RegisterWorker(wt WorkerType, w Worker) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.workers[wt] = w
+}
+
+// TenantSubmitLock returns the per-tenant submit Mutex used to serialize the
+// quota-check + insert sequence for a tenant. Different tenants get
+// independent Mutex instances (concurrency preserved across tenants).
+//
+// W2 (AIMUX-12 v5.1.0): closes the TOCTOU race in TenantScopedLoomEngine.Submit.
+func (l *LoomEngine) TenantSubmitLock(tenantID string) *sync.Mutex {
+	v, _ := l.tenantSubmitLocks.LoadOrStore(tenantID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // Submit creates a persistent task and dispatches to the appropriate worker.
