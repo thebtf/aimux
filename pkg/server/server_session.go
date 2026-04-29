@@ -170,9 +170,16 @@ func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.Projec
 					nil)
 				return json.Marshal(errResp)
 			}
-			// Unknown error class — log and fall through to dispatch without
-			// tenant context. Production should never hit this branch.
+			// Unknown error class — defense-in-depth deny. Production should never
+			// hit this branch, but if a future ResolveContext path returns a new
+			// error type we MUST NOT silently fall through to dispatch without
+			// tenant context (privilege escalation risk per PRC v3 N1).
 			d.srv.log.Warn("dispatch: ResolveContext returned unexpected error: %v", tcErr)
+			d.srv.dispatchMW.EmitUnenrolledBlocked(0, project.ID, "")
+			errResp := mcp.NewJSONRPCError(mcp.NewRequestId(0), -32000,
+				"tenant resolution failed: unexpected error class",
+				nil)
+			return json.Marshal(errResp)
 		} else {
 			ctx = d.srv.dispatchMW.WithContext(ctx, tc)
 
