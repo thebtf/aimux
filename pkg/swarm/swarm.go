@@ -47,8 +47,38 @@ func WithScope(scope string) GetOption {
 //
 // Before AIMUX-13: registryKey(scope, name) → scope+":"+name (or just name)
 // After  AIMUX-13: registryKey(tenantID, scope, name) → tenantID+"|"+scope+"|"+name
+//
+// All callers MUST canonicalize tenantID via canonicalTenantID/tenantIDFromContext
+// before passing it here. Otherwise mixed contexts (some carrying "" legacy,
+// some carrying tenant.LegacyDefault) would partition into separate registry
+// slots and produce split-brain behaviour (CodeRabbit MAJOR PR #131).
 func registryKey(tenantID, scope, name string) string {
 	return tenantID + "|" + scope + "|" + name
+}
+
+// canonicalTenantID collapses tenant.LegacyDefault ("legacy-default") to "".
+//
+// The Swarm registry uses "" as the canonical legacy partition key. Callers
+// that arrive with an explicit LegacyDefault TenantContext (e.g. emitted by
+// pkg/server.DispatchMiddleware) and callers that arrive with no
+// TenantContext at all (zero-value tc.TenantID == "") MUST share the same
+// partition — otherwise the same logical legacy stream splits into two
+// registry slots and produces ErrHandleNotFound for cross-path Get/Send.
+//
+// Real tenant IDs (anything other than "" or LegacyDefault) pass through
+// unchanged.
+func canonicalTenantID(id string) string {
+	if id == tenant.LegacyDefault {
+		return ""
+	}
+	return id
+}
+
+// tenantIDFromContext extracts the canonical tenantID from ctx.
+// Equivalent to canonicalTenantID(tenant.FromContext(ctx).TenantID).
+func tenantIDFromContext(ctx context.Context) string {
+	tc, _ := tenant.FromContext(ctx)
+	return canonicalTenantID(tc.TenantID)
 }
 
 // SpawnMode determines executor lifecycle policy for handles returned by Get.
@@ -168,8 +198,7 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 		return nil, errors.New("swarm: executor name must not be empty")
 	}
 
-	tc, _ := tenant.FromContext(ctx)
-	tenantID := tc.TenantID
+	tenantID := tenantIDFromContext(ctx)
 
 	// Stateless always spawns fresh — no registry lookup needed.
 	if mode == Stateless {
@@ -387,10 +416,10 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 // with an empty TenantID was spawned in legacy-default mode — it is accessible
 // only by contexts that also resolve to an empty TenantID (FR-4).
 func (s *Swarm) checkTenant(ctx context.Context, h *Handle) error {
-	tc, _ := tenant.FromContext(ctx)
-	ctxTenantID := tc.TenantID
+	ctxTenantID := tenantIDFromContext(ctx)
+	handleTenantID := canonicalTenantID(h.TenantID)
 
-	if ctxTenantID == h.TenantID {
+	if ctxTenantID == handleTenantID {
 		return nil
 	}
 
@@ -470,7 +499,7 @@ func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle
 		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
 	}
 
-	tc, _ := tenant.FromContext(ctx)
+	tenantID := tenantIDFromContext(ctx)
 
 	s.mu.Lock()
 	s.nextID++
@@ -480,7 +509,7 @@ func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle
 	now := time.Now()
 	return &Handle{
 		ID:         id,
-		TenantID:   tc.TenantID,
+		TenantID:   tenantID,
 		Name:       name,
 		Mode:       mode,
 		executor:   exec,
@@ -501,7 +530,7 @@ func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode) (*
 		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
 	}
 
-	tc, _ := tenant.FromContext(ctx)
+	tenantID := tenantIDFromContext(ctx)
 
 	s.nextID++
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
@@ -509,7 +538,7 @@ func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode) (*
 	now := time.Now()
 	return &Handle{
 		ID:         id,
-		TenantID:   tc.TenantID,
+		TenantID:   tenantID,
 		Name:       name,
 		Mode:       mode,
 		executor:   exec,
