@@ -4,6 +4,25 @@ import "time"
 
 // EventType is the classification of a single audit event. Use the typed
 // constants below instead of raw strings to prevent typos at call sites.
+//
+// Event taxonomy:
+//
+//   Dispatch layer (DispatchMiddleware):
+//     EventAllow              — tool call permitted
+//     EventDeny               — tool call denied by policy
+//     EventRateLimited        — request dropped by rate-limiter
+//     EventCrossTenantBlocked — cross-tenant resource access blocked
+//
+//   Tenant config (TenantRegistry):
+//     EventTenantConfigChange — hot-reload changed tenant configuration
+//
+//   Loom task layer (LoomEngine):
+//     EventLoomSubmitRejected — task submission rejected by tenant policy
+//
+//   Swarm executor layer (pkg/swarm):
+//     EventSwarmSpawn         — executor spawned for a tenant (multi-tenant mode only)
+//     EventSwarmClose         — executor closed (multi-tenant mode only)
+//     EventSwarmRestart       — executor restarted after health-failure
 type EventType string
 
 const (
@@ -24,6 +43,20 @@ const (
 
 	// EventLoomSubmitRejected records that a loom task submission was rejected.
 	EventLoomSubmitRejected EventType = "loom_submit_rejected"
+
+	// EventSwarmSpawn records that a new executor was spawned for a tenant.
+	// Emitted only in multi-tenant mode (anti-flood, FR-4).
+	EventSwarmSpawn EventType = "swarm_spawn"
+
+	// EventSwarmClose records that an executor was closed.
+	// Reason field carries one of: "stateless-after-send", "shutdown",
+	// "explicit-close", "health-failure".
+	// Emitted only in multi-tenant mode (anti-flood, FR-4).
+	EventSwarmClose EventType = "swarm_close"
+
+	// EventSwarmRestart records that an executor was restarted after a health failure.
+	// Emitted in both legacy and multi-tenant mode (error condition, always relevant).
+	EventSwarmRestart EventType = "swarm_restart"
 )
 
 // AuditEvent is an immutable value type representing a single security-relevant
