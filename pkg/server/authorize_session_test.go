@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -417,6 +418,56 @@ func TestAuthorize_NegativePeerUID_Denies(t *testing.T) {
 	}
 	if !foundNegBlock {
 		t.Errorf("expected cross_tenant_blocked audit event with OperatorUID=-1, got %v", events)
+	}
+}
+
+// TestAuthorizeSession_DenyResponseNoUID verifies DEF-10/FR-3: the shim-visible
+// SessionAuth.Reason on an AuthDeny MUST be the generic literal "access denied"
+// with no UID digits — closing the UID enumeration oracle.
+//
+// The UID stays in the audit log's OperatorUID field for operator forensics;
+// the peer-visible Reason must carry no digit that could be matched to enumerate
+// tenant UIDs via deny-response message scanning.
+func TestAuthorizeSession_DenyResponseNoUID(t *testing.T) {
+	// Registry has tenantA at UID 1000; connecting peer is 9999 (unenrolled).
+	reg := buildRegistry(map[uint32]tenant.TenantConfig{
+		1000: {Name: "tenantA", UID: 1000, Role: tenant.RoleOperator},
+	})
+	al := &mockAuditLog{}
+	rl := newSessionTenantRecorder()
+
+	adapter := NewAuthorizeSessionAdapter(reg, al, rl, nil)
+
+	conn := muxcore.ConnInfo{PeerUid: 9999}
+	project := muxcore.ProjectContext{ID: "proj-uid-redact"}
+	result := adapter.Authorize(context.Background(), conn, project)
+
+	if result.Decision != muxcore.AuthDeny {
+		t.Fatalf("expected AuthDeny for unenrolled UID, got %v", result.Decision)
+	}
+
+	// AC: exact string match — peer sees only "access denied".
+	if result.Reason != "access denied" {
+		t.Errorf("expected Reason %q, got %q", "access denied", result.Reason)
+	}
+
+	// Anti-stub: no digit characters anywhere in the peer-visible Reason.
+	digitRe := regexp.MustCompile(`\d`)
+	if digitRe.MatchString(result.Reason) {
+		t.Errorf("Reason %q must contain no digits (UID enumeration oracle closed)", result.Reason)
+	}
+
+	// Audit log must still carry the full forensic context (UID in OperatorUID field).
+	events := al.Events()
+	var foundBlock bool
+	for _, ev := range events {
+		if ev.EventType == audit.EventCrossTenantBlocked && ev.OperatorUID == 9999 {
+			foundBlock = true
+			break
+		}
+	}
+	if !foundBlock {
+		t.Errorf("expected cross_tenant_blocked audit event with OperatorUID=9999, got %v", events)
 	}
 }
 
