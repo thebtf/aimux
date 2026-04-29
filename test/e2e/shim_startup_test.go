@@ -314,7 +314,9 @@ func TestShim_NoSQLiteWrites(t *testing.T) {
 	case <-time.After(6 * time.Second):
 		t.Log("shim did not exit within 6s after stdin close; sending kill")
 		shimCmd.Process.Kill() //nolint:errcheck
-		shimCmd.Wait()        //nolint:errcheck
+		// Wait via the channel — calling shimCmd.Wait() here directly would
+		// race with the goroutine on line 308 that already owns Wait().
+		<-shimExited
 	}
 
 	// Deactivate write counting immediately after shim exits so subsequent
