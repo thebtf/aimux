@@ -35,7 +35,9 @@ func TestE2E_Upgrade_HotSwap_RuntimeEngineMode(t *testing.T) {
 	// driven by muxcore daemon handoff timing — exceeds AIMUX-15 scope budget.
 	// Tracked: engram issue #183 — reopen when multi-tenant deployment requires
 	// Windows hot-swap reliability OR muxcore upstream lands deterministic handoff.
-	t.Skip("muxcore handoff timing — engram issue #183 (DEF-12 hybrid scope)")
+	if runtime.GOOS == "windows" {
+		t.Skip("muxcore handoff timing on Windows — engram issue #183 (DEF-12 hybrid scope)")
+	}
 
 	v1Bin := buildBinary(t) // current branch — has upgrade-diag patches
 	v2Bin := buildBinary(t)

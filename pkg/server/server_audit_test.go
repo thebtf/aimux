@@ -76,8 +76,11 @@ func TestServer_AuditInitFatal_MultiTenant(t *testing.T) {
 	// initAuditLog must call auditFatalfFn → panic "audit-fatal-stub".
 	func() {
 		defer func() {
-			if r := recover(); r == nil {
+			r := recover()
+			if r == nil {
 				t.Fatal("expected auditFatalfFn to panic (simulate Fatal) but it did not")
+			} else if got := fmt.Sprint(r); got != "audit-fatal-stub" {
+				t.Fatalf("panic value = %q, want %q", got, "audit-fatal-stub")
 			}
 		}()
 		initAuditLog(cfg, log, reg)

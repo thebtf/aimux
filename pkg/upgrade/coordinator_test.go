@@ -722,7 +722,9 @@ func controlSocketTestPath(t *testing.T) string {
 	// limit produced the macOS pkg/upgrade flake on CI.
 	if runtime.GOOS == "darwin" {
 		// /tmp/amx-<pid>-<nano>.sock — typically ≤ 40 bytes, safe within 104.
-		path := filepath.Join(os.TempDir(), fmt.Sprintf("amx-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+		// Hardcode /tmp (not os.TempDir()): on macOS os.TempDir() resolves to
+		// /var/folders/... which can exceed the 104-byte sun_path limit.
+		path := filepath.Join("/tmp", fmt.Sprintf("amx-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
 		t.Cleanup(func() { _ = os.Remove(path) })
 		return path
 	}

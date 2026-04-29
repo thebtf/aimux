@@ -198,7 +198,12 @@ func initAuditLog(cfg *config.Config, log *logger.Logger, reg *tenant.TenantRegi
 // Callers MUST invoke NewDaemon only after detectMode() has confirmed daemon
 // mode. Calling it from shim or legacy-proxy context will corrupt daemon
 // persistent state (spec FR-3, NFR-3, architecture doc §2.3 anti-pattern).
-func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *routing.Router) *Server {
+//
+// tenantReg is the pre-populated TenantRegistry. Pass nil to get legacy-default
+// mode (empty registry, IsMultiTenant() == false). cmd/aimux/main.go passes the
+// registry AFTER loading tenants.yaml so initAuditLog sees the correct multi-tenant
+// state at daemon construction time (DEF-11 / FR-4 fix).
+func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *routing.Router, tenantReg *tenant.TenantRegistry) *Server {
 	s := &Server{
 		cfg:      cfg,
 		log:      log,
@@ -290,7 +295,9 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	// MCP tool dispatch (AIMUX-12 Phase 5, T031). The middleware is always
 	// constructed; in legacy-default mode (no tenants.yaml) it is a no-op pass-through.
 	// In multi-tenant mode, audit log init failure is fatal (DEF-11 / FR-4).
-	tenantReg := tenant.NewRegistry()
+	if tenantReg == nil {
+		tenantReg = tenant.NewRegistry()
+	}
 	s.auditLog, s.dispatchMW = initAuditLog(cfg, log, tenantReg)
 
 	// Start GC reaper for expired sessions
@@ -423,7 +430,7 @@ func New(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *r
 	deprecationOnce.Do(func() {
 		log.Warn("aimuxServer.New is deprecated; use NewDaemon. See AIMUX-6 spec.")
 	})
-	return NewDaemon(cfg, log, reg, router)
+	return NewDaemon(cfg, log, reg, router, nil)
 }
 
 // runSnapshotLoop periodically saves in-memory state to SQLite.

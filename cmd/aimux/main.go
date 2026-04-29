@@ -168,10 +168,9 @@ func run() error {
 
 	router := routing.NewRouterWithPriority(cfg.Roles, afterWarmup, cfg.CLIProfiles, cfg.Server.CLIPriority)
 
-	srv := aimuxServer.NewDaemon(cfg, log, registry, router)
-	defer srv.Shutdown()
-
 	// T012: wire tenant registry + SIGHUP hot-reload (FR-1, FR-12 seam).
+	// Load tenants BEFORE NewDaemon so initAuditLog sees the correct multi-tenant
+	// state at construction time (DEF-11 / FR-4 fix — audit fail-closed).
 	tenantReg := tenant.NewRegistry()
 	tenantsPath := tenantsYAMLPath(configDir)
 	if snap, loadErr := tenant.LoadFromFile(tenantsPath); loadErr == nil {
@@ -188,6 +187,9 @@ func run() error {
 	}
 	hotReloader := tenant.NewConfigHotReloader(tenantsPath, tenantReg, nil)
 	go hotReloader.Run(ctx)
+
+	srv := aimuxServer.NewDaemon(cfg, log, registry, router, tenantReg)
+	defer srv.Shutdown()
 
 	transport := cfg.Server.Transport.Type
 	if envTransport := os.Getenv("MCP_TRANSPORT"); envTransport != "" {

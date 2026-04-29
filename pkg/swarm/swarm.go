@@ -271,8 +271,10 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 	}
 
 	// Step 3: re-acquire write lock only for registry insertion.
+	// Use alive (the already-pruned slice) as the base, not s.registry[key],
+	// so dead handles that were pruned in Step 1 are not re-added here.
 	s.mu.Lock()
-	s.registry[key] = append(s.registry[key], h)
+	s.registry[key] = append(alive, h)
 	s.mu.Unlock()
 
 	s.emitSpawn(h)
@@ -430,6 +432,14 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 	// Clear the registry so new Get calls after Shutdown start fresh.
 	s.registry = make(map[string][]*Handle)
 	s.mu.Unlock()
+
+	// Release all per-key mutexes so they can be GC'd. This prevents the
+	// keyLocks sync.Map from accumulating unbounded entries across repeated
+	// Shutdown+reinit cycles (DEF-8 follow-up — keyLocks memory leak fix).
+	s.keyLocks.Range(func(k, _ any) bool {
+		s.keyLocks.Delete(k)
+		return true
+	})
 
 	var errs []error
 	for _, h := range all {
