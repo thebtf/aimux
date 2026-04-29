@@ -110,6 +110,9 @@ func TestCritical_Swarm_CrossTenantHandleBlocked(t *testing.T) {
 
 	// 4. SendStream from Bob on Alice's handle must also be rejected identically
 	//    (CHK079 applies to the streaming path as well as the unary path).
+	//    Capture event delta BEFORE SendStream so the assertion validates the
+	//    streaming-path emission specifically, not a leftover Send event.
+	beforeStream := rec.Snapshot()
 	_, streamErr := s.SendStream(bobCtx, h, types.Message{Content: "cross-tenant stream probe"}, func(types.Chunk) {})
 
 	if !errors.Is(streamErr, swarm.ErrHandleNotFound) {
@@ -118,12 +121,19 @@ func TestCritical_Swarm_CrossTenantHandleBlocked(t *testing.T) {
 	if streamErr != nil && strings.Contains(streamErr.Error(), "alice") {
 		t.Errorf("CRITICAL: SendStream error message leaks victim tenant ID %q: %q", "alice", streamErr.Error())
 	}
-	if !rec.hasEvent(func(ev audit.AuditEvent) bool {
-		return ev.EventType == audit.EventCrossTenantBlocked &&
+	afterStream := rec.Snapshot()
+	streamEvents := afterStream[len(beforeStream):]
+	foundStreamAudit := false
+	for _, ev := range streamEvents {
+		if ev.EventType == audit.EventCrossTenantBlocked &&
 			ev.TenantID == "bob" &&
-			ev.ResourceID == h.ID
-	}) {
-		t.Errorf("CRITICAL: missing EventCrossTenantBlocked audit event for SendStream (TenantID=bob, ResourceID=%s): %+v",
-			h.ID, rec.Snapshot())
+			ev.ResourceID == h.ID {
+			foundStreamAudit = true
+			break
+		}
+	}
+	if !foundStreamAudit {
+		t.Errorf("CRITICAL: missing EventCrossTenantBlocked audit event for SendStream (TenantID=bob, ResourceID=%s): delta=%+v",
+			h.ID, streamEvents)
 	}
 }
