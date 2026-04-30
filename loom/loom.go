@@ -396,6 +396,30 @@ func (l *LoomEngine) Events() *EventBus {
 	return l.events
 }
 
+// AppendProgress records a single progress line for taskID and emits an
+// EventTaskProgress on the event bus. Workers (or worker wrappers like
+// workers.StreamingBase) call this for every line of live output so that
+// status() readers see progress_tail / progress_lines / progress_updated_at
+// at parity with the legacy JobManager (DEF-13 / AIMUX-16 CR-005).
+//
+// The line is UTF-8-safe truncated to ≤100 bytes by the store. Errors from
+// the store are propagated; the event is emitted only after a successful
+// store update so subscribers never observe a delivered event whose state
+// is missing from disk. taskID lookups for unknown / cancelled tasks are
+// no-ops at the store layer and produce no event.
+func (l *LoomEngine) AppendProgress(taskID, line string) error {
+	if err := l.store.AppendProgress(taskID, line); err != nil {
+		return err
+	}
+	l.events.Emit(TaskEvent{
+		Type:      EventTaskProgress,
+		TaskID:    taskID,
+		Status:    TaskStatusRunning,
+		Timestamp: l.clock.Now().UTC(),
+	})
+	return nil
+}
+
 // failTask is a best-effort helper that marks a task as failed in the store
 // and emits EventTaskFailed. Errors from store operations are logged but not
 // returned — the caller is typically already handling a failure path.

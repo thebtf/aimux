@@ -771,6 +771,17 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 					"job_id": task.ID,
 					"status": string(task.Status),
 				}
+				// Surface live progress fields at parity with the legacy JobManager
+				// (DEF-13 / AIMUX-16 CR-005). Workers that do not opt into the
+				// progress sink see zero/empty values rather than stale data
+				// (EC-5.1) — the columns default to '' / 0 / NULL on insert.
+				result["progress_tail"] = task.LastOutputLine
+				result["progress_lines"] = task.ProgressLines
+				if task.ProgressUpdatedAt != nil {
+					result["progress_updated_at"] = task.ProgressUpdatedAt.UTC().Format(time.RFC3339)
+				} else {
+					result["progress_updated_at"] = nil
+				}
 				if task.Status.IsTerminal() {
 					taskContentLen := len(task.Result)
 					if bp.Tail > 0 {

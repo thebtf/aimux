@@ -76,29 +76,38 @@ const (
 )
 
 // Task represents a unit of work managed by LoomEngine.
+//
+// Progress fields (LastOutputLine, ProgressLines, ProgressUpdatedAt) are
+// populated by Store.AppendProgress when a worker emits live progress
+// (DEF-13, AIMUX-16 CR-005). They are zero/nil for workers that do not
+// opt into the progress sink — callers must treat them as "no signal yet"
+// rather than "stale" (see EC-5.1).
 type Task struct {
-	ID           string            `json:"id"`
-	Status       TaskStatus        `json:"status"`
-	WorkerType   WorkerType        `json:"worker_type"`
-	ProjectID    string            `json:"project_id"`
-	RequestID    string            `json:"request_id,omitempty"`
-	EngineName   string            `json:"engine_name,omitempty"`
-	TenantID     string            `json:"tenant_id,omitempty"`
-	Prompt       string            `json:"prompt"`
-	CWD          string            `json:"cwd,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	CLI          string            `json:"cli,omitempty"`
-	Role         string            `json:"role,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	Effort       string            `json:"effort,omitempty"`
-	Timeout      int               `json:"timeout,omitempty"`
-	Metadata     map[string]any    `json:"metadata,omitempty"`
-	Result       string            `json:"result,omitempty"`
-	Error        string            `json:"error,omitempty"`
-	Retries      int               `json:"retries"`
-	CreatedAt    time.Time         `json:"created_at"`
-	DispatchedAt *time.Time        `json:"dispatched_at,omitempty"`
-	CompletedAt  *time.Time        `json:"completed_at,omitempty"`
+	ID                string            `json:"id"`
+	Status            TaskStatus        `json:"status"`
+	WorkerType        WorkerType        `json:"worker_type"`
+	ProjectID         string            `json:"project_id"`
+	RequestID         string            `json:"request_id,omitempty"`
+	EngineName        string            `json:"engine_name,omitempty"`
+	TenantID          string            `json:"tenant_id,omitempty"`
+	Prompt            string            `json:"prompt"`
+	CWD               string            `json:"cwd,omitempty"`
+	Env               map[string]string `json:"env,omitempty"`
+	CLI               string            `json:"cli,omitempty"`
+	Role              string            `json:"role,omitempty"`
+	Model             string            `json:"model,omitempty"`
+	Effort            string            `json:"effort,omitempty"`
+	Timeout           int               `json:"timeout,omitempty"`
+	Metadata          map[string]any    `json:"metadata,omitempty"`
+	Result            string            `json:"result,omitempty"`
+	Error             string            `json:"error,omitempty"`
+	Retries           int               `json:"retries"`
+	CreatedAt         time.Time         `json:"created_at"`
+	DispatchedAt      *time.Time        `json:"dispatched_at,omitempty"`
+	CompletedAt       *time.Time        `json:"completed_at,omitempty"`
+	LastOutputLine    string            `json:"last_output_line,omitempty"`
+	ProgressLines     int64             `json:"progress_lines,omitempty"`
+	ProgressUpdatedAt *time.Time        `json:"progress_updated_at,omitempty"`
 }
 
 // TaskRequest is the input for submitting a new task.
