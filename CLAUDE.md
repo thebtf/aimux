@@ -5,6 +5,8 @@
 Universal MCP server multiplexing 12 AI CLI tools (codex, gemini, claude, qwen, aider, goose, crush, gptme, cline, continue, droid, opencode).
 Go rewrite of mcp-aimux (TypeScript v2). Single binary, zero external runtime dependencies.
 
+**Mode:** `local-stdio` (per `~/.claude/rules/constitution.md` deployment mode taxonomy). Multi-tenant code paths (AIMUX-12 Phases 0-8 shipped in v5.1.0) dormant by config gate — `tenants.yaml` absent → `IsMultiTenant()` returns false. Resume trigger for multi-tenant enforcement: hosted deployment with ≥2 distinct uids.
+
 ## Stack
 
 - **Language:** Go 1.25+
