@@ -38,7 +38,15 @@ func TestCritical_PersistentSession_CloseGraceful(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 
+	// Register cleanup IMMEDIATELY so any subsequent t.Fatal does NOT leak
+	// the subprocess (PR #134 review — coderabbit major).
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
 	sess := session.New("close-test", stdin, stdout, 5*time.Second, nil, nil, "^===END===$")
+	t.Cleanup(func() { _ = sess.Close() })
 
 	// Warm-up Send so the reader goroutine has touched the pipe.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

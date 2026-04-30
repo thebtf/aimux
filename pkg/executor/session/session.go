@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"regexp"
 	"sync"
 	"time"
@@ -24,6 +25,12 @@ import (
 	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+// readerBufferSize is the per-line scanner buffer cap (1 MB). Default
+// bufio.Scanner ceiling is 64 KB; LLM-CLI tools may emit longer JSON blobs
+// (reasoning chains, tool-result payloads) which would otherwise terminate
+// the session с bufio.ErrTooLong (PR #134 review — gemini medium).
+const readerBufferSize = 1 << 20
 
 // readChunk is a single read result from the lifetime reader goroutine.
 // When completionMatched is true the chunk's data is the sentinel-matched line
@@ -109,8 +116,16 @@ func New(
 
 	var compiled *regexp.Regexp
 	if completionPattern != "" {
-		compiled, _ = regexp.Compile(completionPattern)
-		// Ignore compile errors — invalid pattern falls back to idle-timeout behavior.
+		c, err := regexp.Compile(completionPattern)
+		if err != nil {
+			// Surface the invalid pattern instead of silently falling back
+			// (PR #134 review — gemini medium). Operators relying on sentinel
+			// detection see WHY their pattern is not firing instead of guessing.
+			log.Printf("session.New: invalid completion pattern %q: %v "+
+				"(falling back to idle-timeout-only behavior)", completionPattern, err)
+		} else {
+			compiled = c
+		}
 	}
 
 	s := &BaseSession{
@@ -135,6 +150,10 @@ func New(
 	go func() {
 		defer close(s.readerDone)
 		scanner := bufio.NewScanner(s.stdout)
+		// Raise default 64 KB token cap к 1 MB — LLM-CLI tools may emit long
+		// JSON blobs as a single line; 64 KB triggers bufio.ErrTooLong and
+		// terminates the session prematurely (PR #134 review — gemini medium).
+		scanner.Buffer(make([]byte, 0, 64*1024), readerBufferSize)
 		for scanner.Scan() {
 			line := scanner.Text()
 			// Line-anchored sentinel detection (FR-3, Q-CLAR-1):

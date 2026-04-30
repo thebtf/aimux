@@ -56,8 +56,15 @@ func (a *CLIConPTYAdapter) Info() types.ExecutorInfo {
 // prepending are delegated to messageToSpawnArgs (see adapter_common.go).
 func (a *CLIConPTYAdapter) Send(ctx context.Context, msg types.Message) (*types.Response, error) {
 	// Session-bound mode (FR-2): dispatch via persistent session.
+	// SystemPrompt parity with stateless path — prepend before sending so
+	// session-bound and stateless modes preserve identical message-context
+	// semantics (PR #134 review — gemini high / coderabbit major).
 	if a.session != nil {
-		result, err := a.session.Send(ctx, msg.Content)
+		content := msg.Content
+		if msg.SystemPrompt != "" {
+			content = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
+		}
+		result, err := a.session.Send(ctx, content)
 		if err != nil {
 			return nil, fmt.Errorf("conpty adapter: %w", err)
 		}

@@ -77,32 +77,62 @@ func TestCritical_PersistentMode_ParallelSameNameReuse(t *testing.T) {
 		TenantID: "ec9-test",
 	})
 
-	// First Get(Persistent) — spawns the handle.
-	h1, err := sw.Get(ctx, "codex", swarm.Persistent)
-	if err != nil {
-		t.Fatalf("Get #1: %v", err)
+	// CONCURRENT Get(Persistent) calls — exercises the per-key sync.Map
+	// mutex serialization (DEF-8 / FR-2) AND registryKey partition dedup.
+	// Sequential calls would not validate the concurrent dedupe path
+	// (PR #134 review — coderabbit major).
+	const goroutines = 16
+	handles := make(chan *swarm.Handle, goroutines)
+	errs := make(chan error, goroutines)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // synchronize all goroutines for max contention on first Get
+			h, err := sw.Get(ctx, "codex", swarm.Persistent)
+			if err != nil {
+				errs <- err
+				return
+			}
+			handles <- h
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(handles)
+	close(errs)
+
+	for e := range errs {
+		t.Errorf("concurrent Get error: %v", e)
 	}
 
-	// Second Get(Persistent) with same tenantID+scope+name — MUST return same handle.
-	h2, err := sw.Get(ctx, "codex", swarm.Persistent)
-	if err != nil {
-		t.Fatalf("Get #2: %v", err)
+	// Collect unique handle IDs — all goroutines MUST receive the same handle.
+	seen := make(map[string]int)
+	var firstID string
+	for h := range handles {
+		if firstID == "" {
+			firstID = h.ID
+		}
+		seen[h.ID]++
 	}
 
-	if h1.ID != h2.ID {
-		t.Errorf("EC-9: parallel Persistent Get returned distinct handles "+
-			"(h1=%q, h2=%q) — registryKey partition broken", h1.ID, h2.ID)
+	if len(seen) != 1 {
+		t.Errorf("EC-9: %d concurrent Persistent Gets returned %d distinct "+
+			"handle IDs (registryKey dedup broken): %v", goroutines, len(seen), seen)
 	}
 
 	// Audit must record exactly 1 spawn event for this name (anti-stub:
-	// duplicate spawn surfaces 2 events).
+	// duplicate spawn surfaces 2+ events under concurrent contention).
 	spawnCount := auditLog.eventsByType(audit.EventSwarmSpawn)
 	const wantSpawns = 1
 	if spawnCount != wantSpawns {
-		t.Errorf("EC-9: expected %d EventSwarmSpawn for repeated Persistent Get, "+
-			"got %d (duplicate-spawn regression)", wantSpawns, spawnCount)
+		t.Errorf("EC-9: expected %d EventSwarmSpawn under %d concurrent Persistent Gets, "+
+			"got %d (duplicate-spawn regression)", wantSpawns, goroutines, spawnCount)
 	}
 
-	t.Logf("EC-9 verified: %d Persistent Gets → handle %q reused → %d spawn events",
-		2, h1.ID, spawnCount)
+	t.Logf("EC-9 verified: %d concurrent Persistent Gets → handle %q reused → %d spawn events",
+		goroutines, firstID, spawnCount)
 }

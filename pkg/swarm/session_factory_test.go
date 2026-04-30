@@ -208,3 +208,74 @@ func TestErrNotSupported_Identity(t *testing.T) {
 		t.Error("errors.Is must unwrap joined ErrNotSupported")
 	}
 }
+
+// adapterShim wraps a SessionFactory-bearing legacy executor and exposes
+// it via LegacyAccessor — mirrors the production CLI{Pipe,ConPTY,PTY}Adapter
+// shape (PR #134 review fix).
+type adapterShim struct {
+	mockExecutorV2
+	underlying types.LegacyExecutor
+}
+
+func (a *adapterShim) Info() types.ExecutorInfo {
+	return types.ExecutorInfo{
+		Name: "adapter-shim",
+		Type: types.ExecutorTypeCLI,
+		Capabilities: types.ExecutorCapabilities{
+			PersistentSessions: true,
+		},
+	}
+}
+
+func (a *adapterShim) Legacy() types.LegacyExecutor { return a.underlying }
+
+// legacyWithSessionFactory is a LegacyExecutor whose concrete type ALSO
+// satisfies types.SessionFactory — mirrors pipe.Executor / conpty.Executor /
+// pty.Executor production types.
+type legacyWithSessionFactory struct {
+	startSessionFn func(ctx context.Context, args types.SpawnArgs) (types.Session, error)
+}
+
+func (l *legacyWithSessionFactory) Run(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
+	return &types.Result{Content: "legacy-run"}, nil
+}
+func (l *legacyWithSessionFactory) Start(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
+	return l.StartSession(ctx, args)
+}
+func (l *legacyWithSessionFactory) Available() bool { return true }
+func (l *legacyWithSessionFactory) Name() string    { return "legacy-with-session" }
+func (l *legacyWithSessionFactory) StartSession(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
+	if l.startSessionFn != nil {
+		return l.startSessionFn(ctx, args)
+	}
+	return &mockSession{alive: true}, nil
+}
+
+// TestMaybeStartSession_AdapterPath verifies that MaybeStartSession probes
+// LegacyAccessor when ex itself does NOT satisfy SessionFactory but its
+// underlying legacy executor does. Mirrors production adapter shape
+// (CLI{Pipe,ConPTY,PTY}Adapter wrapping pipe.Executor / conpty.Executor /
+// pty.Executor) — PR #134 review (gemini high).
+func TestMaybeStartSession_AdapterPath(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	underlying := &legacyWithSessionFactory{
+		startSessionFn: func(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
+			called = true
+			return &mockSession{alive: true}, nil
+		},
+	}
+	adapter := &adapterShim{underlying: underlying}
+
+	sess, err := swarm.MaybeStartSession(context.Background(), adapter, types.SpawnArgs{})
+	if err != nil {
+		t.Fatalf("MaybeStartSession: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected non-nil Session via adapter LegacyAccessor probe")
+	}
+	if !called {
+		t.Error("legacy.StartSession was not invoked — adapter probe failed")
+	}
+}

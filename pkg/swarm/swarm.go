@@ -350,6 +350,10 @@ func (s *Swarm) Send(ctx context.Context, h *Handle, msg types.Message) (*types.
 	}
 
 	h.mu.Lock()
+	// Bump lastUsedAt at Send ENTRY so a long-running Send (e.g. multi-turn
+	// dialog с slow CLI) does not let the reaper see a stale timestamp and
+	// kill the executor mid-flight (PR #134 review — coderabbit major).
+	h.lastUsedAt = time.Now()
 	exec := h.executor
 	h.mu.Unlock()
 
@@ -382,6 +386,10 @@ func (s *Swarm) SendStream(ctx context.Context, h *Handle, msg types.Message, on
 	}
 
 	h.mu.Lock()
+	// Bump lastUsedAt at SendStream ENTRY so a long-running stream does not
+	// let the reaper see a stale timestamp and kill the executor mid-flight
+	// (PR #134 review — coderabbit major).
+	h.lastUsedAt = time.Now()
 	exec := h.executor
 	h.mu.Unlock()
 
@@ -584,11 +592,22 @@ func MaybeStartSession(ctx context.Context, ex types.ExecutorV2, args types.Spaw
 	if !ex.Info().Capabilities.PersistentSessions {
 		return nil, nil
 	}
-	sf, ok := ex.(types.SessionFactory)
-	if !ok {
-		return nil, nil
+	// Direct path: ex itself satisfies SessionFactory (concrete backend
+	// types — pipe.Executor / conpty.Executor / pty.Executor — implement it).
+	if sf, ok := ex.(types.SessionFactory); ok {
+		return sf.StartSession(ctx, args)
 	}
-	return sf.StartSession(ctx, args)
+	// Adapter path: ex is a CLI{Pipe,ConPTY,PTY}Adapter wrapping a
+	// LegacyExecutor whose concrete type is the backend Executor satisfying
+	// SessionFactory. Probe the underlying via LegacyAccessor — this lets
+	// orchestrators construct the Swarm с adapter factories WITHOUT losing
+	// persistent-session capability (PR #134 review — gemini high).
+	if la, ok := ex.(types.LegacyAccessor); ok {
+		if sf, ok := la.Legacy().(types.SessionFactory); ok {
+			return sf.StartSession(ctx, args)
+		}
+	}
+	return nil, nil
 }
 
 // --- internal helpers ---

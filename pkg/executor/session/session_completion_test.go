@@ -2,8 +2,16 @@
 //
 // AIMUX-14 CR-001 Phase 1, NFR-4 + CHK011: sentinel completion-pattern
 // false-positive rate ≤ 1% on 100 sample lines per CLI. Fixtures are
-// synthetic stand-ins approximating real CLI output shapes; replace with
-// captured live output via operator collection round when available.
+// SYNTHETIC stand-ins approximating real CLI output shapes — they exercise
+// matcher correctness under diverse line formats, NOT byte-exact CLI
+// output reproduction.
+//
+// Synthetic ≠ canonical-CLI-output. cmd/testcli/{gemini,claude}.go emits
+// JSONL/NDJSON events; this test's gemini/claude corpora include
+// `--- DONE ---` / `---END---` style markers that the corresponding profile
+// patterns в production may use OR may not. Operator fixture-collection
+// round (real captures from live consensus / dialog runs) supersedes this
+// when available — see PR #134 review for context.
 //
 // Anti-stub: removing the matcher would yield zero true-positives AND
 // zero false-positives — the test asserts BOTH bounded false-positive
