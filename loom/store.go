@@ -126,6 +126,45 @@ var migrateV4Columns = []string{
 	`CREATE INDEX IF NOT EXISTS idx_tasks_tenant_id ON tasks(tenant_id, status)`,
 }
 
+// migrateV5Columns adds three live progress columns for DEF-13 / AIMUX-16 CR-005.
+// They surface progress_tail / progress_lines / progress_updated_at on the
+// MCP status response for Loom-managed tasks at parity with the legacy
+// JobManager fields. Each statement is idempotent — duplicate-column errors
+// are silently ignored.
+//
+// Reversibility: SQLite ≥ 3.35.0 supports `ALTER TABLE … DROP COLUMN`. The
+// down migration is documented in MigrateV5Down (used by tests / operator
+// recovery) and is the inverse of these statements.
+var migrateV5Columns = []string{
+	`ALTER TABLE tasks ADD COLUMN last_output_line TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE tasks ADD COLUMN progress_lines INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE tasks ADD COLUMN progress_updated_at DATETIME`,
+}
+
+// migrateV5DownColumns is the reverse of migrateV5Columns. Used by recovery
+// tooling and tests to verify the v5 migration is reversible. Requires
+// SQLite ≥ 3.35.0; the modernc.org/sqlite driver bundles a recent SQLite.
+var migrateV5DownColumns = []string{
+	`ALTER TABLE tasks DROP COLUMN progress_updated_at`,
+	`ALTER TABLE tasks DROP COLUMN progress_lines`,
+	`ALTER TABLE tasks DROP COLUMN last_output_line`,
+}
+
+// MigrateV5Down reverts the v5 progress columns. Returns an error on the
+// first DROP that fails for a reason other than "no such column" (which is
+// idempotent — the column was already absent).
+func MigrateV5Down(db *sql.DB) error {
+	for _, stmt := range migrateV5DownColumns {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "no such column") {
+				continue
+			}
+			return fmt.Errorf("loom store: migrate v5 down: %w", err)
+		}
+	}
+	return nil
+}
+
 // TaskStore persists tasks in SQLite.
 type TaskStore struct {
 	db         *sql.DB
@@ -176,6 +215,19 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 				continue
 			}
 			return nil, fmt.Errorf("loom store: migrate v4 columns: %w", err)
+		}
+	}
+	// DEF-13 / AIMUX-16 CR-005: add live progress columns. New tasks default
+	// to empty/zero/null; existing rows receive the same defaults so reads of
+	// pre-migration tasks return zero-valued progress fields rather than
+	// stale/garbage data (EC-5.1 — "fields stay zero/empty, not stale").
+	for _, stmt := range migrateV5Columns {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") ||
+				strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return nil, fmt.Errorf("loom store: migrate v5 columns: %w", err)
 		}
 	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
@@ -241,12 +293,17 @@ func (s *TaskStore) Create(task *Task) error {
 	return nil
 }
 
+// taskSelectColumns is the canonical column list for SELECT statements that
+// hydrate a *Task via scanTask. Defining it once avoids drift between the
+// query columns and scanTask's destination order.
+const taskSelectColumns = `id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
+		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+		       engine_name, tenant_id, last_output_line, progress_lines, progress_updated_at`
+
 // Get retrieves a task by ID (cross-tenant — use GetForTenant for scoped access).
 func (s *TaskStore) Get(id string) (*Task, error) {
 	row := s.db.QueryRow(`
-		SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-		       engine_name, tenant_id
+		SELECT `+taskSelectColumns+`
 		FROM tasks WHERE id = ?`, id)
 
 	return scanTask(row)
@@ -257,9 +314,7 @@ func (s *TaskStore) Get(id string) (*Task, error) {
 // (defence-in-depth: NEVER reveal task existence to a foreign tenant via 403).
 func (s *TaskStore) GetForTenant(id, tenantID string) (*Task, error) {
 	row := s.db.QueryRow(`
-		SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-		       engine_name, tenant_id
+		SELECT `+taskSelectColumns+`
 		FROM tasks WHERE id = ? AND tenant_id = ?`, id, tenantID)
 
 	task, err := scanTask(row)
@@ -295,9 +350,7 @@ func (s *TaskStore) listInternal(projectID, tenantID string, statuses ...TaskSta
 	)
 
 	base := `
-		SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-		       engine_name, tenant_id
+		SELECT ` + taskSelectColumns + `
 		FROM tasks WHERE project_id = ? AND engine_name = ?`
 
 	placeholders := []interface{}{projectID, s.engineName}
@@ -348,15 +401,11 @@ func (s *TaskStore) ListAll(statuses ...TaskStatus) ([]*Task, error) {
 
 	if len(statuses) == 0 {
 		rows, err = s.db.Query(`
-			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-			       engine_name, tenant_id
+			SELECT ` + taskSelectColumns + `
 			FROM tasks ORDER BY created_at ASC`)
 	} else {
 		query := `
-			SELECT id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
-			       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
-			       engine_name, tenant_id
+			SELECT ` + taskSelectColumns + `
 			FROM tasks WHERE status IN (`
 		placeholders := make([]interface{}, 0, len(statuses))
 		for i, st := range statuses {
@@ -497,11 +546,12 @@ type scanner interface {
 
 func scanTask(s scanner) (*Task, error) {
 	var (
-		task         Task
-		envJSON      string
-		metaJSON     string
-		dispatchedAt sql.NullTime
-		completedAt  sql.NullTime
+		task              Task
+		envJSON           string
+		metaJSON          string
+		dispatchedAt      sql.NullTime
+		completedAt       sql.NullTime
+		progressUpdatedAt sql.NullTime
 	)
 
 	err := s.Scan(
@@ -527,6 +577,9 @@ func scanTask(s scanner) (*Task, error) {
 		&completedAt,
 		&task.EngineName,
 		&task.TenantID,
+		&task.LastOutputLine,
+		&task.ProgressLines,
+		&progressUpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -546,6 +599,10 @@ func scanTask(s scanner) (*Task, error) {
 	if completedAt.Valid {
 		t := completedAt.Time
 		task.CompletedAt = &t
+	}
+	if progressUpdatedAt.Valid {
+		t := progressUpdatedAt.Time
+		task.ProgressUpdatedAt = &t
 	}
 
 	return &task, nil

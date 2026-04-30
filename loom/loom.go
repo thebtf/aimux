@@ -396,6 +396,48 @@ func (l *LoomEngine) Events() *EventBus {
 	return l.events
 }
 
+// AppendProgress records a single progress line for taskID and emits an
+// EventTaskProgress on the event bus. Workers (or worker wrappers like
+// workers.StreamingBase) call this for every line of live output so that
+// status() readers see progress_tail / progress_lines / progress_updated_at
+// at parity with the legacy JobManager (DEF-13 / AIMUX-16 CR-005).
+//
+// The line is UTF-8-safe truncated to ≤100 bytes by the store, with secrets
+// scrubbed before storage. Errors from the store are propagated; the event
+// is emitted only after a successful store update so subscribers never
+// observe a delivered event whose state is missing from disk.
+//
+// taskID lookups for unknown / cancelled tasks are no-ops at the store
+// layer (info.OK == false) and produce no event — this preserves the
+// contract that EventTaskProgress fires only for state that survived the
+// write, so multi-tenant subscribers filtering on ProjectID never receive
+// orphan events for tasks that no longer exist.
+//
+// The emitted TaskEvent carries ProjectID and RequestID returned by the
+// store (read atomically alongside the row update via UPDATE ... RETURNING)
+// so subscribers can correlate progress with multi-tenant fanout filters
+// and distributed tracing the same way they correlate lifecycle events.
+func (l *LoomEngine) AppendProgress(taskID, line string) error {
+	info, err := l.store.AppendProgress(taskID, line)
+	if err != nil {
+		return err
+	}
+	if !info.OK {
+		// Unknown / cancelled task: no row was updated, so there is no state
+		// for subscribers to observe. Suppress the event per CR-005 design.
+		return nil
+	}
+	l.events.Emit(TaskEvent{
+		Type:      EventTaskProgress,
+		TaskID:    taskID,
+		ProjectID: info.ProjectID,
+		RequestID: info.RequestID,
+		Status:    TaskStatusRunning,
+		Timestamp: l.clock.Now().UTC(),
+	})
+	return nil
+}
+
 // failTask is a best-effort helper that marks a task as failed in the store
 // and emits EventTaskFailed. Errors from store operations are logged but not
 // returned — the caller is typically already handling a failure path.

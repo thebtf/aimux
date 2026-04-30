@@ -22,6 +22,13 @@ const (
 	EventTaskFailedCrash EventType = "task.failed_crash"
 	EventTaskRetrying    EventType = "task.retrying"
 	EventTaskCancelled   EventType = "task.cancelled"
+	// EventTaskProgress fires once per AppendProgress call (DEF-13 / AIMUX-16
+	// CR-005). It is additive on the enum (NFR-6): existing subscribers continue
+	// to receive only the lifecycle events they were registered for and never
+	// observe progress events unless they explicitly filter on the new type.
+	// The Status field on the emitted TaskEvent is TaskStatusRunning — progress
+	// only flows from a running task.
+	EventTaskProgress EventType = "task.progress"
 )
 
 // TaskEvent carries task lifecycle data to subscribers.
@@ -48,11 +55,11 @@ type subscription struct {
 // other subscribers or the engine. Slow subscribers block the engine — subscribers
 // MUST return quickly and offload heavy work to their own goroutine.
 type EventBus struct {
-	mu       sync.RWMutex
-	subs     map[uint64]*subscription
-	order    []uint64 // insertion order for deterministic fanout
-	nextID   uint64   // accessed via atomic
-	logger   deps.Logger
+	mu     sync.RWMutex
+	subs   map[uint64]*subscription
+	order  []uint64 // insertion order for deterministic fanout
+	nextID uint64   // accessed via atomic
+	logger deps.Logger
 }
 
 // NewEventBus creates a new EventBus with an optional logger for panic recovery.
