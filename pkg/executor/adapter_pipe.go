@@ -17,6 +17,9 @@ var _ types.ExecutorV2 = (*CLIPipeAdapter)(nil)
 // SendStream is emulated by calling Send and delivering the full response as a
 // single terminal chunk (Done=true), because the pipe executor buffers all output.
 //
+// When session is non-nil the adapter operates in session-bound mode:
+// Send() dispatches via session.Send() instead of legacy.Run() (FR-2, AIMUX-14).
+//
 // Capabilities:
 //   - Streaming: false — output is collected and returned in one Response.
 //   - PersistentSessions: true — pipe.Start() implements multi-turn sessions.
@@ -24,13 +27,23 @@ var _ types.ExecutorV2 = (*CLIPipeAdapter)(nil)
 // Thread safety: CLIPipeAdapter is safe for concurrent use; Run() spawns an
 // independent process per call.
 type CLIPipeAdapter struct {
-	legacy types.LegacyExecutor
+	legacy  types.LegacyExecutor
+	session types.Session // nil when stateless (backward-compat default)
 }
 
 // NewCLIPipeAdapter creates a CLIPipeAdapter wrapping the given legacy executor.
 // Accepts types.LegacyExecutor to avoid the import cycle; pass *pipe.Executor directly.
+// The adapter operates in stateless mode (session == nil); existing callers are unaffected.
 func NewCLIPipeAdapter(legacy types.LegacyExecutor) *CLIPipeAdapter {
 	return &CLIPipeAdapter{legacy: legacy}
+}
+
+// NewCLIPipeAdapterWithSession creates a CLIPipeAdapter bound to an existing Session.
+// Send() dispatches via session.Send() (session-bound mode, FR-2).
+// Existing stateless Send() path via legacy.Run() is preserved byte-identically when
+// session is nil — Stateless SpawnMode immutability invariant (AIMUX-13 FR-1).
+func NewCLIPipeAdapterWithSession(legacy types.LegacyExecutor, sess types.Session) *CLIPipeAdapter {
+	return &CLIPipeAdapter{legacy: legacy, session: sess}
 }
 
 // Info returns static metadata for the pipe executor adapter.
@@ -45,16 +58,33 @@ func (a *CLIPipeAdapter) Info() types.ExecutorInfo {
 	}
 }
 
-// Send converts msg to SpawnArgs, delegates to the legacy Run(), and maps the
-// Result to a Response. The caller must populate msg.Metadata["command"] and
-// msg.Metadata["args"] so the adapter can build the SpawnArgs.
+// Send dispatches the message via session.Send() when session-bound, or via the
+// legacy Run() path when stateless (Stateless SpawnMode preserved byte-identically,
+// AIMUX-13 FR-1 immutability invariant).
 //
-// Recognised Metadata keys (beyond adapter_common defaults):
+// Recognised Metadata keys (via messageToSpawnArgs, stateless path only):
 //   - "command" (string)          — executable path/name (required)
 //   - "args"    ([]string/[]any)  — command-line arguments
 //
-// SystemPrompt, when non-empty, is prepended to the stdin payload.
+// SystemPrompt, when non-empty, is prepended to the stdin payload (stateless path only).
 func (a *CLIPipeAdapter) Send(ctx context.Context, msg types.Message) (*types.Response, error) {
+	// Session-bound mode (FR-2): dispatch via persistent session.
+	// SystemPrompt parity with stateless path — prepend before sending so
+	// session-bound and stateless modes preserve identical message-context
+	// semantics (PR #134 review — gemini high / coderabbit major).
+	if a.session != nil {
+		content := msg.Content
+		if msg.SystemPrompt != "" {
+			content = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
+		}
+		result, err := a.session.Send(ctx, content)
+		if err != nil {
+			return nil, err
+		}
+		return resultToResponse(result), nil
+	}
+
+	// Stateless path — byte-identical to original (AIMUX-13 FR-1).
 	args := messageToSpawnArgs(msg)
 
 	// SystemPrompt: prepend to stdin so the CLI receives full context.
@@ -80,18 +110,27 @@ func (a *CLIPipeAdapter) SendStream(ctx context.Context, msg types.Message, onCh
 	return resp, nil
 }
 
-// IsAlive returns HealthAlive when the pipe executor reports itself as available
-// (always true for pipe — it works on all platforms), HealthDead otherwise.
+// IsAlive returns HealthAlive when the adapter is session-bound and the session
+// process is alive, or when the stateless pipe executor reports itself as available.
 func (a *CLIPipeAdapter) IsAlive() types.HealthStatus {
+	if a.session != nil {
+		if a.session.Alive() {
+			return types.HealthAlive
+		}
+		return types.HealthDead
+	}
 	if a.legacy.Available() {
 		return types.HealthAlive
 	}
 	return types.HealthDead
 }
 
-// Close is a no-op: the pipe executor spawns a new process per Run() call and
-// holds no persistent resources at the adapter level.
+// Close terminates the bound session when session-bound, or is a no-op when stateless
+// (the pipe executor spawns a new process per Run() call and holds no persistent resources).
 func (a *CLIPipeAdapter) Close() error {
+	if a.session != nil {
+		return a.session.Close()
+	}
 	return nil
 }
 

@@ -26,7 +26,7 @@ func TestBaseSession_Send(t *testing.T) {
 
 	// The session's stdin write end is stdinW; we read from stdinR to verify.
 	// The session's stdout read end is stdoutR; we write to stdoutW to simulate output.
-	sess := session.New("test-id", stdinW, stdoutR, 100*time.Millisecond, nil, nil)
+	sess := session.New("test-id", stdinW, stdoutR, 100*time.Millisecond, nil, nil, "")
 
 	// In a goroutine: read the prompt the session writes, then echo a response.
 	go func() {
@@ -55,7 +55,7 @@ func TestBaseSession_InactivityTimeout(t *testing.T) {
 	stdinW, stdinR := mockPipe()
 	_, stdoutR := mockPipe() // writer intentionally not used — simulates silence
 
-	sess := session.New("timeout-id", stdinW, stdoutR, 50*time.Millisecond, nil, nil)
+	sess := session.New("timeout-id", stdinW, stdoutR, 50*time.Millisecond, nil, nil, "")
 
 	// Drain stdinR in background so Write doesn't block.
 	go io.Copy(io.Discard, stdinR) //nolint:errcheck
@@ -85,7 +85,7 @@ func TestBaseSession_Close(t *testing.T) {
 	stdinW, stdinR := mockPipe()
 	_, stdoutR := mockPipe()
 
-	sess := session.New("close-id", stdinW, stdoutR, 50*time.Millisecond, nil, nil)
+	sess := session.New("close-id", stdinW, stdoutR, 50*time.Millisecond, nil, nil, "")
 
 	// Drain stdinR so Write doesn't block.
 	go io.Copy(io.Discard, stdinR) //nolint:errcheck
@@ -111,7 +111,7 @@ func TestBaseSession_ConcurrentSend(t *testing.T) {
 	stdoutW, stdoutR := mockPipe()
 
 	const timeout = 50 * time.Millisecond
-	sess := session.New("concurrent-id", stdinW, stdoutR, timeout, nil, nil)
+	sess := session.New("concurrent-id", stdinW, stdoutR, timeout, nil, nil, "")
 
 	// Echo goroutine: for each line received on stdinR, write a response to stdoutW.
 	go func() {
@@ -150,13 +150,97 @@ func TestBaseSession_ConcurrentSend(t *testing.T) {
 	sess.Close()
 }
 
+// TestBaseSession_CompletionPattern verifies that a sentinel pattern causes
+// Send() to return as soon as the matching line appears in stdout, without
+// waiting for the inactivity timeout (FR-3, Q-CLAR-1 line-anchored semantics).
+func TestBaseSession_CompletionPattern(t *testing.T) {
+	stdinW, stdinR := mockPipe()
+	stdoutW, stdoutR := mockPipe()
+
+	// Use a long inactivity timeout so the test would hang if sentinel detection
+	// does not fire — verifying the implementation is non-stub.
+	const longTimeout = 10 * time.Second
+	sess := session.New("sentinel-id", stdinW, stdoutR, longTimeout, nil, nil, `^DONE$`)
+
+	// Drain stdinR so Write doesn't block.
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
+
+	// Write non-sentinel lines then the sentinel line.
+	go func() {
+		stdoutW.Write([]byte("line one\n"))  //nolint:errcheck
+		stdoutW.Write([]byte("line two\n"))  //nolint:errcheck
+		stdoutW.Write([]byte("DONE\n"))       //nolint:errcheck
+		// Deliberately do NOT close stdoutW — if Send returns, it's due to the sentinel,
+		// not EOF. If sentinel detection is removed, Send would block for longTimeout.
+	}()
+
+	start := time.Now()
+	result, err := sess.Send(context.Background(), "prompt")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	// Should return well within the long inactivity timeout.
+	if elapsed >= 2*time.Second {
+		t.Errorf("Send did not return promptly on sentinel match: elapsed=%v", elapsed)
+	}
+	// Content should contain the lines written before (and including) the sentinel.
+	if !strings.Contains(result.Content, "line one") {
+		t.Errorf("missing pre-sentinel content: %q", result.Content)
+	}
+	if !strings.Contains(result.Content, "DONE") {
+		t.Errorf("missing sentinel line in content: %q", result.Content)
+	}
+
+	sess.Close()
+}
+
+// TestBaseSession_CompletionPattern_NoFalsePositive verifies that lines not
+// matching the sentinel pattern do NOT prematurely terminate Send() (FR-3 EC-1).
+func TestBaseSession_CompletionPattern_NoFalsePositive(t *testing.T) {
+	stdinW, stdinR := mockPipe()
+	stdoutW, stdoutR := mockPipe()
+
+	const shortTimeout = 80 * time.Millisecond
+	// Pattern that matches "SENTINEL" but nothing else.
+	sess := session.New("no-fp-id", stdinW, stdoutR, shortTimeout, nil, nil, `^SENTINEL$`)
+
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
+
+	go func() {
+		// Write lines that should NOT trigger the sentinel.
+		stdoutW.Write([]byte("not-sentinel\n")) //nolint:errcheck
+		stdoutW.Write([]byte("DONE\n"))          //nolint:errcheck
+		// No sentinel — Send should return via inactivity timeout.
+	}()
+
+	start := time.Now()
+	result, err := sess.Send(context.Background(), "probe")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !result.Partial {
+		t.Error("expected Partial=true (inactivity timeout, no sentinel match)")
+	}
+	// Should return near the inactivity timeout, not immediately.
+	if elapsed < shortTimeout/2 {
+		t.Errorf("Send returned too quickly — possible false-positive sentinel: elapsed=%v", elapsed)
+	}
+	_ = result
+
+	sess.Close()
+}
+
 // TestBaseSession_ContextCancel verifies that a cancelled context causes
 // Send to return promptly with Partial=true.
 func TestBaseSession_ContextCancel(t *testing.T) {
 	stdinW, stdinR := mockPipe()
 	_, stdoutR := mockPipe() // no output — simulates long-running silent process
 
-	sess := session.New("cancel-id", stdinW, stdoutR, 10*time.Second, nil, nil)
+	sess := session.New("cancel-id", stdinW, stdoutR, 10*time.Second, nil, nil, "")
 
 	// Drain stdinR so Write doesn't block.
 	go io.Copy(io.Discard, stdinR) //nolint:errcheck

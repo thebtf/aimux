@@ -25,6 +25,9 @@ import (
 // Both stdout and stderr output flow through ptmx, so IOManager captures all of it.
 // No additional stderr draining is needed or possible for the PTY executor.
 
+// Compile-time assertion: *Executor must implement types.SessionFactory (T007 / FR-1).
+var _ types.SessionFactory = (*Executor)(nil)
+
 // Executor spawns CLI processes via Unix PTY for unbuffered text output.
 type Executor struct {
 	available bool
@@ -201,10 +204,21 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 	// ptmx is both the writer (stdin to process) and reader (stdout from process).
 	// session.BaseSession accepts io.WriteCloser and io.ReadCloser separately;
 	// nopWriteCloser and nopReadCloser adapters share the same underlying *os.File.
-	sess := session.New("", ptmxWriter{ptmx}, ptmxReader{ptmx}, inactivity, nil, nil)
+	sess := session.New("", ptmxWriter{ptmx}, ptmxReader{ptmx}, inactivity, nil, nil, args.CompletionPattern)
 	_ = handle // lifecycle managed via ptySession wrapper below
 
 	return &ptySession{BaseSession: sess, handle: handle}, nil
+}
+
+// StartSession implements types.SessionFactory. It delegates to Start() to
+// create a persistent PTY session for multi-turn interaction.
+//
+// When PTY is unavailable (non-Linux/macOS), returns an error describing the
+// platform limitation. Callers MUST gate StartSession invocation on
+// Info().Capabilities.PersistentSessions (via swarm.MaybeStartSession) to
+// avoid this path; the error is a defensive guard, not a graceful fallback.
+func (e *Executor) StartSession(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
+	return e.Start(ctx, args)
 }
 
 // ptyHandle holds the cmd and ptmx for a PTY session.

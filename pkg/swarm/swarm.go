@@ -21,6 +21,13 @@ import (
 // existed or belongs to a different tenant.
 var ErrHandleNotFound = errors.New("swarm: handle not found")
 
+// ErrNotSupported indicates a backend cannot create a persistent Session.
+// Returned by SessionFactory.StartSession implementations when the backend
+// lacks the capability (e.g. ConPTY on non-Windows). FR-1 C3: defensive
+// guard for misuse, NOT a graceful fallback signal — callers MUST gate
+// StartSession invocation on Info().Capabilities.PersistentSessions check.
+var ErrNotSupported = errors.New("swarm: backend does not support persistent sessions")
+
 // GetOption is a functional option for Get.
 type GetOption func(*getOpts)
 
@@ -158,7 +165,37 @@ type Swarm struct {
 	// TOCTOU double-spawn (BUG-003). The value type is *sync.Mutex; LoadOrStore
 	// ensures exactly one mutex is created per key even under concurrent Gets.
 	keyLocks sync.Map
+
+	// statefulTTL is the idle reap budget for Stateful-mode handles. After
+	// time.Since(h.lastUsedAt) > statefulTTL the reaper Closes the handle.
+	// Persistent-mode handles ignore this — they are killed only by
+	// Shutdown/Close/daemon hot-swap (US3 / NFR-5). 0 disables reaping.
+	statefulTTL time.Duration
+
+	// reaperStop is closed by Shutdown to terminate the reaper goroutine.
+	reaperStop chan struct{}
+
+	// reaperOnce ensures reaperStop is closed at most once even when
+	// Shutdown is invoked from multiple goroutines or repeated.
+	reaperOnce sync.Once
 }
+
+// Option customises Swarm behaviour at construction. Used to override
+// non-default tuning knobs (TTL, reaper cadence) without breaking the
+// minimal New signature used by all existing callers.
+type Option func(*Swarm)
+
+// WithStatefulTTL overrides the default 5-minute idle TTL applied to
+// Stateful-mode handles by the background reaper. Persistent-mode handles
+// are NEVER reaped — only explicit Close() or Shutdown() terminates them
+// (US3 / NFR-5 / FR-4 contract). Pass d=0 to disable reaping entirely
+// (useful for unit tests that manage handle lifecycle manually).
+func WithStatefulTTL(d time.Duration) Option {
+	return func(s *Swarm) { s.statefulTTL = d }
+}
+
+// defaultStatefulTTL — 5 minutes per FR-4 spec resolution Q-CLAR-2.
+const defaultStatefulTTL = 5 * time.Minute
 
 // New creates a Swarm. factoryFn is called whenever a new ExecutorV2 is needed
 // for the given name; it must be safe to call concurrently.
@@ -166,16 +203,30 @@ type Swarm struct {
 // auditLog receives executor lifecycle events (spawn, close, restart, cross-tenant
 // block). Pass nil to use a no-op discard log — safe for tests and single-tenant
 // deployments that do not need observability.
-func New(factoryFn func(name string) (types.ExecutorV2, error), auditLog audit.AuditLog) *Swarm {
+//
+// A background reaper goroutine starts automatically and scans every TTL/2
+// interval for Stateful handles idle longer than statefulTTL. Persistent
+// handles are exempt (US3 contract — survive idle reap, killed only by
+// Shutdown/Close/daemon hot-swap).
+func New(factoryFn func(name string) (types.ExecutorV2, error), auditLog audit.AuditLog, opts ...Option) *Swarm {
 	al := auditLog
 	if al == nil {
 		al = audit.DiscardLog{}
 	}
-	return &Swarm{
-		factoryFn: factoryFn,
-		auditLog:  al,
-		registry:  make(map[string][]*Handle),
+	s := &Swarm{
+		factoryFn:   factoryFn,
+		auditLog:    al,
+		registry:    make(map[string][]*Handle),
+		statefulTTL: defaultStatefulTTL,
+		reaperStop:  make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.statefulTTL > 0 {
+		go s.reapLoop()
+	}
+	return s
 }
 
 // isMultiTenant reports whether the swarm is operating in multi-tenant mode.
@@ -299,6 +350,10 @@ func (s *Swarm) Send(ctx context.Context, h *Handle, msg types.Message) (*types.
 	}
 
 	h.mu.Lock()
+	// Bump lastUsedAt at Send ENTRY so a long-running Send (e.g. multi-turn
+	// dialog с slow CLI) does not let the reaper see a stale timestamp and
+	// kill the executor mid-flight (PR #134 review — coderabbit major).
+	h.lastUsedAt = time.Now()
 	exec := h.executor
 	h.mu.Unlock()
 
@@ -331,6 +386,10 @@ func (s *Swarm) SendStream(ctx context.Context, h *Handle, msg types.Message, on
 	}
 
 	h.mu.Lock()
+	// Bump lastUsedAt at SendStream ENTRY so a long-running stream does not
+	// let the reaper see a stale timestamp and kill the executor mid-flight
+	// (PR #134 review — coderabbit major).
+	h.lastUsedAt = time.Now()
 	exec := h.executor
 	h.mu.Unlock()
 
@@ -424,6 +483,14 @@ func (s *Swarm) Health() map[string]types.HealthStatus {
 // but respects ctx for the overall deadline. Errors from individual closes are
 // accumulated and returned as a single combined error.
 func (s *Swarm) Shutdown(ctx context.Context) error {
+	// Stop the reaper goroutine before walking the registry so it does
+	// not race with the shutdown drain.
+	s.reaperOnce.Do(func() {
+		if s.reaperStop != nil {
+			close(s.reaperStop)
+		}
+	})
+
 	s.mu.Lock()
 	all := make([]*Handle, 0)
 	for _, handles := range s.registry {
@@ -454,6 +521,93 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// reapLoop ticks every statefulTTL/2 and reaps idle Stateful handles
+// (US3 / FR-4). Stops when reaperStop is closed by Shutdown.
+func (s *Swarm) reapLoop() {
+	interval := s.statefulTTL / 2
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.reaperStop:
+			return
+		case <-ticker.C:
+			s.reapStaleStateful()
+		}
+	}
+}
+
+// reapStaleStateful walks the registry once and Closes any Stateful-mode
+// handle whose lastUsedAt exceeded statefulTTL. Persistent-mode handles
+// are SKIPPED — US3 contract (Persistent survives idle reap; killed only
+// by Close / Shutdown / daemon hot-swap).
+func (s *Swarm) reapStaleStateful() {
+	now := time.Now()
+	var stale []*Handle
+
+	s.mu.Lock()
+	for key, handles := range s.registry {
+		kept := handles[:0]
+		for _, h := range handles {
+			h.mu.Lock()
+			idle := now.Sub(h.lastUsedAt)
+			h.mu.Unlock()
+			if h.Mode == Stateful && idle > s.statefulTTL {
+				stale = append(stale, h)
+				continue
+			}
+			kept = append(kept, h)
+		}
+		if len(kept) == 0 {
+			delete(s.registry, key)
+		} else {
+			s.registry[key] = kept
+		}
+	}
+	s.mu.Unlock()
+
+	for _, h := range stale {
+		_ = s.closeHandle(h, "stateful-ttl-idle")
+	}
+}
+
+// MaybeStartSession invokes ex.StartSession when (a) ex satisfies SessionFactory
+// AND (b) ex.Info().Capabilities.PersistentSessions == true. Returns the started
+// Session or (nil, nil) when the capability is not present — callers fall back to
+// stateless dispatch. Returns an error only when StartSession is called and fails
+// (FR-1 C3 defensive guard — ErrNotSupported propagated to caller, not swallowed).
+//
+// The capability gate is the primary contract: callers MUST check
+// Info().Capabilities.PersistentSessions before calling StartSession directly;
+// this helper encapsulates the check to prevent misuse.
+//
+// Pattern (FR-4 / DEF-8 latency-bomb fix preserved): capability check and factory
+// invocation run outside Swarm.mu to avoid contention on concurrent Gets.
+func MaybeStartSession(ctx context.Context, ex types.ExecutorV2, args types.SpawnArgs) (types.Session, error) {
+	if !ex.Info().Capabilities.PersistentSessions {
+		return nil, nil
+	}
+	// Direct path: ex itself satisfies SessionFactory (concrete backend
+	// types — pipe.Executor / conpty.Executor / pty.Executor — implement it).
+	if sf, ok := ex.(types.SessionFactory); ok {
+		return sf.StartSession(ctx, args)
+	}
+	// Adapter path: ex is a CLI{Pipe,ConPTY,PTY}Adapter wrapping a
+	// LegacyExecutor whose concrete type is the backend Executor satisfying
+	// SessionFactory. Probe the underlying via LegacyAccessor — this lets
+	// orchestrators construct the Swarm с adapter factories WITHOUT losing
+	// persistent-session capability (PR #134 review — gemini high).
+	if la, ok := ex.(types.LegacyAccessor); ok {
+		if sf, ok := la.Legacy().(types.SessionFactory); ok {
+			return sf.StartSession(ctx, args)
+		}
+	}
+	return nil, nil
 }
 
 // --- internal helpers ---

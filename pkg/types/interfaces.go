@@ -77,6 +77,19 @@ type Session interface {
 	PID() int
 }
 
+// SessionFactory is an OPTIONAL side-interface that ExecutorV2 implementations
+// MAY satisfy to expose persistent-session capability beyond the stateless Run()
+// surface. Callers MUST gate StartSession() invocation on a capability check via
+// ExecutorV2.Info().Capabilities.PersistentSessions; ErrNotSupported is a
+// defensive guard against misuse, not a graceful fallback signal (FR-1, C3).
+//
+// Contract: implementations returning ErrNotSupported MUST do so without side
+// effect (no process spawn, no FD allocation). Successful StartSession returns
+// a Session bound to a live subprocess; caller owns lifecycle (Close).
+type SessionFactory interface {
+	StartSession(ctx context.Context, args SpawnArgs) (Session, error)
+}
+
 // LegacyAccessor is implemented by ExecutorV2 adapters that wrap a LegacyExecutor.
 // Used by Swarm.LegacyRun() for Strangler Fig bridging: Swarm manages lifecycle
 // while callers continue using SpawnArgs/Result (legacy types) until full migration.

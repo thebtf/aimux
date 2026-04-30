@@ -52,6 +52,9 @@ func (cb *cappedBuffer) String() string {
 	return cb.buf.String()
 }
 
+// Compile-time assertion: *Executor must implement types.SessionFactory (T007 / FR-1).
+var _ types.SessionFactory = (*Executor)(nil)
+
 // Executor spawns CLI processes via Windows ConPTY for unbuffered text output.
 // On Windows, processes see a TTY → line-buffered output without --json overhead.
 // On non-Windows, Available() returns false → executor selector skips this.
@@ -257,8 +260,19 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 		inactivity = defaultConPTYInactivitySeconds * time.Second
 	}
 
-	sess := session.New("", stdin, handle.Stdout, inactivity, handle, conptySessionPM)
+	sess := session.New("", stdin, handle.Stdout, inactivity, handle, conptySessionPM, args.CompletionPattern)
 	return sess, nil
+}
+
+// StartSession implements types.SessionFactory. It delegates to Start() to
+// create a persistent ConPTY session for multi-turn interaction.
+//
+// When ConPTY is unavailable (non-Windows), returns an error describing the
+// platform limitation. Callers MUST gate StartSession invocation on
+// Info().Capabilities.PersistentSessions (via swarm.MaybeStartSession) to
+// avoid this path; the error is a defensive guard, not a graceful fallback.
+func (e *Executor) StartSession(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
+	return e.Start(ctx, args)
 }
 
 // probeConPTY checks if the current platform supports ConPTY.

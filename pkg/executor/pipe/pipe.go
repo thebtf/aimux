@@ -26,6 +26,9 @@ const (
 	stderrCapBytes = 64 * 1024
 )
 
+// Compile-time assertion: *Executor must implement types.SessionFactory (T007 / FR-1).
+var _ types.SessionFactory = (*Executor)(nil)
+
 // Executor spawns CLI processes via stdin/stdout pipes.
 type Executor struct{}
 
@@ -192,8 +195,19 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 
 	// T001: session.New starts the lifetime reader goroutine and returns a
 	// *BaseSession that implements types.Session (ID/Send/Stream/Close/Alive/PID).
-	sess := session.New("", stdin, handle.Stdout, inactivity, handle, sessionPM)
+	sess := session.New("", stdin, handle.Stdout, inactivity, handle, sessionPM, args.CompletionPattern)
 	return sess, nil
+}
+
+// StartSession implements types.SessionFactory. It delegates to Start() to
+// create a persistent pipe session for multi-turn interaction. Pipe sessions
+// are available on all platforms (Available() always returns true), so this
+// method never returns an ErrNotSupported-class error in production.
+//
+// Callers MUST gate StartSession invocation on
+// Info().Capabilities.PersistentSessions (via swarm.MaybeStartSession).
+func (e *Executor) StartSession(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
+	return e.Start(ctx, args)
 }
 
 // cappedBuffer is an io.Writer that discards writes once the cap is reached.
