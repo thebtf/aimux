@@ -133,6 +133,45 @@ func TestLoad_MissingConfig(t *testing.T) {
 	}
 }
 
+// TestLoad_ClaudeProfileT11Fields verifies AIMUX-16 CR-001: the claude profile
+// declares cooldown_seconds, model_fallback, and completion_pattern (T11
+// transport contract). These three fields must load into the parsed profile
+// so MarkCooledDown / RunWithModelFallback / completion-pattern matching can
+// fire for claude (per spec FR-1 acceptance signals).
+func TestLoad_ClaudeProfileT11Fields(t *testing.T) {
+	cfg, err := config.Load(findConfigDir(t))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	profile, ok := cfg.CLIProfiles["claude"]
+	if !ok {
+		t.Fatal("expected claude profile to be loaded")
+	}
+
+	if profile.CooldownSeconds != 3600 {
+		t.Errorf("claude cooldown_seconds: want 3600 (1h Anthropic quota window), got %d",
+			profile.CooldownSeconds)
+	}
+
+	wantModels := []string{"claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"}
+	if len(profile.ModelFallback) != len(wantModels) {
+		t.Fatalf("claude model_fallback: want %d entries, got %d (%v)",
+			len(wantModels), len(profile.ModelFallback), profile.ModelFallback)
+	}
+	for i, want := range wantModels {
+		if profile.ModelFallback[i] != want {
+			t.Errorf("claude model_fallback[%d]: want %q, got %q",
+				i, want, profile.ModelFallback[i])
+		}
+	}
+
+	if profile.CompletionPattern != "^---END---$" {
+		t.Errorf("claude completion_pattern: want %q (anchored canonical sentinel), got %q",
+			"^---END---$", profile.CompletionPattern)
+	}
+}
+
 func TestExpandPath(t *testing.T) {
 	home, _ := os.UserHomeDir()
 

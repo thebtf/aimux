@@ -24,6 +24,13 @@ command:
 prompt_flag: ""
 prompt_flag_type: "positional"
 
+# stdin_sentinel: claude reads the prompt as a positional argument and accepts
+# additional input via stdin pipe (features.stdin_pipe = true) without needing
+# a sentinel arg like codex's "-". Declared empty explicitly to satisfy the
+# CLI-profile required-fields rule (see config/cli.d/**/*.yaml schema) rather
+# than relying on implicit defaults.
+stdin_sentinel: ""
+
 default_model: ""
 model_flag: "--model"
 
@@ -31,6 +38,28 @@ model_flag: "--model"
 reasoning:
   flag: "--effort"
   levels: [low, medium, high, max]
+
+# Model fallback — on quota error (rate limit), try next model before switching CLI.
+# Real Anthropic model IDs verified against platform.claude.com/docs/en/about-claude/models/overview
+# at audit time (2026-04-30). Order: Opus 4.7 (flagship) → Sonnet 4.6 (scale) → Haiku 4.5 (low-latency fallback).
+model_fallback:
+  - claude-opus-4-7
+  - claude-sonnet-4-6
+  - claude-haiku-4-5-20251001
+
+# Cooldown duration (seconds) for rate-limited models.
+# 3600s (1h) aligns with Anthropic public quota refresh cadence and matches
+# the gemini precedent. Codex uses 86400s due to weekly spark limits — claude
+# does not have an equivalent suffix-class with multi-day exhaustion windows,
+# so 1h provides faster recovery without wasting requests on a still-rate-limited tier.
+cooldown_seconds: 3600
+
+# Completion pattern for early termination.
+# Matches the canonical claude streaming-end marker emitted on a single line.
+# Pattern source: pkg/executor/session/session_completion_test.go (claudeCorpus
+# canonical sentinel). Anchored regex prevents substring matches in mid-stream
+# tags like <message>, <token>, <tool_use>, <tool_result>.
+completion_pattern: "^---END---$"
 
 # warmup_timeout_seconds: covers CLI cold-start + prompt→response; adjust if false-negatives accumulate
 warmup_timeout_seconds: 8
