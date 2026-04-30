@@ -21,6 +21,13 @@ import (
 // existed or belongs to a different tenant.
 var ErrHandleNotFound = errors.New("swarm: handle not found")
 
+// ErrNotSupported indicates a backend cannot create a persistent Session.
+// Returned by SessionFactory.StartSession implementations when the backend
+// lacks the capability (e.g. ConPTY on non-Windows). FR-1 C3: defensive
+// guard for misuse, NOT a graceful fallback signal — callers MUST gate
+// StartSession invocation on Info().Capabilities.PersistentSessions check.
+var ErrNotSupported = errors.New("swarm: backend does not support persistent sessions")
+
 // GetOption is a functional option for Get.
 type GetOption func(*getOpts)
 
@@ -454,6 +461,29 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// MaybeStartSession invokes ex.StartSession when (a) ex satisfies SessionFactory
+// AND (b) ex.Info().Capabilities.PersistentSessions == true. Returns the started
+// Session or (nil, nil) when the capability is not present — callers fall back to
+// stateless dispatch. Returns an error only when StartSession is called and fails
+// (FR-1 C3 defensive guard — ErrNotSupported propagated to caller, not swallowed).
+//
+// The capability gate is the primary contract: callers MUST check
+// Info().Capabilities.PersistentSessions before calling StartSession directly;
+// this helper encapsulates the check to prevent misuse.
+//
+// Pattern (FR-4 / DEF-8 latency-bomb fix preserved): capability check and factory
+// invocation run outside Swarm.mu to avoid contention on concurrent Gets.
+func MaybeStartSession(ctx context.Context, ex types.ExecutorV2, args types.SpawnArgs) (types.Session, error) {
+	if !ex.Info().Capabilities.PersistentSessions {
+		return nil, nil
+	}
+	sf, ok := ex.(types.SessionFactory)
+	if !ok {
+		return nil, nil
+	}
+	return sf.StartSession(ctx, args)
 }
 
 // --- internal helpers ---
