@@ -33,6 +33,44 @@ var ErrQuotaExhausted = errors.New("quota exhausted")
 // Like ErrQuotaExhausted, flagged via errors.Is so the outer router advances CLI.
 var ErrModelUnavailable = errors.New("model unavailable")
 
+// RecordResultToBreaker maps an ErrorClass to the corresponding breaker
+// state transition per AIMUX-16 FR-2 / EC-2.3:
+//
+//   - ErrorClassNone        → RecordSuccess (HalfOpen probe → Closed)
+//   - ErrorClassFatal       → RecordFailure(permanent=true) — trips breaker
+//     immediately; auth/config errors are not transient.
+//   - ErrorClassQuota       → RecordFailure(permanent=false) — counts toward
+//     the configured failure threshold; sustained quota exhaustion across
+//     attempts trips the breaker.
+//   - ErrorClassTransient   → no-op (EC-2.3: flapping network MUST NOT
+//     trip the breaker — would otherwise mask intermittent connectivity
+//     blips as CLI death and waste the cooldown window).
+//   - ErrorClassModelUnavailable → no-op. ModelUnavailable means *one* model
+//     on the CLI is inaccessible; other models on the same CLI may still be
+//     fine. Only the cooldown tracker (per-(cli,model)) marks the model.
+//   - ErrorClassUnknown     → no-op. Conservative: an unrecognised exit
+//     could be transient; don't penalise the CLI for ambiguous failures.
+//
+// Safe to call with a nil breaker or empty cli — both paths early-return as
+// no-ops, so callers do not need to guard the call site.
+func RecordResultToBreaker(breaker *BreakerRegistry, cli string, errClass ErrorClass) {
+	if breaker == nil || cli == "" {
+		return
+	}
+	cb := breaker.Get(cli)
+	switch errClass {
+	case ErrorClassNone:
+		cb.RecordSuccess()
+	case ErrorClassFatal:
+		cb.RecordFailure(true) // permanent — trip immediately
+	case ErrorClassQuota:
+		cb.RecordFailure(false) // counts toward threshold
+	default:
+		// Transient / ModelUnavailable / Unknown: deliberate no-op.
+		// See EC-2.3 in spec.md.
+	}
+}
+
 // errorClassToResult maps an ErrorClass to the result label used in structured logs and metrics.
 func errorClassToResult(ec ErrorClass) string {
 	switch ec {
@@ -232,6 +270,97 @@ func RunWithModelFallback(
 		return nil, fmt.Errorf("all models exhausted (rate limit) for CLI %s: %w", cli, lastErr)
 	}
 	return nil, fmt.Errorf("all models exhausted for CLI %s: %w", cli, lastErr)
+}
+
+// RunWithModelFallbackBreaker is the breaker-aware variant of
+// RunWithModelFallback. It wraps the existing model-fallback state machine
+// and records the dispatch outcome to the supplied BreakerRegistry per
+// AIMUX-16 FR-2:
+//
+//   - Successful run (no error) → RecordSuccess for the CLI; this is the
+//     transition that flips a HalfOpen probe back to Closed and zeroes the
+//     failure counter.
+//   - Fatal-classified terminal error → RecordFailure(permanent=true);
+//     trips the breaker immediately so the next dispatch skips this CLI.
+//   - Quota / ModelUnavailable terminal error (all models exhausted) →
+//     RecordFailure(permanent=false); counts toward the threshold so
+//     sustained quota failure across calls eventually trips the breaker.
+//   - Transient terminal error → no breaker write (EC-2.3: flapping
+//     network MUST NOT trip the breaker).
+//   - Unknown terminal error → no breaker write (conservative; could be
+//     transient under the hood).
+//
+// When breaker is nil this function is equivalent to RunWithModelFallback —
+// no extra allocations, no extra side effects. Callers that have not yet
+// adopted breaker tracking can still call this entry point safely.
+//
+// The caller is expected to have already filtered the dispatch CLI list
+// with SelectAvailableCLIs, so the breaker is consulted on BOTH ends of
+// the dispatch: pre-dispatch (admission control) and post-dispatch
+// (state update).
+func RunWithModelFallbackBreaker(
+	ctx context.Context,
+	exec types.Executor,
+	baseArgs types.SpawnArgs,
+	models []string,
+	modelFlag string,
+	cooldown types.ModelCooldownTracker,
+	cooldownDuration time.Duration,
+	logFn func(format string, args ...any),
+	counter *metrics.FallbackCounter,
+	breaker *BreakerRegistry,
+) (*types.Result, error) {
+	result, err := RunWithModelFallback(
+		ctx,
+		exec,
+		baseArgs,
+		models,
+		modelFlag,
+		cooldown,
+		cooldownDuration,
+		logFn,
+		counter,
+	)
+	if breaker == nil {
+		return result, err
+	}
+
+	cli := baseArgs.CLI
+	terminalClass := classifyTerminalOutcome(result, err)
+	RecordResultToBreaker(breaker, cli, terminalClass)
+
+	return result, err
+}
+
+// classifyTerminalOutcome reduces the (result, err) pair returned by
+// RunWithModelFallback to a single ErrorClass that drives the breaker
+// state transition.
+//
+// Mapping rationale:
+//   - err == nil  → ErrorClassNone (success).
+//   - err wraps ErrQuotaExhausted or ErrModelUnavailable → ErrorClassQuota
+//     (sustained quota events count toward the breaker; the "rate limit"
+//     wording is preserved by RunWithModelFallback so the outer router can
+//     still detect retriable conditions, but for breaker accounting both
+//     map to the same threshold-incrementing failure).
+//   - else: re-classify via ClassifyError on the result/err pair using the
+//     same patterns the per-attempt loop uses, so terminal Fatal/Transient
+//     stay aligned with how the loop classified individual attempts.
+func classifyTerminalOutcome(result *types.Result, err error) ErrorClass {
+	if err == nil {
+		return ErrorClassNone
+	}
+	if errors.Is(err, ErrQuotaExhausted) || errors.Is(err, ErrModelUnavailable) {
+		return ErrorClassQuota
+	}
+	var content, stderr string
+	exitCode := 1 // err != nil at this point, so exit code is non-zero by definition
+	if result != nil {
+		content = result.Content
+		exitCode = result.ExitCode
+	}
+	stderr = err.Error()
+	return ClassifyError(content, stderr, exitCode)
 }
 
 // DetectModelFromArgs extracts the current model value from a CLI args slice.
