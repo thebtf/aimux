@@ -1,9 +1,22 @@
 // Package driver — warmup probe for health-gating CLIs at daemon startup.
+//
+// AIMUX-16 CR-003 (FR-3): warmup performs two distinct probes per CLI.
+//
+//  1. Liveness: legacy `{"ok":true}` JSON probe — gates the CLI's presence in
+//     the routing pool. Same contract as v4.x.
+//  2. Per-(cli, role) capability: for each role declared in profile.Capabilities,
+//     a role-shaped probe verifies the CLI actually responds with role-aware
+//     output. Result lands in the CapabilityCache; routing reads the cache.
+//
+// The capability probe pass is best-effort — a CLI that fails liveness is
+// still excluded; a CLI that passes liveness but fails capability for role X
+// stays in the pool but is excluded from role-X dispatch via the cache.
 package driver
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -23,6 +36,11 @@ const (
 	// defaultProbePrompt instructs the CLI to emit a minimal JSON response.
 	// A well-behaved CLI that can process prompts will reply with {"ok":true}.
 	defaultProbePrompt = `reply with JSON: {"ok": true}`
+
+	// defaultCapabilityProbeTimeout bounds the wall-clock budget of a single
+	// per-(cli, role) probe. AIMUX-16 EC-3.2 documents graceful degradation
+	// when the budget is exceeded — declared capability stays as fallback.
+	defaultCapabilityProbeTimeout = 5 * time.Second
 )
 
 // warmupResult captures the outcome of a single CLI probe.
@@ -41,12 +59,23 @@ type warmupResult struct {
 // Quota errors do NOT exclude a CLI — they trigger model cooldown instead and
 // leave the CLI available for subsequent requests.
 func RunWarmup(ctx context.Context, reg *Registry, cfg *config.Config) error {
-	return runWarmupWithExec(ctx, reg, cfg, pipeExec.New())
+	return runWarmupWithExec(ctx, reg, cfg, pipeExec.New(), nil)
+}
+
+// RunWarmupWithCache is RunWarmup plus a per-(cli, role) capability probe pass.
+// Each declared capability for each live CLI is probed with a role-shaped
+// prompt; results land in cache. Routing reads cache to gate per-role
+// dispatch. Cache may be nil — in that case behaviour matches RunWarmup.
+//
+// AIMUX-16 CR-003 (FR-3, EC-3.1, EC-3.2, EC-3.3).
+func RunWarmupWithCache(ctx context.Context, reg *Registry, cfg *config.Config, cache *CapabilityCache) error {
+	return runWarmupWithExec(ctx, reg, cfg, pipeExec.New(), cache)
 }
 
 // runWarmupWithExec is the testable core of RunWarmup. It accepts an injected
 // executor so tests can supply a mock without spawning real processes.
-func runWarmupWithExec(ctx context.Context, reg *Registry, cfg *config.Config, exec types.Executor) error {
+// cache may be nil — capability probes are skipped in that case.
+func runWarmupWithExec(ctx context.Context, reg *Registry, cfg *config.Config, exec types.Executor, cache *CapabilityCache) error {
 	// Env var takes precedence: AIMUX_WARMUP=false skips probes regardless of config.
 	if os.Getenv("AIMUX_WARMUP") == "false" {
 		return nil
@@ -89,20 +118,71 @@ func runWarmupWithExec(ctx context.Context, reg *Registry, cfg *config.Config, e
 		close(results)
 	}()
 
+	// Track which CLIs survived liveness (quota counts as alive — CLI is healthy,
+	// just rate-limited). Capability probes only run for survivors so we don't
+	// waste budget on a dead CLI.
+	alive := make([]string, 0, len(clis))
 	for r := range results {
 		if r.isQuota {
 			// Quota: CLI is healthy, just rate-limited. Model cooldown is handled
 			// by the executor layer during actual requests. Mark available so a
 			// previously-unavailable CLI can come back online on the next refresh.
 			reg.SetAvailable(r.cli, true)
+			alive = append(alive, r.cli)
 			continue
 		}
 		// Always set availability explicitly from the probe outcome. Passing
 		// probes re-enable CLIs that an earlier warmup marked unavailable.
 		reg.SetAvailable(r.cli, r.passed)
+		if r.passed {
+			alive = append(alive, r.cli)
+		}
+	}
+
+	// AIMUX-16 CR-003: per-(cli, role) capability probes. Skipped when cache is
+	// nil (legacy RunWarmup path) so existing tests retain v4.x behavior.
+	if cache != nil {
+		runCapabilityProbes(ctx, reg, cfg, exec, cache, alive)
 	}
 
 	return nil
+}
+
+// runCapabilityProbes iterates every alive CLI's declared capabilities and
+// records the role-shaped probe outcome in the cache.
+//
+// Probes run sequentially per CLI but in parallel across CLIs — one goroutine
+// per CLI, each iterating its declared capabilities in profile order. This
+// bounds the total wall-clock to the slowest CLI's probe budget × |roles|
+// rather than fanning out a goroutine per (cli, role) tuple.
+//
+// Each probe outcome is stored unconditionally — even failures. Storing a
+// failed probe (verified=false) prevents the refresher from retrying every
+// tick; the entry stays "fresh failed" until the TTL window expires.
+func runCapabilityProbes(ctx context.Context, reg *Registry, cfg *config.Config, exec types.Executor, cache *CapabilityCache, alive []string) {
+	if len(alive) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, cli := range alive {
+		profile, err := reg.Get(cli)
+		if err != nil || profile == nil || len(profile.Capabilities) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(cliName string, prof *config.CLIProfile) {
+			defer wg.Done()
+			for _, role := range prof.Capabilities {
+				role = strings.TrimSpace(role)
+				if role == "" {
+					continue
+				}
+				verified, perr := probeRole(ctx, exec, cliName, prof, cfg, role)
+				cache.Set(cliName, role, verified, perr)
+			}
+		}(cli, profile)
+	}
+	wg.Wait()
 }
 
 // probeOne executes a single warmup probe for one CLI and returns the result.
@@ -136,6 +216,103 @@ func probeOne(ctx context.Context, exec types.Executor, name string, profile *co
 
 	// Non-JSON or {"ok": false} — exclude CLI.
 	return warmupResult{cli: name, passed: false}
+}
+
+// probeRole sends a role-shaped probe to (cli, role) and returns the verified
+// outcome. The probe asks the CLI to acknowledge the role string in a JSON
+// envelope; a CLI that returns valid JSON but does NOT echo the role string
+// is treated as alive-but-role-incapable — the cache records verified=false.
+//
+// EC-3.2 graceful degradation: a context-deadline error is recorded with
+// verified=false so the refresher reschedules at the next TTL/2 tick; the
+// routing layer treats this as cache miss → declared used as fallback.
+func probeRole(ctx context.Context, exec types.Executor, name string, profile *config.CLIProfile, cfg *config.Config, role string) (bool, error) {
+	timeout := resolveCapabilityProbeTimeout(profile, cfg)
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	prompt := buildRoleProbePrompt(role)
+	args := types.SpawnArgs{
+		CLI:            name,
+		Command:        resolve.CommandBinary(profile.Command.Base),
+		Args:           resolve.BuildPromptArgs(profile, "", "", false, prompt),
+		TimeoutSeconds: int(timeout.Seconds()),
+	}
+
+	result, err := exec.Run(probeCtx, args)
+	if err != nil {
+		// Quota during capability probe — CLI is alive, treat liveness probe's
+		// quota handling as authoritative. Capability stays unverified for now;
+		// the next refresher tick will retry once the quota window clears.
+		if isQuotaError(err.Error()) {
+			return false, fmt.Errorf("capability probe quota: %w", err)
+		}
+		return false, err
+	}
+	if parseRoleProbeResponse(result.Content, role) {
+		return true, nil
+	}
+	return false, fmt.Errorf("capability probe %s/%s: response did not acknowledge role", name, role)
+}
+
+// buildRoleProbePrompt returns the canonical role-shaped probe text.
+//
+// The prompt asks the CLI to echo the role string in a JSON envelope, which
+// distinguishes "alive but ignoring role context" from "alive and follows
+// role context". A CLI that returns plain `{"ok":true}` is recorded as
+// unverified for the role.
+//
+// AIMUX-16 CR-003 task note: a richer per-role prompt mapping (e.g. ask the
+// CLI to perform a small role-shaped task) is a future iteration; the v1
+// contract is the role-echo handshake which is sufficient to satisfy
+// "по факту, не по таблице" while keeping the probe deterministic.
+func buildRoleProbePrompt(role string) string {
+	return fmt.Sprintf(`reply with JSON acknowledging role %q: {"role": %q, "ok": true}`, role, role)
+}
+
+// parseRoleProbeResponse returns true when content contains valid JSON with
+// both ok=true AND role matching the expected role. Tolerates CLI preamble
+// text via the same first-'{' scan as parseWarmupResponse.
+func parseRoleProbeResponse(content, expectedRole string) bool {
+	start := strings.Index(content, "{")
+	if start < 0 {
+		return false
+	}
+	var resp struct {
+		OK   bool   `json:"ok"`
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(strings.NewReader(content[start:])).Decode(&resp); err != nil {
+		return false
+	}
+	return resp.OK && resp.Role == expectedRole
+}
+
+// resolveCapabilityProbeTimeout returns the per-probe budget for the role
+// probe. Profile-level warmup_timeout_seconds wins (per-CLI override),
+// falling back to driver.capability_probe_timeout_seconds, then to the
+// hard default.
+func resolveCapabilityProbeTimeout(profile *config.CLIProfile, cfg *config.Config) time.Duration {
+	if profile != nil && profile.WarmupTimeoutSeconds > 0 {
+		return time.Duration(profile.WarmupTimeoutSeconds) * time.Second
+	}
+	if cfg != nil && cfg.Driver.CapabilityProbeTimeoutSeconds > 0 {
+		return time.Duration(cfg.Driver.CapabilityProbeTimeoutSeconds) * time.Second
+	}
+	return defaultCapabilityProbeTimeout
+}
+
+// MakeCapabilityProbeFn returns a ProbeFn closure wired to a real executor.
+// The refresher and inline-miss paths use this to issue per-(cli, role)
+// probes from the driver-package boundary; tests may pass a custom ProbeFn.
+func MakeCapabilityProbeFn(reg *Registry, cfg *config.Config, exec types.Executor) ProbeFn {
+	return func(ctx context.Context, cli, role string) (bool, error) {
+		profile, err := reg.Get(cli)
+		if err != nil {
+			return false, err
+		}
+		return probeRole(ctx, exec, cli, profile, cfg, role)
+	}
 }
 
 // parseWarmupResponse returns true when content contains valid JSON with ok=true.

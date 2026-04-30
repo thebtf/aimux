@@ -39,6 +39,19 @@ var AdvisoryRoles = map[string]bool{
 	"refactoring-expert":   true,
 }
 
+// CapabilityVerifier reports whether a (cli, role) tuple has been verified
+// by a real probe. Implementations live in the driver package; routing
+// depends on this interface only, not on driver, to avoid an import cycle.
+//
+// AIMUX-16 CR-003 (FR-3): the cache exposes IsVerified for routing. miss=true
+// means no entry exists for (cli, role) — caller treats declared capability
+// as a soft fallback while an inline probe runs. miss=false, verified=false
+// means the role probe ran and failed; caller MUST exclude the CLI for the
+// role.
+type CapabilityVerifier interface {
+	IsVerified(cli, role string) (verified bool, miss bool)
+}
+
 // Router resolves roles to CLI preferences.
 type Router struct {
 	defaults              map[string]types.RolePreference
@@ -49,6 +62,12 @@ type Router struct {
 	// operator-configured priority order used in production capability-match fallback.
 	enabledCLIsPrioritized []string
 	profiles              map[string]*config.CLIProfile
+	// verifier consults the per-(cli, role) capability cache. Optional — when
+	// nil, routing falls back to declared profile.Capabilities (legacy v4.x
+	// behaviour). Set via SetCapabilityVerifier after construction so the
+	// daemon wiring can install the cache without changing constructor
+	// signatures consumed by tests.
+	verifier CapabilityVerifier
 }
 
 // NewRouter creates a router with configured defaults and enabled CLIs.
@@ -229,6 +248,14 @@ func (r *Router) isEnabled(cli string) bool {
 // CLIs whose Capabilities list contains the role name come before others.
 // Within each group the operator-configured cli_priority order is preserved
 // (stable sort on enabledCLIsPrioritized input). CLIs not enabled are excluded.
+//
+// AIMUX-16 CR-003 (FR-3): when a CapabilityVerifier is wired, CLIs with
+// verified=false for the role are excluded from the chain entirely — the
+// per-role probe ran and failed, so dispatch must not retry them. CLIs with
+// no cache entry (miss=true) are kept as soft-fallback so inline probing
+// can fill the cache. This matches the spec's "CLI that fails its
+// capability probe for a role is excluded from fallback chains for that
+// role" requirement.
 func (r *Router) ResolveWithFallback(role string) []types.RolePreference {
 	// Primary
 	primary, err := r.Resolve(role)
@@ -246,6 +273,14 @@ func (r *Router) ResolveWithFallback(role string) []types.RolePreference {
 	for _, cli := range r.enabledCLIsPrioritized {
 		if cli == primary.CLI {
 			continue // will be prepended as primary
+		}
+		// Verifier-driven hard exclusion: when the cache says the role probe
+		// ran and failed for this CLI, drop it from the chain entirely.
+		if r.verifier != nil {
+			verified, miss := r.verifier.IsVerified(cli, role)
+			if !miss && !verified {
+				continue
+			}
 		}
 		hasCapability := r.cliHasCapability(cli, role)
 		fallbacks = append(fallbacks, candidate{
@@ -270,8 +305,37 @@ func (r *Router) ResolveWithFallback(role string) []types.RolePreference {
 	return result
 }
 
-// cliHasCapability checks whether a CLI's profile declares the given capability.
-// Returns false when profiles are not loaded or the CLI has no profile.
+// SetCapabilityVerifier wires a CapabilityVerifier into routing. Subsequent
+// calls to Resolve / ResolveWithFallback consult the verifier per (cli, role)
+// before treating declared capabilities as authoritative.
+//
+// Pass nil to detach (legacy declared-only behaviour).
+func (r *Router) SetCapabilityVerifier(v CapabilityVerifier) {
+	r.verifier = v
+}
+
+// CapabilityVerifier returns the wired verifier (may be nil). Used by tests
+// and the health-action observability surface.
+func (r *Router) CapabilityVerifier() CapabilityVerifier {
+	return r.verifier
+}
+
+// cliHasCapability checks whether a CLI's profile declares the given
+// capability AND, when a CapabilityVerifier is wired, the role probe has not
+// recorded a verified=false outcome.
+//
+// Decision matrix when verifier is wired (AIMUX-16 EC-3.1):
+//
+//	declared	verifier (verified, miss)	→ result
+//	false		any				→ false (CLI does not declare role)
+//	true		(true, false)			→ true  (probe verified)
+//	true		(false, true)			→ true  (cache miss — declared used as fallback)
+//	true		(false, false)			→ false (probe ran and failed; exclude)
+//
+// EC-3.2 graceful degradation: when the verifier returns miss=true (no entry
+// yet), routing keeps the declared capability so dispatch is not blocked by
+// a cold cache. The inline probe at dispatch time fills the cache; the next
+// call observes the verified outcome.
 func (r *Router) cliHasCapability(cli, capability string) bool {
 	if r.profiles == nil {
 		return false
@@ -280,12 +344,25 @@ func (r *Router) cliHasCapability(cli, capability string) bool {
 	if !ok {
 		return false
 	}
+	declared := false
 	for _, cap := range profile.Capabilities {
 		if cap == capability {
-			return true
+			declared = true
+			break
 		}
 	}
-	return false
+	if !declared {
+		return false
+	}
+	if r.verifier == nil {
+		return true
+	}
+	verified, miss := r.verifier.IsVerified(cli, capability)
+	if miss {
+		// Cache cold — soft-fallback to declared so dispatch isn't blocked.
+		return true
+	}
+	return verified
 }
 
 // parseEnvPreference parses "cli:model:effort" format from env vars.

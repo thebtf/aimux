@@ -150,7 +150,10 @@ type CircuitBreakerConfig struct {
 	HalfOpenMaxCalls int `yaml:"half_open_max_calls"`
 }
 
-// DriverConfig holds CLI driver/discovery layer settings.
+// DriverConfig holds CLI driver-layer settings (warmup probes, discovery cache, capability cache).
+//
+// AIMUX-16 CR-003: per-(cli, role) capability cache configuration.
+// AIMUX-16 CR-006: binary discovery result cache configuration.
 type DriverConfig struct {
 	// DiscoveryCacheTTLSeconds is the validity window for a cached binary
 	// discovery result (AIMUX-16 CR-006). Within this window, an unchanged
@@ -158,6 +161,16 @@ type DriverConfig struct {
 	// PATH scan. Default 86400 (24h). Zero or negative falls back to the
 	// default.
 	DiscoveryCacheTTLSeconds int `yaml:"discovery_cache_ttl_seconds"`
+
+	// CapabilityCacheTTLSeconds is the time-to-live for verified capability
+	// probe results. Stale entries trigger a background re-probe via the
+	// capabilityRefresher goroutine. Zero or negative falls back to the
+	// hard-coded default (3600s / 1h) at cache construction time.
+	CapabilityCacheTTLSeconds int `yaml:"capability_cache_ttl_seconds,omitempty"`
+
+	// CapabilityProbeTimeoutSeconds is the wall-clock budget for a single
+	// per-(cli, role) probe. Zero falls back to the warmup timeout.
+	CapabilityProbeTimeoutSeconds int `yaml:"capability_probe_timeout_seconds,omitempty"`
 }
 
 // Config is the root configuration structure.
