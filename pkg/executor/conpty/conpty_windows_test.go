@@ -221,6 +221,15 @@ func TestOpenWindowsConPTY_CloseIsIdempotent(t *testing.T) {
 	}
 
 	// Concurrent Close from 5 goroutines — none should error or panic.
+	//
+	// CR-004 review feedback (coderabbit MINOR): the previous version
+	// asserted that only the FIRST received error could be non-nil, which is
+	// flaky — channel-receive order is not goroutine-launch order, so the
+	// "real" Close (the one that won the sync.Once race) might return its
+	// error AFTER several no-op receives. The robust invariant is "at most
+	// one non-nil error across all Close calls" — sync.Once guarantees
+	// exactly one goroutine actually invokes the inner function, so at most
+	// one non-nil error can be produced regardless of arrival order.
 	const closers = 5
 	errs := make(chan error, closers)
 	for i := 0; i < closers; i++ {
@@ -228,17 +237,19 @@ func TestOpenWindowsConPTY_CloseIsIdempotent(t *testing.T) {
 			errs <- h.Close()
 		}()
 	}
+	nonNil := 0
 	for i := 0; i < closers; i++ {
 		select {
 		case err := <-errs:
-			// First Close returns nil OR a syscall error;
-			// subsequent ones MUST return nil (sync.Once shortcut).
-			if err != nil && i > 0 {
-				t.Errorf("Close call #%d returned %v — sync.Once shortcut not honoured", i+1, err)
+			if err != nil {
+				nonNil++
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatalf("Close goroutine #%d did not return within 2s — possible deadlock", i+1)
 		}
+	}
+	if nonNil > 1 {
+		t.Fatalf("Close returned %d non-nil errors, want <= 1 — sync.Once shortcut not honoured", nonNil)
 	}
 }
 

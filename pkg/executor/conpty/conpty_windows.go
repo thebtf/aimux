@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -260,13 +261,48 @@ func (h *winConsoleHandle) Close() error {
 // channel. Mirrors executor.ProcessManager.Spawn's reap goroutine so existing
 // IsAlive/Done consumers see the same signalling shape.
 //
+// Lifetime invariants (CR-004 review feedback — coderabbit CRIT, gemini #1):
+//
+//   - Wait MUST use context.Background(), NOT h.ctx. h.ctx is the request
+//     context passed into openWindowsConPTY; for persistent sessions started
+//     via Executor.Start(), that context can be cancelled or expire AFTER the
+//     session is established (e.g., the spawn handler returned long ago, but
+//     the session is still alive and serving multi-turn traffic). Using h.ctx
+//     would cause Wait to return STILL_ACTIVE prematurely and falsely mark
+//     the still-running child as exited. The pseudo-console is torn down
+//     explicitly via handle.Close() — that is the only legitimate exit path
+//     for the reap goroutine.
+//
+//   - MarkExited() is called ONLY on a real process exit. If Wait returns
+//     because the upstream library was closed (handle.Close → ClosePseudoConsole),
+//     the child may briefly outlive the call; we still mark it exited because
+//     the pseudo-console is gone and IsAlive should report dead from the
+//     session's perspective. context.Canceled / DeadlineExceeded must NOT
+//     reach here under the new design (we pass Background), but we guard
+//     defensively in case a future caller wires a cancellable context: if
+//     Wait returns one of those errors AND the child is still STILL_ACTIVE,
+//     skip MarkExited so IsAlive stays true.
+//
 // Order matters: MarkExited() MUST be called BEFORE doneCh is signalled so
 // the happens-before guarantee documented on ProcessManager.IsAlive is
 // preserved (a goroutine selecting on <-Done sees IsAlive == false the
 // instant Done unblocks).
 func (h *winConsoleHandle) reapProcess() {
-	exitCode, waitErr := h.cp.Wait(h.ctx)
-	if h.processHandle != nil {
+	// Use Background — see invariants above. h.ctx is retained on the struct
+	// for diagnostics / future request-bound logic but MUST NOT scope the
+	// child process lifetime.
+	exitCode, waitErr := h.cp.Wait(context.Background())
+
+	// STILL_ACTIVE = 259 (Win32 GetExitCodeProcess return when the process
+	// hasn't exited). If Wait was somehow cancelled/deadlined (defensive
+	// path; see invariants above), do NOT mark exited — the child is still
+	// running and IsAlive must reflect that.
+	const stillActive = 259
+	processStillRunning := waitErr != nil &&
+		(errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded)) &&
+		int(exitCode) == stillActive
+
+	if h.processHandle != nil && !processStillRunning {
 		h.processHandle.ExitCode = int(exitCode)
 		h.processHandle.MarkExited()
 	}
@@ -299,6 +335,32 @@ func (w conptyWriter) Write(p []byte) (int, error) {
 // Closing it twice would invoke ClosePseudoConsole twice, which the kernel
 // rejects with ERROR_INVALID_HANDLE. Callers (BaseSession.Close) close stdin
 // then close the handle — only the second close should reach the kernel.
+//
+// KNOWN LIMITATION (CR-004 review feedback — gemini): a no-op Close means
+// callers cannot signal EOF on the child's stdin without tearing down the
+// pseudo-console as a whole. CLI tools that read stdin to EOF before
+// producing output (compilers reading from `<`, formatters in pipe mode,
+// `cat`-like tools) will hang until the executor timeout fires.
+//
+// Why this is acceptable for ConPTY's design contract:
+//   - ConPTY exists to serve INTERACTIVE TUI flows (codex chat, aider,
+//     claude-code REPL). Those tools read stdin line-by-line and respond
+//     after each newline — they do NOT block on EOF.
+//   - Batch / pipeline-style invocations (cat-like, compilers, formatters)
+//     belong on the pipe executor. The selector routes them there based on
+//     the CLI profile's capability flags; ConPTY is not chosen for these.
+//   - The upstream library github.com/UserExistsError/conpty does NOT expose
+//     a way to close the input pipe independently of the output pipe — both
+//     are owned by the single ConPty handle and ClosePseudoConsole tears
+//     down both sides. Closing the input alone would require a fork of the
+//     library to expose the underlying input HANDLE. This is tracked as a
+//     follow-up; for the CR-004 acceptance the limitation is documented and
+//     the selector is responsible for not routing EOF-dependent tools here.
+//
+// Operator action: if a CLI is mistakenly routed to ConPTY and hangs at the
+// timeout, surface that in the daemon log (the ConPTY stub branch logged
+// every fallback; the same discipline applies to misroutes — capture the
+// CLI name + completion-pattern miss in the timeout error).
 func (w conptyWriter) Close() error { return nil }
 
 // nopReadCloser is an empty io.ReadCloser used for the Stderr slot — ConPTY
@@ -328,6 +390,25 @@ func buildCommandLine(prog string, args []string) string {
 // CreateProcess would otherwise split on (space, tab, double-quote). Empty
 // arg becomes "" so the child sees one argument, not zero. Embedded quotes
 // are escaped per CreateProcess rules.
+//
+// CR-004 review feedback (gemini): Windows command-line parsing
+// (CommandLineToArgvW / Microsoft CRT) treats backslashes as escape
+// characters ONLY when they precede a double quote. Indiscriminately
+// escaping every backslash corrupts file paths — `C:\Temp\file` would
+// become `C:\\Temp\\file` and many Windows applications would interpret
+// that as a UNC root or fail to find the file. The correct rule (as
+// implemented by Go's syscall.makeCmdLine):
+//
+//   - A backslash preceding a `"` is doubled (so the `"` becomes literal
+//     after escaping).
+//   - A backslash NOT preceding a `"` is emitted verbatim.
+//   - A run of N backslashes followed by a `"` becomes 2N backslashes plus
+//     `\"` (escapes both the backslashes and the quote).
+//   - A run of N trailing backslashes (closing quote follows) becomes 2N
+//     backslashes (the closing quote is the wrapper, not a literal).
+//
+// This mirrors the algorithm in golang/go/src/syscall/exec_windows.go
+// (EscapeArg / makeCmdLine) and avoids the file-path corruption issue.
 func quoteArg(a string) string {
 	if a == "" {
 		return `""`
@@ -338,14 +419,30 @@ func quoteArg(a string) string {
 	var b strings.Builder
 	b.Grow(len(a) + 2)
 	b.WriteByte('"')
-	for _, r := range a {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
+	for i := 0; i < len(a); {
+		// Count a run of backslashes.
+		backslashes := 0
+		for i < len(a) && a[i] == '\\' {
+			backslashes++
+			i++
+		}
+		switch {
+		case i == len(a):
+			// Trailing run before the closing quote — double them so the
+			// closing quote we append below is recognized as wrapper, not
+			// escaped.
+			b.WriteString(strings.Repeat(`\`, backslashes*2))
+		case a[i] == '"':
+			// Run before a literal quote — double the backslashes and
+			// escape the quote with one more.
+			b.WriteString(strings.Repeat(`\`, backslashes*2+1))
+			b.WriteByte('"')
+			i++
 		default:
-			b.WriteRune(r)
+			// Backslashes do NOT precede a quote — emit verbatim.
+			b.WriteString(strings.Repeat(`\`, backslashes))
+			b.WriteByte(a[i])
+			i++
 		}
 	}
 	b.WriteByte('"')
@@ -379,14 +476,31 @@ func buildEnv(envList []string, envMap map[string]string) []string {
 //
 // We do NOT call cmd.Start — the upstream library already started the child.
 // The synthetic Cmd is a presentation shell only.
+//
+// CR-004 review feedback (coderabbit MAJOR, gemini): Cmd.Process MUST be
+// populated from the real PID via os.FindProcess. ProcessManager.Kill guards
+// `if h.Cmd.Process == nil { return }`, so leaving Process nil meant
+// ConPTY-owned processes could not be killed via the standard kill path —
+// BaseSession.Close would silently no-op the kill, leaking the child until
+// daemon shutdown. os.FindProcess on Windows is cheap (no syscall in the
+// success path) and returns a process handle suitable for Process.Kill().
 func buildSyntheticCmd(name string, args []string, pid int) *exec.Cmd {
 	cmd := exec.Command(name, args...) //nolint:gosec // synthetic, never executed
-	// We can't construct an *os.Process from a PID without invoking
-	// os.FindProcess (Windows: OpenProcess with PROCESS_QUERY_INFORMATION |
-	// PROCESS_TERMINATE). Defer the lookup so callers that don't reach for
-	// Cmd.Process don't pay the syscall.
 	if pid > 0 {
-		_ = pid // documented: caller may call FindProcess on demand
+		// On Windows, os.FindProcess always returns a non-nil *os.Process
+		// without performing a syscall (the OpenProcess call is deferred to
+		// Process.Kill / Process.Signal). The error return on Windows is
+		// always nil; we still check defensively in case stdlib behaviour
+		// changes or this code is exercised from a Windows compatibility
+		// layer that diverges. If FindProcess fails, leave Process nil —
+		// ProcessManager.Kill will early-return as before, which is the
+		// pre-fix behaviour and not a regression.
+		if proc, err := os.FindProcess(pid); err == nil {
+			cmd.Process = proc
+		} else {
+			log.Printf("conpty: buildSyntheticCmd: os.FindProcess(%d) failed: %v "+
+				"(ProcessManager.Kill will be a no-op for this handle)", pid, err)
+		}
 	}
 	return cmd
 }

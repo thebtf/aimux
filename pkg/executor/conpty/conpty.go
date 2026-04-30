@@ -140,9 +140,36 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	// the output stream — IOManager.StreamLines reads it together with the
 	// child's actual output. For the Run() path that's acceptable: callers
 	// concatenate prompt+response into Result.Content.
+	//
+	// CR-004 review feedback (coderabbit MAJOR): write/close errors used to
+	// be silently dropped, leading to misleading timeout/partial-output
+	// results when the child closed stdin or accepted only part of the input.
+	// Now we surface the real cause as an ExecutorError so callers can
+	// distinguish "stdin write failed" from "child timed out". The
+	// pseudo-console handle is torn down via the deferred handle.Close —
+	// no leak.
+	//
+	// Note: handle.Stdin() returns a fresh conptyWriter each call (it's a
+	// thin value type, not a cached field), so we capture it once. The
+	// writer's Close is intentionally a no-op (see conptyWriter.Close docs);
+	// we still call it to honour the io.WriteCloser contract and surface
+	// any future error if the upstream library starts returning one.
 	if args.Stdin != "" {
-		_, _ = io.WriteString(handle.Stdin(), args.Stdin)
-		_ = handle.Stdin().Close()
+		stdin := handle.Stdin()
+		if n, werr := io.WriteString(stdin, args.Stdin); werr != nil || n != len(args.Stdin) {
+			if werr == nil {
+				werr = io.ErrShortWrite
+			}
+			return nil, types.NewExecutorError(
+				fmt.Sprintf("ConPTY stdin write failed for %s (wrote %d of %d bytes)",
+					args.Command, n, len(args.Stdin)),
+				werr, "")
+		}
+		if cerr := stdin.Close(); cerr != nil {
+			return nil, types.NewExecutorError(
+				fmt.Sprintf("ConPTY stdin close failed for %s", args.Command),
+				cerr, "")
+		}
 	}
 
 	// ConPTY merges stderr onto the pseudo-console output stream by design.
