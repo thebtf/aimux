@@ -24,6 +24,13 @@ command:
 prompt_flag: ""
 prompt_flag_type: "positional"
 
+# stdin_sentinel: claude reads the prompt as a positional argument and accepts
+# additional input via stdin pipe (features.stdin_pipe = true) without needing
+# a sentinel arg like codex's "-". Declared empty explicitly to satisfy the
+# CLI-profile required-fields rule (see config/cli.d/**/*.yaml schema) rather
+# than relying on implicit defaults.
+stdin_sentinel: ""
+
 default_model: ""
 model_flag: "--model"
 

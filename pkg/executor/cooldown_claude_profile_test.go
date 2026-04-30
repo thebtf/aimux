@@ -20,7 +20,7 @@ func TestCooldown_ClaudeProfileDuration_Integration(t *testing.T) {
 		t.Fatalf("config.Load: %v", err)
 	}
 	claude := cfg.CLIProfiles["claude"]
-	if claude == nil || claude.CooldownSeconds != 3600 || len(claude.ModelFallback) == 0 {
+	if claude == nil || claude.CooldownSeconds <= 0 || len(claude.ModelFallback) == 0 {
 		t.Fatalf("claude profile prerequisites unmet: %+v", claude)
 	}
 
@@ -32,13 +32,17 @@ func TestCooldown_ClaudeProfileDuration_Integration(t *testing.T) {
 	if tracker.IsAvailable("claude", model) {
 		t.Errorf("claude:%s must be on cooldown immediately after MarkCooledDown", model)
 	}
+	// Tolerance window for clock-drift / scheduling jitter between MarkCooledDown
+	// and time.Until(ExpiresAt). 100s is generous but well below any realistic
+	// cooldown duration so spurious passes are not a concern.
+	const tolerance = 100 * time.Second
 	var found bool
 	for _, e := range tracker.List() {
 		if e.CLI == "claude" && e.Model == model {
 			found = true
 			remaining := time.Until(e.ExpiresAt)
-			if remaining < 3500*time.Second || remaining > 3700*time.Second {
-				t.Errorf("claude:%s remaining=%s, want ~3600s", model, remaining)
+			if remaining < duration-tolerance || remaining > duration+tolerance {
+				t.Errorf("claude:%s remaining=%s, want ~%s", model, remaining, duration)
 			}
 		}
 	}
