@@ -1,9 +1,19 @@
 // Package conpty implements the Windows ConPTY executor.
-// Uses CreatePseudoConsole API for unbuffered text output from CLI processes.
-// Constitution P4: ConPTY-first, JSON-fallback.
 //
-// On non-Windows platforms, Available() returns false and all methods
-// return errors — the executor selector will pick PTY or Pipe instead.
+// AIMUX-16 CR-004: real Win32 CreatePseudoConsole / ResizePseudoConsole /
+// ClosePseudoConsole implementation, replacing the pre-CR-004 stub that
+// announced ConPTY availability but used a plain exec.Command pipe. Operator
+// directive (feedback_aimux_interactive_required.md):
+//
+//   - TUI mode is obligatory; deferral not acceptable.
+//   - Available() reports honestly: false on Win10 < 1809, false on non-Windows.
+//   - NO silent pipe downgrade — the selector explicitly chooses pipe when
+//     Available() is false. Inside this package, every refusal is logged.
+//
+// On Windows: spawns a child process attached to a pseudo-console; the child
+// sees stdin/stdout as a TTY (isatty() returns true), enabling codex chat /
+// aider interactive flows. On other platforms: Available() returns false and
+// the executor selector picks PTY or Pipe instead.
 package conpty
 
 import (
@@ -11,10 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -56,8 +63,9 @@ func (cb *cappedBuffer) String() string {
 var _ types.SessionFactory = (*Executor)(nil)
 
 // Executor spawns CLI processes via Windows ConPTY for unbuffered text output.
-// On Windows, processes see a TTY → line-buffered output without --json overhead.
-// On non-Windows, Available() returns false → executor selector skips this.
+// On Windows 10 1809+: child sees stdin/stdout as a TTY → line-buffered output
+// without --json overhead and TUI flows work. On older Windows / non-Windows:
+// Available() returns false → executor selector skips this adapter.
 type Executor struct {
 	available bool
 }
@@ -65,18 +73,19 @@ type Executor struct {
 // packageAvailable caches the probe result for the package-level Available() func.
 // Populated on first call via probeOnce; all subsequent calls read without locking.
 var (
-	probeOnce       sync.Once
-	probeResult     bool
+	probeOnce   sync.Once
+	probeResult bool
 )
 
-// Available returns whether ConPTY is supported on this platform. The result
+// Available returns whether ConPTY is supported on this host. The result
 // is cached after the first call (probe runs exactly once per process). This
 // package-level function is used by buildFallbackCandidates to skip TTY-only
 // CLIs when ConPTY is unavailable, without needing an *Executor instance.
 //
-// Callers that need fail-open semantics on probe error should check:
-//
-//	if !conpty.Available() && profile.RequiresTTY { skip }
+// Per operator directive: a false return MUST surface as a logged warning
+// (probeConPTY does this on Windows). Callers MUST NOT silently fall back —
+// they MUST either select an alternative executor (selector path) or surface
+// the unavailability to the operator explicitly.
 func Available() bool {
 	probeOnce.Do(func() {
 		probeResult = probeConPTY()
@@ -84,8 +93,8 @@ func Available() bool {
 	return probeResult
 }
 
-// New creates a ConPTY executor. Uses the cached Available() result so that
-// future expensive Win32 probes (see TODO below) are not repeated per-call.
+// New creates a ConPTY executor. Uses the cached Available() result so future
+// expensive Win32 probes are not repeated per-call.
 func New() *Executor {
 	return &Executor{
 		available: Available(),
@@ -100,57 +109,50 @@ func (e *Executor) Available() bool { return e.available }
 
 // Run executes a single prompt via ConPTY and returns the result.
 //
-// On Windows: spawns process with a pseudo-console attached. The process
-// sees a TTY, producing unbuffered text output. We read from the output
-// pipe with ANSI stripping.
+// On Windows 1809+: spawns process inside a pseudo-console (real
+// CreatePseudoConsole). The child sees a TTY → unbuffered output, ANSI
+// escapes preserved on the wire (IOManager strips them per line).
 //
-// Note: Full CreatePseudoConsole implementation requires Windows 10 1809+.
-// Current implementation uses exec.Command with forced PTY-like behavior
-// via ConHost. For true ConPTY (CreatePseudoConsole syscall), a future
-// iteration will add the win32 API calls via golang.org/x/sys/windows.
+// EC-4.3 — if the spawn fails after the pseudo-console allocation succeeded,
+// openWindowsConPTY closes the pseudo-console before returning the error
+// (no handle leak). EC-4.4 — handle.Close is idempotent (sync.Once) and
+// safe to call from both this Run path and from external session teardown.
 func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result, error) {
 	if !e.available {
 		return nil, types.NewExecutorError("ConPTY not available on this platform", nil, "")
 	}
 	start := time.Now()
 
-	cmd := exec.Command(args.Command, args.Args...)
-	cmd.Dir = args.CWD
-	switch {
-	case len(args.EnvList) > 0:
-		cmd.Env = args.EnvList
-	case len(args.Env) > 0:
-		cmd.Env = os.Environ()
-		for k, v := range args.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
-	}
-	if args.Stdin != "" {
-		cmd.Stdin = strings.NewReader(args.Stdin)
-	}
-
-	// Control plane: use shared PM for shutdown tracking
-	handle, err := executor.SharedPM.Spawn(cmd)
+	handle, err := openWindowsConPTY(ctx, openParams{
+		command: args.Command,
+		args:    args.Args,
+		cwd:     args.CWD,
+		envList: args.EnvList,
+		envMap:  args.Env,
+	})
 	if err != nil {
 		return nil, types.NewExecutorError(
 			fmt.Sprintf("ConPTY start failed for %s", args.Command), err, "")
 	}
-	defer executor.SharedPM.Cleanup(handle)
+	defer handle.Close()
 
-	// T003: drain stderr into a capped buffer in the background.
-	// ProcessManager.Spawn() always creates a stderr pipe. If the subprocess
-	// writes >64KB to stderr, the OS pipe buffer fills and the subprocess blocks.
-	// Note: when a true CreatePseudoConsole implementation is added, stderr will
-	// merge onto the console output pipe and this goroutine will drain an empty pipe.
+	// Write stdin upfront if provided. Pseudo-console echoes input back on
+	// the output stream — IOManager.StreamLines reads it together with the
+	// child's actual output. For the Run() path that's acceptable: callers
+	// concatenate prompt+response into Result.Content.
+	if args.Stdin != "" {
+		_, _ = io.WriteString(handle.Stdin(), args.Stdin)
+		_ = handle.Stdin().Close()
+	}
+
+	// ConPTY merges stderr onto the pseudo-console output stream by design.
+	// We keep an empty stderrBuf to preserve the Result.Stderr field shape
+	// (callers may check it; pre-CR-004 path produced stderr separately for
+	// the legacy exec.Command path).
 	stderrBuf := &cappedBuffer{cap: stderrCapBytes}
-	stderrDone := make(chan struct{})
-	go func() {
-		defer close(stderrDone)
-		io.Copy(stderrBuf, handle.Stderr) //nolint:errcheck // drain only
-	}()
 
 	// Data plane (IOManager strips ANSI per line — no need for pipeline.StripANSI here)
-	iom := executor.NewIOManager(handle.Stdout, args.CompletionPattern, args.OnOutput)
+	iom := executor.NewIOManager(handle.Stdout(), args.CompletionPattern, args.OnOutput)
 	iom.StreamLines()
 
 	var timerC <-chan time.Time
@@ -160,53 +162,76 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		timerC = timer.C
 	}
 
+	ph := handle.ProcessHandle()
 	select {
-	case waitErr := <-handle.Done:
+	case waitErr := <-ph.Done:
 		iom.Drain(1 * time.Second)
-		<-stderrDone
 		content := iom.Collect()
 		exitCode := 0
 		if waitErr != nil {
 			if exitErr, ok := waitErr.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
 			} else {
-				return nil, types.NewExecutorError(
-					fmt.Sprintf("%s failed", args.Command), waitErr, content)
+				// Non-zero exit codes come back as a synthetic error from
+				// reapProcess; surface the message but treat as a normal exit
+				// (set exitCode from ProcessHandle).
+				exitCode = ph.ExitCode
+				if exitCode == 0 {
+					return nil, types.NewExecutorError(
+						fmt.Sprintf("%s failed", args.Command), waitErr, content)
+				}
 			}
 		}
-		return &types.Result{Content: content, Stderr: stderrBuf.String(), ExitCode: exitCode, DurationMS: time.Since(start).Milliseconds()}, nil
+		return &types.Result{
+			Content:    content,
+			Stderr:     stderrBuf.String(),
+			ExitCode:   exitCode,
+			DurationMS: time.Since(start).Milliseconds(),
+		}, nil
 
 	case <-iom.PatternMatched():
-		executor.SharedPM.Kill(handle)
+		_ = handle.Close() // forces reapProcess to observe EOF
 		iom.Drain(1 * time.Second)
-		<-stderrDone
-		return &types.Result{Content: iom.Collect(), Stderr: stderrBuf.String(), ExitCode: 0, DurationMS: time.Since(start).Milliseconds()}, nil
+		return &types.Result{
+			Content:    iom.Collect(),
+			Stderr:     stderrBuf.String(),
+			ExitCode:   0,
+			DurationMS: time.Since(start).Milliseconds(),
+		}, nil
 
 	case <-timerC:
-		executor.SharedPM.Kill(handle)
+		_ = handle.Close()
 		iom.Drain(1 * time.Second)
-		<-stderrDone
 		content := iom.Collect()
 		return &types.Result{
-			Content: content, Stderr: stderrBuf.String(), ExitCode: 124, Partial: true,
+			Content:    content,
+			Stderr:     stderrBuf.String(),
+			ExitCode:   124,
+			Partial:    true,
 			DurationMS: time.Since(start).Milliseconds(),
-			Error: types.NewTimeoutError(fmt.Sprintf("ConPTY timed out after %ds", args.TimeoutSeconds), content),
+			Error:      types.NewTimeoutError(fmt.Sprintf("ConPTY timed out after %ds", args.TimeoutSeconds), content),
 		}, nil
 
 	case <-ctx.Done():
-		executor.SharedPM.Kill(handle)
+		_ = handle.Close()
 		iom.Drain(1 * time.Second)
-		<-stderrDone
 		content := iom.Collect()
 		return &types.Result{
-			Content: content, Stderr: stderrBuf.String(), ExitCode: 130, Partial: true,
+			Content:    content,
+			Stderr:     stderrBuf.String(),
+			ExitCode:   130,
+			Partial:    true,
 			DurationMS: time.Since(start).Milliseconds(),
-			Error: types.NewExecutorError("ConPTY cancelled", ctx.Err(), content),
+			Error:      types.NewExecutorError("ConPTY cancelled", ctx.Err(), content),
 		}, nil
 	}
 }
 
-// conptySessionPM is the package-level ProcessManager for persistent ConPTY sessions.
+// conptySessionPM is the package-level ProcessManager for persistent ConPTY
+// sessions. Although the new winConsoleHandle owns its own lifecycle, the PM
+// is retained for shutdown bookkeeping — server shutdown calls
+// ConPTYSessionProcessManager().Shutdown() to ensure no session leaks at
+// daemon exit.
 var conptySessionPM = executor.NewProcessManager()
 
 // ConPTYSessionProcessManager returns the ProcessManager used for persistent ConPTY sessions.
@@ -219,37 +244,26 @@ const defaultConPTYInactivitySeconds = 5
 
 // Start begins a persistent ConPTY session for multi-turn interaction.
 //
-// T003 note: ConPTY merges stdout and stderr onto a single pseudo-console output
-// pipe by design (Windows CreatePseudoConsole API behavior). There is no
-// separate stderr stream to drain — all subprocess output (including stderr)
-// flows through handle.Stdout and is captured by the session reader.
+// On Windows 1809+: real CreatePseudoConsole — child process inherits the
+// pseudo-console as stdio, GetConsoleMode returns ENABLE_VIRTUAL_TERMINAL_PROCESSING
+// for the child, and isatty() returns true. This is what enables codex chat
+// and aider's interactive TUI to function.
 //
-// The session uses session.BaseSession for the lifetime reader goroutine +
-// inactivity-based response detection pattern (same as pipe executor).
+// EC-4.4 — winConsoleHandle.Close is sync.Once-guarded so BaseSession.Close
+// (which closes stdin then signals the reader to exit) cannot race with
+// ProcessHandle.Done's reap goroutine on ConPTY teardown.
 func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
 	if !e.available {
 		return nil, types.NewExecutorError("ConPTY not available on this platform", nil, "")
 	}
 
-	cmd := exec.Command(args.Command, args.Args...)
-	cmd.Dir = args.CWD
-	switch {
-	case len(args.EnvList) > 0:
-		cmd.Env = args.EnvList
-	case len(args.Env) > 0:
-		cmd.Env = os.Environ()
-		for k, v := range args.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
-	}
-
-	// Stdin pipe must be created before Spawn (which calls cmd.Start internally).
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, types.NewExecutorError("ConPTY: failed to create stdin pipe", err, "")
-	}
-
-	handle, err := conptySessionPM.Spawn(cmd)
+	handle, err := openWindowsConPTY(ctx, openParams{
+		command: args.Command,
+		args:    args.Args,
+		cwd:     args.CWD,
+		envList: args.EnvList,
+		envMap:  args.Env,
+	})
 	if err != nil {
 		return nil, types.NewExecutorError(
 			fmt.Sprintf("ConPTY session start failed for %s", args.Command), err, "")
@@ -260,22 +274,31 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 		inactivity = defaultConPTYInactivitySeconds * time.Second
 	}
 
-	sess := session.New("", stdin, handle.Stdout, inactivity, handle, conptySessionPM, args.CompletionPattern)
+	ph := handle.ProcessHandle()
+
+	// BaseSession owns stdout/stdin from this point. When Close fires it
+	// closes stdout via handle.Close (idempotent) which also closes the
+	// pseudo-console — the reader goroutine inside BaseSession sees EOF and
+	// exits cleanly.
+	sess := session.New(
+		"",
+		handle.Stdin(),
+		handle.Stdout(),
+		inactivity,
+		ph,
+		conptySessionPM,
+		args.CompletionPattern,
+	)
 	return sess, nil
 }
 
 // StartSession implements types.SessionFactory. It delegates to Start() to
 // create a persistent ConPTY session for multi-turn interaction.
 //
-// When ConPTY is unavailable (non-Windows), returns an error describing the
-// platform limitation. Callers MUST gate StartSession invocation on
-// Info().Capabilities.PersistentSessions (via swarm.MaybeStartSession) to
-// avoid this path; the error is a defensive guard, not a graceful fallback.
+// When ConPTY is unavailable (non-Windows or Windows < 1809), returns an
+// error describing the platform limitation. Callers MUST gate StartSession
+// invocation on Info().Capabilities.PersistentSessions (via swarm.MaybeStartSession)
+// to avoid this path; the error is a defensive guard, not a graceful fallback.
 func (e *Executor) StartSession(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
 	return e.Start(ctx, args)
-}
-
-// probeConPTY checks if the current platform supports ConPTY.
-func probeConPTY() bool {
-	return runtime.GOOS == "windows"
 }

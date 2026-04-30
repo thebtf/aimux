@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (AIMUX-16 CR-004 — Real Win32 ConPTY)
+
+- **`pkg/executor/conpty/conpty_windows.go`** (FR-4) — real `CreatePseudoConsole` /
+  `ResizePseudoConsole` / `ClosePseudoConsole` implementation via the pinned
+  `github.com/UserExistsError/conpty v0.1.4` library (MIT, pure Go). Replaces the
+  pre-CR-004 documented stub that announced ConPTY support but used a plain
+  `exec.Command` pipe. Child process inherits the pseudo-console as stdio so
+  `isatty()` returns true (codex chat / aider interactive flows now work).
+- **`pkg/executor/conpty/conpty_other.go`** (FR-4) — non-Windows stub. Every
+  entrypoint returns `ErrPlatformUnsupported`; `probeConPTY()` returns false.
+- **`pkg/executor/conpty/conpty_params.go`** — platform-neutral parameter types
+  (`openParams`) and constants (`defaultConPTYWidth=120`, `defaultConPTYHeight=30`)
+  shared by Windows real path and non-Windows stub.
+- **Honest probe (EC-4.1)** — `probeConPTY()` checks Win10 build ≥ 17763 (Win10 1809),
+  verifies `kernel32.dll` exports the ConPTY family, and consults the upstream
+  library's `IsConPtyAvailable()`. Every refusal logs an explicit warning.
+  Operator directive (`feedback_aimux_interactive_required.md`): NO silent pipe
+  downgrade — every reason for declining ConPTY surfaces in the daemon log.
+- **`pkg/executor/process.go`** — `ProcessHandle.MarkExited()` exported method.
+  Used by external reap goroutines (CR-004's `winConsoleHandle.reapProcess`)
+  that own their child-process lifecycle outside `ProcessManager.Spawn`.
+- **`.github/workflows/ci.yml`** (NFR-5) — explicit `windows-latest` step
+  asserting `TestProbeConPTY_RealHostSucceeds` /
+  `TestOpenWindowsConPTY_SpawnsRealPseudoConsole` /
+  `TestExecutor_Run_ProducesOutput` PASS (neither SKIP). Skipping ConPTY
+  tests on Windows is PROHIBITED per spec — silent skip would re-introduce
+  the deferral pattern CR-004 was filed to fix.
+
+### Tests added (AIMUX-16 CR-004)
+
+- `pkg/executor/conpty/conpty_windows_test.go` — Windows-only build-tag-gated:
+  - `TestProbeConPTY_RequiresMinimumBuild` — version gate (EC-4.1).
+  - `TestProbeConPTY_RequiresKernel32Exports` — kernel32 export gate (T004-9).
+  - `TestProbeConPTY_VersionLookupError` — RtlGetVersion failure path.
+  - `TestProbeConPTY_RealHostSucceeds` — happy path on real Windows runner.
+  - `TestOpenWindowsConPTY_SpawnsRealPseudoConsole` — proves `CreatePseudoConsole`
+    actually fires (PID > 0, output marker round-trips through pseudo-console).
+  - `TestOpenWindowsConPTY_ResizeAfterOpen` — `ResizePseudoConsole` wired (T004-4).
+  - `TestOpenWindowsConPTY_CloseIsIdempotent` — `sync.Once` guard, EC-4.4.
+  - `TestExecutor_Run_ProducesOutput` — end-to-end through `Executor.Run()`.
+
+### Verified (AIMUX-16 CR-004)
+
+- NFR-2 warm Send budget preserved — `tests/critical/persistent_session_warm_send_test.go`
+  PASS post-CR-004 (warm-send avg < 100ms budget).
+- Cross-platform builds clean: `GOOS=linux`, `GOOS=darwin`, native Windows.
+- Existing 16 conpty tests + full project suite (~857 tests across 27 packages) PASS.
+
 ## [5.3.0] — 2026-04-30 — AIMUX-14 persistent CLI sessions (M6)
 
 Foundation для multi-turn workflows (consensus, dialog, debug-loop) — subprocess
