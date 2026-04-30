@@ -144,6 +144,50 @@ Patch release v5.2.2 per AIMUX-15 clarification C2: debt clearing ships
 separately from AIMUX-14 feature work (different test surface, different
 blast radius). Zero breaking changes; single-operator deployment unaffected.
 
+## [5.2.1] — 2026-04-30 — AIMUX-13 PRC v7 audit follow-ups
+
+PRC v7 agent-trio audit follow-up cycle on the AIMUX-13 tenant-aware Swarm
+release. 8 inline fixes applied (zero-deferral discipline per autopilot
+promise) + 4 entries deferred to roadmap. Patch release; no behavior change
+for single-operator deployments.
+
+### Fixed
+
+- **BUG-011** — `emit{Spawn,Close,Restart}` canonicalize TenantID
+- **BUG-014** — prune dead handles inside `Get` find-or-spawn (memory leak)
+- **BUG-005** — `NewDispatchMiddleware` nil-guard `auditLog` + eager panic on nil registry
+- **BUG-007** — `TestSwarm_DistinctTenantsDistinctHandles` partition assertion
+- **BUG-008** — `Health()` comment fixed (first-write-wins, not last-write-wins)
+- **BUG-010** — `joinErrors` wrapper removed (`errors.Join` inline)
+- **HIGH-2** — distinct audit `Reason` strings (SIEM disambiguation)
+- **HIGH-3** — `spawn`/`spawnLocked` DRY → `makeHandle` helper
+- **MEDIUM-1** — byte-identical test asserts response content (anti-stub)
+- **F2 S3** — `pkg/tenant/loader.go` rejects `legacy-default` reserved name
+
+### Deferred
+
+- **DEF-8** (BUG-012 `spawnLocked` `factoryFn` under lock — Layer 5 dependency) — resolved later in v5.2.2
+- **DEF-9** (F1 Windows `peerUID=0` — pre-existing AIMUX-12, blocked muxcore #110)
+- **DEF-10** (F3 audit `Reason` UID — pre-existing AIMUX-12) — resolved later in v5.2.2
+- **DEF-11** (F4 `DiscardLog` fail-open — pre-existing AIMUX-12) — resolved later in v5.2.2
+
+### Won't Fix (adjudicated)
+
+- **BUG-013** audit `ToolName` leak — security F5 CLEAR (`h.Name` is the public CLI type)
+- **BUG-009** unused context import — false alarm (used 5x)
+- **MEDIUM-2** `discardAuditLog` alias — false alarm (unexported)
+- **HIGH-1** `emitRestart` anti-flood — intentional design (health failures observability-required)
+
+### Notes
+
+Pre-existing macOS `pkg/upgrade` flake unchanged from v5.2.0 — tracked
+separately in CR-002 of the ci-stability spec.
+
+Files changed: `pkg/server/dispatch_middleware.go`, `pkg/swarm/swarm.go`,
+`pkg/swarm/swarm_bench_test.go`, `pkg/tenant/loader.go`,
+`tests/critical/swarm_legacy_byte_identical_test.go`. Audit source commit
+`c14dec2`.
+
 ## [5.2.0] — 2026-04-29 — AIMUX-13 tenant-aware Swarm
 
 Layer 2 (process pool manager) extended с tenant прошивкой continuing AIMUX-12 multi-tenant
