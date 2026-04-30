@@ -73,6 +73,17 @@ func successResult(_ types.SpawnArgs) (*types.Result, error) {
 	return &types.Result{Content: "ok", ExitCode: 0}, nil
 }
 
+// fatalResultZeroExit builds a Fatal-classified Result whose ExitCode is 0
+// alongside an explicit error. Models the regression reported by CodeRabbit on
+// PR #137: a CLI may surface a fatal failure in its content/stderr but report
+// ExitCode=0; classifyTerminalOutcome must NOT let exitCode==0 leak into
+// ClassifyError when err != nil — that would yield ErrorClassNone and a false
+// RecordSuccess() on the breaker.
+func fatalResultZeroExit(_ types.SpawnArgs) (*types.Result, error) {
+	return &types.Result{Content: "authentication failed", ExitCode: 0},
+		errors.New("authentication failed")
+}
+
 // newTestRegistry builds a BreakerRegistry suitable for fast-failing tests:
 // threshold=2, 100ms cooldown so HalfOpen transitions happen within test
 // budget, halfOpen probe budget=1.
@@ -385,6 +396,39 @@ func TestRunWithModelFallbackBreaker_KFatalsTripThenSelectExcludes(t *testing.T)
 		if cli == "codex" {
 			t.Errorf("after Fatal trip, SelectAvailableCLIs should exclude codex; got %v", got)
 		}
+	}
+}
+
+// Regression: PR #137 CodeRabbit MAJOR — classifyTerminalOutcome MUST NOT let
+// exitCode==0 leak into ClassifyError when err != nil. Without the guard, a CLI
+// that surfaces a fatal failure in content/stderr but reports ExitCode=0
+// alongside an error would be classified ErrorClassNone (because ClassifyError
+// short-circuits to ErrorClassNone whenever exitCode==0) and the breaker would
+// receive RecordSuccess(). With the guard, exitCode is forced to 1 in this
+// case, the content "authentication failed" is recognised as Fatal, and the
+// breaker is correctly tripped via RecordFailure(permanent=true).
+func TestRunWithModelFallbackBreaker_FatalWithZeroExitTripsBreaker(t *testing.T) {
+	reg := newTestRegistry()
+	tracker := executor.NewModelCooldownTracker()
+	stub := &breakerStubExecutor{
+		fns: []func(types.SpawnArgs) (*types.Result, error){fatalResultZeroExit},
+	}
+	baseArgs := types.SpawnArgs{CLI: "codex", Command: "echo", Args: []string{"-m", "model-a"}}
+
+	_, err := executor.RunWithModelFallbackBreaker(
+		context.Background(), stub, baseArgs,
+		[]string{"model-a"}, "-m",
+		tracker, time.Second,
+		nil, nil,
+		reg,
+	)
+	if err == nil {
+		t.Fatal("expected non-nil error from fatalResultZeroExit; got nil")
+	}
+	if state := reg.Get("codex").State(); state != executor.BreakerOpen {
+		t.Errorf("zero-exit fatal terminal outcome MUST trip breaker to Open "+
+			"(regression: would be RecordSuccess if exitCode=0 leaks into "+
+			"ClassifyError); got state=%d", state)
 	}
 }
 

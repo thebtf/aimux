@@ -371,7 +371,12 @@ func classifyTerminalOutcome(result *types.Result, err error) ErrorClass {
 	exitCode := 1 // err != nil at this point, so exit code is non-zero by definition
 	if result != nil {
 		content = result.Content
-		exitCode = result.ExitCode
+		// Only adopt result.ExitCode if it is non-zero; an exitCode of 0 here would
+		// make ClassifyError return ErrorClassNone despite err != nil, masking the
+		// terminal failure as success and yielding a false RecordSuccess() on the breaker.
+		if result.ExitCode != 0 {
+			exitCode = result.ExitCode
+		}
 	}
 	stderr = err.Error()
 	return ClassifyError(content, stderr, exitCode)
