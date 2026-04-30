@@ -282,9 +282,14 @@ func RunWithModelFallback(
 //     failure counter.
 //   - Fatal-classified terminal error → RecordFailure(permanent=true);
 //     trips the breaker immediately so the next dispatch skips this CLI.
-//   - Quota / ModelUnavailable terminal error (all models exhausted) →
+//   - Quota terminal error (all models exhausted on quota grounds) →
 //     RecordFailure(permanent=false); counts toward the threshold so
 //     sustained quota failure across calls eventually trips the breaker.
+//   - ModelUnavailable terminal error → no breaker write. ModelUnavailable
+//     is a per-(cli,model) concern — the cooldown tracker already marks
+//     the offending model so the next dispatch skips it; tripping the
+//     CLI-level breaker would mask other models on the same CLI that may
+//     still be healthy.
 //   - Transient terminal error → no breaker write (EC-2.3: flapping
 //     network MUST NOT trip the breaker).
 //   - Unknown terminal error → no breaker write (conservative; could be
@@ -338,11 +343,17 @@ func RunWithModelFallbackBreaker(
 //
 // Mapping rationale:
 //   - err == nil  → ErrorClassNone (success).
-//   - err wraps ErrQuotaExhausted or ErrModelUnavailable → ErrorClassQuota
-//     (sustained quota events count toward the breaker; the "rate limit"
-//     wording is preserved by RunWithModelFallback so the outer router can
-//     still detect retriable conditions, but for breaker accounting both
-//     map to the same threshold-incrementing failure).
+//   - err wraps ErrQuotaExhausted → ErrorClassQuota. Quota exhaustion of the
+//     entire CLI (all models cooled down on quota grounds) is a CLI-level
+//     concern: sustained occurrences should count toward the breaker
+//     threshold so the dispatcher eventually skips this CLI.
+//   - err wraps ErrModelUnavailable → ErrorClassModelUnavailable (NOT Quota).
+//     ModelUnavailable is a per-(cli,model) concern — wrong account, model
+//     not enabled, plan-gated access. The cooldown tracker already marks
+//     the offending model so the next dispatch skips it; tripping the
+//     CLI-level breaker would mask other models on the same CLI that may
+//     still be healthy. Per RecordResultToBreaker (EC-2.3), ModelUnavailable
+//     terminal outcomes are intentionally a no-op for the breaker.
 //   - else: re-classify via ClassifyError on the result/err pair using the
 //     same patterns the per-attempt loop uses, so terminal Fatal/Transient
 //     stay aligned with how the loop classified individual attempts.
@@ -350,8 +361,11 @@ func classifyTerminalOutcome(result *types.Result, err error) ErrorClass {
 	if err == nil {
 		return ErrorClassNone
 	}
-	if errors.Is(err, ErrQuotaExhausted) || errors.Is(err, ErrModelUnavailable) {
+	if errors.Is(err, ErrQuotaExhausted) {
 		return ErrorClassQuota
+	}
+	if errors.Is(err, ErrModelUnavailable) {
+		return ErrorClassModelUnavailable
 	}
 	var content, stderr string
 	exitCode := 1 // err != nil at this point, so exit code is non-zero by definition

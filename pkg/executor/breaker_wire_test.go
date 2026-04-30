@@ -61,6 +61,13 @@ func transientResult(_ types.SpawnArgs) (*types.Result, error) {
 	return &types.Result{Content: "connection refused", ExitCode: 1}, nil
 }
 
+// modelUnavailableResult builds a Result whose stderr matches a
+// ModelUnavailable-classified pattern (matches FR-9 patterns in classify.go,
+// see TestClassifyError_ModelUnavailable_* in classify_test.go).
+func modelUnavailableResult(_ types.SpawnArgs) (*types.Result, error) {
+	return &types.Result{Content: "Error: model not found: gpt-5.3-codex-spark", ExitCode: 1}, nil
+}
+
 // successResult builds a healthy Result.
 func successResult(_ types.SpawnArgs) (*types.Result, error) {
 	return &types.Result{Content: "ok", ExitCode: 0}, nil
@@ -296,6 +303,58 @@ func TestRunWithModelFallbackBreaker_TransientDoesNotTripEC23(t *testing.T) {
 	}
 	if f := reg.Get("codex").Failures(); f != 0 {
 		t.Errorf("EC-2.3 violated: transient dispatches incremented failure counter; got %d", f)
+	}
+}
+
+// EC-2.3 / PR #137 review: a ModelUnavailable terminal outcome (all models on
+// a CLI returned "model not found / not authorized / not enabled") MUST NOT
+// trip the CLI-level breaker. ModelUnavailable is a per-(cli,model) concern:
+// the cooldown tracker already marks the offending model, and the next
+// dispatch picks the next model on the same CLI. Tripping the CLI breaker
+// would mask other healthy models on the same CLI.
+//
+// Symmetric to TestRunWithModelFallbackBreaker_TransientDoesNotTripEC23 — both
+// assert the negative path through the full RunWithModelFallbackBreaker entry
+// point (not just the unit-level RecordResultToBreaker mapping).
+func TestRunWithModelFallbackBreaker_ModelUnavailableDoesNotTrip(t *testing.T) {
+	reg := newTestRegistry()
+
+	for i := 0; i < 10; i++ {
+		// Fresh cooldown tracker per iteration: a single "model-a" gets
+		// MarkCooledDown'd after iteration 0 returns ModelUnavailable, so
+		// iteration 1 would short-circuit on FilterAvailable("all models on
+		// cooldown") and never reach the classifyTerminalOutcome branch we
+		// want to exercise. Fresh tracker each loop ensures every iteration
+		// runs through RunWithModelFallback → classifyTerminalOutcome →
+		// RecordResultToBreaker on ModelUnavailable.
+		tracker := executor.NewModelCooldownTracker()
+		stub := &breakerStubExecutor{
+			fns: []func(types.SpawnArgs) (*types.Result, error){modelUnavailableResult},
+		}
+		baseArgs := types.SpawnArgs{CLI: "codex", Command: "echo", Args: []string{"-m", "model-a"}}
+		_, err := executor.RunWithModelFallbackBreaker(
+			context.Background(), stub, baseArgs,
+			[]string{"model-a"}, "-m",
+			tracker, time.Second,
+			nil, nil,
+			reg,
+		)
+		// Sanity: the dispatch must terminate with an ErrModelUnavailable-wrapping
+		// error so we know we exercised the right branch in classifyTerminalOutcome.
+		if err == nil {
+			t.Fatalf("iteration %d: expected error wrapping ErrModelUnavailable; got nil", i)
+		}
+		if !errors.Is(err, executor.ErrModelUnavailable) {
+			t.Fatalf("iteration %d: expected errors.Is(err, ErrModelUnavailable); got err = %v", i, err)
+		}
+	}
+
+	cb := reg.Get("codex")
+	if state := cb.State(); state != executor.BreakerClosed {
+		t.Errorf("ModelUnavailable terminal outcomes must NOT trip breaker (per-model concern); got state=%d after 10 dispatches", state)
+	}
+	if f := cb.Failures(); f != 0 {
+		t.Errorf("ModelUnavailable terminal outcomes must NOT increment failure counter; got failures=%d after 10 dispatches", f)
 	}
 }
 
