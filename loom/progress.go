@@ -1,6 +1,8 @@
 package loom
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -57,10 +59,28 @@ func lastNonEmptyLine(s string) string {
 	return ""
 }
 
+// ProgressInfo carries the task identity fields required to emit a fully-
+// populated EventTaskProgress. Returned from TaskStore.AppendProgress when
+// (and only when) a row was actually updated — callers use OK to decide
+// whether to emit an event so unknown / cancelled tasks remain truly no-op.
+type ProgressInfo struct {
+	OK        bool
+	ProjectID string
+	RequestID string
+}
+
 // AppendProgress records a single progress line for taskID. The line is
 // truncated UTF-8-safely to ≤100 bytes before storage; ProgressLines is
 // incremented by 1 plus the count of embedded newlines (matches legacy
-// JobManager semantics). ProgressUpdatedAt is set to time.Now().UTC().
+// JobManager semantics — see pkg/session/jobs.go:242 which uses the same
+// `1 + strings.Count(line, "\n")` formula). ProgressUpdatedAt is set to
+// time.Now().UTC().
+//
+// Sensitive content (API keys, bearer tokens, Authorization headers) is
+// scrubbed from the tail via redactErrorMsg before storage so the field —
+// surfaced through the MCP status response as last_output_line — cannot
+// leak credentials echoed by a CLI tool into its own progress stream.
+// Same secret pattern set as tasks.error redaction (store.go).
 //
 // Whitespace-only lines do NOT update LastOutputLine — the previous value
 // is preserved so the operator-visible tail remains the most recent
@@ -71,55 +91,72 @@ func lastNonEmptyLine(s string) string {
 // the same task ID at the engine level. Callers MAY invoke AppendProgress
 // from arbitrary goroutines without external locking (EC-5.3).
 //
-// Returns an error only on SQL failure; no row affected (taskID unknown)
-// returns nil — progress for an unknown task is a no-op rather than an
+// Returns ProgressInfo{OK: true, ProjectID, RequestID} when the row was
+// updated and an event should be emitted with those identity fields. Returns
+// ProgressInfo{OK: false} (and a nil error) when the task no longer exists
+// — progress for an unknown / cancelled task is a no-op rather than an
 // error so a slow worker emitting after a Cancel does not surface a noisy
-// failure.
-func (s *TaskStore) AppendProgress(taskID, line string) error {
+// failure, and the caller does NOT emit an event for a row that was never
+// updated. Returns a non-nil error only on SQL failure.
+func (s *TaskStore) AppendProgress(taskID, line string) (ProgressInfo, error) {
 	// Compute the new tail. Embedded newlines are valid — split off the
-	// last non-empty segment and truncate. If the entire line is whitespace,
-	// keep the existing LastOutputLine (passed via COALESCE in SQL below).
+	// last non-empty segment, redact secrets, and truncate. If the entire
+	// line is whitespace, keep the existing LastOutputLine (the WHERE-
+	// branch below skips the last_output_line column entirely).
 	nextTail := lastNonEmptyLine(line)
 	truncated := ""
 	if nextTail != "" {
-		truncated = truncateUTF8(nextTail, progressLineMaxBytes)
+		truncated = truncateUTF8(redactErrorMsg(nextTail), progressLineMaxBytes)
 	}
 
-	// 1 line per call + one per embedded newline (final \n with no trailing
-	// content does not count an extra line — strings.Count counts the
-	// separator). Matches legacy JobManager arithmetic (pkg/session/jobs.go).
+	// 1 line per call + one per embedded newline. Matches legacy JobManager
+	// arithmetic exactly (pkg/session/jobs.go:242) so callers comparing the
+	// two representations see identical counts; that parity is an explicit
+	// CR-005 NFR. A trailing "\n" therefore counts as a separator AND adds 1
+	// — same as the legacy code, by design.
 	deltaLines := int64(1 + strings.Count(line, "\n"))
 
 	now := time.Now().UTC()
 
-	var res interface {
-		RowsAffected() (int64, error)
-	}
-	var execErr error
+	// SQLite UPDATE ... RETURNING (>= 3.35.0; modernc.org/sqlite v1.48.1
+	// supports it) lets a single round-trip both apply the update AND read
+	// project_id / request_id from the row that was actually touched. When
+	// the WHERE clause matches no rows the RETURNING set is empty and
+	// QueryRow().Scan() reports sql.ErrNoRows, which we translate to the
+	// no-op return. This replaces the prior Exec + RowsAffected pattern
+	// where the unknown-task branch was indistinguishable from a successful
+	// update at the caller.
+	var (
+		row    *sql.Row
+		projID string
+		reqID  string
+	)
 	if truncated != "" {
-		res, execErr = s.db.Exec(
+		row = s.db.QueryRow(
 			`UPDATE tasks
 			 SET last_output_line = ?,
 			     progress_lines = progress_lines + ?,
 			     progress_updated_at = ?
-			 WHERE id = ?`,
+			 WHERE id = ?
+			 RETURNING project_id, request_id`,
 			truncated, deltaLines, now, taskID,
 		)
 	} else {
 		// Whitespace-only line — preserve existing tail, bump counter + ts.
-		res, execErr = s.db.Exec(
+		row = s.db.QueryRow(
 			`UPDATE tasks
 			 SET progress_lines = progress_lines + ?,
 			     progress_updated_at = ?
-			 WHERE id = ?`,
+			 WHERE id = ?
+			 RETURNING project_id, request_id`,
 			deltaLines, now, taskID,
 		)
 	}
-	if execErr != nil {
-		return fmt.Errorf("loom store: append progress: %w", execErr)
+	if err := row.Scan(&projID, &reqID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ProgressInfo{OK: false}, nil
+		}
+		return ProgressInfo{}, fmt.Errorf("loom store: append progress: %w", err)
 	}
-	if _, err := res.RowsAffected(); err != nil {
-		return fmt.Errorf("loom store: append progress rows affected: %w", err)
-	}
-	return nil
+	return ProgressInfo{OK: true, ProjectID: projID, RequestID: reqID}, nil
 }

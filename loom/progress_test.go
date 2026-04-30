@@ -98,8 +98,15 @@ func TestStore_AppendProgress_FreshTask(t *testing.T) {
 
 	for i := 1; i <= 5; i++ {
 		line := "line-" + strings.Repeat("x", i)
-		if err := store.AppendProgress(task.ID, line); err != nil {
+		info, err := store.AppendProgress(task.ID, line)
+		if err != nil {
 			t.Fatalf("AppendProgress (%d): %v", i, err)
+		}
+		if !info.OK {
+			t.Fatalf("AppendProgress (%d): info.OK = false; want true for known task", i)
+		}
+		if info.ProjectID != "proj-progress" {
+			t.Errorf("AppendProgress (%d): info.ProjectID = %q; want %q", i, info.ProjectID, "proj-progress")
 		}
 	}
 
@@ -160,7 +167,7 @@ func TestStore_AppendProgress_TruncatesLongLine(t *testing.T) {
 	}
 
 	long := strings.Repeat("a", 250)
-	if err := store.AppendProgress(task.ID, long); err != nil {
+	if _, err := store.AppendProgress(task.ID, long); err != nil {
 		t.Fatalf("AppendProgress: %v", err)
 	}
 
@@ -186,10 +193,10 @@ func TestStore_AppendProgress_WhitespaceOnlyPreservesTail(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err := store.AppendProgress(task.ID, "real signal"); err != nil {
+	if _, err := store.AppendProgress(task.ID, "real signal"); err != nil {
 		t.Fatalf("AppendProgress (real): %v", err)
 	}
-	if err := store.AppendProgress(task.ID, "   \t  "); err != nil {
+	if _, err := store.AppendProgress(task.ID, "   \t  "); err != nil {
 		t.Fatalf("AppendProgress (whitespace): %v", err)
 	}
 
@@ -215,7 +222,7 @@ func TestStore_AppendProgress_EmbeddedNewlines(t *testing.T) {
 	}
 
 	// Single AppendProgress with two embedded newlines: counts 1+2=3 lines.
-	if err := store.AppendProgress(task.ID, "first\nsecond\nthird"); err != nil {
+	if _, err := store.AppendProgress(task.ID, "first\nsecond\nthird"); err != nil {
 		t.Fatalf("AppendProgress: %v", err)
 	}
 
@@ -234,10 +241,19 @@ func TestStore_AppendProgress_EmbeddedNewlines(t *testing.T) {
 // TestStore_AppendProgress_UnknownTaskID_NoError verifies that progress for
 // a task that no longer exists (cancelled, GC'd) is a no-op rather than an
 // error — slow workers should not surface noisy failures after Cancel.
+// info.OK MUST be false so callers do not emit an event for state that was
+// never written (CR-005 contract).
 func TestStore_AppendProgress_UnknownTaskID_NoError(t *testing.T) {
 	store := newTestStore(t)
-	if err := store.AppendProgress("does-not-exist", "ghost line"); err != nil {
+	info, err := store.AppendProgress("does-not-exist", "ghost line")
+	if err != nil {
 		t.Errorf("AppendProgress for unknown task should be a no-op, got error: %v", err)
+	}
+	if info.OK {
+		t.Errorf("AppendProgress for unknown task: info.OK = true; want false (no event must be emitted)")
+	}
+	if info.ProjectID != "" || info.RequestID != "" {
+		t.Errorf("AppendProgress for unknown task: info = %+v; want zero ProgressInfo", info)
 	}
 }
 
@@ -264,7 +280,7 @@ func TestStore_AppendProgress_ConcurrentSameTask(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < linesPerWrite; i++ {
-				if err := store.AppendProgress(task.ID, "writer"); err != nil {
+				if _, err := store.AppendProgress(task.ID, "writer"); err != nil {
 					errCount.Add(1)
 					t.Logf("writer %d iter %d: %v", w, i, err)
 				}
@@ -340,9 +356,107 @@ func TestEngine_AppendProgress_EmitsEvent(t *testing.T) {
 		if ev.Type != EventTaskProgress {
 			t.Errorf("progressEvents[%d].Type = %q; want %q", i, ev.Type, EventTaskProgress)
 		}
+		// CR-005: every emitted TaskEvent MUST carry ProjectID for multi-
+		// tenant subscriber filtering — empty ProjectID would silently break
+		// fanout. RequestID may be empty (the task was created without one
+		// in this fixture), but ProjectID is mandatory and was set on the
+		// task above.
+		if ev.ProjectID != task.ProjectID {
+			t.Errorf("progressEvents[%d].ProjectID = %q; want %q (multi-tenant filtering breaks otherwise)", i, ev.ProjectID, task.ProjectID)
+		}
+		if ev.Status != TaskStatusRunning {
+			t.Errorf("progressEvents[%d].Status = %q; want %q", i, ev.Status, TaskStatusRunning)
+		}
 	}
 	if len(lifecycleEvents) != 0 {
 		t.Errorf("lifecycle events delivered to subscriber that should only see progress; got %d events: %v", len(lifecycleEvents), lifecycleEvents)
+	}
+}
+
+// TestEngine_AppendProgress_UnknownTask_NoEvent verifies that progress on
+// a task that no longer exists (cancelled, GC'd) does NOT emit an
+// EventTaskProgress. The store reports info.OK=false and the engine MUST
+// suppress the event so subscribers never observe state that was never
+// written. CR-005 contract from loom.go AppendProgress doc-comment.
+func TestEngine_AppendProgress_UnknownTask_NoEvent(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+	defer func() {
+		_ = engine.Close(context.Background())
+	}()
+
+	var (
+		mu     sync.Mutex
+		events []TaskEvent
+	)
+	unsub := engine.Events().Subscribe(func(ev TaskEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, ev)
+	})
+	defer unsub()
+
+	if err := engine.AppendProgress("never-created", "ghost output"); err != nil {
+		t.Fatalf("engine.AppendProgress (unknown task) returned error; want nil: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 0 {
+		t.Errorf("got %d events for unknown task; want 0 (CR-005: no event for no-op store update)", len(events))
+	}
+}
+
+// TestStore_AppendProgress_RedactsSecretsInTail verifies that the tail
+// surfaced via last_output_line is run through redactErrorMsg before
+// storage so an OpenAI/Anthropic API key or Bearer token echoed by a CLI
+// tool into its own progress stream cannot reach the MCP status response.
+// Pattern set MUST stay in lockstep with the tasks.error redaction (store.go).
+func TestStore_AppendProgress_RedactsSecretsInTail(t *testing.T) {
+	store := newTestStore(t)
+	task := makeProgressTask("task-progress-redact", "proj-redact")
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		line      string
+		mustNotIn string // substring that MUST NOT appear in the stored tail
+	}{
+		{
+			name:      "openai-svcacct-key",
+			line:      "calling api with sk-svcacct-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh",
+			mustNotIn: "sk-svcacct-AbCdEfGhIjKlMnOpQr",
+		},
+		{
+			name:      "bearer-token",
+			line:      "Authorization: Bearer abcdef0123456789abcdef0123456789",
+			mustNotIn: "abcdef0123456789abcdef",
+		},
+		{
+			name:      "google-ai-key",
+			line:      "key=AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+			mustNotIn: "AIzaSyAbCdEfGhIjKl",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.AppendProgress(task.ID, tc.line); err != nil {
+				t.Fatalf("AppendProgress: %v", err)
+			}
+			got, err := store.Get(task.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if strings.Contains(got.LastOutputLine, tc.mustNotIn) {
+				t.Errorf("LastOutputLine = %q contains unredacted secret %q", got.LastOutputLine, tc.mustNotIn)
+			}
+			if !strings.Contains(got.LastOutputLine, "[REDACTED]") {
+				t.Errorf("LastOutputLine = %q; want a [REDACTED] marker after secret scrubbing", got.LastOutputLine)
+			}
+		})
 	}
 }
 
