@@ -267,23 +267,37 @@ func TestRegistry_ProbeWarmCacheUnder1ms(t *testing.T) {
 	}
 	reg := NewRegistry(profiles)
 
-	// Warm the cache with one full Probe so the second one hits exclusively.
+	// Warm the cache with one full Probe so subsequent ones hit exclusively.
 	reg.Probe()
 	beforeProbes := reg.DiscoveryCache().ProbeCalls()
 
-	start := time.Now()
-	reg.Probe()
-	elapsed := time.Since(start)
-
-	if afterProbes := reg.DiscoveryCache().ProbeCalls(); afterProbes != beforeProbes {
-		t.Fatalf("warm Probe ran %d underlying scans, want 0 (fully cached)",
-			afterProbes-beforeProbes)
+	// Use best-of-N to filter CI-scheduler noise: a single 1ms wall-clock
+	// sample on a busy CI runner can spuriously fail without a real
+	// regression. Best-of-5 keeps the same FR-6 ceiling (≤ 1ms) while
+	// requiring a sustained regression to fail (CodeRabbit feedback on PR #138).
+	const attempts = 5
+	best := time.Duration(1<<63 - 1)
+	samples := make([]time.Duration, 0, attempts)
+	for i := 0; i < attempts; i++ {
+		start := time.Now()
+		reg.Probe()
+		elapsed := time.Since(start)
+		samples = append(samples, elapsed)
+		if elapsed < best {
+			best = elapsed
+		}
+		if afterProbes := reg.DiscoveryCache().ProbeCalls(); afterProbes != beforeProbes {
+			t.Fatalf("warm Probe ran %d underlying scans, want 0 (fully cached)",
+				afterProbes-beforeProbes)
+		}
 	}
 
-	// Surface the timing for PR-evidence even when the test passes.
-	t.Logf("warm Probe (%d profiles): %v", profileCount, elapsed)
+	// Surface every sample plus the best for PR-evidence even when the test passes.
+	t.Logf("warm Probe best-of-%d (%d profiles): best=%v samples=%v",
+		attempts, profileCount, best, samples)
 
-	if elapsed > time.Millisecond {
-		t.Errorf("warm Probe took %v, want ≤ 1ms (FR-6 perf budget)", elapsed)
+	if best > time.Millisecond {
+		t.Errorf("warm Probe best-of-%d time %v, want ≤ 1ms (FR-6 perf budget)",
+			attempts, best)
 	}
 }

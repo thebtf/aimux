@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+// LoggerFunc is the optional structured-logger hook invoked by the discovery
+// cache for operationally interesting events (e.g. a cached binary vanishing).
+// Callers that own a project logger pass a closure such as
+//
+//	cache.SetLogger(func(format string, args ...any) {
+//	    projectLogger.Warn(format, args...)
+//	})
+//
+// to route discovery-cache events through the project's structured logger.
+// When unset, the cache falls back to stdlib log.Printf so daemon/test code
+// without a logger remains observable on stderr (per Gemini review feedback
+// on PR #138 — keep the call site decoupled from a specific logger type).
+type LoggerFunc func(format string, args ...any)
+
 // DefaultDiscoveryCacheTTL is the default validity window for a cached
 // discovery result. Beyond this, the entry is treated as stale even if the
 // binary mtime is unchanged. Operator-tunable via
@@ -37,6 +51,7 @@ type DiscoveryCache struct {
 	mu      sync.RWMutex
 	entries map[string]discoveryCacheEntry
 	ttl     time.Duration
+	logger  LoggerFunc // optional; nil means fall back to stdlib log.Printf
 
 	// Instrumentation: counts each invocation of the underlying probe path
 	// (DiscoverBinary). Tests assert "no probe ran" by reading this counter
@@ -56,6 +71,32 @@ func NewDiscoveryCache(ttl time.Duration) *DiscoveryCache {
 		entries: make(map[string]discoveryCacheEntry),
 		ttl:     ttl,
 	}
+}
+
+// SetLogger installs an optional structured-logger hook for cache-invalidation
+// events. Pass nil to revert to the stdlib log.Printf fallback. Safe to call
+// once during daemon startup, before Probe runs.
+func (c *DiscoveryCache) SetLogger(fn LoggerFunc) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.logger = fn
+	c.mu.Unlock()
+}
+
+// logf routes an invalidation event through the configured LoggerFunc when
+// present, falling back to stdlib log.Printf. Centralised so the validity
+// gate can stay terse.
+func (c *DiscoveryCache) logf(format string, args ...any) {
+	c.mu.RLock()
+	fn := c.logger
+	c.mu.RUnlock()
+	if fn != nil {
+		fn(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // Lookup returns the cached resolved path for the given profile name when
@@ -82,7 +123,7 @@ func (c *DiscoveryCache) Lookup(profileName, binary string, searchPaths []string
 	c.mu.RUnlock()
 
 	if ok {
-		if path, valid := validateCachedEntry(profileName, entry, ttl); valid {
+		if path, valid := c.validateCachedEntry(profileName, entry, ttl); valid {
 			return path
 		}
 	}
@@ -93,7 +134,15 @@ func (c *DiscoveryCache) Lookup(profileName, binary string, searchPaths []string
 // validateCachedEntry returns the cached path and a "still valid" flag. A
 // negative-result cache entry (path == "") is always treated as stale so a
 // re-probe can pick up a freshly-installed binary.
-func validateCachedEntry(profileName string, entry discoveryCacheEntry, ttl time.Duration) (string, bool) {
+//
+// Validity gates (per spec EC-6.1..EC-6.4 + PR #138 review hardening):
+//   - cache age ≥ ttl                                → invalid
+//   - target binary missing (stat ENOENT)            → invalid + WARN log
+//   - target is a directory or non-regular file      → invalid (race-safety)
+//   - target lost its execute bit on POSIX           → invalid (immediate
+//     re-probe so a chmod -x doesn't keep the entry "warm" until TTL)
+//   - target mtime changed since cache write         → invalid
+func (c *DiscoveryCache) validateCachedEntry(profileName string, entry discoveryCacheEntry, ttl time.Duration) (string, bool) {
 	if entry.path == "" {
 		return "", false
 	}
@@ -103,12 +152,26 @@ func validateCachedEntry(profileName string, entry discoveryCacheEntry, ttl time
 	info, err := os.Stat(entry.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			log.Printf("driver/discovery: cached binary for %q vanished (path=%q) — invalidating cache",
+			c.logf("driver/discovery: cached binary for %q vanished (path=%q) — invalidating cache",
 				profileName, entry.path)
 		}
 		return "", false
 	}
 	if info.IsDir() {
+		return "", false
+	}
+	// Reject non-regular files (e.g. a path replaced by a device/socket
+	// between the original probe and now). Symlinks resolved via os.Stat
+	// already follow to the regular target, so this rejects only genuinely
+	// non-regular replacements.
+	if !info.Mode().IsRegular() {
+		return "", false
+	}
+	// On POSIX, lose-of-execute-bit must immediately invalidate the entry
+	// rather than serving a stale path until TTL. Windows has no equivalent
+	// permission model in this stat shape, so the check is skipped there
+	// (binaryCandidates already restricts Windows to executable extensions).
+	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
 		return "", false
 	}
 	if !info.ModTime().Equal(entry.mtime) {
@@ -132,14 +195,11 @@ func (c *DiscoveryCache) scanAndStore(profileName, binary string, searchPaths []
 	entry := discoveryCacheEntry{cachedAt: now}
 	if resolved != "" {
 		entry.path = resolved
-		// Resolve symlinks before stat so symlink-target mtime is captured
-		// (per EC-6.3: "stat target, not symlink"). EvalSymlinks falls back
-		// to the original path on error so a non-symlink stays addressable.
-		if target, err := filepath.EvalSymlinks(resolved); err == nil {
-			if info, statErr := os.Stat(target); statErr == nil {
-				entry.mtime = info.ModTime()
-			}
-		} else if info, statErr := os.Stat(resolved); statErr == nil {
+		// Capture mtime of the resolved binary (following symlinks) so that
+		// changes trigger re-probe per EC-6.3. os.Stat already follows
+		// symlinks by default — an explicit EvalSymlinks call is redundant
+		// and adds an extra syscall (Gemini review feedback on PR #138).
+		if info, err := os.Stat(resolved); err == nil {
 			entry.mtime = info.ModTime()
 		}
 	}

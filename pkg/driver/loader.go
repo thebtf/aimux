@@ -67,12 +67,11 @@ func (r *Registry) Probe() {
 		go func(name string, profile *config.CLIProfile) {
 			defer wg.Done()
 
-			var resolvedPath string
-			if cache != nil {
-				resolvedPath = cache.Lookup(name, profile.Binary, profile.SearchPaths)
-			} else {
-				resolvedPath = DiscoverBinary(profile.Binary, profile.SearchPaths)
-			}
+			// cache is guaranteed non-nil after NewRegistry, and DiscoveryCache.Lookup
+			// already falls back to DiscoverBinary on a nil receiver — so a single
+			// call covers both production and any future zero-value Registry edge case
+			// (Gemini review feedback on PR #138).
+			resolvedPath := cache.Lookup(name, profile.Binary, profile.SearchPaths)
 			r.mu.Lock()
 			r.available[name] = resolvedPath != ""
 			if resolvedPath != "" {
