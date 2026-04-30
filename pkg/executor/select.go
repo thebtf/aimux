@@ -48,3 +48,25 @@ func (s *Selector) SelectV2() types.ExecutorV2 {
 	}
 }
 
+// SelectAvailableCLIs is a pre-select gate that filters a list of CLIs by
+// CircuitBreaker state per AIMUX-16 FR-2 / EC-2.1. CLIs whose breakers are
+// Open are excluded; CLIs whose breakers are Closed or HalfOpen-with-budget
+// are included. The relative order of the input slice is preserved.
+//
+// If breaker is nil, clis is returned unchanged — keeping the gate optional
+// for callers that have not yet adopted breaker tracking.
+//
+// EC-2.1: when every breaker is Open the result is an empty slice; the caller
+// is expected to surface a structured "all CLIs unavailable" error rather
+// than fall through to a silent failure.
+//
+// EC-2.2: AvailableCLIs uses CanAllow() under the hood, which is read-only
+// (does not advance HalfOpen probe counters), so this gate never races with
+// a live HalfOpen probe initiated elsewhere.
+func SelectAvailableCLIs(clis []string, breaker *BreakerRegistry) []string {
+	if breaker == nil || len(clis) == 0 {
+		return clis
+	}
+	return breaker.AvailableCLIs(clis)
+}
+
