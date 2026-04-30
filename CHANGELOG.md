@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.0] — 2026-04-30 — AIMUX-14 persistent CLI sessions (M6)
+
+Foundation для multi-turn workflows (consensus, dialog, debug-loop) — subprocess
+запускается ОДИН раз per Handle и удерживается живым между Send'ами через
+sentinel-based completion detection. Stateful TTL idle reaper + Persistent
+SpawnMode survival semantics. Wire'ит уже существующие ConPTY/PTY/pipe.Start()
+backend методы через ExecutorV2 + SessionFactory layer.
+
+Wired into Swarm Stateful/Persistent paths via MaybeStartSession capability-
+detect helper; full Get-path session attachment scoped к operator orchestrator
+wiring (consensus orchestrator, dialog driver) when those land.
+
+### Added (AIMUX-14 CR-001 — 6 FRs)
+
+- **`pkg/types/interfaces.go`** (FR-1) — `SessionFactory` side-interface.
+  ExecutorV2 implementations MAY satisfy it to expose persistent-session
+  capability beyond stateless `Run()` surface. `ErrNotSupported` defensive
+  guard for misuse.
+- **`pkg/executor/session/session.go`** (FR-3) — `BaseSession.New` accepts
+  `completionPattern string` parameter. Reader matches each newline-terminated
+  line against compiled regex (Q-CLAR-1 line-anchored semantics);
+  `completionMatched` flag carried atomically in `readChunk` so matched-line
+  + completion signal delivered without race.
+- **`pkg/executor/adapter_{conpty,pty,pipe}.go`** (FR-2) — adapter session-bound
+  Send dispatch. New `NewCLI{Pipe,ConPTY,PTY}AdapterWithSession` constructors.
+  Send/IsAlive/Close branch on bound session; stateless path preserved
+  byte-identically (AIMUX-13 FR-1 immutability invariant).
+- **`pkg/executor/{conpty,pty,pipe}/*.go`** (FR-1) — backends satisfy
+  `types.SessionFactory` via `StartSession` method. Compile-time assertion
+  enforces the contract.
+- **`pkg/swarm/swarm.go`** (FR-4) — `MaybeStartSession` capability-detect
+  helper. Stateful TTL idle reaper goroutine (default 5min, `WithStatefulTTL(d)`
+  override) closes stale Stateful handles; Persistent-mode handles SKIPPED
+  (US3 contract). `ErrNotSupported` exported var.
+- **`cmd/persistent_testcli/main.go`** — cross-platform echo+sentinel CLI
+  used by critical-suite for real-subprocess NFR validation.
+
+### Tests added — 9 new critical-suite + 1 unit-tier
+
+- T010 `TestCritical_PersistentSession_ColdStartUnderTwoSeconds` (NFR-1) —
+  6.5ms vs 2s budget.
+- T011 `TestCritical_PersistentSession_WarmSendUnderHundredMs` (NFR-2 +
+  PID stability) — 25µs avg over 20 warm Sends; PID unchanged.
+- T013 trio (NFR-6 + NFR-7) — 0 MB heap growth (5×200 sends), 46k single-
+  session Sends/sec, 188k aggregate (4 sessions).
+- T012 `TestBaseSession_CompletionPattern_FalsePositiveRate` (NFR-4 +
+  CHK011) — 0%/1%/0% false-pos rate across codex/gemini/claude vs 1%
+  ceiling.
+- T014 `TestCritical_Consensus_SessionReuse_SpawnEventCount` (US2) — 3
+  CLIs × 5 rounds → exactly 3 EventSwarmSpawn (12 cache hits).
+- T015 `TestCritical_Consensus_PerCLISentinelIsolation` (US2) — 3 distinct
+  sentinels, 5 rounds interleaved, zero cross-contamination.
+- T018 `TestCritical_PersistentMode_SurvivesStatefulReaper` (US3) — TTL=50ms,
+  Stateful reaped, Persistent survived 4×TTL.
+- T019 `TestCritical_PersistentSession_CloseGraceful` (NFR-3) — Close ≤ 500ms
+  budget; observed ~0ms.
+- T020 `TestCritical_PersistentMode_ParallelSameNameReuse` (EC-9) — 2 Persistent
+  Gets → identical Handle.ID; exactly 1 spawn event.
+
+### Compatibility
+
+NFR-2 patch-eligible: existing factoryFn signature preserved; all new behavior
+opt-in via Stateful/Persistent SpawnMode + capability check. Single-operator
+deployment behavior unchanged.
+
+NFR-3 zero new external deps. AIMUX-12+13 critical-suite preserved 18/18.
+6 FRs landed (FR-1..FR-6 including cross-tenant invariant preservation).
+
 ## [5.2.2] — 2026-04-30 — AIMUX-15 tech debt batch 1
 
 5 actionable DEF entries from `aimux-v5-roadmap` graduated to active resolution.
