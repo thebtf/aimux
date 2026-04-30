@@ -137,6 +137,9 @@ func run() error {
 	}
 
 	registry := driver.NewRegistry(cfg.CLIProfiles)
+	if cfg.Driver.DiscoveryCacheTTLSeconds > 0 {
+		registry.SetDiscoveryCacheTTL(time.Duration(cfg.Driver.DiscoveryCacheTTLSeconds) * time.Second)
+	}
 	registry.Probe()
 
 	enabled := registry.EnabledCLIs()
