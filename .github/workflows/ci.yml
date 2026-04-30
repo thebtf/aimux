@@ -33,6 +33,31 @@ jobs:
         if: runner.os == 'Windows'
         run: go test -timeout 5m ./...
 
+      # AIMUX-16 CR-004 NFR-5 — ConPTY-specific verification on Windows.
+      # Runs the conpty package tests verbosely and asserts that the real
+      # CreatePseudoConsole path was exercised (TestProbeConPTY_RealHostSucceeds
+      # AND TestOpenWindowsConPTY_SpawnsRealPseudoConsole both PASS, neither
+      # SKIP). Skipping on Windows is PROHIBITED per spec — silent skip would
+      # re-introduce the deferral pattern CR-004 was filed to fix.
+      - name: ConPTY Windows verification (AIMUX-16 CR-004 NFR-5)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(go test ./pkg/executor/conpty/... -timeout 2m -v -run 'TestProbeConPTY_RealHostSucceeds|TestOpenWindowsConPTY_SpawnsRealPseudoConsole|TestExecutor_Run_ProducesOutput' 2>&1)
+          echo "$out"
+          # Both happy-path tests MUST pass; neither may skip on a real Windows runner.
+          for tc in TestProbeConPTY_RealHostSucceeds TestOpenWindowsConPTY_SpawnsRealPseudoConsole TestExecutor_Run_ProducesOutput; do
+            if ! echo "$out" | grep -q "^--- PASS: $tc"; then
+              echo "::error::AIMUX-16 CR-004 NFR-5 violated: $tc did not PASS on windows-latest" >&2
+              exit 1
+            fi
+            if echo "$out" | grep -q "^--- SKIP: $tc"; then
+              echo "::error::AIMUX-16 CR-004 NFR-5 violated: $tc SKIPPED on windows-latest" >&2
+              exit 1
+            fi
+          done
+
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4

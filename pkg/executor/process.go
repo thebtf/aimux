@@ -126,6 +126,18 @@ func (pm *ProcessManager) IsAlive(h *ProcessHandle) bool {
 	return !h.exited.Load()
 }
 
+// MarkExited atomically marks the handle as exited. Used by external
+// reap goroutines (e.g. ConPTY's wrapper around upconpty.ConPty.Wait —
+// AIMUX-16 CR-004) that own their child-process lifecycle but plug their
+// synthetic ProcessHandle into BaseSession via the same IsAlive contract.
+// Without this, IsAlive would always return true for ConPTY-owned handles
+// because the standard Spawn() reap goroutine never runs for them.
+//
+// MarkExited is idempotent — repeated calls are no-ops.
+func (h *ProcessHandle) MarkExited() {
+	h.exited.Store(true)
+}
+
 // Cleanup removes a handle from tracking and marks it as cleaned up.
 func (pm *ProcessManager) Cleanup(h *ProcessHandle) {
 	if h == nil {
