@@ -153,8 +153,8 @@ for single-operator deployments.
 
 ### Fixed
 
-- **BUG-003** — `emit{Spawn,Close,Restart}` canonicalize TenantID
-- **BUG-004** — prune dead handles inside `Get` find-or-spawn (memory leak)
+- **BUG-011** — `emit{Spawn,Close,Restart}` canonicalize TenantID
+- **BUG-014** — prune dead handles inside `Get` find-or-spawn (memory leak)
 - **BUG-005** — `NewDispatchMiddleware` nil-guard `auditLog` + eager panic on nil registry
 - **BUG-007** — `TestSwarm_DistinctTenantsDistinctHandles` partition assertion
 - **BUG-008** — `Health()` comment fixed (first-write-wins, not last-write-wins)
@@ -166,14 +166,14 @@ for single-operator deployments.
 
 ### Deferred
 
-- **DEF-8** (BUG-001 `spawnLocked` `factoryFn` under lock — Layer 5 dependency) — resolved later in v5.2.2
+- **DEF-8** (BUG-012 `spawnLocked` `factoryFn` under lock — Layer 5 dependency) — resolved later in v5.2.2
 - **DEF-9** (F1 Windows `peerUID=0` — pre-existing AIMUX-12, blocked muxcore #110)
 - **DEF-10** (F3 audit `Reason` UID — pre-existing AIMUX-12) — resolved later in v5.2.2
 - **DEF-11** (F4 `DiscardLog` fail-open — pre-existing AIMUX-12) — resolved later in v5.2.2
 
 ### Won't Fix (adjudicated)
 
-- **BUG-002** audit `ToolName` leak — security F5 CLEAR (`h.Name` is the public CLI type)
+- **BUG-013** audit `ToolName` leak — security F5 CLEAR (`h.Name` is the public CLI type)
 - **BUG-009** unused context import — false alarm (used 5x)
 - **MEDIUM-2** `discardAuditLog` alias — false alarm (unexported)
 - **HIGH-1** `emitRestart` anti-flood — intentional design (health failures observability-required)
