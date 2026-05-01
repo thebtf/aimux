@@ -40,6 +40,10 @@ const (
 	KindCooldownState = "cooldown_state"
 	KindTurn          = "turn"
 	KindError         = "error"
+	// KindHTTPRequest and KindHTTPResponse are defined but not currently emitted.
+	// Payload structs and Path B rationale are in backend.go (T014).
+	KindHTTPRequest  = "http_request"
+	KindHTTPResponse = "http_response"
 )
 
 // ---- Event envelope ----------------------------------------------------
@@ -292,3 +296,4 @@ type exitPayload struct {
 	// ExitCode is the process exit status.
 	ExitCode int `json:"exit_code"`
 }
+

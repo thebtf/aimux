@@ -3,11 +3,13 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
+	"github.com/thebtf/aimux/pkg/executor/api"
 	"github.com/thebtf/aimux/pkg/executor/conpty"
 	"github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/executor/pty"
@@ -149,3 +151,99 @@ func spawnArgsToMetadata(args types.SpawnArgs) map[string]any {
 // defaultTimeout is the per-request timeout applied when SpawnArgs carries no
 // explicit TimeoutSeconds. Five minutes matches api/executor.go DefaultTimeout.
 const defaultTimeout = 5 * time.Minute
+
+// defaultAPIKeyEnv returns the default environment variable name for the API
+// key of the given provider. Returns an empty string for unknown providers.
+func defaultAPIKeyEnv(provider string) string {
+	switch provider {
+	case "openai":
+		return "OPENAI_API_KEY"
+	case "anthropic":
+		return "ANTHROPIC_API_KEY"
+	case "google":
+		return "GOOGLE_AI_API_KEY"
+	default:
+		return ""
+	}
+}
+
+// buildAPIBackend constructs an HTTP API ExecutorV2 for the requested provider.
+//
+// provider must be one of "openai", "anthropic", or "google". model selects
+// the specific model; when empty the provider's default model constant is used.
+// apiKeyEnv is the name of the environment variable holding the API key; the
+// caller must supply the variable name (runAPI defaults it per provider).
+//
+// HTTP middleware decision (T014):
+//
+// OpenAI SDK (github.com/openai/openai-go/v3) accepts option.WithHTTPClient.
+// Anthropic SDK (github.com/anthropics/anthropic-sdk-go) accepts option.WithHTTPClient.
+// Google AI SDK (google.golang.org/genai) uses genai.ClientConfig struct which has
+// no HTTPClient field and no functional-options pattern — custom HTTP transport is
+// not supported by this SDK's public API (checked at tools/launcher implementation
+// time against genai.ClientConfig definition).
+//
+// Because the Google AI SDK does NOT support custom HTTP client injection, HTTP
+// middleware is skipped for ALL providers (Path B) to keep per-provider behaviour
+// consistent. A one-line notice is printed to stderr at backend init time.
+// The httpRequestPayload / httpResponsePayload structs are defined below in this file
+// for future use when Google AI adds HTTPClient support (or is replaced).
+func buildAPIBackend(provider, model, apiKeyEnv string) (types.ExecutorV2, error) {
+	// Validate provider first so that an unknown provider returns a named error
+	// before we attempt to read the API key env var. This ensures the anti-stub
+	// contract: bad provider → "unknown provider"; missing key → "env var X empty".
+	switch provider {
+	case "openai", "anthropic", "google":
+		// valid — proceed to key check below
+	default:
+		return nil, fmt.Errorf("unknown provider %q", provider)
+	}
+
+	apiKey := os.Getenv(apiKeyEnv)
+	if apiKey == "" {
+		return nil, fmt.Errorf("env var %s empty", apiKeyEnv)
+	}
+
+	// Emit one-line notice to stderr that HTTP middleware is not active.
+	// This runs once per backend construction so the operator knows why
+	// http_request / http_response events will not appear in the JSONL log.
+	fmt.Fprintf(os.Stderr, "http_middleware: skipped — google.golang.org/genai has no WithHTTPClient option\n")
+
+	switch provider {
+	case "openai":
+		if model == "" {
+			model = api.DefaultOpenAIModel
+		}
+		return api.NewOpenAI(apiKey, model)
+	case "anthropic":
+		if model == "" {
+			model = api.DefaultAnthropicModel
+		}
+		return api.NewAnthropic(apiKey, model)
+	default: // "google"
+		if model == "" {
+			model = api.DefaultGoogleAIModel
+		}
+		return api.NewGoogleAI(apiKey, model)
+	}
+}
+
+// httpRequestPayload and httpResponsePayload are defined for future use (T014 Path B).
+// They are NOT currently emitted: google.golang.org/genai lacks a WithHTTPClient option,
+// making uniform HTTP middleware across all three providers impossible. These structs will
+// be wired when all active providers support custom HTTP transport injection.
+
+// httpRequestPayload records an outbound HTTP request. Kind: KindHTTPRequest.
+type httpRequestPayload struct {
+	Method          string            `json:"method"`
+	URL             string            `json:"url"`
+	BodyPreview     string            `json:"body_preview,omitempty"`
+	HeadersRedacted map[string]string `json:"headers_redacted,omitempty"`
+}
+
+// httpResponsePayload records an inbound HTTP response. Kind: KindHTTPResponse.
+type httpResponsePayload struct {
+	Status      string `json:"status"`
+	BodyPreview string `json:"body_preview,omitempty"`
+	LatencyMs   int64  `json:"latency_ms"`
+}
