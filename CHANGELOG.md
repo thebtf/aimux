@@ -7,6 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.0] — 2026-05-02 — AIMUX-17 CR-002 / CR-003 — real streaming + interactive TUI
+
+Closes the visibility gap discovered during smoke testing of v5.5.0 — ConPTY hangs
+were undiagnosable, the launcher waited silently for 30+ seconds with zero output
+and no signal whether the child wrote anything. v5.6.0 ships two amendments to
+AIMUX-17:
+
+- **CR-002** — real per-line streaming through `ExecutorV2.SendStream` + launcher
+  `--diag` flag with timestamped per-chunk stderr printout and idle heartbeat.
+- **CR-003** — bidirectional interactive TUI mode for ConPTY/PTY backends with
+  raw-byte input forwarding (escape sequences, arrow keys, Ctrl+X passthrough)
+  so a human operator can drive real codex chat / gemini TUI / aider sessions
+  through the launcher's `session` subcommand.
+
+Production binary `cmd/aimux/` is **unchanged**. The launcher remains a dev tool.
+
+### Added
+
+- `pkg/executor/adapter_{pipe,pty,conpty}.go` real per-line streaming: `SendStream`
+  forwards each stripped line through `onChunk(Chunk{Content: line+"\\n", Done: false})`
+  via `args.OnOutput` callback (already invoked per stripped line by `IOManager`),
+  with a terminal `Done=true` marker after `legacy.Run` returns.
+  `Capabilities.Streaming` flipped `false → true` for all three CLI adapters.
+- `pkg/types/interfaces.go` new optional side-interfaces — `SessionPipes`
+  (`Stdin()`/`Stdout()` accessors) and `InteractivePipes` (Session + SessionPipes);
+  `InteractiveSessionFactory` with `StartInteractiveSession` returning an
+  `InteractivePipes` session without spawning a background reader goroutine — the
+  caller owns the read loop.
+- `pkg/executor/session/session.go` `BaseSession.Stdin()`/`Stdout()` accessors plus
+  compile-time assertion `var _ types.SessionPipes = (*BaseSession)(nil)`. ConPTY
+  and PTY backends inherit the capability without adapter changes.
+- `tools/launcher/debug_executor.go` + `debug_diag.go` `--diag` flag wraps
+  `SendStream` with timestamped stderr printout per chunk and an idle-window
+  heartbeat goroutine. When idle ≥ 5 s a `[+X.Ys] ...still waiting (no output for
+  Ns)` line is printed and a `KindHeartbeat` event is emitted. Compatible with
+  `--bypass`: heartbeat layered over the L2 raw spawn path. Default `diag=false`
+  preserves existing behaviour bit-identically.
+- `tools/launcher/heartbeat.go` heartbeat goroutine + `KindHeartbeat` constant +
+  `heartbeatPayload` struct.
+- `tools/launcher/interactive.go` `runInteractiveSession` bidirectional loop.
+  Reader goroutine drains `Stdout()` and forwards chunks; input goroutine reads
+  operator stdin as raw byte chunks (128-byte buffer, **not** line-buffered —
+  preserves escape sequences); main loop drains stdoutCh first with a 5 ms
+  blocking window so the TUI render reaches the operator before any input
+  handling — prevents a `/quit` race against the TUI that real CLIs need 1-2 s
+  to draw. Slash-commands `/quit` and `/help`; state-tracking ones (`/dump`,
+  `/save`, `/history`, `/reset`, `/raw`) print "not supported in interactive
+  mode" notice. SIGINT/SIGTERM closes session, exit 130.
+- `tools/launcher/session_cmd.go` routing — `--executor conpty|pty` →
+  `runInteractiveSession` (interactive TUI passthrough); `--executor pipe` →
+  `runREPL` (request/response, unchanged).
+- `tools/launcher/interactive_test.go` 4 tests with `io.Pipe` mock for
+  deterministic timing — `PipesPassthrough`, `QuitCommand`, `NoPipesError`,
+  `StdinEOF`. All PASS.
+- `tools/launcher/README.md` reframed troubleshooting: ConPTY is correct for
+  real interactive TUI; headless flags (`--full-auto`, `--print`, `-p`) require
+  pipe stdin **by design**. Diagnostic findings table for codex / claude /
+  gemini under ConPTY (verified 2026-05-02 with `--diag` mode).
+
+### Changed
+
+- CLI adapter `Capabilities.Streaming` flipped `false → true`. Live callers of
+  CLI `SendStream` are limited to mocks in `pkg/swarm/swarm_test.go` and
+  `tools/launcher/debug_executor_test.go` — no production server / loom / MCP
+  code uses `SendStream` against a real CLI adapter, so the contract change is
+  safe.
+
+### Notes
+
+**Diagnostic finding from running `--diag` against the trio (verified 2026-05-02):**
+
+| CLI | Headless invocation | ConPTY response | Pipe response |
+|-----|---------------------|-----------------|---------------|
+| **codex** | `exec --full-auto --json -` | sees TTY → silently waits for keyboard input even with `--full-auto --json` | streams JSONL events, exit 0 in ~10 s |
+| **claude** | `--print` | exits 1 with named error `Input must be provided either through stdin or as a prompt argument when using --print` | streams result JSONL, exit 0 in ~12 s |
+| **gemini** | `-p` | renders full TUI (status bar, prompt input, sandbox indicator) | streams JSONL events, exit 0 in ~10 s |
+
+**ConPTY is not broken** — it correctly delivers a TTY. Headless modes are
+designed for pipe stdin and break under TTY by design. The launcher's existing
+default `--executor pipe` is the right call for any `--full-auto / --json /
+--print / -p` flow. Reach for `--executor conpty` only when driving real
+interactive TUI / chat sessions with a human at the keyboard.
+
+**Phase 0 research conclusion (2026-05-02 — `.agent/reports/research-stateful-ai-cli-sessions-2026-05-01.md`):**
+the entire OSS ecosystem has converged on Pattern A — pipe + headless flags +
+each CLI's native session-resume mechanism (`claude --resume <id>`, `codex exec
+resume <id>`, gemini's manual context passing). No OSS project uses Win32
+`WriteConsoleInputW` for AI CLI automation. tmux-based persistence (Pattern B)
+is Linux/macOS only and not viable for the Windows-native aimux launcher. v5.6.0
+makes Pattern A debuggable end-to-end — programmatic stateful sessions are a
+follow-up CR using each CLI's `--resume` flag.
+
+**Other:** HTTP middleware (`http_request` / `http_response` events) probed in
+CR-001 — `google.golang.org/genai` does not expose a custom `*http.Client`
+injection point, so middleware is skipped for all 3 providers (Path B) for
+parity. Reserved payload structs in code; revisit when google SDK adds support.
+L2 raw capture is pipe-only by design (PTY merges stdout+stderr into ptmx;
+ConPTY uses a terminal emulator). All 16 `tools/launcher/*.go` files ≤ 300 LOC
+(NFR-4).
+
 ## [5.5.0] — 2026-05-01 — AIMUX-17 Launcher debug tool
 
 Adds `tools/launcher/` — a standalone debug binary that decorates `types.ExecutorV2`
