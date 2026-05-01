@@ -166,132 +166,98 @@ func mkSink(logPath string) (EventSink, io.Closer, error) {
 
 // ---- Typed payload structs (T004) --------------------------------------
 
-// spawnArgsPayload records the resolved SpawnArgs before a CLI dispatch.
-// Emitted as kind="spawn_args" immediately before the inner executor Send call.
+// spawnArgsPayload records the resolved SpawnArgs before a CLI dispatch (kind="spawn_args").
 type spawnArgsPayload struct {
-	// Command is the fully resolved binary path (e.g., /usr/bin/codex).
-	Command string `json:"command"`
-	// Args are the command-line arguments passed to the binary.
-	Args []string `json:"args,omitempty"`
-	// CWD is the working directory for the spawned process.
-	CWD string `json:"cwd,omitempty"`
-	// Model is the resolved model name, if known.
-	Model string `json:"model,omitempty"`
-	// Executor identifies the backend (pipe/conpty/pty) being used.
-	Executor string `json:"executor"`
+	Command  string   `json:"command"`           // fully resolved binary path
+	Args     []string `json:"args,omitempty"`    // command-line arguments
+	CWD      string   `json:"cwd,omitempty"`     // working directory for the spawned process
+	Model    string   `json:"model,omitempty"`   // resolved model name, if known
+	Executor string   `json:"executor"`          // backend identifier (pipe/conpty/pty)
 }
 
-// completePayload records the full Response returned by the inner executor.
-// Emitted as kind="complete" after Send/SendStream returns.
+// completePayload records the full Response returned by the inner executor (kind="complete").
 type completePayload struct {
-	// Content is the response text from the executor.
-	Content string `json:"content"`
-	// ExitCode is the CLI exit code (0 for API executors).
-	ExitCode int `json:"exit_code"`
-	// TokensUsed captures input/output token counts for API executors.
+	Content    string           `json:"content"`
+	ExitCode   int              `json:"exit_code"`
 	TokensUsed types.TokenCount `json:"tokens_used"`
-	// DurationMs is the round-trip time in milliseconds.
-	DurationMs int64 `json:"duration_ms"`
-	// Error contains the error string when Send returned a non-nil error.
-	Error string `json:"error,omitempty"`
+	DurationMs int64            `json:"duration_ms"`
+	Error      string           `json:"error,omitempty"` // set when Send returned a non-nil error
 }
 
-// classifyPayload records the ErrorClass determined by ClassifyError.
-// Emitted as kind="classify" after each Send/SendStream completes.
+// classifyPayload records the ErrorClass determined by ClassifyError (kind="classify").
 type classifyPayload struct {
-	// Class is the string name of the ErrorClass (None/Quota/ModelUnavailable/Transient/Fatal/Unknown).
-	Class string `json:"class"`
-	// ClassCode is the integer value of the ErrorClass for programmatic filtering.
-	ClassCode int `json:"class_code"`
+	Class     string `json:"class"`      // None/Quota/ModelUnavailable/Transient/Fatal/Unknown
+	ClassCode int    `json:"class_code"` // integer value for programmatic filtering
 }
 
-// breakerStatePayload records a snapshot of the CircuitBreaker state.
-// Emitted as kind="breaker_state" when a BreakerRegistry is available.
+// breakerStatePayload records a CircuitBreaker snapshot (kind="breaker_state").
 type breakerStatePayload struct {
-	// CLI is the name of the CLI whose breaker is reported.
-	CLI string `json:"cli"`
-	// State is the string name of the breaker state (Closed/Open/HalfOpen).
-	State string `json:"state"`
-	// Failures is the current consecutive failure count.
-	Failures int `json:"failures"`
+	CLI      string `json:"cli"`      // name of the CLI whose breaker is reported
+	State    string `json:"state"`    // Closed/Open/HalfOpen
+	Failures int    `json:"failures"` // current consecutive failure count
 }
 
-// cooldownStatePayload records all active cooldown entries at a point in time.
-// Emitted as kind="cooldown_state" when a ModelCooldownTracker is available.
+// cooldownStatePayload records all active cooldown entries (kind="cooldown_state").
 type cooldownStatePayload struct {
-	// Entries is the list of currently active (non-expired) cooldown entries.
-	Entries []types.CooldownEntry `json:"entries"`
-	// Count is the number of active entries (convenience field for log scanning).
-	Count int `json:"count"`
+	Entries []types.CooldownEntry `json:"entries"` // currently active (non-expired) entries
+	Count   int                   `json:"count"`   // convenience field for log scanning
 }
 
-// errorPayload records a launcher-level or signal-triggered error.
-// Emitted as kind="error" on Ctrl+C, SIGTERM, or internal launcher failures.
+// errorPayload records a launcher-level or signal-triggered error (kind="error").
 type errorPayload struct {
-	// Source identifies who emitted the error ("launcher", "executor", etc.).
-	Source string `json:"source"`
-	// Message is the human-readable error description.
+	Source  string `json:"source"`           // "launcher", "executor", etc.
 	Message string `json:"message,omitempty"`
-	// Signal contains the signal name when the error was caused by a signal (e.g., "interrupt").
-	Signal string `json:"signal,omitempty"`
+	Signal  string `json:"signal,omitempty"` // signal name when error was caused by a signal
 }
 
-// turnPayload records one turn in an interactive REPL session.
-// Emitted as kind="turn" for both user input and agent responses.
+// turnPayload records one REPL session turn (kind="turn").
 type turnPayload struct {
-	// Role is "user" or "agent".
-	Role string `json:"role"`
-	// Content is the text of the turn.
+	Role    string `json:"role"`    // "user" or "agent"
 	Content string `json:"content"`
-	// TurnID is the 1-based monotonic turn counter within the session.
-	TurnID int `json:"turn_id"`
+	TurnID  int    `json:"turn_id"` // 1-based monotonic counter within the session
 }
 
-// chunkPayload records one streaming chunk from SendStream.
-// Emitted as kind="chunk" for each incremental fragment.
+// chunkPayload records one streaming chunk from SendStream (kind="chunk").
 type chunkPayload struct {
-	// Content is the text fragment delivered by this chunk.
 	Content string `json:"content"`
-	// Done is true for the final chunk (Content may be empty).
-	Done bool `json:"done"`
-	// Stream discriminates the source: "api_delta", "api_complete", or "cli_line".
-	Stream string `json:"stream"`
+	Done    bool   `json:"done"`   // true for the final chunk
+	Stream  string `json:"stream"` // "api_delta", "api_complete", or "cli_line"
 }
 
-// stdoutPayload records one line of subprocess stdout output.
-// Emitted as kind="stdout" by the L2 raw spawn path.
+// stdoutPayload records one line of subprocess stdout (kind="stdout").
+// stream="raw" sets bytes_hex; stream="line" sets content (ANSI-stripped).
 type stdoutPayload struct {
-	// Stream is "raw" for pre-StripANSI bytes (bytes_hex set) or "line" for
-	// the ANSI-stripped UTF-8 text (content set).
-	Stream string `json:"stream"`
-	// Content is the ANSI-stripped line text (stream="line").
-	Content string `json:"content,omitempty"`
-	// BytesHex is the hex-encoded raw bytes (stream="raw").
+	Stream   string `json:"stream"`
+	Content  string `json:"content,omitempty"`
 	BytesHex string `json:"bytes_hex,omitempty"`
 }
 
-// stderrPayload records one line of subprocess stderr output.
-// Emitted as kind="stderr" by the L2 raw spawn path.
+// stderrPayload records one line of subprocess stderr (kind="stderr").
+// stream="raw" sets bytes_hex; stream="line" sets content (ANSI-stripped).
 type stderrPayload struct {
-	// Stream is "raw" for hex-encoded bytes or "line" for ANSI-stripped text.
-	Stream string `json:"stream"`
-	// Content is the ANSI-stripped line text (stream="line").
-	Content string `json:"content,omitempty"`
-	// BytesHex is the hex-encoded raw bytes (stream="raw").
+	Stream   string `json:"stream"`
+	Content  string `json:"content,omitempty"`
 	BytesHex string `json:"bytes_hex,omitempty"`
 }
 
-// spawnPayload records the OS-level process spawn event.
-// Emitted as kind="spawn" when the subprocess is created.
+// spawnPayload records the OS-level process spawn event (kind="spawn").
 type spawnPayload struct {
-	// PID is the OS process identifier of the spawned subprocess.
-	PID int `json:"pid"`
-	// Command is the resolved binary path that was executed.
-	Command string `json:"command"`
+	PID     int    `json:"pid"`     // OS process identifier of the spawned subprocess
+	Command string `json:"command"` // resolved binary path that was executed
 }
 
 // exitPayload records the subprocess exit event (kind="exit").
 type exitPayload struct {
 	PID      int `json:"pid"`       // OS process identifier that exited
 	ExitCode int `json:"exit_code"` // process exit status
+}
+
+// KindHeartbeat is emitted by the --diag realtime path when the process
+// produces no output for a configured idle interval (default 5 s).
+const KindHeartbeat = "heartbeat"
+
+// heartbeatPayload records a single idle-heartbeat event in diag mode (kind="heartbeat").
+type heartbeatPayload struct {
+	IdleSeconds  float64 `json:"idle_seconds"`          // seconds since last output line
+	TotalElapsed float64 `json:"total_elapsed_seconds"` // seconds since Run call started
 }

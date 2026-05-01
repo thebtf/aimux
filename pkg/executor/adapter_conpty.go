@@ -18,6 +18,10 @@ var _ types.ExecutorV2 = (*CLIConPTYAdapter)(nil)
 // When session is non-nil the adapter operates in session-bound mode:
 // Send() dispatches via session.Send() instead of legacy.Run() (FR-2, AIMUX-14).
 // When session is nil the adapter is stateless — each Send call spawns a fresh process.
+//
+// SendStream now forwards per-line stripped output through onChunk as the underlying
+// IOManager reads them (via SpawnArgs.OnOutput); the final chunk has Done=true.
+// Session-bound mode preserves the collected-response behaviour (single Done=true chunk).
 type CLIConPTYAdapter struct {
 	legacy  types.LegacyExecutor
 	session types.Session // nil when stateless (backward-compat default)
@@ -45,7 +49,7 @@ func (a *CLIConPTYAdapter) Info() types.ExecutorInfo {
 		Type: types.ExecutorTypeCLI,
 		Capabilities: types.ExecutorCapabilities{
 			PersistentSessions: true,
-			Streaming:          false,
+			Streaming:          true,
 		},
 	}
 }
@@ -82,16 +86,41 @@ func (a *CLIConPTYAdapter) Send(ctx context.Context, msg types.Message) (*types.
 	return resultToResponse(result), nil
 }
 
-// SendStream calls Send and then invokes onChunk once with Done=true.
-// ConPTY does not support incremental streaming; the full response is buffered
-// by the underlying executor. Streaming will be added in M6.
+// SendStream forwards per-line stripped output through onChunk as the underlying
+// process produces it, then emits a final chunk with Done=true.
+//
+// Stateless path: SpawnArgs.OnOutput is populated so that IOManager delivers each
+// new line to onChunk in real time before the process exits.
+//
+// Session-bound path: no per-line hook available; the full response is collected
+// and delivered as a single Done=true chunk (multi-turn streaming is deferred).
 func (a *CLIConPTYAdapter) SendStream(ctx context.Context, msg types.Message, onChunk func(types.Chunk)) (*types.Response, error) {
-	resp, err := a.Send(ctx, msg)
-	if err != nil {
-		return nil, err
+	// Session-bound mode: no per-line hook available — fall back to collected chunk.
+	if a.session != nil {
+		resp, err := a.Send(ctx, msg)
+		if err != nil {
+			return nil, err
+		}
+		onChunk(types.Chunk{Content: resp.Content, Done: true})
+		return resp, nil
 	}
-	onChunk(types.Chunk{Content: resp.Content, Done: true})
-	return resp, nil
+
+	// Stateless path: wire OnOutput so IOManager forwards each line as it arrives.
+	spawnArgs := messageToSpawnArgs(msg)
+	if msg.SystemPrompt != "" {
+		spawnArgs.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
+	}
+	spawnArgs.OnOutput = func(line string) {
+		onChunk(types.Chunk{Content: line + "\n", Done: false})
+	}
+
+	result, err := a.legacy.Run(ctx, spawnArgs)
+	// Emit the terminal Done marker regardless of error.
+	onChunk(types.Chunk{Done: true})
+	if err != nil {
+		return nil, fmt.Errorf("conpty adapter: %w", err)
+	}
+	return resultToResponse(result), nil
 }
 
 // IsAlive returns HealthAlive when the adapter is session-bound and the session

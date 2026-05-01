@@ -18,7 +18,7 @@ var _ types.ExecutorV2 = (*CLIPTYAdapter)(nil)
 // Send() dispatches via session.Send() instead of legacy.Run() (FR-2, AIMUX-14).
 //
 // Capabilities:
-//   - Streaming: false — output is collected and returned in one Response.
+//   - Streaming: true — per-line output forwarded through onChunk as it arrives.
 //   - PersistentSessions: true — pty.Start() implements multi-turn sessions (M6).
 //
 // Thread safety: CLIPTYAdapter is safe for concurrent use; the underlying
@@ -49,7 +49,7 @@ func (a *CLIPTYAdapter) Info() types.ExecutorInfo {
 		Name: "pty",
 		Type: types.ExecutorTypeCLI,
 		Capabilities: types.ExecutorCapabilities{
-			Streaming:          false,
+			Streaming:          true,
 			PersistentSessions: true,
 		},
 	}
@@ -94,15 +94,41 @@ func (a *CLIPTYAdapter) Send(ctx context.Context, msg types.Message) (*types.Res
 	return resultToResponse(result), nil
 }
 
-// SendStream calls Send and delivers the complete response as a single chunk
-// with Done=true. PTY executor does not support incremental streaming.
+// SendStream forwards per-line stripped output through onChunk as the underlying
+// process produces it, then emits a final chunk with Done=true.
+//
+// Stateless path: SpawnArgs.OnOutput is populated so that IOManager delivers each
+// new line to onChunk in real time before the process exits.
+//
+// Session-bound path: no per-line hook available; the full response is collected
+// and delivered as a single Done=true chunk (multi-turn streaming is deferred).
 func (a *CLIPTYAdapter) SendStream(ctx context.Context, msg types.Message, onChunk func(types.Chunk)) (*types.Response, error) {
-	resp, err := a.Send(ctx, msg)
+	// Session-bound mode: no per-line hook available — fall back to collected chunk.
+	if a.session != nil {
+		resp, err := a.Send(ctx, msg)
+		if err != nil {
+			return nil, err
+		}
+		onChunk(types.Chunk{Content: resp.Content, Done: true})
+		return resp, nil
+	}
+
+	// Stateless path: wire OnOutput so IOManager forwards each line as it arrives.
+	args := messageToSpawnArgs(msg)
+	if msg.SystemPrompt != "" {
+		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
+	}
+	args.OnOutput = func(line string) {
+		onChunk(types.Chunk{Content: line + "\n", Done: false})
+	}
+
+	result, err := a.legacy.Run(ctx, args)
+	// Emit the terminal Done marker regardless of error.
+	onChunk(types.Chunk{Done: true})
 	if err != nil {
 		return nil, err
 	}
-	onChunk(types.Chunk{Content: resp.Content, Done: true})
-	return resp, nil
+	return resultToResponse(result), nil
 }
 
 // IsAlive returns HealthAlive when the adapter is session-bound and the session

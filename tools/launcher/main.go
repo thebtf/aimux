@@ -86,6 +86,7 @@ func runCLI(args []string) int {
 	logPath := fs.String("log", "", "path to append JSONL events (empty = no log)")
 	bypass := fs.Bool("bypass", false, "L2 mode: pipe-only raw subprocess capture pre-StripANSI (writes raw bytes to log)")
 	stream := fs.Bool("stream", false, "use SendStream (streaming chunks) instead of Send")
+	diag := fs.Bool("diag", false, "realtime diagnostic mode: stream each output line to stderr as it arrives + heartbeat when idle (uses SendStream path through ExecutorV2 adapter)")
 
 	if err := fs.Parse(args); err != nil {
 		// flag.ContinueOnError already printed the error.
@@ -108,6 +109,13 @@ func runCLI(args []string) int {
 	if *stream && *bypass {
 		fmt.Fprintln(os.Stderr, "launcher cli: --stream + --bypass not supported (--bypass is non-streaming raw capture)")
 		return 2
+	}
+
+	// --diag + --bypass are compatible: bypass already streams realtime;
+	// --diag adds a heartbeat goroutine on top of the bypass path.
+	// NFR-7-style advisory so the operator knows both flags are active.
+	if *diag && *bypass {
+		fmt.Fprintln(os.Stderr, "WARNING: --diag + --bypass: bypass already streams realtime; --diag adds heartbeat only.")
 	}
 
 	// --bypass is pipe-only; reject incompatible executor choices early (T009).
@@ -152,6 +160,7 @@ func runCLI(args []string) int {
 	}()
 
 	// --bypass: L2 raw path — skip debugExecutor, call runRawCLI directly.
+	// When --diag is also active, attach a heartbeat goroutine on top.
 	if *bypass {
 		start := time.Now()
 
@@ -162,8 +171,19 @@ func runCLI(args []string) int {
 		ctx, cancel := context.WithTimeout(sigCtx, timeout)
 		defer cancel()
 
+		var stopBypassHeartbeat chan struct{}
+		if *diag {
+			hs := newHeartbeatState(start)
+			stopBypassHeartbeat = startHeartbeat(sink, hs)
+			// bypass path has no OnOutput hook — heartbeat fires on idle only.
+		}
+
 		exitCode, rawErr := runRawCLI(ctx, sigCtx, spawnArgs, sink)
 		duration := time.Since(start)
+
+		if stopBypassHeartbeat != nil {
+			close(stopBypassHeartbeat)
+		}
 
 		if sigCtx.Err() != nil {
 			sink.Emit(KindError, errorPayload{
@@ -195,7 +215,7 @@ func runCLI(args []string) int {
 		HalfOpenMaxCalls: 1,
 	})
 	cooldownTracker := executor.NewModelCooldownTracker()
-	dbgExec := newDebugExecutor(innerExec, sink, *cliName, breakerReg, cooldownTracker)
+	dbgExec := newDebugExecutor(innerExec, sink, *cliName, breakerReg, cooldownTracker, *diag)
 
 	sendMsg := types.Message{
 		Content:  *prompt,
