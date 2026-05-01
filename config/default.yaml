@@ -159,3 +159,11 @@ circuit_breaker:
   failure_threshold: 3
   cooldown_seconds: 300
   half_open_max_calls: 1
+
+# CLI driver / discovery layer settings (AIMUX-16 CR-006).
+# discovery_cache_ttl_seconds: how long a successful binary discovery result
+#   stays cached before the registry re-runs the 4-level scan. A binary mtime
+#   change short-circuits the TTL — the cache invalidates immediately on any
+#   file change. Default 86400 (24h).
+driver:
+  discovery_cache_ttl_seconds: 86400

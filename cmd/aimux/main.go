@@ -136,7 +136,17 @@ func run() error {
 		return runShim(ctx, cfg, log, shimIPC)
 	}
 
+	// Everything below this point is DAEMON-ONLY.
+	// Adding code paths here MUST NOT trigger SQLite, LoomEngine, or any other
+	// daemon-level init that would violate AIMUX-6 NFR-3 (shim must not open
+	// sessions.db). The shim path returned above; this block, including
+	// driver.Registry.Probe and DiscoveryCache wiring (AIMUX-16 CR-006), only
+	// runs after detectMode == ModeDaemon. If you move CLI/registry code that
+	// relies on filesystem state above the shim return, NFR-3 will regress.
 	registry := driver.NewRegistry(cfg.CLIProfiles)
+	if cfg.Driver.DiscoveryCacheTTLSeconds > 0 {
+		registry.SetDiscoveryCacheTTL(time.Duration(cfg.Driver.DiscoveryCacheTTLSeconds) * time.Second)
+	}
 	registry.Probe()
 
 	enabled := registry.EnabledCLIs()

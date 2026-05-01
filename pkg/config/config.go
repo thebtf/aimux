@@ -150,11 +150,22 @@ type CircuitBreakerConfig struct {
 	HalfOpenMaxCalls int `yaml:"half_open_max_calls"`
 }
 
+// DriverConfig holds CLI driver/discovery layer settings.
+type DriverConfig struct {
+	// DiscoveryCacheTTLSeconds is the validity window for a cached binary
+	// discovery result (AIMUX-16 CR-006). Within this window, an unchanged
+	// binary mtime serves the cached path without re-running the 4-level
+	// PATH scan. Default 86400 (24h). Zero or negative falls back to the
+	// default.
+	DiscoveryCacheTTLSeconds int `yaml:"discovery_cache_ttl_seconds"`
+}
+
 // Config is the root configuration structure.
 type Config struct {
 	Server         ServerConfig                    `yaml:"server"`
 	Roles          map[string]types.RolePreference `yaml:"roles"`
 	CircuitBreaker CircuitBreakerConfig            `yaml:"circuit_breaker"`
+	Driver         DriverConfig                    `yaml:"driver"`
 	CLIProfiles    map[string]*CLIProfile          `yaml:"-"` // loaded from cli.d/
 	ConfigDir      string                          `yaml:"-"` // directory containing config files
 }
@@ -392,6 +403,13 @@ func applyDefaults(cfg *Config) {
 	}
 	if cb.HalfOpenMaxCalls == 0 {
 		cb.HalfOpenMaxCalls = 1
+	}
+
+	// Driver: discovery cache TTL defaults to 86400s (24h) per AIMUX-16 CR-006.
+	// Zero/negative values are normalised so DiscoveryCache builds with a
+	// sane window even when default.yaml is incomplete.
+	if cfg.Driver.DiscoveryCacheTTLSeconds <= 0 {
+		cfg.Driver.DiscoveryCacheTTLSeconds = 86400
 	}
 }
 
