@@ -80,10 +80,14 @@ func runRawCLI(ctx context.Context, sigCtx context.Context, spawnArgs types.Spaw
 	// stderr pipeline — lines discarded after emit (no pattern matching on stderr)
 	startStreamPair(&wg, sink, handle.Stderr, KindStderr, nil, nil)
 
+	// Done channel signals watchPattern to exit when the process ends.
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+
 	// Completion pattern watcher
 	patternMatched := make(chan struct{}, 1)
 	if spawnArgs.CompletionPattern != "" {
-		go watchPattern(spawnArgs.CompletionPattern, &stdoutLines, &stdoutMu, patternMatched)
+		go watchPattern(spawnArgs.CompletionPattern, &stdoutLines, &stdoutMu, patternMatched, watchDone)
 	}
 
 	// Timeout channel
@@ -198,8 +202,14 @@ func emitRawLines(sink EventSink, kind string, r io.Reader) {
 }
 
 // watchPattern polls lines for the first occurrence of pattern and sends on matched.
-func watchPattern(pattern string, lines *[]string, mu *sync.Mutex, matched chan<- struct{}) {
+// done is closed by the caller when the process ends so the goroutine can exit cleanly.
+func watchPattern(pattern string, lines *[]string, mu *sync.Mutex, matched chan<- struct{}, done <-chan struct{}) {
 	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
 		mu.Lock()
 		for _, l := range *lines {
 			if strings.Contains(l, pattern) {

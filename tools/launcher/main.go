@@ -9,7 +9,7 @@
 //
 //	cli      — one-shot prompt via the best available CLI executor (ConPTY/PTY/Pipe)
 //	api      — one-shot prompt via HTTP API executor (openai|anthropic|google)
-//	session  — interactive REPL (not yet implemented)
+//	session  — interactive REPL (CLI: --cli <name>; API: --provider <p>)
 //	replay   — replay a JSONL log with optional kind filtering
 //
 // Usage:

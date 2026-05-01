@@ -176,13 +176,15 @@ func sendWithTimer(ctx context.Context, sess types.Session, prompt string) (*typ
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
+		warnedInactivity := false
 		for {
 			select {
 			case <-done:
 				return
 			case <-ticker.C:
 				fmt.Fprint(os.Stderr, ".")
-				if time.Since(start) >= replInactivitySeconds*time.Second {
+				if !warnedInactivity && time.Since(start) >= replInactivitySeconds*time.Second {
+					warnedInactivity = true
 					fmt.Fprintf(os.Stderr, "\n[inactivity timeout — Session.Send returning]\n")
 				}
 			}

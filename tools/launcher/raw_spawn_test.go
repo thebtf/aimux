@@ -1,3 +1,5 @@
+//go:build windows
+
 // Package main — raw_spawn_test.go tests the L2 raw subprocess capture path.
 //
 // Tests:
