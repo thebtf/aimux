@@ -187,9 +187,40 @@ launcher replay --log /tmp/raw.jsonl --filter stdout
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `codex` hangs | ConPTY conflicts with headless `--json -` | Use `--executor pipe` (default) |
+| Headless CLI hangs / errors under ConPTY | TTY detection — see "ConPTY ≠ headless" below | Use `--executor pipe` (default) |
 | `launcher: env var OPENAI_API_KEY empty` | API key not set | `export OPENAI_API_KEY=<key>` |
 | `--bypass` with PTY/ConPTY fails | L2 is pipe-only | Add `--executor pipe` |
 | `launcher session` returns "not implemented" | API executor lacks SessionFactory | Use `launcher api` instead |
 | Partial last line in replay | Process killed mid-write | Normal — replay discards partial lines with a warning |
 | Log file grows without bound | No rotation built in | Delete or archive manually after debugging |
+
+### ConPTY ≠ headless: TTY detection in headless CLIs
+
+ConPTY backend creates a Windows pseudo-terminal so that the child process sees
+`stdin`/`stdout` as a TTY (`isatty() == true`). This is what enables real
+interactive sessions: codex chat, gemini TUI, aider's REPL.
+
+**Headless modes detect the TTY and refuse / change behaviour.** Verified
+2026-05-02 with `--diag` mode (each line shown with timestamp):
+
+| CLI | Headless command | ConPTY behaviour | Pipe behaviour |
+|-----|------------------|------------------|----------------|
+| `codex exec --full-auto --json -` | sees TTY → silently waits for interactive input (deprecation warning at +0.1s, then idle until kill) | streams JSONL events, exits 0 in ~10s |
+| `claude --print` | exits 1 immediately with `Error: Input must be provided either through stdin or as a prompt argument when using --print` (it refuses to read TTY as stdin) | streams result JSONL, exits 0 in ~12s |
+| `gemini -p` | renders full TUI (header bar, status bar, prompt input) and waits for typing | streams JSONL events, exits 0 in ~10s |
+
+**Conclusion:** ConPTY is not broken — it correctly delivers a TTY. Headless
+JSON modes are designed for pipe stdin and break under TTY by design. The
+launcher's default `--executor pipe` is the right choice for any
+`--full-auto / --json / --print / -p` flow. Reach for `--executor conpty` only
+when testing real interactive TUI / chat sessions.
+
+To reproduce the diagnostic yourself:
+
+```powershell
+# Headless via pipe (works)
+launcher cli --cli gemini --prompt "say ok" --diag
+
+# Same prompt via ConPTY — observe what really happens, in real time
+launcher cli --cli gemini --prompt "say ok" --executor conpty --diag
+```
