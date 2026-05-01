@@ -115,7 +115,7 @@ func (a *CLIPTYAdapter) SendStream(ctx context.Context, msg types.Message, onChu
 
 	// Stateless path: wire OnOutput so IOManager forwards each line as it arrives.
 	args := messageToSpawnArgs(msg)
-	if msg.SystemPrompt != "" {
+	if msg.SystemPrompt != "" && args.Stdin == msg.Content {
 		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
 	}
 	args.OnOutput = func(line string) {

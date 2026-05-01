@@ -172,13 +172,15 @@ func runCLI(args []string) int {
 		defer cancel()
 
 		var stopBypassHeartbeat chan struct{}
+		var bypassOnOutput func()
 		if *diag {
 			hs := newHeartbeatState(start)
 			stopBypassHeartbeat = startHeartbeat(sink, hs)
-			// bypass path has no OnOutput hook — heartbeat fires on idle only.
+			// Wire hs.touch so the heartbeat goroutine reflects actual subprocess output.
+			bypassOnOutput = hs.touch
 		}
 
-		exitCode, rawErr := runRawCLI(ctx, sigCtx, spawnArgs, sink)
+		exitCode, rawErr := runRawCLI(ctx, sigCtx, spawnArgs, sink, bypassOnOutput)
 		duration := time.Since(start)
 
 		if stopBypassHeartbeat != nil {
