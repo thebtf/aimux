@@ -160,10 +160,16 @@ circuit_breaker:
   cooldown_seconds: 300
   half_open_max_calls: 1
 
-# CLI driver / discovery layer settings (AIMUX-16 CR-006).
+# CLI driver layer settings (AIMUX-16 CR-003 + CR-006).
 # discovery_cache_ttl_seconds: how long a successful binary discovery result
 #   stays cached before the registry re-runs the 4-level scan. A binary mtime
 #   change short-circuits the TTL — the cache invalidates immediately on any
 #   file change. Default 86400 (24h).
+# capability_cache_ttl_seconds: how long a verified per-(cli, role) probe
+#   result stays fresh before the background refresher re-probes. Default 3600s (1h).
+# capability_probe_timeout_seconds: per-probe wall-clock budget. Zero falls back
+#   to server.warmup_timeout_seconds. Inline cache-miss probes use this directly.
 driver:
   discovery_cache_ttl_seconds: 86400
+  capability_cache_ttl_seconds: 3600
+  capability_probe_timeout_seconds: 5

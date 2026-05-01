@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -127,6 +128,13 @@ type Server struct {
 	initPhase           atomic.Int32  // 0=pre-init, 1=phase-A, 2=phase-B complete
 	initDurationMs      atomic.Int64  // wall-clock ms for Phase B to complete (set on swap)
 	warmupDeferredCount atomic.Uint64 // HandleRequest calls deferred during Phase A
+
+	// AIMUX-16 CR-003: per-(cli, role) capability cache + background refresher.
+	// capCache holds verified probe outcomes; capRefresher runs every TTL/2 to
+	// refresh stale entries. Both are nil only in legacy / test paths that
+	// construct Server without NewDaemon.
+	capCache     *driver.CapabilityCache
+	capRefresher *driver.CapabilityRefresher
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -220,6 +228,26 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	}
 	s.metrics = metrics.New()
 	s.engineName = ResolveEngineName()
+
+	// AIMUX-16 CR-003: per-(cli, role) capability cache + background refresher.
+	// Cache TTL comes from driver.capability_cache_ttl_seconds with a 1h default.
+	// The refresher's ProbeFn closes over a real pipe executor so probes go
+	// through the same path as warmup. The refresher goroutine is launched
+	// from RunPhaseB so the engine is fully constructed before probes fire.
+	{
+		ttl := time.Duration(cfg.Driver.CapabilityCacheTTLSeconds) * time.Second
+		if ttl <= 0 {
+			ttl = driver.DefaultCapabilityCacheTTL
+		}
+		s.capCache = driver.NewCapabilityCache(ttl)
+		probeFn := driver.MakeCapabilityProbeFn(reg, cfg, pipeExec.New())
+		s.capRefresher = driver.NewCapabilityRefresher(s.capCache, probeFn)
+		// Routing reads the cache via the CapabilityVerifier interface — no
+		// direct driver-package import on the routing side.
+		if router != nil {
+			router.SetCapabilityVerifier(s.capCache)
+		}
+	}
 
 	// Wire the log ingester — daemon-side receiver for shim log_forward notifications
 	// (AIMUX-11 Phase 2, T011). LocalSink() is non-nil in daemon mode.
@@ -479,6 +507,12 @@ func (s *Server) ToolDescription(name string) string {
 // Shutdown stops background services (GC reaper, snapshot) and closes persistence.
 // Graceful: waits up to 5s for running CLI processes to finish before killing.
 func (s *Server) Shutdown() {
+	// AIMUX-16 CR-003: stop the capability refresher first so its goroutine
+	// doesn't race with executor teardown when probing through the pipe.
+	if s.capRefresher != nil {
+		s.capRefresher.Stop()
+	}
+
 	// Graceful drain: give running CLI processes time to finish.
 	// mcp-mux gives us ~8s grace after stdin close — use 5s for drain, rest for cleanup.
 	graceful := executor.SharedPM.GracefulShutdown(5 * time.Second)
@@ -522,6 +556,13 @@ func (s *Server) Shutdown() {
 // The method is a no-op when s.sessionHandler is not an *aimuxHandler (e.g. proxy /
 // stdio / SSE / HTTP transport paths that do not use the delegate machinery).
 func (s *Server) RunPhaseB(ctx context.Context) {
+	// AIMUX-16 CR-003: start the capability refresher early in Phase B so the
+	// goroutine is alive once warmup populates the cache. Refresher.Start is
+	// idempotent — safe to call from any RunPhaseB path that reaches here.
+	if s.capRefresher != nil {
+		s.capRefresher.Start(ctx)
+	}
+
 	h, ok := s.sessionHandler.(*aimuxHandler)
 	if !ok || h == nil {
 		// Not in engine mode — no delegate swap needed.
@@ -1065,6 +1106,12 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		health["init_phase"] = s.initPhase.Load()
 		health["init_duration_ms"] = s.initDurationMs.Load()
 		health["warmup_deferred_count"] = s.warmupDeferredCount.Load()
+
+		// AIMUX-16 CR-003 (FR-3 acceptance signal): per-CLI declared vs
+		// verified capability surface. Operators can read this to confirm
+		// the cache is populated with role-shaped probe outcomes rather
+		// than YAML-declared claims. Cache is nil in legacy test paths.
+		s.attachCapabilityHealth(health)
 		return marshalToolResult(health)
 
 	case "cancel":
@@ -1127,7 +1174,11 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 				"reason":    "warmup disabled via warmup_enabled: false in config",
 			})
 		}
-		if err := driver.RunWarmup(ctx, s.registry, s.cfg); err != nil {
+		// AIMUX-16 CR-003: refresh both liveness AND per-(cli, role) capability
+		// probes. The cache parameter may be nil in legacy server constructions
+		// (e.g. tests using NewWithRegistry); RunWarmupWithCache treats nil as
+		// "skip capability pass" so behaviour matches v4.x in those paths.
+		if err := driver.RunWarmupWithCache(ctx, s.registry, s.cfg, s.capCache); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("refresh-warmup failed: %v", err)), nil
 		}
 		// Reset ALL circuit breakers after a successful re-probe. The user
@@ -1174,6 +1225,87 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 	}
 }
 
+// attachCapabilityHealth adds the capability-cache observability fields to a
+// health payload. Used by both sessions(action="health") and the
+// aimux://health resource so the two surfaces agree on schema.
+//
+// No-op when capCache is nil (legacy server constructions used by tests).
+func (s *Server) attachCapabilityHealth(health map[string]any) {
+	if s.capCache == nil {
+		return
+	}
+	health["capability_cache"] = buildCapabilityCacheReport(s.registry, s.capCache)
+	health["capability_cache_ttl_seconds"] = int(s.capCache.TTL().Seconds())
+	if s.capRefresher != nil {
+		health["capability_refresher_tick_seconds"] = int(s.capRefresher.Tick().Seconds())
+	}
+}
+
+// buildCapabilityCacheReport renders the per-CLI declared-vs-verified surface
+// for the sessions(action="health") response (AIMUX-16 CR-003 / FR-3 signal).
+//
+// Output shape:
+//
+//	{
+//	  "codex": {"declared": ["coding","review"], "verified": ["coding"], "errors": {"review": "..."}},
+//	  "claude": {"declared": ["coding"], "verified": []},
+//	  ...
+//	}
+//
+// "verified" lists roles that probed successfully; cache entries with
+// verified=false land in "errors" (role → error string) so operators can
+// see which roles failed and why. Roles never probed at all are absent
+// from both lists — routing treats those as cache miss + declared fallback.
+//
+// A single Snapshot is taken at the top of the call to avoid O(N²·M) work
+// (one full snapshot per CLI in the previous implementation, plus one full
+// store walk inside each VerifiedRoles call).
+func buildCapabilityCacheReport(reg *driver.Registry, cache *driver.CapabilityCache) map[string]any {
+	snap := cache.Snapshot()
+	report := make(map[string]any)
+	for _, name := range reg.AllCLIs() {
+		profile, err := reg.Get(name)
+		if err != nil || profile == nil {
+			continue
+		}
+		verified, errs := splitCapabilitySnapshot(snap[name])
+		entry := map[string]any{
+			"declared": append([]string{}, profile.Capabilities...),
+			"verified": verified,
+		}
+		if len(errs) > 0 {
+			entry["errors"] = errs
+		}
+		report[name] = entry
+	}
+	return report
+}
+
+// splitCapabilitySnapshot reduces a per-CLI snapshot map into the
+// (verified-roles, errors-by-role) pair the health report needs. A nil or
+// empty snapshot returns ([]string{}, nil) so callers always get a JSON
+// array for "verified" rather than a missing field.
+func splitCapabilitySnapshot(roles map[string]driver.ProbeResult) ([]string, map[string]string) {
+	if len(roles) == 0 {
+		return []string{}, nil
+	}
+	verified := make([]string, 0, len(roles))
+	var errs map[string]string
+	for role, r := range roles {
+		switch {
+		case r.Verified:
+			verified = append(verified, role)
+		case r.Err != nil:
+			if errs == nil {
+				errs = make(map[string]string)
+			}
+			errs[role] = r.Err.Error()
+		}
+	}
+	sort.Strings(verified)
+	return verified, errs
+}
+
 // --- Resource Handlers ---
 
 func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
@@ -1184,6 +1316,10 @@ func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResou
 		"running_jobs":   len(running),
 		"metrics":        s.metrics.Snapshot(),
 	}
+	// Keep the resource schema in sync with sessions(action="health") for the
+	// AIMUX-16 CR-003 capability-cache observability fields. Operators should
+	// be able to scrape the same fields from either surface.
+	s.attachCapabilityHealth(health)
 	data, _ := json.Marshal(health)
 
 	return []mcp.ResourceContents{

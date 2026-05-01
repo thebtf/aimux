@@ -105,7 +105,7 @@ func TestRunWarmup_AllSucceed(t *testing.T) {
 		},
 	}
 
-	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec); err != nil {
+	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec, nil); err != nil {
 		t.Fatalf("RunWarmup: %v", err)
 	}
 
@@ -129,7 +129,7 @@ func TestRunWarmup_OneFails(t *testing.T) {
 		},
 	}
 
-	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec); err != nil {
+	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec, nil); err != nil {
 		t.Fatalf("RunWarmup: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestRunWarmup_OneTimesOut(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := runWarmupWithExec(ctx, reg, defaultCfg(), exec); err != nil {
+	if err := runWarmupWithExec(ctx, reg, defaultCfg(), exec, nil); err != nil {
 		t.Fatalf("RunWarmup: %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestRunWarmup_OptOut(t *testing.T) {
 		},
 	}
 
-	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec); err != nil {
+	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec, nil); err != nil {
 		t.Fatalf("RunWarmup: %v", err)
 	}
 
@@ -246,7 +246,7 @@ func TestRunWarmup_ConfigDisabled(t *testing.T) {
 	cfg := defaultCfg()
 	cfg.Server.WarmupEnabled = false // explicit config-level disable
 
-	if err := runWarmupWithExec(context.Background(), reg, cfg, exec); err != nil {
+	if err := runWarmupWithExec(context.Background(), reg, cfg, exec, nil); err != nil {
 		t.Fatalf("RunWarmup: %v", err)
 	}
 
@@ -335,7 +335,7 @@ func TestDaemon_WarmupExcludesMisconfiguredCLI(t *testing.T) {
 	cfg := defaultCfg()
 
 	// Must not panic.
-	if err := runWarmupWithExec(context.Background(), reg, cfg, exec); err != nil {
+	if err := runWarmupWithExec(context.Background(), reg, cfg, exec, nil); err != nil {
 		t.Fatalf("RunWarmup should not return error (only excludes CLI): %v", err)
 	}
 
@@ -377,7 +377,7 @@ func TestRunWarmup_ReEnablesPassingCLI(t *testing.T) {
 		},
 	}
 
-	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec); err != nil {
+	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec, nil); err != nil {
 		t.Fatalf("RunWarmup: %v", err)
 	}
 
