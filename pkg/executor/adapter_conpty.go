@@ -108,7 +108,7 @@ func (a *CLIConPTYAdapter) SendStream(ctx context.Context, msg types.Message, on
 	// Stateless path: wire OnOutput so IOManager forwards each line as it arrives.
 	spawnArgs := messageToSpawnArgs(msg)
 	if msg.SystemPrompt != "" && spawnArgs.Stdin == msg.Content {
-		spawnArgs.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
+		spawnArgs.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, spawnArgs.Stdin)
 	}
 	spawnArgs.OnOutput = func(line string) {
 		onChunk(types.Chunk{Content: line + "\n", Done: false})

@@ -92,7 +92,7 @@ func (a *CLIPipeAdapter) Send(ctx context.Context, msg types.Message) (*types.Re
 
 	// SystemPrompt: prepend to stdin so the CLI receives full context.
 	if msg.SystemPrompt != "" && args.Stdin == msg.Content {
-		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
+		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, args.Stdin)
 	}
 
 	result, err := a.legacy.Run(ctx, args)
@@ -126,7 +126,7 @@ func (a *CLIPipeAdapter) SendStream(ctx context.Context, msg types.Message, onCh
 	// Stateless path: wire OnOutput so IOManager forwards each line as it arrives.
 	args := messageToSpawnArgs(msg)
 	if msg.SystemPrompt != "" && args.Stdin == msg.Content {
-		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
+		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, args.Stdin)
 	}
 	args.OnOutput = func(line string) {
 		onChunk(types.Chunk{Content: line + "\n", Done: false})

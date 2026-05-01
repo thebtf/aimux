@@ -50,7 +50,11 @@ func startHeartbeat(sink EventSink, hs *heartbeatState) (stop chan struct{}) {
 	stop = make(chan struct{})
 
 	go func() {
-		ticker := time.NewTicker(heartbeatInterval)
+		// Poll at 1s resolution so the heartbeat fires within 1s of the deadline
+		// (lastOutput + heartbeatInterval).  A ticker at heartbeatInterval itself
+		// could delay the first event by up to 2×heartbeatInterval in the worst case
+		// (CodeRabbit PRRT_kwDOR6K9ds5_EJ03).
+		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 
 		for {
@@ -60,12 +64,14 @@ func startHeartbeat(sink EventSink, hs *heartbeatState) (stop chan struct{}) {
 			case t := <-ticker.C:
 				lastNano := hs.lastOutputNano.Load()
 				idleSince := time.Unix(0, lastNano)
-				idleSeconds := t.Sub(idleSince).Seconds()
+				deadline := idleSince.Add(heartbeatInterval)
 
-				// Only emit when actually idle for at least one interval.
-				if idleSeconds < heartbeatInterval.Seconds() {
+				// Skip until the deadline has been reached.
+				if t.Before(deadline) {
 					continue
 				}
+
+				idleSeconds := t.Sub(idleSince).Seconds()
 
 				totalElapsed := t.Sub(hs.startTime).Seconds()
 

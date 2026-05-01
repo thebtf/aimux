@@ -201,7 +201,7 @@ ConPTY backend creates a Windows pseudo-terminal so that the child process sees
 interactive sessions: codex chat, gemini TUI, aider's REPL.
 
 **Headless modes detect the TTY and refuse / change behaviour.** Verified
-2026-05-02 with `--diag` mode (each line shown with timestamp):
+2026-05-01 with `--diag` mode (each line shown with timestamp):
 
 | CLI | Headless command | ConPTY behaviour | Pipe behaviour |
 |-----|------------------|------------------|----------------|
