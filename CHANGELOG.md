@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added (AIMUX-16 CR-004 — Real Win32 ConPTY)
+## [5.4.0] — 2026-05-01 — AIMUX-16 Transport-Completeness Pass
+
+Drives all 6 PARTIAL transport capabilities to COMPLETE per the canonical contract
+in `.agent/data/audits/transport-contract-2026-05-01.md`. CLI scope: codex, claude,
+gemini (9 deferred CLIs out of scope per operator directive — tracked under AIMUX-3 /
+AIMUX-4). Final post-audit verdict: 18 / 18 transport capabilities COMPLETE
+(`.agent/data/audits/transport-audit-2026-05-01-post-AIMUX-16.md`).
+
+### Added — CR-001 / T11 — Claude profile completeness (`bc276b3`)
+
+- **`config/cli.d/claude/profile.yaml`** — three previously missing T11 fields
+  filled to mirror the codex / gemini precedent:
+  - `cooldown_seconds: 3600` (1h Anthropic quota refresh; matches gemini).
+  - `model_fallback: [claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001]`
+    (verified against platform.claude.com/docs/en/about-claude/models/overview at audit time).
+  - `completion_pattern: ^---END---$` (anchored canonical sentinel from `claudeCorpus`).
+- Explicit `stdin_sentinel: ""` declared per CLI-profile required-fields rule
+  (CodeRabbit MAJOR review feedback #136).
+- Audit-row regression: claude T11 row entries flip from MISSING/MISSING/MISSING to ✓/✓/✓.
+
+### Added — CR-002 / T10 — Circuit breaker wired into dispatch (`5dfc7d9`)
+
+- **`pkg/executor/select.go::SelectAvailableCLIs`** — pre-select gate filtering CLIs by
+  breaker state. CLIs whose breakers are Open are excluded; Closed and HalfOpen-with-
+  budget pass through. nil breaker → passthrough. Empty result on all-Open per EC-2.1.
+- **`pkg/executor/fallback.go::RecordResultToBreaker`** — maps `ErrorClass` to breaker
+  state per EC-2.3: Fatal trips immediately (permanent=true); Quota counts toward
+  threshold; Transient / ModelUnavailable / Unknown are deliberate no-ops (flapping-
+  network protection).
+- **`pkg/executor/fallback.go::RunWithModelFallbackBreaker`** — breaker-aware variant
+  of the fallback runner that records the terminal outcome to the registry post-dispatch.
+- **19 integration tests** (`pkg/executor/breaker_wire_test.go`) covering the full
+  state machine: Fatal trips immediately, Quota counts, Transient stays no-op,
+  K Fatals trip → SelectAvailableCLIs excludes, HalfOpen → Closed on healthy probe, etc.
+
+### Added — CR-003 / T13 — Real per-(cli, role) capability probe + cache + refresher (`67685cc`)
+
+- **`pkg/driver/capability_cache.go`** — `CapabilityCache` with TTL + RWMutex (1h
+  default, configurable via `cfg.Driver.CapabilityCacheTTLSeconds`); per-(cli, role)
+  verified-set storage. `CapabilityRefresher` background goroutine running every TTL/2
+  (clamped at 5s minimum). `MakeCapabilityProbeFn` factory closing over a real pipe
+  executor; role-shaped prompt asks the CLI to acknowledge the role string in
+  `{"role": "<role>", "ok": true}`.
+- **`pkg/routing/routing.go::CapabilityVerifier`** — interface + `SetCapabilityVerifier`
+  / `CapabilityVerifier()` accessors. Decision matrix in `cliHasCapability`:
+  declared=false → false; verified=true → true; cache miss → declared fallback (EC-3.2);
+  verified=false → hard exclude. `ResolveWithFallback` drops verified=false CLIs from
+  the chain entirely (EC-3.1).
+- **`pkg/server/server.go`** — `NewDaemon` constructs `capCache` + `capRefresher` and
+  wires the cache via `router.SetCapabilityVerifier`. `RunPhaseB` calls
+  `RunWarmupWithCache` so the inline warmup pass populates verified outcomes; refresher
+  keeps them fresh. `Shutdown` stops the refresher. `sessions(action="health")` health
+  surface adds `capability_cache: {cli → {declared, verified, errors}}` plus TTL +
+  refresher tick (FR-3 acceptance signal).
+- **`pkg/config/config.go::DriverConfig`** — adds `capability_cache_ttl_seconds` +
+  `capability_probe_timeout_seconds` (operator-tunable defaults: 3600s TTL, 5s per-probe
+  budget).
+- **`config/default.yaml`** — new `driver:` section.
+- **21 new tests** (16 driver + 5 routing) covering EC-3.1 / EC-3.2 / EC-3.3 plus
+  refresher lifecycle, transient-error no-op, CAS write-back, timeout fallback.
+
+### Added — CR-004 / T3 — Real Win32 ConPTY backend (`ba47f50`)
 
 - **`pkg/executor/conpty/conpty_windows.go`** (FR-4) — real `CreatePseudoConsole` /
   `ResizePseudoConsole` / `ClosePseudoConsole` implementation via the pinned
@@ -15,45 +76,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-CR-004 documented stub that announced ConPTY support but used a plain
   `exec.Command` pipe. Child process inherits the pseudo-console as stdio so
   `isatty()` returns true (codex chat / aider interactive flows now work).
+  Win10 1809+ minimum (build ≥ 17763).
 - **`pkg/executor/conpty/conpty_other.go`** (FR-4) — non-Windows stub. Every
   entrypoint returns `ErrPlatformUnsupported`; `probeConPTY()` returns false.
 - **`pkg/executor/conpty/conpty_params.go`** — platform-neutral parameter types
   (`openParams`) and constants (`defaultConPTYWidth=120`, `defaultConPTYHeight=30`)
   shared by Windows real path and non-Windows stub.
-- **Honest probe (EC-4.1)** — `probeConPTY()` checks Win10 build ≥ 17763 (Win10 1809),
-  verifies `kernel32.dll` exports the ConPTY family, and consults the upstream
-  library's `IsConPtyAvailable()`. Every refusal logs an explicit warning.
-  Operator directive (`feedback_aimux_interactive_required.md`): NO silent pipe
-  downgrade — every reason for declining ConPTY surfaces in the daemon log.
+- **Honest probe (EC-4.1)** — `probeConPTY()` checks Win10 build ≥ 17763, verifies
+  `kernel32.dll` exports the ConPTY family, and consults the upstream library's
+  `IsConPtyAvailable()`. Every refusal logs an explicit warning. Operator directive
+  (`feedback_aimux_interactive_required.md`): NO silent pipe downgrade.
 - **`pkg/executor/process.go`** — `ProcessHandle.MarkExited()` exported method.
-  Used by external reap goroutines (CR-004's `winConsoleHandle.reapProcess`)
-  that own their child-process lifecycle outside `ProcessManager.Spawn`.
-- **`.github/workflows/ci.yml`** (NFR-5) — explicit `windows-latest` step
-  asserting `TestProbeConPTY_RealHostSucceeds` /
-  `TestOpenWindowsConPTY_SpawnsRealPseudoConsole` /
-  `TestExecutor_Run_ProducesOutput` PASS (neither SKIP). Skipping ConPTY
-  tests on Windows is PROHIBITED per spec — silent skip would re-introduce
-  the deferral pattern CR-004 was filed to fix.
+  Used by external reap goroutines (CR-004's `winConsoleHandle.reapProcess`) that own
+  their child-process lifecycle outside `ProcessManager.Spawn`.
+- **`.github/workflows/ci.yml`** (NFR-5) — explicit `windows-latest` step asserting
+  `TestProbeConPTY_RealHostSucceeds` / `TestOpenWindowsConPTY_SpawnsRealPseudoConsole`
+  / `TestExecutor_Run_ProducesOutput` PASS (skip is PROHIBITED — CI fails the build
+  on skip; silent skip would re-introduce the deferral pattern CR-004 was filed to fix).
+- **8 Windows-only build-tag-gated tests** (`pkg/executor/conpty/conpty_windows_test.go`):
+  minimum build gate, kernel32 exports gate, version-lookup failure, real-host happy
+  path, `CreatePseudoConsole` actually fires, `ResizePseudoConsole` wired,
+  `sync.Once` Close idempotency, end-to-end through `Executor.Run()`.
 
-### Tests added (AIMUX-16 CR-004)
+### Added — CR-005 / T18 / DEF-13 — Loom progress signal port (`63eb88c`)
 
-- `pkg/executor/conpty/conpty_windows_test.go` — Windows-only build-tag-gated:
-  - `TestProbeConPTY_RequiresMinimumBuild` — version gate (EC-4.1).
-  - `TestProbeConPTY_RequiresKernel32Exports` — kernel32 export gate (T004-9).
-  - `TestProbeConPTY_VersionLookupError` — RtlGetVersion failure path.
-  - `TestProbeConPTY_RealHostSucceeds` — happy path on real Windows runner.
-  - `TestOpenWindowsConPTY_SpawnsRealPseudoConsole` — proves `CreatePseudoConsole`
-    actually fires (PID > 0, output marker round-trips through pseudo-console).
-  - `TestOpenWindowsConPTY_ResizeAfterOpen` — `ResizePseudoConsole` wired (T004-4).
-  - `TestOpenWindowsConPTY_CloseIsIdempotent` — `sync.Once` guard, EC-4.4.
-  - `TestExecutor_Run_ProducesOutput` — end-to-end through `Executor.Run()`.
+- **`loom/task.go`** — `Task` extends with `LastOutputLine`, `ProgressLines`,
+  `ProgressUpdatedAt` fields at parity with the legacy `JobManager` triple.
+- **`loom/store.go` / `loom/progress.go::Store.AppendProgress(taskID, line) (ProgressInfo, error)`**
+  — UTF-8-safe truncate (≤ 100 bytes), newline-aware line counter, monotonic timestamp;
+  per-row `UPDATE…RETURNING` round-trip serialises concurrent writes via SQLite WAL
+  (EC-5.3). Whitespace-only lines preserve `LastOutputLine` (signal primacy) but
+  still bump the counter and timestamp so activity-since polls keep advancing.
+- **`loom/loom.go::LoomEngine.AppendProgress`** — wraps the store call and emits
+  `EventTaskProgress` ONLY when `info.OK == true`, populating `ProjectID` / `RequestID`
+  from the returned identity fields (PR #139 CodeRabbit MAJOR fixes #1 + #2: multi-tenant
+  subscriber filtering + distributed tracing parity; no-event-for-unknown-task contract).
+- **`loom/event.go::EventTaskProgress`** — additive enum value (NFR-6 preserves
+  existing subscribers).
+- **`loom/workers/streaming_base.go::ProgressSink`** — interface field on
+  `StreamingBase`; workers opt into the persistent progress signal alongside the
+  existing `OnLine` callback. `*LoomEngine` satisfies `ProgressSink` directly.
+- **Schema migration v5** — 3 columns (`last_output_line`, `progress_lines`,
+  `progress_updated_at`). Idempotent on re-run; reversible via `MigrateV5Down`
+  (SQLite ≥ 3.35 ALTER TABLE DROP COLUMN — bundled with `modernc/sqlite`).
+- **`mcp__aimux__status`** Loom branch surfaces `progress_tail` / `progress_lines` /
+  `progress_updated_at`; whitelist updated; `progress_updated_at` formatted as RFC3339
+  UTC or null.
+- **15 new tests** — 11 progress + 4 streaming_base + v5 migration tests.
+- **Closes engram issue #173** — closure marker at
+  `.agent/data/audits/engram-173-closure-marker.md`. Both code paths (legacy
+  JobManager and new Loom) surface progress until JobManager retirement (DEF-13).
 
-### Verified (AIMUX-16 CR-004)
+### Added — CR-006 / T12 — Discovery cache TTL + mtime invalidation (`80b64b1`)
 
-- NFR-2 warm Send budget preserved — `tests/critical/persistent_session_warm_send_test.go`
-  PASS post-CR-004 (warm-send avg < 100ms budget).
-- Cross-platform builds clean: `GOOS=linux`, `GOOS=darwin`, native Windows.
-- Existing 16 conpty tests + full project suite (~857 tests across 27 packages) PASS.
+- **`pkg/driver/discovery.go::DiscoveryCache`** — per-profile binary lookup cache.
+  Entries record resolved path, binary mtime, and cached-at timestamp; lookups
+  validated against the live file before being served.
+- **Invalidation triggers** (per spec EC-6.1..EC-6.4): cache age ≥ TTL (default 24h,
+  configurable via `config/default.yaml::driver.discovery_cache_ttl_seconds`); mtime
+  change; ENOENT (logs WARN); turn-into-directory; non-regular-file (CodeRabbit MAJOR);
+  POSIX exec-bit removal (CodeRabbit MAJOR); negative-result entries always re-probed.
+- **Symlink resolution** — `os.Stat` follows symlinks by default (CR-006 review
+  removed redundant explicit `EvalSymlinks` step).
+- **`pkg/driver/loader.go::Registry.Probe`** — consults `DiscoveryCache.Lookup`;
+  warm-cache lookups skip `DiscoverBinary` entirely.
+- **`cmd/aimux/main.go`** — reads `cfg.Driver.DiscoveryCacheTTLSeconds` from YAML
+  and applies via `Registry.SetDiscoveryCacheTTL` before the first Probe (operator-
+  tunable without recompile). DAEMON-ONLY block — explicit invariant comment
+  preserves `TestShim_NoSQLiteWrites` (AIMUX-6 NFR-3 regression gate).
+- **`pkg/driver/discovery_cache_test.go`** — 9 tests including best-of-5 perf gate
+  (`TestRegistry_ProbeWarmCacheUnder1ms` — 12-profile warm Probe ≤ 1ms ceiling on
+  busy-CI-tolerant best-of-N sampling).
+- **`LoggerFunc`** hook on `DiscoveryCache` — daemon routes invalidation events
+  through the project logger (gemini review feedback).
+
+### Fixed — Reviewer findings consolidated across all 6 PRs
+
+- **CR-001 / PR #136** — gemini hardcoded duration bounds replaced with profile-derived
+  `CooldownSeconds ± 100s` tolerance; `stdin_sentinel: ""` explicit declaration
+  (CodeRabbit MAJOR).
+- **CR-002 / PR #137** — `classifyTerminalOutcome` splits `ErrModelUnavailable` from
+  `ErrQuotaExhausted` so the CLI-level breaker is not tripped by per-(cli, model)
+  unavailability (CodeRabbit MAJOR); `(ExitCode=0, err != nil)` masking guard added —
+  preserves `err != nil ⇒ exitCode != 0` invariant required by `ClassifyError`
+  (CodeRabbit MAJOR).
+- **CR-003 / PR #141** — transient context errors leave the cache slot UNTOUCHED in
+  both warmup-time pass and refresher (was: writing `verified=false` for a TTL window
+  on transient failure — contradicted EC-3.2 declared-fallback contract);
+  `CapabilityRefresher.Stop()` cancels the in-flight probe via private child context
+  (was: hostage to probe deadline); `staleEntries` returns `LastProbed` paired with key
+  and refresher writes back via `SetIfUnchanged` CAS (was: clobber risk on slow probe
+  vs fresh inline write); `resolveCapabilityProbeTimeout` falls back to
+  `cfg.Server.WarmupTimeoutSeconds` before the hard 5s default (was: ignored operator-
+  raised global warmup timeout); `attachCapabilityHealth` helper unifies
+  `sessions(action="health")` and `aimux://health` resource emission (parity);
+  `buildCapabilityCacheReport` takes a single `Snapshot()` at the top (was: O(N²·M)
+  walk).
+- **CR-004 / PR #140** — `reapProcess` uses lifetime context, defensive STILL_ACTIVE +
+  context error guard (CodeRabbit CRIT — persistent sessions no longer killed when the
+  originating spawn-request context expires); `buildSyntheticCmd` populates
+  `cmd.Process` via `os.FindProcess(pid)` so `ProcessManager.Kill` works for ConPTY
+  children (CodeRabbit MAJOR — was: `BaseSession.Close` could not terminate ConPTY
+  child); stdin write/close errors surface as `ExecutorError` instead of being silently
+  dropped (CodeRabbit MAJOR); `TestOpenWindowsConPTY_CloseIsIdempotent` asserts
+  "at most one non-nil error across all Close calls" (was: assumed channel-receive
+  order); `quoteArg` Windows-correct backslash escaping mirroring stdlib
+  `syscall.makeCmdLine`; `conptyWriter.Close` documented as known limitation (upstream
+  library does not expose stdin-only close — ConPTY is interactive-TUI-only by design,
+  EOF-dependent batch tools belong on the pipe executor; selector enforces this via
+  capability flags).
+- **CR-005 / PR #139** — `EventTaskProgress` carries `ProjectID` / `RequestID`
+  (CodeRabbit MAJOR — was: broken multi-tenant subscriber filtering and distributed
+  tracing correlation); `TaskStore.AppendProgress` returns `ProgressInfo` with `OK` flag
+  so the engine emits no event for unknown / cancelled tasks (CodeRabbit MAJOR — was:
+  contradicted doc-comment); `last_output_line` redacted with the same pattern set as
+  `tasks.error` for openai svcacct / Bearer / Google AI key formats (gemini MEDIUM —
+  prevented credential leak through MCP status response); `1 + strings.Count(line, "\n")`
+  parity formula vs legacy `pkg/session/jobs.go:242` preserved with corrected code
+  comment (gemini MEDIUM REJECTED with rationale — semantic parity with JobManager
+  caller comparison takes precedence over the misleading comment, which was rewritten).
+- **CR-006 / PR #138** — `LoggerFunc` hook on `DiscoveryCache` (gemini); cache-validity
+  gate invalidates on non-regular-file or POSIX exec-bit removal (CodeRabbit MAJOR);
+  redundant `EvalSymlinks` removed (gemini); `loader.go::Probe` simplified — `cache`
+  non-nil after `NewRegistry`, `DiscoveryCache.Lookup` handles nil receiver internally
+  (gemini); 1ms wall-clock perf gate switched to best-of-5 sampling (CodeRabbit MAJOR
+  — busy-CI-tolerant without weakening the FR-6 ceiling).
+
+### Verification
+
+- **18 / 18** transport capabilities COMPLETE per re-audit
+  (`.agent/data/audits/transport-audit-2026-05-01-post-AIMUX-16.md`).
+- **27 packages** × `go test -count=1 -timeout 300s` GREEN (incl. `tests/critical/`,
+  `test/e2e/`, `loom/` standalone module).
+- **`windows-latest`** CI matrix runs ConPTY tests without skip (NFR-5 gate enforced).
+- **NFR-2** warm Send avg ≤ 100ms preserved across the ConPTY change
+  (`tests/critical/persistent_session_warm_send_test.go`).
+- **engram #173** RESOLVED (closure marker at
+  `.agent/data/audits/engram-173-closure-marker.md`).
+- Master HEAD: `67685cc69f089d01b1209f0224d23c31d0bab50d`.
 
 ## [5.3.0] — 2026-04-30 — AIMUX-14 persistent CLI sessions (M6)
 
