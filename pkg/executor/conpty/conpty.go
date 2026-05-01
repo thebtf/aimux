@@ -329,3 +329,47 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 func (e *Executor) StartSession(ctx context.Context, args types.SpawnArgs) (types.Session, error) {
 	return e.Start(ctx, args)
 }
+
+// StartInteractiveSession implements types.InteractiveSessionFactory. It creates a
+// ConPTY session whose stdout is safe to read exclusively from the caller — no
+// background reader goroutine is started (session.NewInteractiveSession).
+//
+// Use this for bidirectional TUI passthrough (runInteractiveSession) where the
+// caller owns the stdout reader exclusively. Do NOT use for request/response
+// Send/Stream flows — use StartSession for those.
+func (e *Executor) StartInteractiveSession(ctx context.Context, args types.SpawnArgs) (types.InteractivePipes, error) {
+	if !e.available {
+		return nil, types.NewExecutorError("ConPTY not available on this platform", nil, "")
+	}
+
+	handle, err := openWindowsConPTY(ctx, openParams{
+		command: args.Command,
+		args:    args.Args,
+		cwd:     args.CWD,
+		envList: args.EnvList,
+		envMap:  args.Env,
+	})
+	if err != nil {
+		return nil, types.NewExecutorError(
+			fmt.Sprintf("ConPTY interactive session start failed for %s", args.Command), err, "")
+	}
+
+	inactivity := time.Duration(args.InactivitySeconds) * time.Second
+	if args.InactivitySeconds <= 0 {
+		inactivity = defaultConPTYInactivitySeconds * time.Second
+	}
+
+	ph := handle.ProcessHandle()
+
+	// NewInteractiveSession skips the background reader goroutine so the caller
+	// (runInteractiveSession) can read stdout exclusively without races.
+	sess := session.NewInteractiveSession(
+		"",
+		handle.Stdin(),
+		handle.Stdout(),
+		inactivity,
+		ph,
+		conptySessionPM,
+	)
+	return sess, nil
+}

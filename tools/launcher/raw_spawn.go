@@ -38,9 +38,11 @@ const rawSpawnMaxLineBytes = 1024 * 1024
 // runRawCLI executes spawnArgs as a subprocess via SharedPM, inserts TeeReaders
 // on stdout and stderr to capture raw bytes pre-StripANSI, and emits events through sink.
 //
-//   - ctx     — deadline/timeout context → exit code 124 on expiry
-//   - sigCtx  — signal-cancel context (Ctrl+C / SIGTERM) → exit code 130 on expiry
-func runRawCLI(ctx context.Context, sigCtx context.Context, spawnArgs types.SpawnArgs, sink EventSink) (int, error) {
+//   - ctx      — deadline/timeout context → exit code 124 on expiry
+//   - sigCtx   — signal-cancel context (Ctrl+C / SIGTERM) → exit code 130 on expiry
+//   - onOutput — optional callback invoked after each stripped stdout/stderr line (nil = no-op).
+//     Used by --diag mode to update the heartbeat state so idle intervals reflect real output.
+func runRawCLI(ctx context.Context, sigCtx context.Context, spawnArgs types.SpawnArgs, sink EventSink, onOutput func()) (int, error) {
 	start := time.Now()
 
 	cmd := exec.Command(spawnArgs.Command, spawnArgs.Args...)
@@ -75,10 +77,10 @@ func runRawCLI(ctx context.Context, sigCtx context.Context, spawnArgs types.Spaw
 	// stdout pipeline — collect stripped lines for pattern matching
 	var stdoutLines []string
 	var stdoutMu sync.Mutex
-	startStreamPair(&wg, sink, handle.Stdout, KindStdout, &stdoutLines, &stdoutMu)
+	startStreamPair(&wg, sink, handle.Stdout, KindStdout, &stdoutLines, &stdoutMu, onOutput)
 
 	// stderr pipeline — lines discarded after emit (no pattern matching on stderr)
-	startStreamPair(&wg, sink, handle.Stderr, KindStderr, nil, nil)
+	startStreamPair(&wg, sink, handle.Stderr, KindStderr, nil, nil, onOutput)
 
 	// Done channel signals watchPattern to exit when the process ends.
 	watchDone := make(chan struct{})
@@ -123,7 +125,11 @@ func runRawCLI(ctx context.Context, sigCtx context.Context, spawnArgs types.Spaw
 	case <-ctx.Done():
 		executor.SharedPM.Kill(handle)
 		wg.Wait()
-		exitCode = 130
+		if ctx.Err() == context.DeadlineExceeded {
+			exitCode = 124
+		} else {
+			exitCode = 130
+		}
 	case <-sigCtx.Done():
 		executor.SharedPM.Kill(handle)
 		wg.Wait()
@@ -138,6 +144,8 @@ func runRawCLI(ctx context.Context, sigCtx context.Context, spawnArgs types.Spaw
 // startStreamPair wires a TeeReader split for one stream (stdout or stderr).
 // It launches two goroutines — one for raw hex events and one for stripped line events.
 // If lines/mu are non-nil, stripped lines are appended to *lines for pattern matching.
+// onLine is called after each stripped-line emit (nil = no-op); used by --diag mode to
+// update heartbeat state so idle intervals reflect actual subprocess output.
 func startStreamPair(
 	wg *sync.WaitGroup,
 	sink EventSink,
@@ -145,6 +153,7 @@ func startStreamPair(
 	kind string,
 	lines *[]string,
 	mu *sync.Mutex,
+	onLine func(),
 ) {
 	rawPR, rawPW := io.Pipe()
 	teeOut := io.TeeReader(src, rawPW)
@@ -177,6 +186,9 @@ func startStreamPair(
 				mu.Lock()
 				*lines = append(*lines, line)
 				mu.Unlock()
+			}
+			if onLine != nil {
+				onLine()
 			}
 		}
 	}()

@@ -66,6 +66,57 @@ func TestCLIPTYAdapter_SessionBound_DispatchesViaSession(t *testing.T) {
 	}
 }
 
+// TestCLIPTYAdapter_SendStream_PerLineChunks verifies that SendStream delivers one
+// Chunk per output line (Done=false) followed by a terminal Chunk with Done=true.
+// Anti-stub: replacing OnOutput wiring would produce a single Done=true chunk,
+// failing the len(received) == len(outputLines)+1 assertion.
+func TestCLIPTYAdapter_SendStream_PerLineChunks(t *testing.T) {
+	t.Parallel()
+
+	lines := []string{"x1", "x2"}
+	mock := &mockLegacyExecutor{
+		outputLines: lines,
+		result:      &types.Result{Content: "x1\nx2\n", ExitCode: 0},
+	}
+
+	adapter := executor.NewCLIPTYAdapter(mock)
+
+	var received []types.Chunk
+	resp, err := adapter.SendStream(context.Background(), types.Message{Content: "test"}, func(c types.Chunk) {
+		received = append(received, c)
+	})
+
+	if err != nil {
+		t.Fatalf("SendStream: unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+
+	wantTotal := len(lines) + 1
+	if len(received) != wantTotal {
+		t.Fatalf("received %d chunks, want %d", len(received), wantTotal)
+	}
+
+	for i, line := range lines {
+		c := received[i]
+		if c.Done {
+			t.Errorf("chunk[%d] Done=true, want false", i)
+		}
+		if c.Content != line+"\n" {
+			t.Errorf("chunk[%d] Content=%q, want %q", i, c.Content, line+"\n")
+		}
+	}
+
+	if !received[len(received)-1].Done {
+		t.Error("last chunk Done=false, want true")
+	}
+
+	if mock.runCalls != 1 {
+		t.Errorf("legacy.Run called %d times, want 1", mock.runCalls)
+	}
+}
+
 // TestCLIPTYAdapter_Info verifies the static ExecutorInfo returned by the adapter.
 func TestCLIPTYAdapter_Info(t *testing.T) {
 	t.Parallel()
@@ -81,8 +132,8 @@ func TestCLIPTYAdapter_Info(t *testing.T) {
 	if info.Type != types.ExecutorTypeCLI {
 		t.Errorf("Info().Type = %v, want ExecutorTypeCLI", info.Type)
 	}
-	if info.Capabilities.Streaming {
-		t.Error("Info().Capabilities.Streaming = true, want false")
+	if !info.Capabilities.Streaming {
+		t.Error("Info().Capabilities.Streaming = false, want true (per-line streaming enabled)")
 	}
 	if !info.Capabilities.PersistentSessions {
 		t.Error("Info().Capabilities.PersistentSessions = false, want true (M6 implemented)")

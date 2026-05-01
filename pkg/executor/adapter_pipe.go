@@ -14,14 +14,17 @@ var _ types.ExecutorV2 = (*CLIPipeAdapter)(nil)
 // an ExecutorV2. It accepts the interface to avoid an import cycle:
 // pkg/executor/pipe imports pkg/executor for IOManager and process helpers.
 // Pipe execution is inherently stateless — each Send spawns a fresh process.
-// SendStream is emulated by calling Send and delivering the full response as a
-// single terminal chunk (Done=true), because the pipe executor buffers all output.
+//
+// SendStream now forwards per-line stripped output through onChunk as the
+// underlying IOManager reads them (via SpawnArgs.OnOutput); the final chunk
+// has Done=true. Session-bound mode preserves the collected-response behaviour
+// (single Done=true chunk) because sessions have no IOManager hook.
 //
 // When session is non-nil the adapter operates in session-bound mode:
 // Send() dispatches via session.Send() instead of legacy.Run() (FR-2, AIMUX-14).
 //
 // Capabilities:
-//   - Streaming: false — output is collected and returned in one Response.
+//   - Streaming: true — per-line output forwarded through onChunk as it arrives.
 //   - PersistentSessions: true — pipe.Start() implements multi-turn sessions.
 //
 // Thread safety: CLIPipeAdapter is safe for concurrent use; Run() spawns an
@@ -53,7 +56,7 @@ func (a *CLIPipeAdapter) Info() types.ExecutorInfo {
 		Type: types.ExecutorTypeCLI,
 		Capabilities: types.ExecutorCapabilities{
 			PersistentSessions: true,
-			Streaming:          false,
+			Streaming:          true,
 		},
 	}
 }
@@ -89,7 +92,7 @@ func (a *CLIPipeAdapter) Send(ctx context.Context, msg types.Message) (*types.Re
 
 	// SystemPrompt: prepend to stdin so the CLI receives full context.
 	if msg.SystemPrompt != "" && args.Stdin == msg.Content {
-		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, msg.Content)
+		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, args.Stdin)
 	}
 
 	result, err := a.legacy.Run(ctx, args)
@@ -99,15 +102,43 @@ func (a *CLIPipeAdapter) Send(ctx context.Context, msg types.Message) (*types.Re
 	return resultToResponse(result), nil
 }
 
-// SendStream calls Send and delivers the complete response as a single chunk
-// with Done=true. Pipe executor does not support incremental streaming.
+// SendStream forwards per-line stripped output through onChunk as the underlying
+// process produces it, then emits a final chunk with Done=true.
+//
+// Stateless path: SpawnArgs.OnOutput is populated so that IOManager delivers each
+// new line to onChunk in real time before the process exits. The final Done=true
+// chunk is emitted after legacy.Run returns.
+//
+// Session-bound path: the session has no IOManager hook; the full response is
+// collected by session.Send and delivered as a single Done=true chunk (same as
+// the previous behaviour — multi-turn streaming is a separate phase).
 func (a *CLIPipeAdapter) SendStream(ctx context.Context, msg types.Message, onChunk func(types.Chunk)) (*types.Response, error) {
-	resp, err := a.Send(ctx, msg)
+	// Session-bound mode: no per-line hook available — fall back to collected chunk.
+	if a.session != nil {
+		resp, err := a.Send(ctx, msg)
+		if err != nil {
+			return nil, err
+		}
+		onChunk(types.Chunk{Content: resp.Content, Done: true})
+		return resp, nil
+	}
+
+	// Stateless path: wire OnOutput so IOManager forwards each line as it arrives.
+	args := messageToSpawnArgs(msg)
+	if msg.SystemPrompt != "" && args.Stdin == msg.Content {
+		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, args.Stdin)
+	}
+	args.OnOutput = func(line string) {
+		onChunk(types.Chunk{Content: line + "\n", Done: false})
+	}
+
+	result, err := a.legacy.Run(ctx, args)
+	// Emit the terminal Done marker regardless of error.
+	onChunk(types.Chunk{Done: true})
 	if err != nil {
 		return nil, err
 	}
-	onChunk(types.Chunk{Content: resp.Content, Done: true})
-	return resp, nil
+	return resultToResponse(result), nil
 }
 
 // IsAlive returns HealthAlive when the adapter is session-bound and the session

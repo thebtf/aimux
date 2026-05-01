@@ -88,6 +88,11 @@ type BaseSession struct {
 // New creates a BaseSession wrapping the given stdin/stdout pair and starts the
 // lifetime reader goroutine.
 //
+// Use New for request/response sessions (Send/Stream calls). For interactive
+// sessions that need raw Stdout() access use NewInteractiveSession instead —
+// New's background goroutine would race with any external reader on the same
+// ReadCloser.
+//
 // Parameters:
 //   - id: session identifier; if empty, a random UUID is generated.
 //   - stdin: writable end of the process's stdin pipe.
@@ -183,8 +188,65 @@ func New(
 	return s
 }
 
+// NewInteractiveSession creates a BaseSession for bidirectional interactive
+// (TUI) use. Unlike New, it does NOT start the lifetime reader goroutine, so
+// Stdout() may be read exclusively by the caller (e.g. runInteractiveSession).
+//
+// Send and Stream MUST NOT be called on a session created with
+// NewInteractiveSession — there is no background reader to service readCh.
+// Use the raw Stdin()/Stdout() accessors instead.
+//
+// Parameters are identical to New except completionPattern (not applicable to
+// interactive sessions).
+func NewInteractiveSession(
+	id string,
+	stdin io.WriteCloser,
+	stdout io.ReadCloser,
+	inactivityTimeout time.Duration,
+	handle *executor.ProcessHandle,
+	pm *executor.ProcessManager,
+) *BaseSession {
+	if id == "" {
+		id = uuid.NewString()
+	}
+	readerDone := make(chan struct{})
+	// No background reader goroutine is started; close readerDone immediately
+	// so Close() does not block waiting for a goroutine that never ran.
+	close(readerDone)
+	return &BaseSession{
+		id:                id,
+		stdin:             stdin,
+		stdout:            stdout,
+		handle:            handle,
+		pm:                pm,
+		inactivityTimeout: inactivityTimeout,
+		readCh:            make(chan readChunk, 32),
+		readerDone:        readerDone,
+		stopCh:            make(chan struct{}),
+	}
+}
+
+// Compile-time assertion: BaseSession must satisfy types.SessionPipes.
+var _ types.SessionPipes = (*BaseSession)(nil)
+
 // ID returns the session identifier.
 func (s *BaseSession) ID() string { return s.id }
+
+// Stdin returns a writer for raw input bytes to the underlying process.
+//
+// WARNING: Using Stdin/Stdout concurrently with Send/Stream causes undefined
+// behaviour — the interactive loop becomes the exclusive owner of the I/O
+// handles. Do not mix the two access patterns on the same session.
+func (s *BaseSession) Stdin() io.Writer { return s.stdin }
+
+// Stdout returns a reader for raw output bytes from the underlying process.
+//
+// The reader is shared: if the lifetime reader goroutine (started in New) is
+// still running it owns the underlying ReadCloser exclusively via bufio.Scanner.
+// Callers that need the raw reader MUST bypass Send/Stream entirely and manage
+// reads themselves. The interactive loop in tools/launcher/interactive.go is
+// the sole intended consumer.
+func (s *BaseSession) Stdout() io.Reader { return s.stdout }
 
 // Send writes prompt to stdin and reads the response via the lifetime reader.
 //

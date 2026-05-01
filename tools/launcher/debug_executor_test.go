@@ -91,7 +91,7 @@ func TestDebugExecutor_Send_EmitsExpectedEvents(t *testing.T) {
 	}
 
 	sink := &captureSink{}
-	dbg := newDebugExecutor(fake, sink, "codex", newTestBreakers(), newTestCooldown())
+	dbg := newDebugExecutor(fake, sink, "codex", newTestBreakers(), newTestCooldown(), false)
 
 	resp, err := dbg.Send(context.Background(), makeTestMessage())
 	if err != nil {
@@ -180,7 +180,7 @@ func TestDebugExecutor_Send_ErrorPath(t *testing.T) {
 			}
 
 			sink := &captureSink{}
-			dbg := newDebugExecutor(fake, sink, "codex", newTestBreakers(), newTestCooldown())
+			dbg := newDebugExecutor(fake, sink, "codex", newTestBreakers(), newTestCooldown(), false)
 			_, _ = dbg.Send(context.Background(), makeTestMessage())
 
 			var clp classifyPayload
@@ -215,7 +215,7 @@ func TestDebugExecutor_SendStream_EmitsChunks(t *testing.T) {
 	}
 
 	sink := &captureSink{}
-	dbg := newDebugExecutor(fake, sink, "codex", newTestBreakers(), newTestCooldown())
+	dbg := newDebugExecutor(fake, sink, "codex", newTestBreakers(), newTestCooldown(), false)
 
 	var received []types.Chunk
 	resp, err := dbg.SendStream(context.Background(), makeTestMessage(), func(c types.Chunk) {
@@ -273,7 +273,7 @@ func TestDebugExecutor_PassThroughInfoIsAliveClose(t *testing.T) {
 	}
 
 	sink := &captureSink{}
-	dbg := newDebugExecutor(fake, sink, "codex", nil, nil)
+	dbg := newDebugExecutor(fake, sink, "codex", nil, nil, false)
 
 	info := dbg.Info()
 	if info.Name != "pipe" {

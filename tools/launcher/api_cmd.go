@@ -105,7 +105,9 @@ func runAPI(args []string) int {
 	cooldownTracker := executor.NewModelCooldownTracker()
 	// Use "api:<provider>" as the cliName so the breaker registry and JSONL events
 	// carry a meaningful identifier even though this is not a CLI executor.
-	dbgExec := newDebugExecutor(innerExec, sink, "api:"+*provider, breakerReg, cooldownTracker)
+	// API executors do not implement LegacyAccessor, so diag=false always falls
+	// through to the standard path inside debugExecutor.Send.
+	dbgExec := newDebugExecutor(innerExec, sink, "api:"+*provider, breakerReg, cooldownTracker, false)
 
 	sendMsg := types.Message{Content: *prompt}
 

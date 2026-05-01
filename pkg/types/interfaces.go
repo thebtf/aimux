@@ -2,6 +2,7 @@ package types
 
 import (
 	"context"
+	"io"
 	"time"
 )
 
@@ -77,6 +78,28 @@ type Session interface {
 	PID() int
 }
 
+// SessionPipes is an OPTIONAL side-interface that Session implementations MAY
+// satisfy to expose direct stdin/stdout access for interactive (TUI) mode.
+//
+// Pipe-based sessions (BaseSession over plain stdin/stdout pipes) implement
+// this trivially. ConPTY/PTY sessions wrap a pseudo-console; their handles
+// satisfy io.Writer (stdin) and io.Reader (stdout) via the same shape.
+//
+// Callers MUST type-assert; absence of this interface means the Session
+// supports only request/response via Send/Stream.
+//
+// WARNING: Sessions exposed via SessionPipes lose Send/Stream correctness —
+// the interactive loop now owns reader/writer exclusively. Do NOT use Send and
+// Stdin/Stdout concurrently on the same session.
+type SessionPipes interface {
+	// Stdin returns a writer for raw input bytes to the underlying process.
+	Stdin() io.Writer
+	// Stdout returns a reader for raw output bytes from the underlying process.
+	// The reader is shared — multiple consumers will conflict; only the launcher
+	// interactive loop is expected to read.
+	Stdout() io.Reader
+}
+
 // SessionFactory is an OPTIONAL side-interface that ExecutorV2 implementations
 // MAY satisfy to expose persistent-session capability beyond the stateless Run()
 // surface. Callers MUST gate StartSession() invocation on a capability check via
@@ -88,6 +111,28 @@ type Session interface {
 // a Session bound to a live subprocess; caller owns lifecycle (Close).
 type SessionFactory interface {
 	StartSession(ctx context.Context, args SpawnArgs) (Session, error)
+}
+
+// InteractivePipes combines Session lifecycle (ID, Close, Alive, PID) with raw
+// byte I/O (Stdin, Stdout). Returned by InteractiveSessionFactory.StartInteractiveSession.
+//
+// Implementations MUST NOT start a background stdout reader goroutine — the
+// interactive loop (runInteractiveSession) owns stdout exclusively.
+type InteractivePipes interface {
+	Session
+	SessionPipes
+}
+
+// InteractiveSessionFactory is an OPTIONAL side-interface for executor backends
+// that support bidirectional interactive (TUI) sessions. Unlike SessionFactory,
+// which starts a session with a background reader goroutine (owned by Send/Stream),
+// StartInteractiveSession returns a session whose Stdout() is safe to read
+// exclusively from the caller — no lifetime reader goroutine races on the pipe.
+//
+// Callers (e.g. runInteractiveSession) MUST assert this interface and fall back
+// to the regular SessionFactory + runREPL path when it is not available.
+type InteractiveSessionFactory interface {
+	StartInteractiveSession(ctx context.Context, args SpawnArgs) (InteractivePipes, error)
 }
 
 // LegacyAccessor is implemented by ExecutorV2 adapters that wrap a LegacyExecutor.

@@ -221,6 +221,56 @@ func (e *Executor) StartSession(ctx context.Context, args types.SpawnArgs) (type
 	return e.Start(ctx, args)
 }
 
+// StartInteractiveSession implements types.InteractiveSessionFactory. It creates a
+// PTY session whose stdout is safe to read exclusively from the caller — no
+// background reader goroutine is started (session.NewInteractiveSession).
+//
+// Use this for bidirectional TUI passthrough (runInteractiveSession) where the
+// caller owns the stdout reader exclusively. Do NOT use for request/response
+// Send/Stream flows — use StartSession for those.
+func (e *Executor) StartInteractiveSession(ctx context.Context, args types.SpawnArgs) (types.InteractivePipes, error) {
+	if !e.available {
+		return nil, types.NewExecutorError("PTY not available on this platform", nil, "")
+	}
+
+	cmd := exec.Command(args.Command, args.Args...)
+	cmd.Dir = args.CWD
+	switch {
+	case len(args.EnvList) > 0:
+		cmd.Env = args.EnvList
+	case len(args.Env) > 0:
+		cmd.Env = os.Environ()
+		for k, v := range args.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return nil, types.NewExecutorError(
+			fmt.Sprintf("PTY interactive session start failed for %s", args.Command), err, "")
+	}
+
+	inactivity := time.Duration(args.InactivitySeconds) * time.Second
+	if args.InactivitySeconds <= 0 {
+		inactivity = defaultPTYInactivitySeconds * time.Second
+	}
+
+	// NewInteractiveSession skips the background reader goroutine so the caller
+	// (runInteractiveSession) can read stdout exclusively without races.
+	// ptySession wrapper is not needed here — runInteractiveSession owns lifecycle
+	// via SessionPipes and does not call Send/Stream/Alive/PID.
+	sess := session.NewInteractiveSession(
+		"",
+		ptmxWriter{ptmx},
+		ptmxReader{ptmx},
+		inactivity,
+		nil,
+		nil,
+	)
+	return sess, nil
+}
+
 // ptyHandle holds the cmd and ptmx for a PTY session.
 type ptyHandle struct {
 	cmd  *exec.Cmd

@@ -41,6 +41,34 @@ func (m *mockSession) Close() error {
 func (m *mockSession) Alive() bool { return m.aliveResult }
 func (m *mockSession) PID() int    { return 12345 }
 
+// mockLegacyExecutor is a test double implementing types.LegacyExecutor.
+// Run() fires the OnOutput callback for each configured output line, then
+// returns the configured Result.  Used to verify per-line SendStream behaviour
+// without spawning a real subprocess.
+type mockLegacyExecutor struct {
+	outputLines []string     // lines delivered via SpawnArgs.OnOutput
+	result      *types.Result
+	runErr      error
+	runCalls    int
+}
+
+func (m *mockLegacyExecutor) Run(_ context.Context, args types.SpawnArgs) (*types.Result, error) {
+	m.runCalls++
+	for _, line := range m.outputLines {
+		if args.OnOutput != nil {
+			args.OnOutput(line)
+		}
+	}
+	return m.result, m.runErr
+}
+
+func (m *mockLegacyExecutor) Start(_ context.Context, _ types.SpawnArgs) (types.Session, error) {
+	return nil, nil
+}
+
+func (m *mockLegacyExecutor) Name() string      { return "mock" }
+func (m *mockLegacyExecutor) Available() bool   { return true }
+
 // TestCLIPipeAdapter_CompileCheck verifies that CLIPipeAdapter satisfies
 // ExecutorV2 at compile time (redundant with the package-level var _ check,
 // but acts as an explicit, searchable test assertion).
@@ -99,6 +127,63 @@ func TestCLIPipeAdapter_SessionBound_DispatchesViaSession(t *testing.T) {
 	}
 }
 
+// TestCLIPipeAdapter_SendStream_PerLineChunks verifies that SendStream delivers one
+// Chunk per output line (Done=false) followed by a terminal Chunk with Done=true.
+// Anti-stub: replacing OnOutput wiring would produce a single Done=true chunk,
+// failing the len(received) == len(outputLines)+1 assertion.
+func TestCLIPipeAdapter_SendStream_PerLineChunks(t *testing.T) {
+	t.Parallel()
+
+	lines := []string{"line one", "line two", "line three"}
+	mock := &mockLegacyExecutor{
+		outputLines: lines,
+		result:      &types.Result{Content: "line one\nline two\nline three\n", ExitCode: 0},
+	}
+
+	adapter := executor.NewCLIPipeAdapter(mock)
+
+	var received []types.Chunk
+	resp, err := adapter.SendStream(context.Background(), types.Message{Content: "test"}, func(c types.Chunk) {
+		received = append(received, c)
+	})
+
+	if err != nil {
+		t.Fatalf("SendStream: unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+
+	// Expect N per-line chunks + 1 terminal Done=true chunk.
+	wantTotal := len(lines) + 1
+	if len(received) != wantTotal {
+		t.Fatalf("received %d chunks, want %d (per-line + terminal)", len(received), wantTotal)
+	}
+
+	// Verify per-line chunks carry correct content and Done=false.
+	for i, line := range lines {
+		c := received[i]
+		if c.Done {
+			t.Errorf("chunk[%d] Done=true, want false (intermediate chunk)", i)
+		}
+		wantContent := line + "\n"
+		if c.Content != wantContent {
+			t.Errorf("chunk[%d] Content=%q, want %q", i, c.Content, wantContent)
+		}
+	}
+
+	// Last chunk must be terminal.
+	last := received[len(received)-1]
+	if !last.Done {
+		t.Error("last chunk Done=false, want true")
+	}
+
+	// RunCalls must be exactly 1 (not zero — that would indicate a stub bypassing Run).
+	if mock.runCalls != 1 {
+		t.Errorf("legacy.Run called %d times, want 1", mock.runCalls)
+	}
+}
+
 // TestCLIPipeAdapter_Info verifies that Info() returns the correct ExecutorInfo.
 func TestCLIPipeAdapter_Info(t *testing.T) {
 	t.Parallel()
@@ -115,7 +200,7 @@ func TestCLIPipeAdapter_Info(t *testing.T) {
 	if !info.Capabilities.PersistentSessions {
 		t.Error("Info().Capabilities.PersistentSessions should be true")
 	}
-	if info.Capabilities.Streaming {
-		t.Error("Info().Capabilities.Streaming should be false for pipe executor")
+	if !info.Capabilities.Streaming {
+		t.Error("Info().Capabilities.Streaming should be true for pipe executor (per-line streaming enabled)")
 	}
 }

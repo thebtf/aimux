@@ -1,24 +1,20 @@
 // Package main — debug_executor.go implements the L1 ExecutorV2 decorator.
 //
 // debugExecutor wraps any types.ExecutorV2 and emits structured JSONL events
-// before and after each Send/SendStream call.  The decorator is backend-agnostic:
-// it works identically over CLI adapters (pipe/conpty/pty) and HTTP API executors
-// (OpenAI/Anthropic/Google AI).
+// before and after each Send/SendStream call.  Works identically over CLI
+// adapters (pipe/conpty/pty) and HTTP API executors.
 //
-// Event sequence per Send call:
-//
-//	spawn_args  — resolved args / executor info, emitted before inner.Send
-//	complete    — full Response (content, exit code, tokens, duration), after return
-//	classify    — ErrorClass determined from response content + exit code
-//	breaker_state  — optional; emitted when a BreakerRegistry is provided
-//	cooldown_state — optional; emitted when a ModelCooldownTracker is provided
-//
-// SendStream mirrors the same sequence plus a chunk event per streaming fragment.
+// Event sequence per Send: spawn_args → complete → classify → breaker_state?
+// → cooldown_state?  SendStream adds a chunk event per streaming fragment.
+// diag=true routes Send through sendViaSendStream (debug_diag.go) for
+// realtime per-line output without bypassing the adapter via LegacyAccessor.
 package main
 
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor"
@@ -63,19 +59,23 @@ func errorClassName(c executor.ErrorClass) string {
 type debugExecutor struct {
 	inner    types.ExecutorV2
 	sink     EventSink
-	cliName  string // used for breaker registry lookup; empty for API executors
-	breakers *executor.BreakerRegistry    // optional; nil → no breaker_state events
-	cooldown types.ModelCooldownTracker   // optional; nil → no cooldown_state events
+	cliName  string                     // used for breaker registry lookup; empty for API executors
+	breakers *executor.BreakerRegistry  // optional; nil → no breaker_state events
+	cooldown types.ModelCooldownTracker // optional; nil → no cooldown_state events
+	diag     bool                       // when true, route Send through SendStream for realtime per-line output
 }
 
 // newDebugExecutor wraps inner in a debugExecutor.  Provide breakers and
 // cooldown when available for richer event output; both may be nil.
+// diag=true routes Send through SendStream so per-line adapter output reaches
+// stderr and the JSONL log in real time (no LegacyAccessor bypass required).
 func newDebugExecutor(
 	inner types.ExecutorV2,
 	sink EventSink,
 	cliName string,
 	breakers *executor.BreakerRegistry,
 	cooldown types.ModelCooldownTracker,
+	diag bool,
 ) *debugExecutor {
 	return &debugExecutor{
 		inner:    inner,
@@ -83,6 +83,7 @@ func newDebugExecutor(
 		cliName:  cliName,
 		breakers: breakers,
 		cooldown: cooldown,
+		diag:     diag,
 	}
 }
 
@@ -205,10 +206,14 @@ func (d *debugExecutor) emitCooldownState() {
 	})
 }
 
-// Send emits spawn_args before delegating to inner.Send, then emits complete +
-// classify + optional breaker_state + optional cooldown_state after the call
-// returns.  The inner error and response are returned unmodified.
+// Send emits spawn_args → inner.Send → complete + classify + optional state events.
+// When d.diag is true the call is routed through sendViaSendStream (debug_diag.go)
+// for realtime per-line output; aggregated content is returned as a single Response.
 func (d *debugExecutor) Send(ctx context.Context, msg types.Message) (*types.Response, error) {
+	if d.diag {
+		return d.sendViaSendStream(ctx, msg)
+	}
+
 	d.emitSpawnArgs(msg)
 
 	start := time.Now()
@@ -223,10 +228,10 @@ func (d *debugExecutor) Send(ctx context.Context, msg types.Message) (*types.Res
 	return resp, err
 }
 
-// SendStream emits spawn_args before delegating to inner.SendStream.  Each
-// streaming chunk is forwarded to onChunk and mirrored to the sink as a chunk
-// event.  After the stream completes, complete + classify + optional state
-// events are emitted.
+// SendStream emits spawn_args, forwards each chunk to onChunk and the sink,
+// then emits complete + classify + optional state events.  When d.diag is true
+// each non-empty chunk is also printed to stderr and a heartbeat goroutine fires
+// on idle intervals.
 func (d *debugExecutor) SendStream(ctx context.Context, msg types.Message, onChunk func(types.Chunk)) (*types.Response, error) {
 	d.emitSpawnArgs(msg)
 
@@ -237,7 +242,25 @@ func (d *debugExecutor) SendStream(ctx context.Context, msg types.Message, onChu
 		streamLabel = "cli_line"
 	}
 
+	start := time.Now()
+
+	// Diag mode: attach heartbeat + stderr per-chunk print.
+	var hs *heartbeatState
+	var stopHB chan struct{}
+	if d.diag {
+		hs = newHeartbeatState(start)
+		stopHB = startHeartbeat(d.sink, hs)
+	}
+
 	wrappedChunk := func(c types.Chunk) {
+		if d.diag && c.Content != "" {
+			elapsed := time.Since(start)
+			fmt.Fprintf(os.Stderr, "[+%.1fs] %s", elapsed.Seconds(), c.Content)
+			if !strings.HasSuffix(c.Content, "\n") {
+				fmt.Fprintln(os.Stderr)
+			}
+			hs.touch()
+		}
 		d.sink.Emit(KindChunk, chunkPayload{
 			Content: c.Content,
 			Done:    c.Done,
@@ -248,9 +271,12 @@ func (d *debugExecutor) SendStream(ctx context.Context, msg types.Message, onChu
 		}
 	}
 
-	start := time.Now()
 	resp, err := d.inner.SendStream(ctx, msg, wrappedChunk)
 	elapsed := time.Since(start)
+
+	if stopHB != nil {
+		close(stopHB)
+	}
 
 	d.emitComplete(resp, err, elapsed)
 	d.emitClassify(resp, err)

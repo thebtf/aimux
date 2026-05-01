@@ -46,7 +46,7 @@ func TestRawSpawn_TeeReaderCapturesBytesPreStrip(t *testing.T) {
 	sink := &captureSink{}
 	ctx := context.Background()
 
-	exitCode, err := runRawCLI(ctx, ctx, echoSpawnArgs("test"), sink)
+	exitCode, err := runRawCLI(ctx, ctx, echoSpawnArgs("test"), sink, nil)
 	if err != nil {
 		t.Fatalf("runRawCLI: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestRawSpawn_LineSplit(t *testing.T) {
 	sink := &captureSink{}
 	ctx := context.Background()
 
-	exitCode, err := runRawCLI(ctx, ctx, echoSpawnArgs("hello"), sink)
+	exitCode, err := runRawCLI(ctx, ctx, echoSpawnArgs("hello"), sink, nil)
 	if err != nil {
 		t.Fatalf("runRawCLI: %v", err)
 	}

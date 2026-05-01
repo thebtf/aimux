@@ -25,8 +25,8 @@ func TestCLIConPTYAdapter_Info(t *testing.T) {
 	if !info.Capabilities.PersistentSessions {
 		t.Error("Info().Capabilities.PersistentSessions = false, want true (M6 implemented)")
 	}
-	if info.Capabilities.Streaming {
-		t.Error("Info().Capabilities.Streaming = true, want false")
+	if !info.Capabilities.Streaming {
+		t.Error("Info().Capabilities.Streaming = false, want true (per-line streaming enabled)")
 	}
 }
 
@@ -39,6 +39,57 @@ func TestCLIConPTYAdapter_CompileCheck(t *testing.T) {
 
 	// Interface assignment — if this compiles, the contract is satisfied.
 	var _ types.ExecutorV2 = adapter
+}
+
+// TestCLIConPTYAdapter_SendStream_PerLineChunks verifies that SendStream delivers one
+// Chunk per output line (Done=false) followed by a terminal Chunk with Done=true.
+// Anti-stub: replacing OnOutput wiring would produce a single Done=true chunk,
+// failing the len(received) == len(outputLines)+1 assertion.
+func TestCLIConPTYAdapter_SendStream_PerLineChunks(t *testing.T) {
+	lines := []string{"alpha", "beta", "gamma"}
+	mock := &mockLegacyExecutor{
+		outputLines: lines,
+		result:      &types.Result{Content: "alpha\nbeta\ngamma\n", ExitCode: 0},
+	}
+
+	adapter := executor.NewCLIConPTYAdapter(mock)
+
+	var received []types.Chunk
+	resp, err := adapter.SendStream(context.Background(), types.Message{Content: "test"}, func(c types.Chunk) {
+		received = append(received, c)
+	})
+
+	if err != nil {
+		t.Fatalf("SendStream: unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+
+	wantTotal := len(lines) + 1
+	if len(received) != wantTotal {
+		t.Fatalf("received %d chunks, want %d (per-line + terminal)", len(received), wantTotal)
+	}
+
+	for i, line := range lines {
+		c := received[i]
+		if c.Done {
+			t.Errorf("chunk[%d] Done=true, want false", i)
+		}
+		wantContent := line + "\n"
+		if c.Content != wantContent {
+			t.Errorf("chunk[%d] Content=%q, want %q", i, c.Content, wantContent)
+		}
+	}
+
+	last := received[len(received)-1]
+	if !last.Done {
+		t.Error("last chunk Done=false, want true")
+	}
+
+	if mock.runCalls != 1 {
+		t.Errorf("legacy.Run called %d times, want 1", mock.runCalls)
+	}
 }
 
 // TestCLIConPTYAdapter_SessionBound_DispatchesViaSession verifies that when a CLIConPTYAdapter
