@@ -23,8 +23,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/executor"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -82,6 +85,7 @@ func runCLI(args []string) int {
 	effort := fs.String("effort", "", "reasoning effort override (empty = profile default)")
 	cwd := fs.String("cwd", "", "working directory for the spawned process (empty = inherit)")
 	execChoice := fs.String("executor", "pipe", "executor backend: pipe|conpty|pty|auto (default pipe — deterministic for headless CLIs)")
+	logPath := fs.String("log", "", "path to append JSONL events (empty = no log)")
 
 	if err := fs.Parse(args); err != nil {
 		// flag.ContinueOnError already printed the error.
@@ -99,18 +103,44 @@ func runCLI(args []string) int {
 		return 2
 	}
 
-	exec, spawnArgs, err := buildCLIBackend(*configDir, *cliName, *prompt, *model, *effort, *cwd, *execChoice)
+	// Signal-aware context: Ctrl+C or SIGTERM cancels sigCtx and triggers the
+	// error event + exit 130 path (per Clarification C3).
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Open the JSONL sink (or nop sink when --log is absent).
+	sink, sinkCloser, err := mkSink(*logPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "launcher cli: backend setup failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "launcher: open log %q: %v\n", *logPath, err)
+		return 1
+	}
+	defer func() { _ = sinkCloser.Close() }()
+
+	innerExec, spawnArgs, err := buildCLIBackend(*configDir, *cliName, *prompt, *model, *effort, *cwd, *execChoice)
+	if err != nil {
+		errMsg := fmt.Sprintf("backend setup failed: %v", err)
+		fmt.Fprintf(os.Stderr, "launcher cli: %s\n", errMsg)
+		sink.Emit(KindError, errorPayload{Source: "launcher", Message: errMsg})
 		return 1
 	}
 	defer func() {
-		if closeErr := exec.Close(); closeErr != nil {
+		if closeErr := innerExec.Close(); closeErr != nil {
 			fmt.Fprintf(os.Stderr, "launcher cli: executor close: %v\n", closeErr)
 		}
 	}()
 
-	msg := types.Message{
+	// Construct the L1 decorator.  Provide a fresh breaker registry and cooldown
+	// tracker so state events are always emitted (they will show defaults since
+	// this is a standalone session with no shared daemon state).
+	breakerReg := executor.NewBreakerRegistry(executor.BreakerConfig{
+		FailureThreshold: 3,
+		CooldownSeconds:  60,
+		HalfOpenMaxCalls: 1,
+	})
+	cooldownTracker := executor.NewModelCooldownTracker()
+	dbgExec := newDebugExecutor(innerExec, sink, *cliName, breakerReg, cooldownTracker)
+
+	sendMsg := types.Message{
 		Content:  *prompt,
 		Metadata: spawnArgsToMetadata(spawnArgs),
 	}
@@ -120,12 +150,24 @@ func runCLI(args []string) int {
 		timeout = time.Duration(spawnArgs.TimeoutSeconds) * time.Second
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(sigCtx, timeout)
 	defer cancel()
 
 	start := time.Now()
-	resp, err := exec.Send(ctx, msg)
+	resp, err := dbgExec.Send(ctx, sendMsg)
 	duration := time.Since(start)
+
+	// Check whether the cancellation was triggered by a signal (sigCtx done)
+	// vs a plain timeout.  Signal → exit 130 (POSIX SIGINT convention).
+	if sigCtx.Err() != nil {
+		sink.Emit(KindError, errorPayload{
+			Source:  "launcher",
+			Message: sigCtx.Err().Error(),
+			Signal:  "interrupt",
+		})
+		fmt.Fprintln(os.Stderr, "launcher: interrupted")
+		return 130
+	}
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "launcher cli: send failed: %v\n", err)
