@@ -290,12 +290,8 @@ type spawnPayload struct {
 	Command string `json:"command"`
 }
 
-// exitPayload records the subprocess exit event.
-// Emitted as kind="exit" when the subprocess terminates.
+// exitPayload records the subprocess exit event (kind="exit").
 type exitPayload struct {
-	// PID is the OS process identifier that exited.
-	PID int `json:"pid"`
-	// ExitCode is the process exit status.
-	ExitCode int `json:"exit_code"`
+	PID      int `json:"pid"`       // OS process identifier that exited
+	ExitCode int `json:"exit_code"` // process exit status
 }
-

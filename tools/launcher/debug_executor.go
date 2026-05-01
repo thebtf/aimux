@@ -157,6 +157,15 @@ func (d *debugExecutor) emitClassify(resp *types.Response, err error) {
 	}
 	if err != nil {
 		stderr = err.Error()
+		// ClassifyError treats exitCode==0 as None regardless of content
+		// (`pkg/executor/classify.go:86`). When Send returns a non-nil error,
+		// the call effectively failed; force a synthetic non-zero exit code so
+		// the classifier can examine the error text and produce a meaningful
+		// class (Quota / Fatal / Transient / Unknown). API-only paths return
+		// nil resp and rely on this branch.
+		if resp == nil && exitCode == 0 {
+			exitCode = 1
+		}
 	}
 
 	class := executor.ClassifyError(content, stderr, exitCode)
