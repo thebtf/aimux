@@ -77,6 +77,9 @@ func (a *CLIConPTYAdapter) Send(ctx context.Context, msg types.Message) (*types.
 
 	// Stateless path — byte-identical to original (AIMUX-13 FR-1).
 	spawnArgs := messageToSpawnArgs(msg)
+	if msg.SystemPrompt != "" && spawnArgs.Stdin == msg.Content {
+		spawnArgs.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, spawnArgs.Stdin)
+	}
 
 	result, err := a.legacy.Run(ctx, spawnArgs)
 	if err != nil {

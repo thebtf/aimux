@@ -125,7 +125,11 @@ func runRawCLI(ctx context.Context, sigCtx context.Context, spawnArgs types.Spaw
 	case <-ctx.Done():
 		executor.SharedPM.Kill(handle)
 		wg.Wait()
-		exitCode = 130
+		if ctx.Err() == context.DeadlineExceeded {
+			exitCode = 124
+		} else {
+			exitCode = 130
+		}
 	case <-sigCtx.Done():
 		executor.SharedPM.Kill(handle)
 		wg.Wait()
