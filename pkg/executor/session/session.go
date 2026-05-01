@@ -183,8 +183,27 @@ func New(
 	return s
 }
 
+// Compile-time assertion: BaseSession must satisfy types.SessionPipes.
+var _ types.SessionPipes = (*BaseSession)(nil)
+
 // ID returns the session identifier.
 func (s *BaseSession) ID() string { return s.id }
+
+// Stdin returns a writer for raw input bytes to the underlying process.
+//
+// WARNING: Using Stdin/Stdout concurrently with Send/Stream causes undefined
+// behaviour — the interactive loop becomes the exclusive owner of the I/O
+// handles. Do not mix the two access patterns on the same session.
+func (s *BaseSession) Stdin() io.Writer { return s.stdin }
+
+// Stdout returns a reader for raw output bytes from the underlying process.
+//
+// The reader is shared: if the lifetime reader goroutine (started in New) is
+// still running it owns the underlying ReadCloser exclusively via bufio.Scanner.
+// Callers that need the raw reader MUST bypass Send/Stream entirely and manage
+// reads themselves. The interactive loop in tools/launcher/interactive.go is
+// the sole intended consumer.
+func (s *BaseSession) Stdout() io.Reader { return s.stdout }
 
 // Send writes prompt to stdin and reads the response via the lifetime reader.
 //

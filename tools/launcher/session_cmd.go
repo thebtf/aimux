@@ -159,7 +159,17 @@ func runCLISession(
 	}
 	defer func() { _ = sess.Close() }()
 
-	// Build a sessionFactory closure for /reset support.
+	// ConPTY and PTY backends expose a real pseudo-terminal to the child process
+	// (isatty() == true).  CLIs that render a TUI (gemini, aider, codex chat) need
+	// bidirectional passthrough — bytes flow as they arrive in both directions.
+	// The request/response model in runREPL is designed for pipe (headless) mode
+	// and is the wrong fit here: it waits for Send to return before printing output,
+	// so the TUI never renders before operator stdin EOF closes the session.
+	if execChoice == "conpty" || execChoice == "pty" {
+		return runInteractiveSession(ctx, sess, sink, os.Stdout, os.Stdin)
+	}
+
+	// Build a sessionFactory closure for /reset support (pipe mode only).
 	sessionFactory := func() (types.Session, error) {
 		return factory.StartSession(ctx, spawnArgs)
 	}

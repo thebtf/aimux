@@ -2,6 +2,7 @@ package types
 
 import (
 	"context"
+	"io"
 	"time"
 )
 
@@ -75,6 +76,28 @@ type Session interface {
 
 	// PID returns the OS process ID.
 	PID() int
+}
+
+// SessionPipes is an OPTIONAL side-interface that Session implementations MAY
+// satisfy to expose direct stdin/stdout access for interactive (TUI) mode.
+//
+// Pipe-based sessions (BaseSession over plain stdin/stdout pipes) implement
+// this trivially. ConPTY/PTY sessions wrap a pseudo-console; their handles
+// satisfy io.Writer (stdin) and io.Reader (stdout) via the same shape.
+//
+// Callers MUST type-assert; absence of this interface means the Session
+// supports only request/response via Send/Stream.
+//
+// WARNING: Sessions exposed via SessionPipes lose Send/Stream correctness —
+// the interactive loop now owns reader/writer exclusively. Do NOT use Send and
+// Stdin/Stdout concurrently on the same session.
+type SessionPipes interface {
+	// Stdin returns a writer for raw input bytes to the underlying process.
+	Stdin() io.Writer
+	// Stdout returns a reader for raw output bytes from the underlying process.
+	// The reader is shared — multiple consumers will conflict; only the launcher
+	// interactive loop is expected to read.
+	Stdout() io.Reader
 }
 
 // SessionFactory is an OPTIONAL side-interface that ExecutorV2 implementations

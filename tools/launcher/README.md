@@ -92,12 +92,20 @@ launcher session [flags]
 | `--cli <name>` | | CLI session (mutually exclusive with `--provider`) |
 | `--provider <p>` | | API provider (mutually exclusive with `--cli`) |
 | `--model <m>` | profile default | Model override |
-| `--executor <e>` | `pipe` | Backend (CLI mode only) |
+| `--executor <e>` | `pipe` | Backend (CLI mode only): `pipe\|conpty\|pty\|auto` |
 | `--cwd <dir>` | inherit | Working directory |
 | `--log <path>` | none | Append JSONL events |
 | `--config-dir <d>` | `config` | aimux config directory |
 
-**Slash-commands:**
+**Backend mode determines the loop:**
+
+| `--executor` | Loop | Best for |
+|---|---|---|
+| `pipe` (default) | Request/response REPL — sends prompt, waits for full response, emits `turn{user}`/`turn{agent}` events | Headless CLIs: codex `--full-auto --json -`, claude `--print`, gemini `-p` |
+| `conpty` | Bidirectional interactive passthrough — bytes flow in both directions as they arrive; ANSI escape sequences pass through so the CLI's TUI renders in the operator's terminal | Gemini TUI, codex chat, aider's REPL on Windows |
+| `pty` | Same as `conpty` (Unix PTY variant) | Same as conpty, on Linux/macOS |
+
+**Slash-commands — pipe (request/response) mode:**
 
 | Command | Description |
 |---------|-------------|
@@ -109,12 +117,29 @@ launcher session [flags]
 | `/history` | Print conversation turns |
 | `/help` | List slash-commands |
 
+**Slash-commands — conpty/pty (interactive TUI) mode:**
+
+| Command | Description |
+|---------|-------------|
+| `/quit` | Close session and exit 0 |
+| `/help` | List slash-commands |
+
+All other slash-commands are not available in interactive mode (they require the
+request/response model to track conversation state).  Use the CLI's own keybindings
+for navigation within the TUI.
+
 Examples:
 
 ```bash
+# Pipe backend: request/response REPL (headless CLIs, codex/claude/gemini -p flags)
 launcher session --cli codex
 launcher session --cli codex --log /tmp/sess.jsonl
 echo "hello" | launcher session --cli codex   # non-interactive via piped stdin
+
+# ConPTY backend: interactive TUI passthrough (gemini full TUI, aider, codex chat)
+launcher session --cli gemini --executor conpty --log /tmp/gemini-tui.jsonl
+# Operator sees gemini's full TUI rendered; types prompts directly; /quit to exit.
+# Log captures raw bytes as bytes_hex (NFR-7: may contain terminal escapes/secrets).
 ```
 
 ### launcher replay — read a captured JSONL log
@@ -187,40 +212,47 @@ launcher replay --log /tmp/raw.jsonl --filter stdout
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Headless CLI hangs / errors under ConPTY | TTY detection — see "ConPTY ≠ headless" below | Use `--executor pipe` (default) |
+| Headless CLI hangs or waits for TTY input under ConPTY | Misuse: headless mode + ConPTY is the wrong combination. The CLI sees a TTY, renders its TUI, and waits for operator input. | Use `--executor pipe` (default) for headless/JSON modes; use `--executor conpty` only for interactive TUI sessions |
+| Interactive TUI session exits immediately with `[EOF — closing session]` | Operator stdin EOF reaching the pipe-mode REPL before the TUI renders | Switch to `--executor conpty` (or `--executor pty` on Linux/macOS) — the interactive loop keeps the session alive until /quit |
 | `launcher: env var OPENAI_API_KEY empty` | API key not set | `export OPENAI_API_KEY=<key>` |
 | `--bypass` with PTY/ConPTY fails | L2 is pipe-only | Add `--executor pipe` |
 | `launcher session` returns "not implemented" | API executor lacks SessionFactory | Use `launcher api` instead |
 | Partial last line in replay | Process killed mid-write | Normal — replay discards partial lines with a warning |
 | Log file grows without bound | No rotation built in | Delete or archive manually after debugging |
 
-### ConPTY ≠ headless: TTY detection in headless CLIs
+### ConPTY/PTY: right tool, right mode
 
-ConPTY backend creates a Windows pseudo-terminal so that the child process sees
-`stdin`/`stdout` as a TTY (`isatty() == true`). This is what enables real
-interactive sessions: codex chat, gemini TUI, aider's REPL.
+ConPTY (Windows) and PTY (Linux/macOS) create a real pseudo-terminal so that
+the child process sees `stdin`/`stdout` as a TTY (`isatty() == true`). This is
+what enables real interactive sessions: gemini TUI, codex chat, aider's REPL.
 
-**Headless modes detect the TTY and refuse / change behaviour.** Verified
-2026-05-01 with `--diag` mode (each line shown with timestamp):
+**Headless flags + ConPTY = misuse.** Verified 2026-05-01 with `--diag` mode:
 
 | CLI | Headless command | ConPTY behaviour | Pipe behaviour |
 |-----|------------------|------------------|----------------|
 | `codex exec --full-auto --json -` | sees TTY → silently waits for interactive input (deprecation warning at +0.1s, then idle until kill) | streams JSONL events, exits 0 in ~10s |
-| `claude --print` | exits 1 immediately with `Error: Input must be provided either through stdin or as a prompt argument when using --print` (it refuses to read TTY as stdin) | streams result JSONL, exits 0 in ~12s |
+| `claude --print` | exits 1 immediately with `Error: Input must be provided either through stdin or as a prompt argument when using --print` | streams result JSONL, exits 0 in ~12s |
 | `gemini -p` | renders full TUI (header bar, status bar, prompt input) and waits for typing | streams JSONL events, exits 0 in ~10s |
 
-**Conclusion:** ConPTY is not broken — it correctly delivers a TTY. Headless
-JSON modes are designed for pipe stdin and break under TTY by design. The
-launcher's default `--executor pipe` is the right choice for any
-`--full-auto / --json / --print / -p` flow. Reach for `--executor conpty` only
-when testing real interactive TUI / chat sessions.
+**Rule of thumb:**
 
-To reproduce the diagnostic yourself:
+- Headless/JSON/automation flags (`--full-auto --json -`, `--print`, `-p`) → `--executor pipe` (default)
+- Interactive TUI / chat sessions → `--executor conpty` (Windows) or `--executor pty` (Linux/macOS)
+
+To reproduce the diagnostic:
 
 ```powershell
-# Headless via pipe (works)
+# Headless via pipe (correct)
 launcher cli --cli gemini --prompt "say ok" --diag
 
-# Same prompt via ConPTY — observe what really happens, in real time
+# Same prompt via ConPTY — observe TUI render and wait for input (intentional for interactive use)
 launcher cli --cli gemini --prompt "say ok" --executor conpty --diag
+```
+
+For a full interactive session with gemini's TUI:
+
+```powershell
+launcher session --cli gemini --executor conpty
+# Operator sees gemini's header bar, status bar, and prompt input in real time.
+# Type prompts directly; /quit to close.
 ```
