@@ -156,9 +156,13 @@ func runWarmupWithExec(ctx context.Context, reg *Registry, cfg *config.Config, e
 // bounds the total wall-clock to the slowest CLI's probe budget × |roles|
 // rather than fanning out a goroutine per (cli, role) tuple.
 //
-// Each probe outcome is stored unconditionally — even failures. Storing a
-// failed probe (verified=false) prevents the refresher from retrying every
-// tick; the entry stays "fresh failed" until the TTL window expires.
+// Definitive failures (probe ran and the CLI did not acknowledge the role,
+// quota errors wrapped explicitly, decode failures) are stored as
+// verified=false so the refresher does not retry every tick. Transient
+// context errors (DeadlineExceeded / Canceled) intentionally leave the slot
+// UNTOUCHED — the spec's EC-3.2 graceful-degradation contract requires that
+// a probe timeout surface as cache miss to the routing layer, allowing the
+// declared capability to act as soft fallback while the next probe retries.
 func runCapabilityProbes(ctx context.Context, reg *Registry, cfg *config.Config, exec types.Executor, cache *CapabilityCache, alive []string) {
 	if len(alive) == 0 {
 		return
@@ -178,6 +182,12 @@ func runCapabilityProbes(ctx context.Context, reg *Registry, cfg *config.Config,
 					continue
 				}
 				verified, perr := probeRole(ctx, exec, cliName, prof, cfg, role)
+				if isTransientProbeError(perr) {
+					// EC-3.2: leave the slot empty so routing treats it as
+					// miss → declared fallback. The refresher tick retries
+					// the probe at the next interval.
+					continue
+				}
 				cache.Set(cliName, role, verified, perr)
 			}
 		}(cli, profile)
@@ -223,9 +233,11 @@ func probeOne(ctx context.Context, exec types.Executor, name string, profile *co
 // envelope; a CLI that returns valid JSON but does NOT echo the role string
 // is treated as alive-but-role-incapable — the cache records verified=false.
 //
-// EC-3.2 graceful degradation: a context-deadline error is recorded with
-// verified=false so the refresher reschedules at the next TTL/2 tick; the
-// routing layer treats this as cache miss → declared used as fallback.
+// EC-3.2 graceful degradation: callers (runCapabilityProbes, refreshOnce) MUST
+// inspect the returned err with isTransientProbeError. On context.Canceled
+// or context.DeadlineExceeded the slot is left untouched so the routing
+// layer sees a cache miss and uses the declared capability as soft fallback;
+// the next refresher tick retries.
 func probeRole(ctx context.Context, exec types.Executor, name string, profile *config.CLIProfile, cfg *config.Config, role string) (bool, error) {
 	timeout := resolveCapabilityProbeTimeout(profile, cfg)
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -289,15 +301,27 @@ func parseRoleProbeResponse(content, expectedRole string) bool {
 }
 
 // resolveCapabilityProbeTimeout returns the per-probe budget for the role
-// probe. Profile-level warmup_timeout_seconds wins (per-CLI override),
-// falling back to driver.capability_probe_timeout_seconds, then to the
-// hard default.
+// probe. The fallback chain matches the contract documented in
+// config/default.yaml + pkg/config/config.go:
+//
+//  1. profile.WarmupTimeoutSeconds (per-CLI override) when > 0.
+//  2. cfg.Driver.CapabilityProbeTimeoutSeconds when > 0.
+//  3. cfg.Server.WarmupTimeoutSeconds when > 0 (operator-tuned global
+//     warmup budget — a zero capability_probe_timeout_seconds MUST inherit
+//     the warmup budget, otherwise capability probes time out earlier than
+//     normal warmup on installs that already raised the global timeout).
+//  4. defaultCapabilityProbeTimeout (hard floor — 5s).
 func resolveCapabilityProbeTimeout(profile *config.CLIProfile, cfg *config.Config) time.Duration {
 	if profile != nil && profile.WarmupTimeoutSeconds > 0 {
 		return time.Duration(profile.WarmupTimeoutSeconds) * time.Second
 	}
-	if cfg != nil && cfg.Driver.CapabilityProbeTimeoutSeconds > 0 {
-		return time.Duration(cfg.Driver.CapabilityProbeTimeoutSeconds) * time.Second
+	if cfg != nil {
+		if cfg.Driver.CapabilityProbeTimeoutSeconds > 0 {
+			return time.Duration(cfg.Driver.CapabilityProbeTimeoutSeconds) * time.Second
+		}
+		if cfg.Server.WarmupTimeoutSeconds > 0 {
+			return time.Duration(cfg.Server.WarmupTimeoutSeconds) * time.Second
+		}
 	}
 	return defaultCapabilityProbeTimeout
 }

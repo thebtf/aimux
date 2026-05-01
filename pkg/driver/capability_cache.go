@@ -18,6 +18,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -141,6 +142,44 @@ func (c *CapabilityCache) SetWithTime(cli, role string, verified bool, err error
 	}
 }
 
+// SetIfUnchanged writes a probe outcome only when the cached entry's
+// LastProbed timestamp matches expectedLastProbed (compare-and-swap). It
+// returns true when the write happened.
+//
+// This protects the background refresher from clobbering a fresher entry
+// written by warmup or an inline-miss probe between staleEntries() and the
+// probe completing. The expected timestamp comes from the staleEntries
+// snapshot the refresher iterates over.
+//
+// If expectedLastProbed is the zero value, the write proceeds only when no
+// entry exists yet (the slot is genuinely empty). This lets the refresher
+// safely seed entries that were never probed.
+func (c *CapabilityCache) SetIfUnchanged(cli, role string, verified bool, err error, expectedLastProbed time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := capabilityKey{CLI: cli, Role: role}
+	cur, ok := c.store[k]
+	switch {
+	case expectedLastProbed.IsZero():
+		// Caller observed an empty slot; only write if it's still empty.
+		if ok {
+			return false
+		}
+	case !ok:
+		// Caller observed a non-zero stamp but the entry is gone — abort.
+		return false
+	case !cur.LastProbed.Equal(expectedLastProbed):
+		// Entry was overwritten between observation and write — abort.
+		return false
+	}
+	c.store[k] = ProbeResult{
+		Verified:   verified,
+		LastProbed: c.now(),
+		Err:        err,
+	}
+	return true
+}
+
 // Delete removes a (cli, role) entry. Used to evict bad entries explicitly;
 // staleness is normally handled in-place by the refresher.
 func (c *CapabilityCache) Delete(cli, role string) {
@@ -184,16 +223,26 @@ func (c *CapabilityCache) VerifiedRoles(cli string) []string {
 	return roles
 }
 
-// staleEntries returns every (cli, role) tuple whose LastProbed is older than TTL.
+// staleEntry pairs a stale (cli, role) tuple with the LastProbed timestamp
+// observed when the staleness check ran. The refresher uses the timestamp as
+// a compare-and-swap key in SetIfUnchanged so a concurrent warmup/inline
+// probe that writes a fresher entry is not clobbered.
+type staleEntry struct {
+	key        capabilityKey
+	lastProbed time.Time
+}
+
+// staleEntries returns every (cli, role) tuple whose LastProbed is older than TTL,
+// each paired with the timestamp observed during the snapshot.
 // Used by the refresher to schedule background re-probes.
-func (c *CapabilityCache) staleEntries() []capabilityKey {
+func (c *CapabilityCache) staleEntries() []staleEntry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	now := c.now()
-	var stale []capabilityKey
+	var stale []staleEntry
 	for k, v := range c.store {
 		if v.LastProbed.IsZero() || now.Sub(v.LastProbed) >= c.ttl {
-			stale = append(stale, k)
+			stale = append(stale, staleEntry{key: k, lastProbed: v.LastProbed})
 		}
 	}
 	return stale
@@ -206,12 +255,33 @@ func (c *CapabilityCache) staleEntries() []capabilityKey {
 // the next TTL cycle.
 type ProbeFn func(ctx context.Context, cli, role string) (verified bool, err error)
 
+// isTransientProbeError reports whether err represents a transient probe
+// outcome (deadline exceeded or context cancellation). The cache must NOT
+// record these as verified=false: that would convert a transient failure
+// into a hard exclude until TTL expiry, defeating the EC-3.2 graceful
+// degradation contract that "cache miss → declared used as fallback".
+//
+// On transient errors the slot is left untouched (or absent) so routing
+// keeps treating it as a miss and the next refresher tick / inline probe
+// gets a fresh attempt.
+func isTransientProbeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
 // CapabilityRefresher periodically re-probes stale cache entries.
 //
 // Lifecycle: NewCapabilityRefresher → Start (idempotent; spawns goroutine) →
 // Stop (cancels ctx; goroutine drains and exits). The refresher is bound to
 // a single CapabilityCache and a single ProbeFn; daemon construction wires
 // it once and never reuses it.
+//
+// Stop cancels a private child context that is passed into every ProbeFn
+// invocation, so a probe blocked on a hung CLI is unblocked at shutdown
+// rather than holding Stop hostage until the per-probe timeout (or
+// indefinitely if the probe ignores its own deadline).
 type CapabilityRefresher struct {
 	cache    *CapabilityCache
 	probe    ProbeFn
@@ -221,6 +291,14 @@ type CapabilityRefresher struct {
 	stopOnce  sync.Once
 	stopCh    chan struct{}
 	doneCh    chan struct{}
+
+	// childCtx / childCancel are owned by Start and cancelled by Stop. They
+	// derive from the ctx passed to Start so an outer cancellation is still
+	// respected; their purpose is to give Stop an additional cancel handle
+	// without depending on the caller cancelling the outer ctx.
+	mu          sync.Mutex
+	childCtx    context.Context
+	childCancel context.CancelFunc
 }
 
 // NewCapabilityRefresher creates a refresher with tick = max(TTL/2, minRefreshInterval).
@@ -243,7 +321,7 @@ func NewCapabilityRefresher(cache *CapabilityCache, probe ProbeFn) *CapabilityRe
 // idempotent — repeated calls return immediately.
 //
 // The goroutine exits when:
-//   - Stop is called (closes stopCh), OR
+//   - Stop is called (cancels child ctx, closes stopCh), OR
 //   - parent ctx is cancelled.
 func (r *CapabilityRefresher) Start(ctx context.Context) {
 	if r.probe == nil {
@@ -252,16 +330,31 @@ func (r *CapabilityRefresher) Start(ctx context.Context) {
 		return
 	}
 	r.startOnce.Do(func() {
-		go r.loop(ctx)
+		child, cancel := context.WithCancel(ctx)
+		r.mu.Lock()
+		r.childCtx = child
+		r.childCancel = cancel
+		r.mu.Unlock()
+		go r.loop(child)
 	})
 }
 
 // Stop cancels the refresher and waits for the goroutine to drain.
 // Safe to call multiple times; safe to call before Start (becomes a no-op
 // returning immediately); subsequent calls return immediately.
+//
+// Stop cancels the child context passed into ProbeFn so an in-flight probe
+// blocked on a hung CLI returns promptly rather than blocking shutdown for
+// the per-probe timeout (or indefinitely if the probe disregards deadlines).
 func (r *CapabilityRefresher) Stop() {
 	r.stopOnce.Do(func() {
 		close(r.stopCh)
+		r.mu.Lock()
+		cancel := r.childCancel
+		r.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 	})
 	// If Start was never called, doneCh is still open and the goroutine never
 	// launched — closing doneCh here unblocks the wait. startOnce.Do ensures
@@ -292,8 +385,21 @@ func (r *CapabilityRefresher) loop(ctx context.Context) {
 // refreshOnce probes every stale entry. Each probe runs sequentially so we
 // don't fan out N goroutines against the same CLI; the per-probe budget is
 // bounded by the ProbeFn implementation (typically warmup_timeout_seconds).
+//
+// Two write-side guards apply per (cli, role):
+//
+//  1. Transient context errors (DeadlineExceeded / Canceled) leave the cache
+//     slot UNTOUCHED so routing keeps observing a miss and falls back to the
+//     declared capability. Recording verified=false on a transient failure
+//     would convert it into a hard exclude for a full TTL window, which
+//     contradicts EC-3.2 graceful degradation.
+//
+//  2. SetIfUnchanged compares the entry's LastProbed against the timestamp
+//     captured during staleEntries(). If warmup or an inline probe wrote a
+//     fresher entry while the background probe was in flight, the refresher
+//     skips the write rather than clobber the newer result.
 func (r *CapabilityRefresher) refreshOnce(ctx context.Context) {
-	for _, k := range r.cache.staleEntries() {
+	for _, e := range r.cache.staleEntries() {
 		select {
 		case <-ctx.Done():
 			return
@@ -301,8 +407,13 @@ func (r *CapabilityRefresher) refreshOnce(ctx context.Context) {
 			return
 		default:
 		}
-		verified, err := r.probe(ctx, k.CLI, k.Role)
-		r.cache.Set(k.CLI, k.Role, verified, err)
+		verified, err := r.probe(ctx, e.key.CLI, e.key.Role)
+		if isTransientProbeError(err) {
+			// Leave the slot as-is; routing treats absence (or stale entry)
+			// as miss → declared fallback. Next tick retries.
+			continue
+		}
+		r.cache.SetIfUnchanged(e.key.CLI, e.key.Role, verified, err, e.lastProbed)
 	}
 }
 

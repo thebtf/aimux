@@ -268,16 +268,18 @@ func TestCapabilityRefresher_NilProbe_NoOp(t *testing.T) {
 }
 
 // TestCapabilityRefresher_TimeoutDegradation verifies EC-3.2: when a probe
-// returns a context-cancelled / deadline-exceeded error, the cache stores
-// verified=false with the error, and routing treats this as cache-miss-equivalent
-// for graceful degradation (declared used as fallback).
+// returns a context-cancelled / deadline-exceeded error, the refresher does
+// NOT clobber the cache slot. Routing then treats the (still-stale) seed
+// entry as "miss-equivalent" only when it is absent, so the contract really
+// matters more for cold slots; for a warm slot with stale data, leaving the
+// previous outcome in place is still preferable to flipping a transient
+// timeout into a hard verified=false.
 //
-// Implementation note: the cache does NOT distinguish "probe ran and rejected
-// the role" from "probe timed out" — both surface as verified=false. Routing
-// applies hard exclusion uniformly (per FR-3 spec line "MUST consult the
-// verified set"), and the refresher will retry on the next TTL/2 tick. If
-// timeouts persist, the role stays excluded; if the next probe succeeds,
-// the entry flips to verified=true.
+// New contract (per PR #141 review): a transient context error MUST leave
+// the slot untouched. If the slot was empty, it stays empty (cache miss →
+// declared fallback at the routing layer). If the slot held a previous
+// result, it stays as-is. Either way, the next refresher tick / inline
+// probe gets a fresh attempt rather than a TTL-bound hard exclude.
 func TestCapabilityRefresher_TimeoutDegradation(t *testing.T) {
 	c := NewCapabilityCache(50 * time.Millisecond)
 	c.SetWithTime("codex", "coding", false, errors.New("stale"), time.Now().Add(-time.Second))
@@ -299,13 +301,183 @@ func TestCapabilityRefresher_TimeoutDegradation(t *testing.T) {
 	<-ctx.Done()
 	r.Stop()
 
-	// Cache should now hold the timeout outcome — verified=false, Err non-nil.
+	// The seeded entry must still be present — the transient error must NOT
+	// overwrite it (and crucially must not mark a cold slot verified=false).
 	r2, ok := c.Get("codex", "coding")
 	if !ok {
-		t.Fatal("entry must remain after timeout-failed probe")
+		t.Fatal("entry must remain after timeout-failed probe (refresher must not delete)")
 	}
 	if r2.Verified {
-		t.Errorf("timeout probe should record verified=false, got true")
+		t.Errorf("seeded entry was verified=false; refresher must not flip it on transient err")
+	}
+	if r2.Err == nil || r2.Err.Error() != "stale" {
+		t.Errorf("refresher must not overwrite the seeded Err on transient probe error; got %v", r2.Err)
+	}
+}
+
+// TestCapabilityRefresher_TransientError_ColdSlotStaysMiss verifies the
+// strongest form of the EC-3.2 contract: when no entry exists yet for
+// (cli, role) and the probe fails with context.DeadlineExceeded /
+// context.Canceled, refreshOnce MUST NOT create a verified=false entry.
+// A cold slot that takes a transient timeout stays a cache miss so the
+// routing layer keeps the declared capability as soft fallback.
+//
+// We exercise refreshOnce directly to avoid a 5s+ wait for the refresher
+// tick — the assertion is about refreshOnce's write-side guard, not about
+// scheduling, and the scheduling path is covered by other tests.
+func TestCapabilityRefresher_TransientError_ColdSlotStaysMiss(t *testing.T) {
+	c := NewCapabilityCache(50 * time.Millisecond)
+	// Seed a stale entry the refresher will discover, then delete it BEFORE
+	// refreshOnce calls the probe + write-back path. After staleEntries()
+	// captures the key but before the write-back, the slot is empty. A
+	// transient probe error must leave it empty.
+	c.SetWithTime("codex", "coding", false, errors.New("seed"), time.Now().Add(-time.Hour))
+
+	probe := ProbeFn(func(_ context.Context, _, _ string) (bool, error) {
+		// Delete the seed mid-probe to simulate inline-probe / external
+		// Delete clearing the slot before write-back.
+		c.Delete("codex", "coding")
+		return false, context.DeadlineExceeded
+	})
+
+	r := NewCapabilityRefresher(c, probe)
+	r.refreshOnce(context.Background())
+
+	if _, ok := c.Get("codex", "coding"); ok {
+		t.Fatalf("transient probe error must NOT resurrect a deleted slot as verified=false")
+	}
+	verified, miss := c.IsVerified("codex", "coding")
+	if !miss {
+		t.Errorf("cold slot after transient err: want miss=true (declared fallback), got miss=false verified=%v", verified)
+	}
+}
+
+// TestRunCapabilityProbes_TransientError_NoCacheWrite verifies that the
+// warmup-time capability pass also honors EC-3.2: a transient context
+// error from probeRole leaves the cache slot empty rather than recording
+// verified=false. Without this, the very first warmup after a slow CLI
+// boot would lock out that CLI for a full TTL window.
+func TestRunCapabilityProbes_TransientError_NoCacheWrite(t *testing.T) {
+	profiles := map[string]*config.CLIProfile{
+		"codex": {
+			Name:         "codex",
+			Binary:       "echo",
+			Command:      config.CommandConfig{Base: "echo"},
+			ResolvedPath: "/fake/codex",
+			Capabilities: []string{"coding"},
+		},
+	}
+	reg := NewRegistry(profiles)
+	reg.SetAvailable("codex", true)
+
+	cache := NewCapabilityCache(time.Hour)
+
+	// Executor that returns context.DeadlineExceeded on every role probe.
+	exec := &warmupStubExecutor{
+		handlers: map[string]func(types.SpawnArgs) (*types.Result, error){
+			"codex": func(args types.SpawnArgs) (*types.Result, error) {
+				promptArg := ""
+				for _, a := range args.Args {
+					if a != "" {
+						promptArg = a
+					}
+				}
+				if indexOf(promptArg, "acknowledging role") >= 0 {
+					return nil, context.DeadlineExceeded
+				}
+				// Liveness probe still passes so capability pass actually runs.
+				return &types.Result{Content: `{"ok":true}`, ExitCode: 0}, nil
+			},
+		},
+	}
+
+	if err := runWarmupWithExec(context.Background(), reg, defaultCfg(), exec, cache); err != nil {
+		t.Fatalf("runWarmupWithExec: %v", err)
+	}
+
+	verified, miss := cache.IsVerified("codex", "coding")
+	if !miss {
+		t.Errorf("transient probe error during warmup: want miss=true, got miss=false verified=%v", verified)
+	}
+}
+
+// TestCapabilityCache_SetIfUnchanged_CompareAndSwap covers the race the
+// refresher must defend against: warmup or an inline probe writes a fresh
+// entry between staleEntries() and the background probe completing. The
+// background write MUST NOT clobber the newer result.
+func TestCapabilityCache_SetIfUnchanged_CompareAndSwap(t *testing.T) {
+	c := NewCapabilityCache(time.Hour)
+
+	// Seed a stale entry observed by the refresher.
+	staleAt := time.Now().Add(-time.Hour)
+	c.SetWithTime("codex", "coding", false, errors.New("old failure"), staleAt)
+
+	// Simulate a concurrent fresh write (warmup / inline probe).
+	freshAt := time.Now()
+	c.SetWithTime("codex", "coding", true, nil, freshAt)
+
+	// Refresher attempts to write back using the OLD timestamp it saw
+	// during staleEntries(). Must be a no-op.
+	wrote := c.SetIfUnchanged("codex", "coding", false, errors.New("background write"), staleAt)
+	if wrote {
+		t.Fatalf("SetIfUnchanged must return false when entry timestamp changed")
+	}
+	r, _ := c.Get("codex", "coding")
+	if !r.Verified {
+		t.Errorf("fresh entry was clobbered by stale-key write")
+	}
+
+	// Refresher with the matching timestamp succeeds.
+	wrote = c.SetIfUnchanged("codex", "coding", false, errors.New("background write"), freshAt)
+	if !wrote {
+		t.Fatalf("SetIfUnchanged must return true when expected timestamp matches")
+	}
+	r, _ = c.Get("codex", "coding")
+	if r.Verified {
+		t.Errorf("matching-timestamp write should have applied")
+	}
+}
+
+// TestCapabilityRefresher_Stop_CancelsInFlightProbe verifies that Stop()
+// unblocks a probe holding ctx open. Without Stop cancelling the child ctx,
+// a probe stuck on a hung CLI would block Stop until its own deadline (or
+// indefinitely if the probe ignored deadlines), serializing daemon
+// shutdown behind every active probe.
+func TestCapabilityRefresher_Stop_CancelsInFlightProbe(t *testing.T) {
+	c := NewCapabilityCache(50 * time.Millisecond)
+	c.SetWithTime("codex", "coding", false, errors.New("seed"), time.Now().Add(-time.Second))
+
+	entered := make(chan struct{}, 1)
+	probe := ProbeFn(func(ctx context.Context, _, _ string) (bool, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-ctx.Done() // park until ctx is cancelled
+		return false, ctx.Err()
+	})
+
+	r := NewCapabilityRefresher(c, probe)
+	r.Start(context.Background())
+
+	// Wait for the probe to enter (refresher tick fires at minRefreshInterval=5s
+	// since TTL/2 = 25ms < 5s). Allow a generous 8s window.
+	select {
+	case <-entered:
+	case <-time.After(8 * time.Second):
+		t.Fatal("probe never entered")
+	}
+
+	stopReturned := make(chan struct{})
+	go func() {
+		r.Stop()
+		close(stopReturned)
+	}()
+
+	select {
+	case <-stopReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not return within 2s — child ctx must be cancelled")
 	}
 }
 
