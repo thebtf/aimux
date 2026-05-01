@@ -5,9 +5,10 @@
 //   - A reader goroutine drains sess.Stdout() and forwards raw bytes to the
 //     operator's terminal, passing ANSI escape sequences through unmodified so
 //     the CLI's TUI (header bar, status bar, prompt input) renders correctly.
-//   - An input goroutine reads operator stdin line by line and writes to
+//   - An input goroutine reads raw bytes from operator stdin and writes to
 //     sess.Stdin().  Slash-commands (/quit, /dump, etc.) are processed inline
-//     without forwarding to the session.
+//     without forwarding to the session.  Raw reads preserve escape sequences
+//     (arrow keys, Tab, Ctrl+X) that line-buffered readers would block.
 //   - The main loop selects on stdout data, operator input results, and context
 //     cancellation (SIGINT/SIGTERM).
 //
@@ -23,7 +24,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -48,21 +48,24 @@ type interactiveCompleteEvent struct {
 	Reason string `json:"reason"`
 }
 
-// inputResult carries one operator input line or a terminal error from the
+// inputResult carries one raw input chunk or a terminal error from the
 // input goroutine to the main select loop.
 type inputResult struct {
-	line string
-	err  error // io.EOF when stdin is exhausted; other errors are propagated.
+	buf []byte // raw bytes read from operator stdin (may include escape sequences)
+	n   int    // valid bytes in buf (len(buf) is the capacity; use buf[:n])
+	err error  // io.EOF when stdin is exhausted; other errors are propagated.
 }
 
 // runInteractiveSession drives a bidirectional interactive session against sess.
 //
-// It requires sess to satisfy types.SessionPipes.  If the assertion fails, it
-// prints an error to stderr and returns exit code 1.
+// sess must satisfy types.InteractivePipes (Session + SessionPipes).  Callers
+// must obtain sess via InteractiveSessionFactory.StartInteractiveSession — which
+// guarantees no background reader goroutine races on Stdout().
 //
 // Parameters:
 //   - ctx:    parent context; cancellation (SIGINT/SIGTERM) exits with code 130.
-//   - sess:   live Session.  runInteractiveSession is responsible for sess.Close().
+//   - sess:   live InteractivePipes session.  runInteractiveSession is responsible
+//     for sess.Close().
 //   - sink:   JSONL event sink (may be nopSink).
 //   - output: where TUI bytes are written (os.Stdout in production; bytes.Buffer
 //     in tests so tests do not pollute real stdout).
@@ -70,19 +73,11 @@ type inputResult struct {
 //     in tests).
 func runInteractiveSession(
 	ctx context.Context,
-	sess types.Session,
+	sess types.InteractivePipes,
 	sink EventSink,
 	output io.Writer,
 	input io.Reader,
 ) int {
-	pipes, ok := sess.(types.SessionPipes)
-	if !ok {
-		fmt.Fprintf(os.Stderr,
-			"launcher session: interactive mode requires a SessionPipes-capable session "+
-				"(conpty or pty backend); pipe backend does not satisfy this interface\n")
-		return 1
-	}
-
 	fmt.Fprintf(os.Stderr,
 		"[session %s ready — interactive TUI mode]\n", sess.ID())
 	fmt.Fprintln(os.Stderr,
@@ -100,7 +95,7 @@ func runInteractiveSession(
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := pipes.Stdout().Read(buf)
+			n, err := sess.Stdout().Read(buf)
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
@@ -117,27 +112,40 @@ func runInteractiveSession(
 		}
 	}()
 
-	// Input goroutine: reads operator stdin line by line and forwards to inputCh.
+	// Input goroutine: reads raw bytes from operator stdin and forwards to inputCh.
+	// Raw reads (not line-buffered) pass escape sequences (arrow keys, Tab, Ctrl+X
+	// combos) through unmodified so TUI CLIs receive every keypress immediately.
+	//
 	// Operator stdin EOF is forwarded as an inputResult{err: io.EOF} so the main
 	// loop can decide whether to keep the session alive (session continues until
 	// /quit or process exit — stdin EOF alone does not close the session).
 	go func() {
-		scanner := bufio.NewScanner(input)
-		for scanner.Scan() {
-			select {
-			case inputCh <- inputResult{line: scanner.Text()}:
-			case <-ctx.Done():
+		buf := make([]byte, 128)
+		for {
+			n, err := input.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				select {
+				case inputCh <- inputResult{buf: chunk, n: n}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				if err == io.EOF {
+					select {
+					case inputCh <- inputResult{err: io.EOF}:
+					case <-ctx.Done():
+					}
+				} else {
+					select {
+					case inputCh <- inputResult{err: err}:
+					case <-ctx.Done():
+					}
+				}
 				return
 			}
-		}
-		// Scanner done — EOF or scanner error.
-		scanErr := scanner.Err()
-		if scanErr == nil {
-			scanErr = io.EOF
-		}
-		select {
-		case inputCh <- inputResult{err: scanErr}:
-		case <-ctx.Done():
 		}
 	}()
 
@@ -205,16 +213,20 @@ func runInteractiveSession(
 				continue
 			}
 			if res.err != nil {
-				// Operator stdin exhausted (EOF) or scanner error.
+				// Operator stdin exhausted (EOF) or read error.
 				// Session stays alive — only /quit or process exit terminates it.
 				// Nil out inputCh so we stop selecting on it (avoids busy loop).
 				inputCh = nil
 				continue
 			}
 
-			line := res.line
-			if strings.HasPrefix(line, "/") {
-				// Slash-command: process without forwarding to session.
+			raw := res.buf[:res.n]
+
+			// Slash-command detection: only when the chunk starts with "/" and
+			// contains a single line of printable text (no embedded escape bytes).
+			// Non-slash raw input (including escape sequences) is forwarded as-is.
+			if strings.HasPrefix(string(raw), "/") && !strings.ContainsAny(string(raw), "\x1b\x00") {
+				line := strings.TrimRight(string(raw), "\r\n")
 				code := handleInteractiveSlashCommand(line, sess, sink)
 				if code >= 0 {
 					return code
@@ -222,8 +234,8 @@ func runInteractiveSession(
 				continue
 			}
 
-			// Regular input: forward to session stdin with newline.
-			if _, err := fmt.Fprintln(pipes.Stdin(), line); err != nil {
+			// Regular input: forward raw bytes directly (preserves escape sequences).
+			if _, err := sess.Stdin().Write(raw); err != nil {
 				fmt.Fprintf(os.Stderr,
 					"launcher session: stdin write error: %v\n", err)
 			}

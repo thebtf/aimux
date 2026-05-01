@@ -88,6 +88,11 @@ type BaseSession struct {
 // New creates a BaseSession wrapping the given stdin/stdout pair and starts the
 // lifetime reader goroutine.
 //
+// Use New for request/response sessions (Send/Stream calls). For interactive
+// sessions that need raw Stdout() access use NewInteractiveSession instead —
+// New's background goroutine would race with any external reader on the same
+// ReadCloser.
+//
 // Parameters:
 //   - id: session identifier; if empty, a random UUID is generated.
 //   - stdin: writable end of the process's stdin pipe.
@@ -181,6 +186,44 @@ func New(
 	}()
 
 	return s
+}
+
+// NewInteractiveSession creates a BaseSession for bidirectional interactive
+// (TUI) use. Unlike New, it does NOT start the lifetime reader goroutine, so
+// Stdout() may be read exclusively by the caller (e.g. runInteractiveSession).
+//
+// Send and Stream MUST NOT be called on a session created with
+// NewInteractiveSession — there is no background reader to service readCh.
+// Use the raw Stdin()/Stdout() accessors instead.
+//
+// Parameters are identical to New except completionPattern (not applicable to
+// interactive sessions).
+func NewInteractiveSession(
+	id string,
+	stdin io.WriteCloser,
+	stdout io.ReadCloser,
+	inactivityTimeout time.Duration,
+	handle *executor.ProcessHandle,
+	pm *executor.ProcessManager,
+) *BaseSession {
+	if id == "" {
+		id = uuid.NewString()
+	}
+	readerDone := make(chan struct{})
+	// No background reader goroutine is started; close readerDone immediately
+	// so Close() does not block waiting for a goroutine that never ran.
+	close(readerDone)
+	return &BaseSession{
+		id:                id,
+		stdin:             stdin,
+		stdout:            stdout,
+		handle:            handle,
+		pm:                pm,
+		inactivityTimeout: inactivityTimeout,
+		readCh:            make(chan readChunk, 32),
+		readerDone:        readerDone,
+		stopCh:            make(chan struct{}),
+	}
 }
 
 // Compile-time assertion: BaseSession must satisfy types.SessionPipes.

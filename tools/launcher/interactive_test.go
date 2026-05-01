@@ -4,10 +4,12 @@
 //   - TestRunInteractiveSession_PipesPassthrough: bytes written to mock's stdout
 //     buffer reach os.Stdout; lines read from operator stdin reach mock's stdin.
 //   - TestRunInteractiveSession_QuitCommand: /quit closes session cleanly.
-//   - TestRunInteractiveSession_NoPipesError: session without SessionPipes interface
-//     returns exit code 1 with a descriptive error.
 //   - TestRunInteractiveSession_StdinEOF: operator stdin EOF leaves session running
 //     (session continues until /quit or process exit).
+//
+// Note: the former TestRunInteractiveSession_NoPipesError test verified a runtime
+// error path that no longer exists — runInteractiveSession requires types.InteractivePipes
+// at the type level, so the absence of SessionPipes is caught at compile time, not runtime.
 package main
 
 import (
@@ -81,61 +83,20 @@ func (m *mockPipedSession) PID() int    { return 0 }
 func (m *mockPipedSession) Stdin() io.Writer  { return m.stdinBuf }
 func (m *mockPipedSession) Stdout() io.Reader { return m.stdoutPR }
 
-// Compile-time assertion that mockPipedSession satisfies both interfaces.
-var _ types.Session = (*mockPipedSession)(nil)
-var _ types.SessionPipes = (*mockPipedSession)(nil)
-
-// --- mockNoPipesSession -----------------------------------------------------
-
-// mockNoPipesSession implements only types.Session (no SessionPipes).
-// Used to verify that runInteractiveSession returns an error when pipes are absent.
-type mockNoPipesSession struct {
-	id string
-}
-
-func (m *mockNoPipesSession) ID() string { return m.id }
-func (m *mockNoPipesSession) Send(_ context.Context, _ string) (*types.Result, error) {
-	return &types.Result{}, nil
-}
-func (m *mockNoPipesSession) Stream(_ context.Context, _ string) (<-chan types.Event, error) {
-	ch := make(chan types.Event)
-	close(ch)
-	return ch, nil
-}
-func (m *mockNoPipesSession) Close() error { return nil }
-func (m *mockNoPipesSession) Alive() bool  { return true }
-func (m *mockNoPipesSession) PID() int     { return 0 }
-
-var _ types.Session = (*mockNoPipesSession)(nil)
-
-// --- TestRunInteractiveSession_NoPipesError ---------------------------------
-
-// TestRunInteractiveSession_NoPipesError verifies that a session not implementing
-// SessionPipes causes runInteractiveSession to return exit code 1.
-func TestRunInteractiveSession_NoPipesError(t *testing.T) {
-	t.Parallel()
-
-	sess := &mockNoPipesSession{id: "no-pipes"}
-	outBuf := &bytes.Buffer{}
-	inReader := strings.NewReader("") // empty operator stdin
-
-	code := runInteractiveSession(
-		context.Background(),
-		sess,
-		nopSink{},
-		outBuf,
-		inReader,
-	)
-	if code != 1 {
-		t.Errorf("expected exit code 1 for non-SessionPipes session, got %d", code)
-	}
-}
+// Compile-time assertion that mockPipedSession satisfies types.InteractivePipes.
+var _ types.InteractivePipes = (*mockPipedSession)(nil)
 
 // --- TestRunInteractiveSession_PipesPassthrough -----------------------------
 
 // TestRunInteractiveSession_PipesPassthrough verifies the core passthrough contract:
-//   1. Bytes pre-loaded in stdoutBuf are forwarded to the output writer.
-//   2. Lines typed by the operator are written to the session's stdin buffer.
+//  1. Bytes pre-loaded in stdoutBuf are forwarded to the output writer.
+//  2. Lines typed by the operator are written to the session's stdin buffer.
+//
+// Input is delivered via io.Pipe so each write becomes its own Read call in the
+// input goroutine. This guarantees "hello\n" and "/quit\n" arrive as separate
+// chunks, which is required for slash-command detection (the loop checks whether
+// a chunk starts with "/"). strings.NewReader would deliver both lines in a single
+// Read and the "/quit" prefix would not be found.
 func TestRunInteractiveSession_PipesPassthrough(t *testing.T) {
 	t.Parallel()
 
@@ -143,15 +104,24 @@ func TestRunInteractiveSession_PipesPassthrough(t *testing.T) {
 	sess := newMockPipedSession("pipe-test", tui)
 
 	outBuf := &bytes.Buffer{}
-	// Operator types "hello\n/quit\n" then EOF.
-	inReader := strings.NewReader("hello\n/quit\n")
+
+	// Use io.Pipe so we can write chunks individually to the input goroutine.
+	pr, pw := io.Pipe()
+
+	// Writer goroutine: send "hello\n" as regular input, then "/quit\n" as a
+	// slash-command.  Each Write is a separate Read on the pipe reader.
+	go func() {
+		_, _ = pw.Write([]byte("hello\n"))
+		_, _ = pw.Write([]byte("/quit\n"))
+		_ = pw.Close()
+	}()
 
 	code := runInteractiveSession(
 		context.Background(),
 		sess,
 		nopSink{},
 		outBuf,
-		inReader,
+		pr,
 	)
 
 	// /quit → exit 0.

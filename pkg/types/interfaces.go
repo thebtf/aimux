@@ -113,6 +113,28 @@ type SessionFactory interface {
 	StartSession(ctx context.Context, args SpawnArgs) (Session, error)
 }
 
+// InteractivePipes combines Session lifecycle (ID, Close, Alive, PID) with raw
+// byte I/O (Stdin, Stdout). Returned by InteractiveSessionFactory.StartInteractiveSession.
+//
+// Implementations MUST NOT start a background stdout reader goroutine — the
+// interactive loop (runInteractiveSession) owns stdout exclusively.
+type InteractivePipes interface {
+	Session
+	SessionPipes
+}
+
+// InteractiveSessionFactory is an OPTIONAL side-interface for executor backends
+// that support bidirectional interactive (TUI) sessions. Unlike SessionFactory,
+// which starts a session with a background reader goroutine (owned by Send/Stream),
+// StartInteractiveSession returns a session whose Stdout() is safe to read
+// exclusively from the caller — no lifetime reader goroutine races on the pipe.
+//
+// Callers (e.g. runInteractiveSession) MUST assert this interface and fall back
+// to the regular SessionFactory + runREPL path when it is not available.
+type InteractiveSessionFactory interface {
+	StartInteractiveSession(ctx context.Context, args SpawnArgs) (InteractivePipes, error)
+}
+
 // LegacyAccessor is implemented by ExecutorV2 adapters that wrap a LegacyExecutor.
 // Used by Swarm.LegacyRun() for Strangler Fig bridging: Swarm manages lifecycle
 // while callers continue using SpawnArgs/Result (legacy types) until full migration.

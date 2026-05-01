@@ -45,6 +45,7 @@ launcher cli [flags]
 | `--executor <e>` | `pipe` | Backend: `pipe\|conpty\|pty\|auto` |
 | `--log <path>` | none | Append JSONL events to this file |
 | `--bypass` | false | L2 mode: raw bytes pre-StripANSI (pipe only) |
+| `--diag` | false | Emit per-chunk diagnostic events to the JSONL log (pipe only) |
 | `--stream` | false | Use `SendStream` (streaming chunks) |
 | `--config-dir <d>` | `config` | aimux config directory |
 
@@ -96,6 +97,7 @@ launcher session [flags]
 | `--cwd <dir>` | inherit | Working directory |
 | `--log <path>` | none | Append JSONL events |
 | `--config-dir <d>` | `config` | aimux config directory |
+| `--diag` | — | Not applicable (CLI `--cli` only; see `launcher cli --diag`) |
 
 **Backend mode determines the loop:**
 

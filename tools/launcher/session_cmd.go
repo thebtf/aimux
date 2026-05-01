@@ -165,8 +165,22 @@ func runCLISession(
 	// The request/response model in runREPL is designed for pipe (headless) mode
 	// and is the wrong fit here: it waits for Send to return before printing output,
 	// so the TUI never renders before operator stdin EOF closes the session.
-	if execChoice == "conpty" || execChoice == "pty" {
-		return runInteractiveSession(ctx, sess, sink, os.Stdout, os.Stdin)
+	//
+	// Use resolveInteractiveSessionFactory to probe the actual resolved backend
+	// (not the raw --executor flag value, which may be "auto" even when the
+	// resolved backend is conpty or pty).
+	if isf := resolveInteractiveSessionFactory(innerExec); isf != nil {
+		// Close the regular session started above — we need an interactive one
+		// (no background reader goroutine racing on stdout).
+		_ = sess.Close()
+		iSess, iErr := isf.StartInteractiveSession(ctx, spawnArgs)
+		if iErr != nil {
+			errMsg := fmt.Sprintf("start interactive session: %v", iErr)
+			fmt.Fprintf(os.Stderr, "launcher session: %s\n", errMsg)
+			sink.Emit(KindError, errorPayload{Source: "launcher", Message: errMsg})
+			return 1
+		}
+		return runInteractiveSession(ctx, iSess, sink, os.Stdout, os.Stdin)
 	}
 
 	// Build a sessionFactory closure for /reset support (pipe mode only).
@@ -250,6 +264,23 @@ func resolveSessionFactory(ex types.ExecutorV2) types.SessionFactory {
 	if la, ok := ex.(types.LegacyAccessor); ok {
 		if sf, ok := la.Legacy().(types.SessionFactory); ok {
 			return sf
+		}
+	}
+	return nil
+}
+
+// resolveInteractiveSessionFactory returns an InteractiveSessionFactory bound to
+// the given ExecutorV2, or nil when neither the executor nor its underlying legacy
+// executor implements InteractiveSessionFactory. Mirrors resolveSessionFactory —
+// CLI adapters (CLIConPTYAdapter, CLIPTYAdapter) wrap a legacy executor; probe
+// the legacy layer via LegacyAccessor before giving up.
+func resolveInteractiveSessionFactory(ex types.ExecutorV2) types.InteractiveSessionFactory {
+	if isf, ok := ex.(types.InteractiveSessionFactory); ok {
+		return isf
+	}
+	if la, ok := ex.(types.LegacyAccessor); ok {
+		if isf, ok := la.Legacy().(types.InteractiveSessionFactory); ok {
+			return isf
 		}
 	}
 	return nil
