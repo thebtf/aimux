@@ -1543,7 +1543,8 @@ _Two targeted improvements following v3.3.0._
 
 - Fixed resolve layer to always pipe prompt via stdin, removed length threshold logic (#52)
 
-[Unreleased]: https://github.com/thebtf/aimux/compare/v5.5.0...HEAD
+[Unreleased]: https://github.com/thebtf/aimux/compare/v5.6.0...HEAD
+[5.6.0]: https://github.com/thebtf/aimux/compare/v5.5.0...v5.6.0
 [5.5.0]: https://github.com/thebtf/aimux/compare/v5.4.0...v5.5.0
 [5.4.0]: https://github.com/thebtf/aimux/compare/v5.3.0...v5.4.0
 [5.3.0]: https://github.com/thebtf/aimux/compare/v5.2.2...v5.3.0
