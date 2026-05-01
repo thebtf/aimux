@@ -45,8 +45,7 @@ func main() {
 	case "api":
 		os.Exit(runAPI(os.Args[2:]))
 	case "session":
-		fmt.Fprintln(os.Stderr, "session: not yet implemented in this phase")
-		os.Exit(2)
+		os.Exit(runSession(os.Args[2:]))
 	case "replay":
 		fmt.Fprintln(os.Stderr, "replay: not yet implemented in this phase")
 		os.Exit(2)
@@ -67,7 +66,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Subcommands:")
 	fmt.Fprintln(os.Stderr, "  cli      one-shot prompt via CLI executor (ConPTY/PTY/Pipe)")
 	fmt.Fprintln(os.Stderr, "  api      one-shot prompt via HTTP API executor (openai|anthropic|google)")
-	fmt.Fprintln(os.Stderr, "  session  interactive REPL               (not yet implemented)")
+	fmt.Fprintln(os.Stderr, "  session  interactive REPL (CLI: --cli <name>; API: --provider <p> --model <m>)")
 	fmt.Fprintln(os.Stderr, "  replay   replay JSONL log               (not yet implemented)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run 'launcher <subcommand> --help' for subcommand flags.")

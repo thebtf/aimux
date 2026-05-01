@@ -243,6 +243,8 @@ type turnPayload struct {
 	Role string `json:"role"`
 	// Content is the text of the turn.
 	Content string `json:"content"`
+	// TurnID is the 1-based monotonic turn counter within the session.
+	TurnID int `json:"turn_id"`
 }
 
 // chunkPayload records one streaming chunk from SendStream.
