@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.5.0] — 2026-05-01 — AIMUX-17 Launcher debug tool
+
+Adds `tools/launcher/` — a standalone debug binary that decorates `types.ExecutorV2`
+over both CLI subprocess (ConPTY/PTY/Pipe) and HTTP API (OpenAI/Anthropic/Google)
+backends. Built to investigate executor regressions without rebuilding the aimux
+daemon: cuts the debug-loop latency from minutes (rebuild + daemon restart + MCP
+shim reconnect + filtered output) to seconds (direct binary invocation with
+explicit visibility into resolved SpawnArgs, raw stdout/stderr, classification,
+breaker state, and cooldown).
+
+Production binary `cmd/aimux/` is unchanged. Launcher is a dev/operator tool only.
+
+### Added
+
+- `tools/launcher/` — new dev-tool binary (no separate go.mod; main module sub-package, loomlint pattern)
+- Subcommand `launcher cli --cli <name> --prompt <text>` — one-shot CLI prompt via the same `pkg/executor` surface as production
+- Subcommand `launcher api --provider {openai|anthropic|google} --prompt <text>` — one-shot HTTP API prompt
+- Subcommand `launcher session --cli <name>` (or `--provider <p>`) — interactive multi-turn REPL with slash-commands `/quit`, `/reset`, `/dump`, `/save <path>`, `/raw on|off`, `/history`, `/help`
+- Subcommand `launcher replay --log <path>` — read JSONL log, filter by event kind, human-readable or `--raw` byte-identical re-emit
+- L1 universal ExecutorV2 decorator (`debug_executor.go`) — emits `spawn_args`, `complete`, `classify`, `breaker_state`, `cooldown_state` events per Send; chunk events per SendStream
+- L2 pipe-only raw spawn (`raw_spawn.go`) — `--bypass` mode with `io.TeeReader` capturing raw stdout/stderr bytes pre-StripANSI alongside ANSI-stripped line events for side-by-side debug
+- JSONL replay log writer (`jsonl.go`) with monotonic seq counter, fsync-after-write contract, 1 MB max line buffer
+- 14 typed event payload structs covering `spawn_args`, `spawn`, `stdout`, `stderr`, `chunk`, `exit`, `complete`, `classify`, `breaker_state`, `cooldown_state`, `turn`, `error`, `http_request`, `http_response` kinds
+- Default executor backend = `pipe` (deterministic for headless CLIs); `--executor pipe|conpty|pty|auto` flag for parity testing
+- NFR-7 disclosure: `--bypass --log <path>` prints 4-line UNREDACTED-secrets warning to stderr at startup
+- SIGINT/SIGTERM handler — emits final `error {signal: interrupt}` event and exits 130 (POSIX SIGINT convention)
+- `tools/launcher/README.md` — usage, L1 vs L2 capability matrix, 8 verification smoke commands, troubleshooting
+- 18 unit tests + 7 subtests across `jsonl_test.go`, `debug_executor_test.go`, `raw_spawn_test.go`, `repl_test.go` — `go test ./tools/launcher/... -count=1` PASS in ~8.5s
+
+### Notes
+
+- HTTP middleware (`http_request` / `http_response` events) probed during implementation: `google.golang.org/genai` SDK does not expose a custom `*http.Client` injection point, so middleware is skipped for all 3 providers (Path B) for parity. Reserved payload structs in code; revisit when google SDK adds support.
+- L2 raw capture is pipe-only by design. PTY merges stdout+stderr into ptmx; ConPTY uses terminal emulation — neither matches the byte-level visibility the tee-reader pattern provides for plain pipes. Documented constraint in README.
+- Spec artifacts under `.agent/specs/AIMUX-17-launcher-debug-tool/` (gitignored on this public repo): spec.md, plan.md, CR-001 tasks.md (24 tasks + 7 GATEs), clarification report, completeness report, 7 phase-gate reports.
+
 ## [5.4.0] — 2026-05-01 — AIMUX-16 Transport-Completeness Pass
 
 Drives all 6 PARTIAL transport capabilities to COMPLETE per the canonical contract
