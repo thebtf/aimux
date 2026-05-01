@@ -86,6 +86,7 @@ func runCLI(args []string) int {
 	cwd := fs.String("cwd", "", "working directory for the spawned process (empty = inherit)")
 	execChoice := fs.String("executor", "pipe", "executor backend: pipe|conpty|pty|auto (default pipe — deterministic for headless CLIs)")
 	logPath := fs.String("log", "", "path to append JSONL events (empty = no log)")
+	bypass := fs.Bool("bypass", false, "L2 mode: pipe-only raw subprocess capture pre-StripANSI (writes raw bytes to log)")
 
 	if err := fs.Parse(args); err != nil {
 		// flag.ContinueOnError already printed the error.
@@ -103,6 +104,12 @@ func runCLI(args []string) int {
 		return 2
 	}
 
+	// --bypass is pipe-only; reject incompatible executor choices early (T009).
+	if *bypass && *execChoice != "pipe" {
+		fmt.Fprintln(os.Stderr, "launcher cli: --bypass is pipe-only; use --executor pipe")
+		return 2
+	}
+
 	// Signal-aware context: Ctrl+C or SIGTERM cancels sigCtx and triggers the
 	// error event + exit 130 path (per Clarification C3).
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -116,6 +123,15 @@ func runCLI(args []string) int {
 	}
 	defer func() { _ = sinkCloser.Close() }()
 
+	// NFR-7: print unredacted-write warning when --bypass and --log are both active.
+	if *bypass && *logPath != "" {
+		fmt.Fprintf(os.Stderr, "WARNING: --bypass --log %s writes raw subprocess bytes UNREDACTED.\n", *logPath)
+		fmt.Fprintf(os.Stderr, "The log file MAY contain API tokens, passwords, or other secrets pasted in\n")
+		fmt.Fprintf(os.Stderr, "--prompt or echoed by the backend. Use only in a trusted dev environment.\n")
+		fmt.Fprintf(os.Stderr, "Delete the log file after debugging: rm %s\n", *logPath)
+	}
+
+	// Build backend once — returns both ExecutorV2 and SpawnArgs.
 	innerExec, spawnArgs, err := buildCLIBackend(*configDir, *cliName, *prompt, *model, *effort, *cwd, *execChoice)
 	if err != nil {
 		errMsg := fmt.Sprintf("backend setup failed: %v", err)
@@ -128,6 +144,41 @@ func runCLI(args []string) int {
 			fmt.Fprintf(os.Stderr, "launcher cli: executor close: %v\n", closeErr)
 		}
 	}()
+
+	// --bypass: L2 raw path — skip debugExecutor, call runRawCLI directly.
+	if *bypass {
+		start := time.Now()
+
+		timeout := defaultTimeout
+		if spawnArgs.TimeoutSeconds > 0 {
+			timeout = time.Duration(spawnArgs.TimeoutSeconds) * time.Second
+		}
+		ctx, cancel := context.WithTimeout(sigCtx, timeout)
+		defer cancel()
+
+		exitCode, rawErr := runRawCLI(ctx, sigCtx, spawnArgs, sink)
+		duration := time.Since(start)
+
+		if sigCtx.Err() != nil {
+			sink.Emit(KindError, errorPayload{
+				Source:  "launcher",
+				Message: sigCtx.Err().Error(),
+				Signal:  "interrupt",
+			})
+			fmt.Fprintln(os.Stderr, "launcher: interrupted")
+			return 130
+		}
+		if rawErr != nil {
+			fmt.Fprintf(os.Stderr, "launcher cli: bypass spawn failed: %v\n", rawErr)
+			return 1
+		}
+
+		fmt.Fprintf(os.Stderr, "[bypass duration: %.3fs exit:%d]\n", duration.Seconds(), exitCode)
+		if exitCode != 0 {
+			return 1
+		}
+		return 0
+	}
 
 	// Construct the L1 decorator.  Provide a fresh breaker registry and cooldown
 	// tracker so state events are always emitted (they will show defaults since
