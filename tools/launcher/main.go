@@ -87,6 +87,7 @@ func runCLI(args []string) int {
 	execChoice := fs.String("executor", "pipe", "executor backend: pipe|conpty|pty|auto (default pipe — deterministic for headless CLIs)")
 	logPath := fs.String("log", "", "path to append JSONL events (empty = no log)")
 	bypass := fs.Bool("bypass", false, "L2 mode: pipe-only raw subprocess capture pre-StripANSI (writes raw bytes to log)")
+	stream := fs.Bool("stream", false, "use SendStream (streaming chunks) instead of Send")
 
 	if err := fs.Parse(args); err != nil {
 		// flag.ContinueOnError already printed the error.
@@ -101,6 +102,13 @@ func runCLI(args []string) int {
 	if *prompt == "" {
 		fmt.Fprintln(os.Stderr, "launcher cli: --prompt is required")
 		fs.Usage()
+		return 2
+	}
+
+	// --stream + --bypass are mutually exclusive: bypass is non-streaming raw
+	// capture; stream routes through SendStream.  Detect early before any I/O.
+	if *stream && *bypass {
+		fmt.Fprintln(os.Stderr, "launcher cli: --stream + --bypass not supported (--bypass is non-streaming raw capture)")
 		return 2
 	}
 
@@ -205,7 +213,24 @@ func runCLI(args []string) int {
 	defer cancel()
 
 	start := time.Now()
-	resp, err := dbgExec.Send(ctx, sendMsg)
+	var resp *types.Response
+
+	if *stream {
+		// --stream: route through SendStream, printing each chunk as it arrives.
+		// onChunk callback writes chunk content to stdout immediately.
+		// resp.Content is NOT printed after SendStream to avoid duplication —
+		// content was already delivered chunk by chunk.
+		onChunk := func(c types.Chunk) {
+			if c.Content != "" {
+				fmt.Print(c.Content)
+			}
+		}
+		resp, err = dbgExec.SendStream(ctx, sendMsg, onChunk)
+		// Ensure streamed output ends with a newline.
+		fmt.Println()
+	} else {
+		resp, err = dbgExec.Send(ctx, sendMsg)
+	}
 	duration := time.Since(start)
 
 	// Check whether the cancellation was triggered by a signal (sigCtx done)
@@ -226,11 +251,14 @@ func runCLI(args []string) int {
 		return 1
 	}
 
-	fmt.Print(resp.Content)
-	// Ensure the output ends with a newline so the shell prompt appears on its
-	// own line even when the CLI omits a trailing newline.
-	if len(resp.Content) > 0 && resp.Content[len(resp.Content)-1] != '\n' {
-		fmt.Println()
+	if !*stream {
+		// Non-streaming: print the complete response content.
+		fmt.Print(resp.Content)
+		// Ensure the output ends with a newline so the shell prompt appears on its
+		// own line even when the CLI omits a trailing newline.
+		if len(resp.Content) > 0 && resp.Content[len(resp.Content)-1] != '\n' {
+			fmt.Println()
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "[duration: %.3fs exit:%d]\n", duration.Seconds(), resp.ExitCode)
