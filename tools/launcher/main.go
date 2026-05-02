@@ -11,6 +11,7 @@
 //	api      — one-shot prompt via HTTP API executor (openai|anthropic|google)
 //	session  — interactive REPL (CLI: --cli <name>; API: --provider <p>)
 //	replay   — replay a JSONL log with optional kind filtering
+//	validate — run CR-002 launcher validation scenarios
 //
 // Usage:
 //
@@ -48,6 +49,8 @@ func main() {
 		os.Exit(runSession(os.Args[2:]))
 	case "replay":
 		os.Exit(runReplay(os.Args[2:]))
+	case "validate":
+		os.Exit(runValidate(os.Args[2:]))
 	case "--help", "-help", "-h", "help":
 		printUsage()
 		os.Exit(0)
@@ -67,6 +70,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  api      one-shot prompt via HTTP API executor (openai|anthropic|google)")
 	fmt.Fprintln(os.Stderr, "  session  interactive REPL (CLI: --cli <name>; API: --provider <p> --model <m>)")
 	fmt.Fprintln(os.Stderr, "  replay   replay JSONL log               (--log <path> [--filter <kinds>] [--raw])")
+	fmt.Fprintln(os.Stderr, "  validate run CR-002 validation harness  (--out <dir> [--synthetic-only])")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run 'launcher <subcommand> --help' for subcommand flags.")
 }
