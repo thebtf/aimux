@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -168,5 +169,61 @@ func TestProcessManager_CleanupRemovesFromTracking(t *testing.T) {
 	default:
 		// If we reach default, the channel is not yet closed — unexpected.
 		t.Error("Done channel should be closed after process exit")
+	}
+}
+
+func TestProcessManager_CleanupIsIdempotentAndNilSafe(t *testing.T) {
+	pm := executor.NewProcessManager()
+
+	pm.Cleanup(nil)
+
+	h := &executor.ProcessHandle{PID: 12345}
+	pm.Cleanup(h)
+	pm.Cleanup(h)
+}
+
+type recordingReadCloser struct {
+	closed atomic.Bool
+}
+
+func (r *recordingReadCloser) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (r *recordingReadCloser) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
+func TestProcessManager_CleanupWaitsForDrainSignal(t *testing.T) {
+	pm := executor.NewProcessManager()
+	stdout := &recordingReadCloser{}
+	stderr := &recordingReadCloser{}
+	h := &executor.ProcessHandle{PID: 12345, Stdout: stdout, Stderr: stderr}
+	h.ArmDrainWait()
+
+	cleanupDone := make(chan struct{})
+	go func() {
+		defer close(cleanupDone)
+		pm.Cleanup(h)
+	}()
+
+	select {
+	case <-cleanupDone:
+		t.Fatal("Cleanup returned before drain signal")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if stdout.closed.Load() || stderr.closed.Load() {
+		t.Fatal("Cleanup closed pipes before drain signal")
+	}
+
+	h.MarkDrained()
+	select {
+	case <-cleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("Cleanup did not return after drain signal")
+	}
+	if !stdout.closed.Load() || !stderr.closed.Load() {
+		t.Fatal("Cleanup did not close pipes after drain signal")
 	}
 }

@@ -69,6 +69,8 @@ func runRawCLI(ctx context.Context, sigCtx context.Context, spawnArgs types.Spaw
 		return -1, fmt.Errorf("spawn %s: %w", spawnArgs.Command, err)
 	}
 	defer executor.SharedPM.Cleanup(handle)
+	handle.ArmDrainWait()
+	defer handle.MarkDrained()
 
 	sink.Emit(KindSpawn, spawnPayload{PID: handle.PID, Command: spawnArgs.Command})
 

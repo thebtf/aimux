@@ -74,6 +74,8 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 			fmt.Sprintf("failed to start %s", args.Command), err, "")
 	}
 	defer executor.SharedPM.Cleanup(handle)
+	handle.ArmDrainWait()
+	defer handle.MarkDrained()
 
 	stdinDone := make(chan struct{})
 	close(stdinDone)
@@ -111,8 +113,11 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	// 4-way select: process exit | pattern | timeout | cancel
 	select {
 	case waitErr := <-handle.Done:
-		<-iom.Done()
-		<-stderrDone
+		iom.Drain(10 * time.Second)
+		select {
+		case <-stderrDone:
+		case <-time.After(10 * time.Second):
+		}
 		<-stdinDone
 		content := iom.Collect()
 		exitCode := 0
