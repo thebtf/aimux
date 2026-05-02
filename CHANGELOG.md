@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.1] — 2026-05-02 — executor pipe drain hotfix
+
+Fixes the post-merge v5.6.0 CI failure where `TestPipeExecutor_Run_CompletionPattern`
+intermittently collected empty stdout under the Unix race/coverage job.
+
+### Fixed
+
+- `ProcessManager` no longer lets `exec.Cmd.Wait` close stdout/stderr pipes before
+  pipe readers finish draining output. Pipe-backed executor paths now opt into
+  drain synchronization before cleanup, preserving completion-pattern output under
+  race/coverage scheduling.
+- `pipe.Executor.Run` now uses explicit `StdinPipe` lifecycle and bounded output
+  drains for normal process exit, timeout, cancellation, and completion-pattern
+  termination.
+- `tools/launcher` raw-spawn cleanup now participates in the same drain signal so
+  L2 capture does not race cleanup against stdout/stderr tee readers.
+
 ## [5.6.0] — 2026-05-02 — AIMUX-17 CR-002 / CR-003 — real streaming + interactive TUI
 
 Closes the visibility gap discovered during smoke testing of v5.5.0 — ConPTY hangs
@@ -1543,7 +1560,8 @@ _Two targeted improvements following v3.3.0._
 
 - Fixed resolve layer to always pipe prompt via stdin, removed length threshold logic (#52)
 
-[Unreleased]: https://github.com/thebtf/aimux/compare/v5.6.0...HEAD
+[Unreleased]: https://github.com/thebtf/aimux/compare/v5.6.1...HEAD
+[5.6.1]: https://github.com/thebtf/aimux/compare/v5.6.0...v5.6.1
 [5.6.0]: https://github.com/thebtf/aimux/compare/v5.5.0...v5.6.0
 [5.5.0]: https://github.com/thebtf/aimux/compare/v5.4.0...v5.5.0
 [5.4.0]: https://github.com/thebtf/aimux/compare/v5.3.0...v5.4.0
