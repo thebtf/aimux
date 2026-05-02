@@ -85,6 +85,22 @@ func TestInspectANSIProof(t *testing.T) {
 	}
 }
 
+func TestInspectANSIProofRequiresByteSequence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ansi-false-positive.jsonl")
+	content := `{"seq":1,"ts":"2026-05-02T00:00:00Z","kind":"stdout","payload":{"stream":"raw","bytes_hex":"01b5b0"}}` + "\n" +
+		`{"seq":2,"ts":"2026-05-02T00:00:00Z","kind":"stdout","payload":{"stream":"line","content":"AIMUX_ANSI_OK"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw, stripped, err := inspectANSIProof(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw || !stripped {
+		t.Fatalf("raw=%v stripped=%v, want raw=false stripped=true", raw, stripped)
+	}
+}
+
 func TestMissingKindsPropagatesScanErrors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "broken.jsonl")
 	if err := os.WriteFile(path, []byte("{not-json}\n"), 0o644); err != nil {

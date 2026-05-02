@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -39,7 +40,11 @@ func inspectANSIProof(logPath string) (bool, bool, error) {
 		}
 		switch p.Stream {
 		case "raw":
-			if strings.Contains(strings.ToLower(p.BytesHex), "1b5b") {
+			rawBytes, err := hex.DecodeString(p.BytesHex)
+			if err != nil {
+				return err
+			}
+			if bytes.Contains(rawBytes, []byte{0x1b, 0x5b}) {
 				rawANSI = true
 			}
 		case "line":
@@ -136,7 +141,10 @@ func scanEvents(logPath string, fn func(logEventLite) error) error {
 			return fmt.Errorf("inspect %s line %d: %w", logPath, lineNo, err)
 		}
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("scan %s after line %d: %w", logPath, lineNo, err)
+	}
+	return nil
 }
 
 func classifyExternalBlocker(name, cmd, logPath, stdout, stderr string, code int, err error) ScenarioResult {
