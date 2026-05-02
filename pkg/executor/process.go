@@ -20,10 +20,12 @@ type ProcessHandle struct {
 	ExitCode  int
 	StartedAt time.Time
 
-	done    chan error    // internal writable channel
-	exited  atomic.Bool  // set to true before Done is signalled; safe for concurrent reads
-	mu      sync.Mutex
-	cleaned bool
+	done      chan error  // internal writable channel
+	exited    atomic.Bool // set to true before Done is signalled; safe for concurrent reads
+	mu        sync.Mutex
+	cleaned   bool
+	drainDone chan struct{} // optional: closed when stdout/stderr readers are fully drained
+	drained   bool
 }
 
 // ProcessManager tracks and manages spawned processes.
@@ -76,7 +78,14 @@ func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
 	pm.handles.Store(h.PID, h)
 
 	go func() {
-		waitErr := cmd.Wait()
+		state, waitErr := cmd.Process.Wait()
+		if state != nil {
+			cmd.ProcessState = state
+			if state.ExitCode() != 0 && waitErr == nil {
+				waitErr = &exec.ExitError{ProcessState: state}
+			}
+		}
+
 		h.mu.Lock()
 		if cmd.ProcessState != nil {
 			h.ExitCode = cmd.ProcessState.ExitCode()
@@ -138,15 +147,65 @@ func (h *ProcessHandle) MarkExited() {
 	h.exited.Store(true)
 }
 
+// ArmDrainWait makes Cleanup wait briefly for the handle's stdout/stderr
+// reader owner to finish draining before Cleanup closes those readers.
+func (h *ProcessHandle) ArmDrainWait() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.drainDone == nil && !h.drained {
+		h.drainDone = make(chan struct{})
+	}
+}
+
+// MarkDrained releases Cleanup once the handle's stdout/stderr readers have
+// finished draining. It is safe to call multiple times.
+func (h *ProcessHandle) MarkDrained() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.drained {
+		return
+	}
+	h.drained = true
+	if h.drainDone != nil {
+		close(h.drainDone)
+	}
+}
+
 // Cleanup removes a handle from tracking and marks it as cleaned up.
 func (pm *ProcessManager) Cleanup(h *ProcessHandle) {
 	if h == nil {
 		return
 	}
-	pm.handles.Delete(h.PID)
+
 	h.mu.Lock()
+	if h.cleaned {
+		h.mu.Unlock()
+		return
+	}
 	h.cleaned = true
+	drainDone := h.drainDone
 	h.mu.Unlock()
+
+	if drainDone != nil {
+		select {
+		case <-drainDone:
+		case <-time.After(10 * time.Second):
+		}
+	}
+
+	pm.handles.Delete(h.PID)
+	if h.Stdout != nil {
+		_ = h.Stdout.Close()
+	}
+	if h.Stderr != nil {
+		_ = h.Stderr.Close()
+	}
 }
 
 // Shutdown kills all tracked processes and removes them from tracking.

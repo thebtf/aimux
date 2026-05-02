@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
@@ -56,17 +55,38 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	case len(args.Env) > 0:
 		cmd.Env = mergeEnv(args.Env)
 	}
+	var stdin io.WriteCloser
 	if args.Stdin != "" {
-		cmd.Stdin = strings.NewReader(args.Stdin)
+		var err error
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return nil, types.NewExecutorError("failed to create stdin pipe", err, "")
+		}
 	}
 
 	// Control plane: spawn process via shared manager (tracked for server shutdown)
 	handle, err := executor.SharedPM.Spawn(cmd)
 	if err != nil {
+		if stdin != nil {
+			_ = stdin.Close()
+		}
 		return nil, types.NewExecutorError(
 			fmt.Sprintf("failed to start %s", args.Command), err, "")
 	}
 	defer executor.SharedPM.Cleanup(handle)
+	handle.ArmDrainWait()
+	defer handle.MarkDrained()
+
+	stdinDone := make(chan struct{})
+	close(stdinDone)
+	if stdin != nil {
+		stdinDone = make(chan struct{})
+		go func() {
+			defer close(stdinDone)
+			defer stdin.Close()
+			_, _ = io.WriteString(stdin, args.Stdin)
+		}()
+	}
 
 	// T003: drain stderr into a capped buffer in the background.
 	// Without draining, a process that writes >64KB to stderr will block forever
@@ -93,8 +113,12 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 	// 4-way select: process exit | pattern | timeout | cancel
 	select {
 	case waitErr := <-handle.Done:
-		iom.Drain(1 * time.Second)
-		<-stderrDone
+		iom.Drain(10 * time.Second)
+		select {
+		case <-stderrDone:
+		case <-time.After(10 * time.Second):
+		}
+		<-stdinDone
 		content := iom.Collect()
 		exitCode := 0
 		if waitErr != nil {
@@ -116,6 +140,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
 		<-stderrDone
+		<-stdinDone
 		return &types.Result{
 			Content:    iom.Collect(),
 			Stderr:     stderrBuf.String(),
@@ -127,6 +152,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
 		<-stderrDone
+		<-stdinDone
 		content := iom.Collect()
 		return &types.Result{
 			Content:    content,
@@ -142,6 +168,7 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 		executor.SharedPM.Kill(handle)
 		iom.Drain(1 * time.Second)
 		<-stderrDone
+		<-stdinDone
 		content := iom.Collect()
 		return &types.Result{
 			Content:    content,
