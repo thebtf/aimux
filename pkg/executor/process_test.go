@@ -1,8 +1,10 @@
 package executor_test
 
 import (
+	"io"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +46,14 @@ func TestProcessManager_SpawnReturnsHandle(t *testing.T) {
 	case <-h.Done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("process did not exit within timeout")
+	}
+
+	out, err := io.ReadAll(h.Stdout)
+	if err != nil {
+		t.Fatalf("read stdout after Done: %v", err)
+	}
+	if !strings.Contains(string(out), "hello") {
+		t.Fatalf("stdout after Done = %q, expected hello", string(out))
 	}
 
 	if h.ExitCode != 0 {

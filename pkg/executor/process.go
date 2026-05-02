@@ -20,8 +20,8 @@ type ProcessHandle struct {
 	ExitCode  int
 	StartedAt time.Time
 
-	done    chan error    // internal writable channel
-	exited  atomic.Bool  // set to true before Done is signalled; safe for concurrent reads
+	done    chan error  // internal writable channel
+	exited  atomic.Bool // set to true before Done is signalled; safe for concurrent reads
 	mu      sync.Mutex
 	cleaned bool
 }
@@ -76,7 +76,14 @@ func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
 	pm.handles.Store(h.PID, h)
 
 	go func() {
-		waitErr := cmd.Wait()
+		state, waitErr := cmd.Process.Wait()
+		if state != nil {
+			cmd.ProcessState = state
+			if state.ExitCode() != 0 && waitErr == nil {
+				waitErr = &exec.ExitError{ProcessState: state}
+			}
+		}
+
 		h.mu.Lock()
 		if cmd.ProcessState != nil {
 			h.ExitCode = cmd.ProcessState.ExitCode()
@@ -144,6 +151,8 @@ func (pm *ProcessManager) Cleanup(h *ProcessHandle) {
 		return
 	}
 	pm.handles.Delete(h.PID)
+	_ = h.Stdout.Close()
+	_ = h.Stderr.Close()
 	h.mu.Lock()
 	h.cleaned = true
 	h.mu.Unlock()
