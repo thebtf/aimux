@@ -133,7 +133,7 @@ func scanEvents(logPath string, fn func(logEventLite) error) error {
 			return fmt.Errorf("parse %s line %d: %w", logPath, lineNo, err)
 		}
 		if err := fn(ev); err != nil {
-			return err
+			return fmt.Errorf("inspect %s line %d: %w", logPath, lineNo, err)
 		}
 	}
 	return sc.Err()
@@ -144,7 +144,7 @@ func classifyExternalBlocker(name, cmd, logPath, stdout, stderr string, code int
 	detail := trim(stderr + " " + fmt.Sprint(err))
 	reason := ""
 	switch {
-	case strings.Contains(combined, "executable file not found") || strings.Contains(combined, "cannot find the file") || strings.Contains(combined, "not found") || strings.Contains(combined, "not configured"):
+	case strings.Contains(combined, "executable file not found") || strings.Contains(combined, "cannot find the file") || strings.Contains(combined, "command not found") || strings.Contains(combined, "file not found") || strings.Contains(combined, "no such file or directory") || strings.Contains(combined, "not configured"):
 		reason = "binary or profile unavailable: " + detail
 	case strings.Contains(combined, "unauthorized") || strings.Contains(combined, "authentication") || strings.Contains(combined, "api key") || strings.Contains(combined, "login") || strings.Contains(combined, "credential"):
 		reason = "authentication unavailable: " + detail

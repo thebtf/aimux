@@ -175,3 +175,14 @@ func TestExternalTimeoutBlockerIncludesErrorDetail(t *testing.T) {
 		t.Fatalf("blocker missing timeout detail: %#v", result)
 	}
 }
+
+func TestExternalBlockerDoesNotHideGenericNotFoundFailures(t *testing.T) {
+	result := classifyExternalBlocker("real CLI codex", "launcher cli", "cli.jsonl", "", "semantic assertion not found in response", 1, errors.New("exit status 1"))
+	if result.Status != StatusFail {
+		t.Fatalf("generic not found status=%s want FAIL: %#v", result.Status, result)
+	}
+	result = classifyExternalBlocker("real CLI missing", "launcher cli", "cli.jsonl", "", "command not found", 127, errors.New("exit status 127"))
+	if result.Status != StatusBlocked {
+		t.Fatalf("command not found status=%s want BLOCKED: %#v", result.Status, result)
+	}
+}
