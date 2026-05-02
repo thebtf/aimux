@@ -40,6 +40,7 @@ type validateOptions struct {
 	IncludeAPI    bool
 	IncludeManual bool
 	SyntheticOnly bool
+	AllowBlocked  bool
 	Timeout       time.Duration
 }
 
@@ -61,6 +62,7 @@ func runValidate(args []string) int {
 	includeAPI := fs.Bool("include-api", true, "run API provider validation scenarios")
 	includeManual := fs.Bool("include-manual", true, "include manual TUI validation recipe in the report")
 	syntheticOnly := fs.Bool("synthetic-only", false, "run deterministic synthetic scenarios only")
+	allowBlocked := fs.Bool("allow-blocked", false, "exit 0 when scenarios are BLOCKED and no scenario FAILs")
 	timeout := fs.Duration("timeout", 30*time.Second, "per-scenario timeout")
 
 	if err := fs.Parse(args); err != nil {
@@ -78,6 +80,7 @@ func runValidate(args []string) int {
 		IncludeAPI:    *includeAPI,
 		IncludeManual: *includeManual,
 		SyntheticOnly: *syntheticOnly,
+		AllowBlocked:  *allowBlocked,
 		Timeout:       *timeout,
 	}
 
@@ -87,10 +90,7 @@ func runValidate(args []string) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stdout, "validation report: %s\n", run.ReportPath)
-	if countByStatus(run.Results, StatusFail) > 0 {
-		return 1
-	}
-	return 0
+	return validationExitCode(run.Results, opts.AllowBlocked)
 }
 
 func executeValidation(opts validateOptions) (validateRun, error) {
@@ -115,7 +115,7 @@ func executeValidation(opts validateOptions) (validateRun, error) {
 		if opts.IncludeAPI {
 			results = append(results, runAPIScenarios(opts, launcher, runDir)...)
 		}
-		results = append(results, runSessionScenario(opts, launcher, runDir))
+		results = append(results, runSessionScenarios(opts, launcher, runDir)...)
 	}
 
 	recipe := []string(nil)
@@ -210,6 +210,16 @@ func countByStatus(results []ScenarioResult, status ScenarioStatus) int {
 		}
 	}
 	return count
+}
+
+func validationExitCode(results []ScenarioResult, allowBlocked bool) int {
+	if countByStatus(results, StatusFail) > 0 {
+		return 1
+	}
+	if !allowBlocked && countByStatus(results, StatusBlocked) > 0 {
+		return 2
+	}
+	return 0
 }
 
 func mdEscape(value string) string {

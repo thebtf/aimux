@@ -9,19 +9,21 @@ import (
 	"strings"
 )
 
-func missingKinds(logPath string, required []string) []string {
+func missingKinds(logPath string, required []string) ([]string, error) {
 	seen := map[string]bool{}
-	_ = scanEvents(logPath, func(ev logEventLite) error {
+	if err := scanEvents(logPath, func(ev logEventLite) error {
 		seen[ev.Kind] = true
 		return nil
-	})
+	}); err != nil {
+		return nil, err
+	}
 	var missing []string
 	for _, kind := range required {
 		if !seen[kind] {
 			missing = append(missing, kind)
 		}
 	}
-	return missing
+	return missing, nil
 }
 
 func inspectANSIProof(logPath string) (bool, bool, error) {
@@ -76,9 +78,9 @@ func inspectRawByteCount(logPath string) (int64, int64, error) {
 	return total, info.Size(), err
 }
 
-func hasTurnRoles(logPath string) bool {
+func hasTurnRoles(logPath string) (bool, error) {
 	roles := map[string]bool{}
-	_ = scanEvents(logPath, func(ev logEventLite) error {
+	if err := scanEvents(logPath, func(ev logEventLite) error {
 		if ev.Kind != KindTurn {
 			return nil
 		}
@@ -88,8 +90,30 @@ func hasTurnRoles(logPath string) bool {
 		}
 		roles[p.Role] = true
 		return nil
-	})
-	return roles["user"] && roles["agent"]
+	}); err != nil {
+		return false, err
+	}
+	return roles["user"] && roles["agent"], nil
+}
+
+func turnContentContains(logPath, role, token string) (bool, error) {
+	found := false
+	if err := scanEvents(logPath, func(ev logEventLite) error {
+		if ev.Kind != KindTurn {
+			return nil
+		}
+		var p turnPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			return err
+		}
+		if p.Role == role && strings.Contains(p.Content, token) {
+			found = true
+		}
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	return found, nil
 }
 
 func scanEvents(logPath string, fn func(logEventLite) error) error {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -108,7 +109,10 @@ func runSyntheticL1Scenario(opts validateOptions, launcher, cfgDir, runDir strin
 	if err != nil || code != 0 {
 		return ScenarioResult{Name: "synthetic L1 JSONL", Status: StatusFail, Command: cmd, LogPath: logPath, Error: fmt.Sprintf("exit=%d err=%v stderr=%s", code, err, trim(stderr))}
 	}
-	missing := missingKinds(logPath, []string{KindSpawnArgs, KindComplete, KindClassify, KindBreakerState, KindCooldownState})
+	missing, scanErr := missingKinds(logPath, []string{KindSpawnArgs, KindComplete, KindClassify, KindBreakerState, KindCooldownState})
+	if scanErr != nil {
+		return ScenarioResult{Name: "synthetic L1 JSONL", Status: StatusFail, Command: cmd, LogPath: logPath, Error: scanErr.Error()}
+	}
 	if len(missing) > 0 {
 		return ScenarioResult{Name: "synthetic L1 JSONL", Status: StatusFail, Command: cmd, LogPath: logPath, Error: "missing JSONL kinds: " + strings.Join(missing, ",")}
 	}
@@ -157,7 +161,12 @@ func runLargeOutputScenario(opts validateOptions, launcher, cfgDir, runDir strin
 func runRealCLIScenarios(opts validateOptions, launcher, runDir string) []ScenarioResult {
 	var results []ScenarioResult
 	for _, cli := range opts.CLIScope {
-		logPath := filepath.Join(runDir, "real-cli-"+cli+".jsonl")
+		safeCli, safeErr := safeCLIName(cli)
+		if safeErr != nil {
+			results = append(results, ScenarioResult{Name: "real CLI " + cli + " one-shot/L1", Status: StatusFail, Error: safeErr.Error()})
+			continue
+		}
+		logPath := filepath.Join(runDir, "real-cli-"+safeCli+".jsonl")
 		args := []string{"cli", "--cli", cli, "--config-dir", opts.ConfigDir, "--prompt", "Respond with exactly AIMUX_OK.", "--log", logPath}
 		stdout, stderr, code, err := timedLauncher(opts, launcher, args, "")
 		cmd := launcherCommand(args)
@@ -165,12 +174,20 @@ func runRealCLIScenarios(opts validateOptions, launcher, runDir string) []Scenar
 			results = append(results, classifyExternalBlocker("real CLI "+cli+" one-shot/L1", cmd, logPath, stdout, stderr, code, err))
 			continue
 		}
-		missing := missingKinds(logPath, []string{KindSpawnArgs, KindComplete, KindClassify})
+		missing, scanErr := missingKinds(logPath, []string{KindSpawnArgs, KindComplete, KindClassify})
+		if scanErr != nil {
+			results = append(results, ScenarioResult{Name: "real CLI " + cli + " one-shot/L1", Status: StatusFail, Command: cmd, LogPath: logPath, Error: scanErr.Error()})
+			continue
+		}
 		if len(missing) > 0 {
 			results = append(results, ScenarioResult{Name: "real CLI " + cli + " one-shot/L1", Status: StatusFail, Command: cmd, LogPath: logPath, Error: "missing JSONL kinds: " + strings.Join(missing, ",")})
 			continue
 		}
-		results = append(results, ScenarioResult{Name: "real CLI " + cli + " one-shot/L1", Status: StatusPass, Command: cmd, LogPath: logPath, Evidence: []string{"launcher exited 0", "L1 JSONL events present", "stdout=" + trim(stdout)}})
+		if !strings.Contains(stdout, "AIMUX_OK") {
+			results = append(results, ScenarioResult{Name: "real CLI " + cli + " one-shot/L1", Status: StatusFail, Command: cmd, LogPath: logPath, Error: "stdout missing AIMUX_OK sentinel: " + trim(stdout)})
+			continue
+		}
+		results = append(results, ScenarioResult{Name: "real CLI " + cli + " one-shot/L1", Status: StatusPass, Command: cmd, LogPath: logPath, Evidence: []string{"launcher exited 0", "L1 JSONL events present", "stdout contains AIMUX_OK", "stdout=" + trim(stdout)}})
 	}
 	return results
 }
@@ -192,28 +209,55 @@ func runAPIScenarios(opts validateOptions, launcher, runDir string) []ScenarioRe
 			results = append(results, classifyAPIBlocker(provider, cmd, logPath, stdout, stderr, code, err))
 			continue
 		}
-		results = append(results, ScenarioResult{Name: "API " + provider + " happy-path", Status: StatusPass, Command: cmd, LogPath: logPath, Evidence: []string{"launcher exited 0", "stdout=" + trim(stdout)}})
+		if !strings.Contains(stdout, "AIMUX_API_OK") {
+			results = append(results, ScenarioResult{Name: "API " + provider + " happy-path", Status: StatusFail, Command: cmd, LogPath: logPath, Error: "stdout missing AIMUX_API_OK sentinel: " + trim(stdout)})
+			continue
+		}
+		results = append(results, ScenarioResult{Name: "API " + provider + " happy-path", Status: StatusPass, Command: cmd, LogPath: logPath, Evidence: []string{"launcher exited 0", "stdout contains AIMUX_API_OK", "stdout=" + trim(stdout)}})
 	}
 	return results
 }
 
-func runSessionScenario(opts validateOptions, launcher, runDir string) ScenarioResult {
+func runSessionScenarios(opts validateOptions, launcher, runDir string) []ScenarioResult {
 	if len(opts.CLIScope) == 0 {
-		return ScenarioResult{Name: "stdin-driven CLI session", Status: StatusBlocked, Blocker: "empty --cli-scope"}
+		return []ScenarioResult{{Name: "stdin-driven CLI session", Status: StatusBlocked, Blocker: "empty --cli-scope"}}
 	}
-	cli := opts.CLIScope[0]
-	logPath := filepath.Join(runDir, "session-"+cli+".jsonl")
+	results := make([]ScenarioResult, 0, len(opts.CLIScope))
+	for _, cli := range opts.CLIScope {
+		results = append(results, runSessionScenario(opts, launcher, runDir, cli))
+	}
+	return results
+}
+
+func runSessionScenario(opts validateOptions, launcher, runDir, cli string) ScenarioResult {
+	safeCli, safeErr := safeCLIName(cli)
+	if safeErr != nil {
+		return ScenarioResult{Name: "stdin-driven CLI session " + cli, Status: StatusFail, Error: safeErr.Error()}
+	}
+	logPath := filepath.Join(runDir, "session-"+safeCli+".jsonl")
 	args := []string{"session", "--cli", cli, "--config-dir", opts.ConfigDir, "--log", logPath}
 	stdin := "Reply with exactly AIMUX_SESSION_OK.\n/dump\n/quit\n"
 	stdout, stderr, code, err := timedLauncher(opts, launcher, args, stdin)
+	name := "stdin-driven CLI session " + cli
 	cmd := "printf <session-script> | " + launcherCommand(args)
 	if err != nil || code != 0 {
-		return classifyExternalBlocker("stdin-driven CLI session", cmd, logPath, stdout, stderr, code, err)
+		return classifyExternalBlocker(name, cmd, logPath, stdout, stderr, code, err)
 	}
-	if !hasTurnRoles(logPath) {
-		return ScenarioResult{Name: "stdin-driven CLI session", Status: StatusFail, Command: cmd, LogPath: logPath, Error: "missing user/agent turn events"}
+	hasRoles, scanErr := hasTurnRoles(logPath)
+	if scanErr != nil {
+		return ScenarioResult{Name: name, Status: StatusFail, Command: cmd, LogPath: logPath, Error: scanErr.Error()}
 	}
-	return ScenarioResult{Name: "stdin-driven CLI session", Status: StatusPass, Command: cmd, LogPath: logPath, Evidence: []string{"turn events include user and agent", "/dump executed before /quit", "stdout=" + trim(stdout)}}
+	if !hasRoles {
+		return ScenarioResult{Name: name, Status: StatusFail, Command: cmd, LogPath: logPath, Error: "missing user/agent turn events"}
+	}
+	hasSentinel, scanErr := turnContentContains(logPath, "agent", "AIMUX_SESSION_OK")
+	if scanErr != nil {
+		return ScenarioResult{Name: name, Status: StatusFail, Command: cmd, LogPath: logPath, Error: scanErr.Error()}
+	}
+	if !hasSentinel {
+		return ScenarioResult{Name: name, Status: StatusFail, Command: cmd, LogPath: logPath, Error: "agent turn missing AIMUX_SESSION_OK sentinel"}
+	}
+	return ScenarioResult{Name: name, Status: StatusPass, Command: cmd, LogPath: logPath, Evidence: []string{"turn events include user and agent", "agent turn contains AIMUX_SESSION_OK", "/dump executed before /quit", "stdout=" + trim(stdout)}}
 }
 
 func manualTUIRecipe(opts validateOptions, runDir string) []string {
@@ -221,7 +265,8 @@ func manualTUIRecipe(opts validateOptions, runDir string) []string {
 	if len(opts.CLIScope) > 0 {
 		cli = opts.CLIScope[len(opts.CLIScope)-1]
 	}
-	logPath := filepath.Join(runDir, "manual-tui-"+cli+".jsonl")
+	safeCli := safeArtifactName(cli)
+	logPath := filepath.Join(runDir, "manual-tui-"+safeCli+".jsonl")
 	return []string{
 		"1. Run: `launcher session --cli " + cli + " --executor conpty --config-dir " + opts.ConfigDir + " --log " + logPath + "` (use `--executor pty` on Unix if preferred).",
 		"2. Type a short prompt and confirm the CLI TUI renders in the terminal.",
@@ -229,6 +274,38 @@ func manualTUIRecipe(opts validateOptions, runDir string) []string {
 		"4. Type `/quit` and confirm the process exits cleanly with exit code 0.",
 		"5. Artifact checklist: JSONL log path, screenshot or terminal transcript, visible TUI render evidence, automated session `/dump` evidence from this report, clean close evidence.",
 	}
+}
+
+func safeCLIName(cli string) (string, error) {
+	safe := safeArtifactName(cli)
+	if safe != cli || safe == ".." || safe == "invalid" {
+		return "", fmt.Errorf("invalid CLI scope %q: use only letters, digits, dot, underscore, or hyphen", cli)
+	}
+	return safe, nil
+}
+
+func safeArtifactName(value string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
+	base := path.Base(path.Clean(normalized))
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.' || r == '_' || r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 || b.String() == "." {
+		return "invalid"
+	}
+	return b.String()
 }
 
 func timedLauncher(opts validateOptions, launcher string, args []string, stdin string) (string, string, int, error) {

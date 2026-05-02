@@ -55,6 +55,20 @@ func TestParseCSV(t *testing.T) {
 	}
 }
 
+func TestValidationExitCodeTreatsBlockedAsNonZeroByDefault(t *testing.T) {
+	results := []ScenarioResult{{Name: "blocked", Status: StatusBlocked}}
+	if got := validationExitCode(results, false); got != 2 {
+		t.Fatalf("exit code=%d want 2", got)
+	}
+	if got := validationExitCode(results, true); got != 0 {
+		t.Fatalf("exit code with allowBlocked=%d want 0", got)
+	}
+	results = append(results, ScenarioResult{Name: "fail", Status: StatusFail})
+	if got := validationExitCode(results, true); got != 1 {
+		t.Fatalf("FAIL must take precedence, exit code=%d want 1", got)
+	}
+}
+
 func TestInspectANSIProof(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ansi.jsonl")
 	content := `{"seq":1,"ts":"2026-05-02T00:00:00Z","kind":"stdout","payload":{"stream":"raw","bytes_hex":"1b5b33326d41494d55585f414e53495f4f4b1b5b306d"}}` + "\n" +
@@ -68,6 +82,51 @@ func TestInspectANSIProof(t *testing.T) {
 	}
 	if !raw || !stripped {
 		t.Fatalf("raw=%v stripped=%v", raw, stripped)
+	}
+}
+
+func TestMissingKindsPropagatesScanErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken.jsonl")
+	if err := os.WriteFile(path, []byte("{not-json}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := missingKinds(path, []string{KindComplete})
+	if err == nil {
+		t.Fatal("missingKinds returned nil error for malformed JSONL")
+	}
+}
+
+func TestTurnContentContainsAgentSentinel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "turns.jsonl")
+	content := `{"seq":1,"ts":"2026-05-02T00:00:00Z","kind":"turn","payload":{"role":"user","content":"prompt","turn_id":1}}` + "\n" +
+		`{"seq":2,"ts":"2026-05-02T00:00:00Z","kind":"turn","payload":{"role":"agent","content":"AIMUX_SESSION_OK","turn_id":1}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := hasTurnRoles(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected user and agent turn roles")
+	}
+	found, err := turnContentContains(path, "agent", "AIMUX_SESSION_OK")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected agent sentinel")
+	}
+}
+
+func TestSafeCLINameRejectsPathTraversal(t *testing.T) {
+	if safe, err := safeCLIName("codex"); err != nil || safe != "codex" {
+		t.Fatalf("safeCLIName(codex)=(%q,%v), want codex,nil", safe, err)
+	}
+	for _, value := range []string{"../codex", `..\\codex`, "bad/name", "bad name", ".."} {
+		if _, err := safeCLIName(value); err == nil {
+			t.Fatalf("safeCLIName(%q) returned nil error", value)
+		}
 	}
 }
 

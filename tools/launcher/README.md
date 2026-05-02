@@ -158,9 +158,10 @@ launcher validate [flags]
 | `--include-api` | `true` | Run API provider gates when credentials are present |
 | `--include-manual` | `true` | Include the manual TUI evidence recipe in the report |
 | `--synthetic-only` | `false` | Run deterministic synthetic ANSI and large-output scenarios only |
+| `--allow-blocked` | `false` | Exit 0 when scenarios are BLOCKED and no scenario FAILs |
 | `--timeout <duration>` | `30s` | Per-scenario timeout |
 
-The harness writes `AIMUX-17-cr002-validation-<timestamp>.md` under `--out` and returns non-zero only when a scenario is **FAIL**. **BLOCKED** means an external prerequisite prevented validation, such as a missing binary, missing API key, unavailable network, quota/rate-limit, or model-scope denial. BLOCKED scenarios are reported with exact reasons and do not count as FAIL.
+The harness writes `AIMUX-17-cr002-validation-<timestamp>.md` under `--out`. **FAIL** returns exit code 1. **BLOCKED** returns exit code 2 by default because an external prerequisite prevented validation, such as a missing binary, missing API key, unavailable network, quota/rate-limit, or model-scope denial. Use `--allow-blocked` only for advisory inventory runs where BLOCKED scenarios must not fail the process.
 
 Synthetic scenarios build temporary fixture binaries under the run directory and generate a temporary config directory from `tools/launcher/testdata/emitters/`; they never create or require live profiles under `config/cli.d/`. The ANSI scenario proves raw `bytes_hex` contains `1b5b` while the paired line output is stripped. The large-output scenario emits at least 50 MB and records output size, log size, and memory evidence availability.
 
