@@ -1,0 +1,46 @@
+# codex-int — codex CLI in interactive TUI mode (no headless flags)
+# Used by tools/launcher to drive a real human-in-loop chat through ConPTY.
+name: codex-int
+binary: codex
+display_name: "Codex (interactive TUI)"
+capabilities: [coding, review, analysis, debugging, planning]
+
+features:
+  streaming: true
+  headless: false       # NO --full-auto / --json flags
+  read_only: false
+  session_resume: false
+  json: false
+  jsonl: false
+  stdin_pipe: false     # interactive — no upfront stdin
+
+output_format: text
+
+command:
+  base: "codex"         # bare codex — launches interactive chat TUI
+
+prompt_flag: ""
+prompt_flag_type: "positional"
+
+# Keep model defaults aligned with the headless codex profile so interactive
+# launcher validation exercises the same model family unless overridden.
+default_model: "gpt-5.5"
+model_flag: "-m"
+
+reasoning:
+  flag: "-c"
+  flag_value_template: 'model_reasoning_effort={{.Level}}'
+  levels: [low, medium, high, xhigh]
+
+model_fallback: []
+fallback_suffix_strip:
+  - "-spark"
+cooldown_seconds: 86400
+
+timeout_seconds: 3600
+stdin_threshold: 0
+stdin_sentinel: ""
+completion_pattern: ""
+
+env_passthrough:
+  - OPENAI_API_KEY
