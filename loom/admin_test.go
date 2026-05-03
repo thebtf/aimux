@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/thebtf/aimux/loom/deps"
 )
 
 type ignoreCancelWorker struct {
@@ -75,11 +77,12 @@ func TestTaskStore_FailActive_IgnoresTerminal(t *testing.T) {
 
 func TestLoomEngine_FailStaleRunning(t *testing.T) {
 	store := newTestStore(t)
-	engine := New(store)
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	engine := New(store, WithClock(deps.NewFakeClock(now)))
 	oldTask := makeTask("admin-stale", "proj-admin", TaskStatusRunning)
-	oldTask.CreatedAt = time.Now().UTC().Add(-30 * time.Minute)
+	oldTask.CreatedAt = now.Add(-30 * time.Minute)
 	freshTask := makeTask("admin-fresh", "proj-admin", TaskStatusRunning)
-	freshTask.CreatedAt = time.Now().UTC()
+	freshTask.CreatedAt = now
 	if err := store.Create(oldTask); err != nil {
 		t.Fatalf("Create oldTask: %v", err)
 	}
@@ -112,8 +115,9 @@ func TestLoomEngine_FailStaleRunning(t *testing.T) {
 
 func TestLoomEngine_FailStaleRunningUsesDispatchedAtWithoutProgress(t *testing.T) {
 	store := newTestStore(t)
-	engine := New(store)
-	dispatchedAt := time.Now().UTC()
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	engine := New(store, WithClock(deps.NewFakeClock(now)))
+	dispatchedAt := now
 	task := makeTask("admin-fresh-dispatch", "proj-admin", TaskStatusRunning)
 	task.CreatedAt = dispatchedAt.Add(-30 * time.Minute)
 	task.DispatchedAt = &dispatchedAt
@@ -134,6 +138,36 @@ func TestLoomEngine_FailStaleRunningUsesDispatchedAtWithoutProgress(t *testing.T
 	}
 	if got.Status != TaskStatusRunning {
 		t.Fatalf("status = %s, want running", got.Status)
+	}
+}
+
+func TestLoomEngine_FailActiveDoesNotCancelWhenStoreUpdateFails(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+	task := makeTask("admin-store-fail", "proj-admin", TaskStatusRunning)
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	cancelled := make(chan struct{})
+	engine.mu.Lock()
+	engine.cancels[task.ID] = func() { close(cancelled) }
+	engine.mu.Unlock()
+
+	if err := store.db.Close(); err != nil {
+		t.Fatalf("Close db: %v", err)
+	}
+	ok, err := engine.FailActive(task.ID, "store unavailable")
+	if err == nil {
+		t.Fatal("FailActive error = nil, want store error")
+	}
+	if ok {
+		t.Fatal("FailActive ok = true, want false when store update fails")
+	}
+	select {
+	case <-cancelled:
+		t.Fatal("cancel called before persistent failure was recorded")
+	default:
 	}
 }
 

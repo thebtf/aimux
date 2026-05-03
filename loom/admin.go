@@ -32,13 +32,13 @@ func (l *LoomEngine) FailActive(taskID, errMsg string) (bool, error) {
 	l.mu.RLock()
 	cancel := l.cancels[taskID]
 	l.mu.RUnlock()
-	if cancel != nil {
-		cancel()
-	}
 
 	info, err := l.store.FailActive(taskID, errMsg)
 	if err != nil || info == nil {
 		return info != nil, err
+	}
+	if cancel != nil {
+		cancel()
 	}
 	l.emitAdminFailed(*info, errMsg)
 	return true, nil
@@ -69,7 +69,7 @@ func (l *LoomEngine) FailStaleRunning(maxIdle time.Duration, errMsg string) (int
 	if err != nil {
 		return 0, err
 	}
-	now := time.Now().UTC()
+	now := l.clock.Now().UTC()
 	stale := make([]*Task, 0, len(tasks))
 	for _, task := range tasks {
 		if now.Sub(taskActivityBaseline(task)) > maxIdle {
