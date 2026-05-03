@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/guidance"
 	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -164,7 +165,7 @@ func loomStatusResult(s *Server, task *loom.Task, bp budget.BudgetParams, jobID 
 		result["last_seen_at"] = progressAt
 	} else {
 		result["progress_updated_at"] = nil
-		result["last_seen_at"] = task.CreatedAt.UTC().Format(time.RFC3339)
+		result["last_seen_at"] = loomTaskActivityBaseline(task).UTC().Format(time.RFC3339)
 	}
 
 	if task.Status == loom.TaskStatusRunning {
@@ -182,19 +183,13 @@ func loomStatusResult(s *Server, task *loom.Task, bp budget.BudgetParams, jobID 
 			result["content_tail"] = tail
 			result["content_length"] = contentLen
 			meta := budget.BuildTruncationMeta(nil, contentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
-			if meta.Truncated {
-				result["truncated"] = meta.Truncated
-				result["hint"] = meta.Hint
-			}
+			budget.AttachTruncation(&guidance.ResponseEnvelope{Result: result}, meta)
 		} else if bp.IncludeContent {
 			result["content"] = task.Result
 		} else {
 			result["content_length"] = contentLen
 			meta := budget.BuildTruncationMeta(nil, contentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
-			if meta.Truncated {
-				result["truncated"] = meta.Truncated
-				result["hint"] = meta.Hint
-			}
+			budget.AttachTruncation(&guidance.ResponseEnvelope{Result: result}, meta)
 		}
 		if task.Error != "" {
 			result["error"] = task.Error

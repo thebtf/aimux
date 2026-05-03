@@ -166,6 +166,30 @@ func TestHandleStatus_LoomTaskPrimary(t *testing.T) {
 	}
 }
 
+func TestHandleStatus_LoomTaskLastSeenFallsBackToDispatchedAt(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-status-last-seen")
+	taskID, _ := submitBlockingLoomTask(t, srv, projectID, "")
+
+	task, err := srv.loom.Get(taskID)
+	if err != nil {
+		t.Fatalf("loom.Get: %v", err)
+	}
+	if task.DispatchedAt == nil {
+		t.Fatal("DispatchedAt is nil for running task")
+	}
+
+	result, err := srv.handleStatus(ctx, makeRequest("status", map[string]any{"job_id": taskID}))
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	data := parseResult(t, result)
+	want := task.DispatchedAt.UTC().Format(time.RFC3339)
+	if data["last_seen_at"] != want {
+		t.Fatalf("last_seen_at = %v, want dispatched_at %s", data["last_seen_at"], want)
+	}
+}
+
 func TestSessionsHealth_CountsLoomRunningTasks(t *testing.T) {
 	srv := testServerWithLoom(t)
 	ctx, projectID := projectCtxAndID("proj-health")

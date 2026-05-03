@@ -106,6 +106,7 @@ func taskActivityBaseline(task *Task) time.Time {
 
 func (l *LoomEngine) emitAdminFailed(info FailedTaskInfo, errMsg string) {
 	ctx := context.Background()
+	redactedErr := redactErrorMsg(errMsg)
 	l.events.Emit(TaskEvent{
 		Type:      EventTaskFailed,
 		TaskID:    info.Task.ID,
@@ -127,7 +128,7 @@ func (l *LoomEngine) emitAdminFailed(info FailedTaskInfo, errMsg string) {
 		"previous_status", string(info.FromStatus),
 		"request_id", info.Task.RequestID,
 		"error_code", "admin_failed",
-		"error", errMsg,
+		"error", redactedErr,
 	)
 }
 

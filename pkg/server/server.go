@@ -1301,7 +1301,11 @@ func splitCapabilitySnapshot(roles map[string]driver.ProbeResult) ([]string, map
 
 func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	legacyRunning := s.jobs.ListRunning()
-	loomRunning, _ := s.loomRunningCount(ctx)
+	loomRunning, loomRunningErr := s.loomRunningCount(ctx)
+	if loomRunningErr != nil {
+		s.log.Warn("health resource: loom running count failed: %v", loomRunningErr)
+		loomRunning = 0
+	}
 	health := map[string]any{
 		"version":        Version,
 		"total_sessions": s.sessions.Count(),
