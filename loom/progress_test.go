@@ -257,6 +257,30 @@ func TestStore_AppendProgress_UnknownTaskID_NoError(t *testing.T) {
 	}
 }
 
+func TestStore_AppendProgress_TerminalTaskNoOp(t *testing.T) {
+	store := newTestStore(t)
+	task := makeProgressTask("task-progress-terminal", "proj-terminal")
+	task.Status = TaskStatusFailed
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	info, err := store.AppendProgress(task.ID, "late output")
+	if err != nil {
+		t.Fatalf("AppendProgress terminal task should be a no-op, got error: %v", err)
+	}
+	if info.OK {
+		t.Fatalf("AppendProgress terminal task: info.OK = true; want false")
+	}
+	got, err := store.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LastOutputLine != "" || got.ProgressLines != 0 || got.ProgressUpdatedAt != nil {
+		t.Fatalf("terminal progress changed: tail=%q lines=%d updated=%v", got.LastOutputLine, got.ProgressLines, got.ProgressUpdatedAt)
+	}
+}
+
 // TestStore_AppendProgress_ConcurrentSameTask verifies EC-5.3: many
 // goroutines calling AppendProgress on the same task ID must all succeed
 // and the final ProgressLines counter equals the total invocation count.

@@ -93,11 +93,10 @@ type ProgressInfo struct {
 //
 // Returns ProgressInfo{OK: true, ProjectID, RequestID} when the row was
 // updated and an event should be emitted with those identity fields. Returns
-// ProgressInfo{OK: false} (and a nil error) when the task no longer exists
-// — progress for an unknown / cancelled task is a no-op rather than an
-// error so a slow worker emitting after a Cancel does not surface a noisy
-// failure, and the caller does NOT emit an event for a row that was never
-// updated. Returns a non-nil error only on SQL failure.
+// ProgressInfo{OK: false} (and a nil error) when the task no longer exists or
+// is no longer running — late progress for a completed, failed, or cancelled
+// task is a no-op rather than an error, and the caller does NOT emit an event
+// for a row that was never updated. Returns a non-nil error only on SQL failure.
 func (s *TaskStore) AppendProgress(taskID, line string) (ProgressInfo, error) {
 	// Compute the new tail. Embedded newlines are valid — split off the
 	// last non-empty segment, redact secrets, and truncate. If the entire
@@ -137,7 +136,7 @@ func (s *TaskStore) AppendProgress(taskID, line string) (ProgressInfo, error) {
 			 SET last_output_line = ?,
 			     progress_lines = progress_lines + ?,
 			     progress_updated_at = ?
-			 WHERE id = ?
+			 WHERE id = ? AND status = 'running'
 			 RETURNING project_id, request_id`,
 			truncated, deltaLines, now, taskID,
 		)
@@ -147,7 +146,7 @@ func (s *TaskStore) AppendProgress(taskID, line string) (ProgressInfo, error) {
 			`UPDATE tasks
 			 SET progress_lines = progress_lines + ?,
 			     progress_updated_at = ?
-			 WHERE id = ?
+			 WHERE id = ? AND status = 'running'
 			 RETURNING project_id, request_id`,
 			deltaLines, now, taskID,
 		)

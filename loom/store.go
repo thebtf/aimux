@@ -484,13 +484,15 @@ func (s *TaskStore) UpdateStatus(id string, from, to TaskStatus) error {
 	return nil
 }
 
-// SetResult stores the execution result and marks completed_at.
+// SetResult stores the execution result and marks completed_at for an active task.
 // errMsg is redacted before storage — secrets (API keys, Bearer tokens) are
 // replaced with [REDACTED]. result is stored verbatim (callers own its content).
 func (s *TaskStore) SetResult(id string, result string, errMsg string) error {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
-		`UPDATE tasks SET result = ?, error = ?, completed_at = ? WHERE id = ?`,
+		`UPDATE tasks
+		 SET result = ?, error = ?, completed_at = ?
+		 WHERE id = ? AND status IN ('pending', 'dispatched', 'running', 'retrying')`,
 		result, redactErrorMsg(errMsg), now, id,
 	)
 	if err != nil {
@@ -498,7 +500,7 @@ func (s *TaskStore) SetResult(id string, result string, errMsg string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("loom store: task %s not found", id)
+		return fmt.Errorf("loom store: task %s not found or not active", id)
 	}
 	return nil
 }

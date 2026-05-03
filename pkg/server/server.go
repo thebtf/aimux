@@ -346,6 +346,9 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	}
 	gc := session.NewGCReaper(s.sessions, s.jobs, log, ttl)
 	go gc.Run(gcCtx, time.Duration(gcInterval)*time.Second)
+	if s.loom != nil {
+		go s.runLoomGC(gcCtx, time.Duration(gcInterval)*time.Second)
+	}
 
 	// Think session GC: clean up stale think pattern sessions alongside main GC
 	go func() {
@@ -525,16 +528,30 @@ func (s *Server) Shutdown() {
 		pm.Shutdown()
 	}
 
-	// Mark any still-running jobs as interrupted with partial output.
+	if s.gcCancel != nil {
+		s.gcCancel()
+	}
+
+	if s.loom != nil {
+		if failed, err := s.loom.FailActiveAll("interrupted: upstream shutdown"); err != nil {
+			s.log.Warn("loom shutdown: fail active tasks failed: %v", err)
+		} else if failed > 0 {
+			s.log.Info("loom shutdown: failed %d active tasks", failed)
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := s.loom.Close(closeCtx); err != nil {
+			s.log.Warn("loom shutdown: close timed out: %v", err)
+		}
+		cancel()
+	}
+
+	// Mark any still-running legacy jobs as interrupted with partial output.
 	if s.jobs != nil {
 		for _, job := range s.jobs.ListRunning() {
 			s.jobs.FailJob(job.ID, types.NewExecutorError("interrupted: upstream shutdown", nil, job.Progress))
 		}
 	}
 
-	if s.gcCancel != nil {
-		s.gcCancel()
-	}
 	if s.store != nil {
 		// Final snapshot before close
 		if err := s.store.SnapshotAll(s.sessions, s.jobs); err != nil {
@@ -801,64 +818,19 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("job_id is required"), nil
 	}
 
+	if task, ok, taskErr := s.getLoomTask(ctx, jobID); taskErr != nil {
+		return mcp.NewToolResultError(taskErr.Error()), nil
+	} else if ok {
+		result := loomStatusResult(s, task, bp, jobID)
+		filtered, _, applyErr := budget.ApplyFields(result, bp.Fields, budget.FieldWhitelist["status"])
+		if applyErr != nil {
+			return mcp.NewToolResultError(applyErr.Error()), nil
+		}
+		return marshalToolResult(filtered)
+	}
+
 	j := s.jobs.GetSnapshot(jobID)
 	if j == nil {
-		// Fallback: check LoomEngine TaskStore (async tasks routed through Loom
-		// don't create legacy Job entries).
-		if s.loom != nil {
-			task, taskErr := s.loom.Get(jobID)
-			if taskErr == nil && task != nil {
-				result := map[string]any{
-					"job_id": task.ID,
-					"status": string(task.Status),
-				}
-				// Surface live progress fields at parity with the legacy JobManager
-				// (DEF-13 / AIMUX-16 CR-005). Workers that do not opt into the
-				// progress sink see zero/empty values rather than stale data
-				// (EC-5.1) — the columns default to '' / 0 / NULL on insert.
-				result["progress_tail"] = task.LastOutputLine
-				result["progress_lines"] = task.ProgressLines
-				if task.ProgressUpdatedAt != nil {
-					result["progress_updated_at"] = task.ProgressUpdatedAt.UTC().Format(time.RFC3339)
-				} else {
-					result["progress_updated_at"] = nil
-				}
-				if task.Status.IsTerminal() {
-					taskContentLen := len(task.Result)
-					if bp.Tail > 0 {
-						tail := task.Result
-						if len(tail) > bp.Tail {
-							tail = tail[len(tail)-bp.Tail:]
-						}
-						result["content_tail"] = tail
-						result["content_length"] = taskContentLen
-						meta := budget.BuildTruncationMeta(nil, taskContentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
-						if meta.Truncated {
-							result["truncated"] = meta.Truncated
-							result["hint"] = meta.Hint
-						}
-					} else if bp.IncludeContent {
-						result["content"] = task.Result
-					} else {
-						result["content_length"] = taskContentLen
-						meta := budget.BuildTruncationMeta(nil, taskContentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
-						if meta.Truncated {
-							result["truncated"] = meta.Truncated
-							result["hint"] = meta.Hint
-						}
-					}
-					if task.Error != "" {
-						result["error"] = task.Error
-					}
-				}
-				whitelist := budget.FieldWhitelist["status"]
-				filtered, _, applyErr := budget.ApplyFields(result, bp.Fields, whitelist)
-				if applyErr != nil {
-					return mcp.NewToolResultError(applyErr.Error()), nil
-				}
-				return marshalToolResult(filtered)
-			}
-		}
 		return mcp.NewToolResultError(fmt.Sprintf("job %q not found", jobID)), nil
 	}
 
@@ -952,6 +924,9 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 
 		// Build session briefs using a single-pass job count map to avoid N+1.
 		jobCounts := s.jobs.CountsBySession()
+		for sessionID, count := range s.countLoomBySession(ctx) {
+			jobCounts[sessionID] += count
+		}
 		sessionBriefs := make([]SessionBrief, len(allSessions))
 		for i, sess := range allSessions {
 			sessionBriefs[i] = SessionBrief{
@@ -965,7 +940,6 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 
 		allFlag := request.GetBool("all", false)
 		var allLoomTasks []*loom.Task
-		projectID := projectIDFromContext(ctx)
 		if s.loom != nil {
 			if allFlag {
 				tasks, taskErr := s.loom.ListAll()
@@ -975,10 +949,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 					allLoomTasks = tasks
 					s.log.Info("loom.scope.global_query: engine_name=%s rows=%d", s.engineName, len(allLoomTasks))
 				}
-			} else if projectID != "" {
-				tasks, taskErr := s.loom.List(projectID)
+			} else {
+				tasks, taskErr := s.listLoomTasksForContext(ctx)
 				if taskErr != nil {
-					s.log.Warn("sessions list: loom list failed for project %s: %v", projectID, taskErr)
+					s.log.Warn("sessions list: loom list failed: %v", taskErr)
 				} else {
 					allLoomTasks = tasks
 				}
@@ -1003,7 +977,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 				Status:            t.Status,
 				Kind:              string(t.WorkerType),
 				CreatedAt:         t.CreatedAt,
-				ProgressLineCount: 0,
+				ProgressLineCount: t.ProgressLines,
 			}
 		}
 
@@ -1042,9 +1016,13 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			return mcp.NewToolResultError("session not found"), nil
 		}
 		rawJobs := s.jobs.ListBySessionSnapshot(sessionID)
+		loomJobs, loomErr := s.loomTasksForSession(ctx, sessionID)
+		if loomErr != nil {
+			s.log.Warn("sessions info: loom list failed for session %s: %v", sessionID, loomErr)
+		}
 
-		jobBriefs := make([]JobBrief, len(rawJobs))
-		for i, j := range rawJobs {
+		jobBriefs := make([]JobBrief, 0, len(rawJobs)+len(loomJobs))
+		for _, j := range rawJobs {
 			brief := JobBrief{
 				ID:            j.ID,
 				Status:        j.Status,
@@ -1054,7 +1032,10 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			if bp.IncludeContent {
 				brief.Content = j.Content
 			}
-			jobBriefs[i] = brief
+			jobBriefs = append(jobBriefs, brief)
+		}
+		for _, task := range loomJobs {
+			jobBriefs = append(jobBriefs, loomTaskBrief(task, bp.IncludeContent))
 		}
 
 		result := map[string]any{
@@ -1073,23 +1054,24 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		return marshalToolResult(filtered)
 
 	case "health":
-		running := s.jobs.ListRunning()
+		legacyRunning := s.jobs.ListRunning()
+		loomRunning, loomRunningErr := s.loomRunningCount(ctx)
+		if loomRunningErr != nil {
+			s.log.Warn("sessions health: loom running count failed: %v", loomRunningErr)
+		}
 		snap := s.metrics.Snapshot()
 		health := map[string]any{
 			"total_sessions": s.sessions.Count(),
-			"running_jobs":   len(running),
+			"running_jobs":   len(legacyRunning) + loomRunning,
 			"per_project":    snap.PerProject,
 		}
 		// Include Loom task counts when available.
 		if s.loom != nil {
-			projectID := projectIDFromContext(ctx)
-			if projectID != "" {
-				if tasks, err := s.loom.List(projectID); err != nil {
-					s.log.Warn("sessions health: loom list failed for project %s: %v", projectID, err)
-					health["loom_error"] = err.Error()
-				} else {
-					health["loom_tasks"] = len(tasks)
-				}
+			if tasks, err := s.listLoomTasksForContext(ctx); err != nil {
+				s.log.Warn("sessions health: loom list failed: %v", err)
+				health["loom_error"] = err.Error()
+			} else {
+				health["loom_tasks"] = len(tasks)
 			}
 		}
 		// F2 shim-reconnect counters (muxcore v0.21.1+). Silent graceful
@@ -1119,16 +1101,20 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if jobID == "" {
 			return mcp.NewToolResultError("job_id required for cancel"), nil
 		}
-		// Try legacy JobManager first, then Loom.
-		if s.jobs.CancelJob(jobID) {
-			return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
-		}
-		if s.loom != nil {
-			if err := s.loom.Cancel(jobID); err == nil {
+		if task, ok, taskErr := s.getLoomTask(ctx, jobID); taskErr != nil {
+			return mcp.NewToolResultError(taskErr.Error()), nil
+		} else if ok {
+			if !task.Status.IsActive() {
+				return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
+			}
+			if _, err := s.loom.FailActive(jobID, "job cancelled"); err == nil {
 				return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
 			} else {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
+		}
+		if s.jobs.CancelJob(jobID) {
+			return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
 		}
 		return mcp.NewToolResultError("job not found"), nil
 
@@ -1141,7 +1127,12 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
-		// Atomically fail only still-active jobs for this session.
+		if failed, failErr := s.failLoomTasksForSession(ctx, sessionID, "session killed"); failErr != nil {
+			return mcp.NewToolResultError(failErr.Error()), nil
+		} else if failed > 0 {
+			s.log.Info("sessions kill: failed %d loom tasks for session %s", failed, sessionID)
+		}
+		// Atomically fail only still-active legacy jobs for this session.
 		for _, j := range s.jobs.ListBySessionSnapshot(sessionID) {
 			s.jobs.FailJobIfActive(j.ID, types.NewExecutorError("session killed", nil, ""))
 		}
@@ -1309,11 +1300,16 @@ func splitCapabilitySnapshot(roles map[string]driver.ProbeResult) ([]string, map
 // --- Resource Handlers ---
 
 func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	running := s.jobs.ListRunning()
+	legacyRunning := s.jobs.ListRunning()
+	loomRunning, loomRunningErr := s.loomRunningCount(ctx)
+	if loomRunningErr != nil {
+		s.log.Warn("health resource: loom running count failed: %v", loomRunningErr)
+		loomRunning = 0
+	}
 	health := map[string]any{
 		"version":        Version,
 		"total_sessions": s.sessions.Count(),
-		"running_jobs":   len(running),
+		"running_jobs":   len(legacyRunning) + loomRunning,
 		"metrics":        s.metrics.Snapshot(),
 	}
 	// Keep the resource schema in sync with sessions(action="health") for the
