@@ -85,7 +85,6 @@ type Server struct {
 	registry                *driver.Registry
 	router                  *routing.Router
 	sessions                *session.Registry
-	jobs                    *session.JobManager
 	breakers                *executor.BreakerRegistry
 	mcp                     *server.MCPServer
 	promptEng               *prompt.Engine
@@ -218,7 +217,6 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		registry: reg,
 		router:   router,
 		sessions: session.NewRegistry(),
-		jobs:     session.NewJobManager(),
 		breakers: executor.NewBreakerRegistry(executor.BreakerConfig{
 			FailureThreshold: cfg.CircuitBreaker.FailureThreshold,
 			CooldownSeconds:  cfg.CircuitBreaker.CooldownSeconds,
@@ -287,25 +285,6 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 			s.store = store
 			log.Info("SQLite persistence enabled: %s", dbPath)
 
-			// Recover state from WAL if exists
-			walPath := dbPath + ".wal.log"
-			if err := session.RecoverFromWAL(walPath, s.sessions, s.jobs); err != nil {
-				log.Warn("WAL recovery: %v", err)
-			}
-
-			// Restore jobs from SQLite (survive process restarts)
-			if n, err := s.store.RestoreJobs(s.jobs); err != nil {
-				log.Warn("job restore failed: %v", err)
-			} else if n > 0 {
-				log.Info("restored %d jobs from SQLite", n)
-			}
-
-			// Enable immediate persistence — jobs written to SQLite on create/complete/fail.
-			// Survives process restart between 30s snapshot intervals.
-			s.jobs.SetStore(s.store)
-
-			// snapshot loop started below after gcCtx is created
-
 			// Initialize LoomEngine with shared SQLite DB.
 			taskStore, taskStoreErr := loom.NewTaskStore(store.DB(), s.engineName)
 			if taskStoreErr != nil {
@@ -316,6 +295,24 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 				log.Info("loom task scoping: engine_name=%s", s.engineName)
 			}
 
+			if n, err := s.importLegacyJobsFromSQLite(); err != nil {
+				log.Warn("legacy job import from SQLite failed: %v", err)
+			} else if n > 0 {
+				log.Info("imported %d legacy jobs into Loom", n)
+			}
+
+			// Recover state from WAL if exists. Legacy job entries are imported
+			// into Loom explicitly; there is no legacy runtime fallback backend.
+			walPath := dbPath + ".wal.log"
+			if legacyJobs, err := session.RecoverFromWAL(walPath, s.sessions); err != nil {
+				log.Warn("WAL recovery: %v", err)
+			} else if n, importErr := s.importLegacyJobs(legacyJobs); importErr != nil {
+				log.Warn("legacy job import from WAL failed: %v", importErr)
+			} else if n > 0 {
+				log.Info("imported %d legacy WAL jobs into Loom", n)
+			}
+
+			// snapshot loop started below after gcCtx is created
 		}
 	}
 
@@ -344,7 +341,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	if gcInterval <= 0 {
 		gcInterval = 300
 	}
-	gc := session.NewGCReaper(s.sessions, s.jobs, log, ttl)
+	gc := session.NewGCReaper(s.sessions, log, ttl)
 	go gc.Run(gcCtx, time.Duration(gcInterval)*time.Second)
 	if s.loom != nil {
 		go s.runLoomGC(gcCtx, time.Duration(gcInterval)*time.Second)
@@ -475,7 +472,7 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := store.SnapshotAll(s.sessions, s.jobs); err != nil {
+			if err := store.SnapshotAll(s.sessions); err != nil {
 				s.log.Warn("snapshot failed: %v", err)
 			}
 		}
@@ -545,16 +542,9 @@ func (s *Server) Shutdown() {
 		cancel()
 	}
 
-	// Mark any still-running legacy jobs as interrupted with partial output.
-	if s.jobs != nil {
-		for _, job := range s.jobs.ListRunning() {
-			s.jobs.FailJob(job.ID, types.NewExecutorError("interrupted: upstream shutdown", nil, job.Progress))
-		}
-	}
-
 	if s.store != nil {
 		// Final snapshot before close
-		if err := s.store.SnapshotAll(s.sessions, s.jobs); err != nil {
+		if err := s.store.SnapshotAll(s.sessions); err != nil {
 			s.log.Warn("final snapshot failed: %v", err)
 		}
 		s.store.Close()
@@ -616,9 +606,9 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(
 		mcp.NewTool("status",
 			mcp.WithDescription("[manage — server state, no cost] Check async job status. "+
-				"Returns a result map with status field set to one of: queued, running, completing, completed, failed, aborted. "+
-				"status=aborted means the job was running when the daemon restarted (SIGKILL/crash); the job did not complete. "+
-				"last_seen_at: timestamp of the last SnapshotJob write for this job; useful for determining when the daemon last observed it alive. "+
+				"Returns a result map with status field set to one of: pending, dispatched, running, retrying, completed, failed, failed_crash. "+
+				"status=failed_crash means the task was in flight when the daemon restarted; the task did not complete. "+
+				"last_seen_at: timestamp of the most recent persisted task activity known to Loom. "+
 				"Default returns metadata only (fits ~4k chars). Add include_content=true for full job output. Use tail=N for last N chars. "+
 				"When content is omitted, content_length gives the byte count of the full output. "+
 				"progress_tail: last non-empty output line, UTF-8-safe truncated to 100 bytes — compact real-time activity signal. "+
@@ -657,7 +647,7 @@ func (s *Server) registerTools() {
 				"action=refresh-warmup re-runs CLI warmup probes and updates the routing pool. "+
 				"Session status=aborted indicates the daemon restarted while this session had running jobs (SIGKILL/crash recovery). "+
 				"aborted_job_ids lists the job IDs that were aborted during that restart reconciliation. "+
-				"last_seen_at on job rows tracks the most recent SnapshotJob write; used by ReconcileOnStartup to identify orphaned jobs. "+
+				"Task rows are served from Loom; legacy job rows are imported at startup and are not used as a fallback backend. "+
 				"Pass all=true to sessions(action=\"list\") to return a cross-engine global view (all daemons' tasks)."),
 			mcp.WithString("action",
 				mcp.Required(),
@@ -829,78 +819,7 @@ func (s *Server) handleStatus(ctx context.Context, request mcp.CallToolRequest) 
 		return marshalToolResult(filtered)
 	}
 
-	j := s.jobs.GetSnapshot(jobID)
-	if j == nil {
-		return mcp.NewToolResultError(fmt.Sprintf("job %q not found", jobID)), nil
-	}
-
-	pollCount := s.jobs.IncrementPoll(jobID)
-
-	result := map[string]any{
-		"job_id":         j.ID,
-		"status":         string(j.Status),
-		"progress":       j.Progress,
-		"poll_count":     pollCount,
-		"session_id":     j.SessionID,
-		"progress_tail":  j.LastOutputLine,
-		"progress_lines": j.ProgressLines,
-		// last_seen_at: time of the most recent SnapshotJob write for this job.
-		// ProgressUpdatedAt is updated on every state transition (Create, StartJob,
-		// AppendProgress, CompleteJob, FailJob, CancelJob) which corresponds 1:1 with
-		// SnapshotJob calls, making it the correct in-memory proxy for the SQLite column.
-		"last_seen_at": j.ProgressUpdatedAt,
-	}
-
-	if j.Status == types.JobStatusCompleted || j.Status == types.JobStatusFailed || j.Status == types.JobStatusAborted {
-		if j.Error != nil {
-			result["error"] = j.Error.Error()
-		}
-		contentLen := len(j.Content)
-		if bp.Tail > 0 {
-			tail := j.Content
-			if len(tail) > bp.Tail {
-				tail = tail[len(tail)-bp.Tail:]
-			}
-			result["content_tail"] = tail
-			result["content_length"] = contentLen
-			meta := budget.BuildTruncationMeta(nil, contentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
-			if meta.Truncated {
-				result["truncated"] = meta.Truncated
-				result["hint"] = meta.Hint
-			}
-		} else if bp.IncludeContent {
-			result["content"] = j.Content
-		} else {
-			result["content_length"] = contentLen
-			meta := budget.BuildTruncationMeta(nil, contentLen, fmt.Sprintf("Use status(job_id=%s, include_content=true) for full output.", jobID))
-			if meta.Truncated {
-				result["truncated"] = meta.Truncated
-				result["hint"] = meta.Hint
-			}
-		}
-	}
-
-	if j.Status == types.JobStatusRunning {
-		// Use LastOutputAt when available; fall back to CreatedAt for jobs that
-		// have never produced a line of output yet (zero value).
-		baseline := j.LastOutputAt
-		if baseline.IsZero() {
-			baseline = j.CreatedAt
-		}
-		tier := evaluateInactivityTier(baseline, &s.cfg.Server)
-		applyStallGuidance(result, tier, j.ID)
-	}
-
-	if pollCount >= 3 {
-		result["warning"] = fmt.Sprintf("Polling detected (%d calls). Use a Sonnet subagent wrapper — see aimux guide skill (poll-wrapper-subagent pattern).", pollCount)
-	}
-
-	whitelist := budget.FieldWhitelist["status"]
-	filtered, _, applyErr := budget.ApplyFields(result, bp.Fields, whitelist)
-	if applyErr != nil {
-		return mcp.NewToolResultError(applyErr.Error()), nil
-	}
-	return marshalToolResult(filtered)
+	return mcp.NewToolResultError(fmt.Sprintf("job %q not found", jobID)), nil
 }
 
 func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -922,11 +841,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		statusFilter := request.GetString("status", "")
 		allSessions := s.sessions.List(types.SessionStatus(statusFilter))
 
-		// Build session briefs using a single-pass job count map to avoid N+1.
-		jobCounts := s.jobs.CountsBySession()
-		for sessionID, count := range s.countLoomBySession(ctx) {
-			jobCounts[sessionID] += count
-		}
+		jobCounts := s.countLoomBySession(ctx)
 		sessionBriefs := make([]SessionBrief, len(allSessions))
 		for i, sess := range allSessions {
 			sessionBriefs[i] = SessionBrief{
@@ -1015,25 +930,12 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
-		rawJobs := s.jobs.ListBySessionSnapshot(sessionID)
 		loomJobs, loomErr := s.loomTasksForSession(ctx, sessionID)
 		if loomErr != nil {
 			s.log.Warn("sessions info: loom list failed for session %s: %v", sessionID, loomErr)
 		}
 
-		jobBriefs := make([]JobBrief, 0, len(rawJobs)+len(loomJobs))
-		for _, j := range rawJobs {
-			brief := JobBrief{
-				ID:            j.ID,
-				Status:        j.Status,
-				Progress:      j.Progress,
-				ContentLength: len(j.Content),
-			}
-			if bp.IncludeContent {
-				brief.Content = j.Content
-			}
-			jobBriefs = append(jobBriefs, brief)
-		}
+		jobBriefs := make([]JobBrief, 0, len(loomJobs))
 		for _, task := range loomJobs {
 			jobBriefs = append(jobBriefs, loomTaskBrief(task, bp.IncludeContent))
 		}
@@ -1054,7 +956,6 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		return marshalToolResult(filtered)
 
 	case "health":
-		legacyRunning := s.jobs.ListRunning()
 		loomRunning, loomRunningErr := s.loomRunningCount(ctx)
 		if loomRunningErr != nil {
 			s.log.Warn("sessions health: loom running count failed: %v", loomRunningErr)
@@ -1062,7 +963,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		snap := s.metrics.Snapshot()
 		health := map[string]any{
 			"total_sessions": s.sessions.Count(),
-			"running_jobs":   len(legacyRunning) + loomRunning,
+			"running_jobs":   loomRunning,
 			"per_project":    snap.PerProject,
 		}
 		// Include Loom task counts when available.
@@ -1113,9 +1014,6 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 		}
-		if s.jobs.CancelJob(jobID) {
-			return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
-		}
 		return mcp.NewToolResultError("job not found"), nil
 
 	case "kill":
@@ -1131,10 +1029,6 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			return mcp.NewToolResultError(failErr.Error()), nil
 		} else if failed > 0 {
 			s.log.Info("sessions kill: failed %d loom tasks for session %s", failed, sessionID)
-		}
-		// Atomically fail only still-active legacy jobs for this session.
-		for _, j := range s.jobs.ListBySessionSnapshot(sessionID) {
-			s.jobs.FailJobIfActive(j.ID, types.NewExecutorError("session killed", nil, ""))
 		}
 		s.sessions.Delete(sessionID)
 		return mcp.NewToolResultText(`{"status":"killed"}`), nil
@@ -1300,7 +1194,6 @@ func splitCapabilitySnapshot(roles map[string]driver.ProbeResult) ([]string, map
 // --- Resource Handlers ---
 
 func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	legacyRunning := s.jobs.ListRunning()
 	loomRunning, loomRunningErr := s.loomRunningCount(ctx)
 	if loomRunningErr != nil {
 		s.log.Warn("health resource: loom running count failed: %v", loomRunningErr)
@@ -1309,7 +1202,7 @@ func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResou
 	health := map[string]any{
 		"version":        Version,
 		"total_sessions": s.sessions.Count(),
-		"running_jobs":   len(legacyRunning) + loomRunning,
+		"running_jobs":   loomRunning,
 		"metrics":        s.metrics.Snapshot(),
 	}
 	// Keep the resource schema in sync with sessions(action="health") for the

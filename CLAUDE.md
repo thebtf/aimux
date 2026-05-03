@@ -44,7 +44,7 @@ pkg/guidance/        — Policy-driven response guidance (envelope, registry, bu
 pkg/guidance/policies/ — Surviving guidance policy: think (other policies are dormant Layer 5 seams)
 pkg/skills/          — Embedded skill engine with disk overlay
 pkg/prompt/          — Prompt engine with built-in + project overlay
-pkg/session/         — SQLite session persistence with WAL crash recovery (JobManager deprecated → use LoomEngine)
+pkg/session/         — SQLite session persistence with WAL crash recovery; legacy job rows import into Loom at startup
 pkg/tools/deepresearch/ — Gemini deep research with caching
 pkg/types/           — Shared interfaces and types
 pkg/metrics/         — Per-CLI request counters, error rates, latency
@@ -149,7 +149,6 @@ Supported: codex, gemini, claude, aider, goose, gptme, qwen, cline, crush, droid
 
 ## Known Issues
 
-- `progress_tail`/`progress_lines` not ported from legacy `JobManager` to LoomEngine — async tasks via loom emit no activity signal until terminal. Tracked as engram issue #173 (priority=high).
 - `TestE2E_Think_AllPatterns` skipped — `sampleArgsFromSchema` does not understand XOR-required schemas (e.g. `scientific_method` requires `stage` OR `entry_type`). Re-enable when generator learns OneOf semantics.
 - New Layer 5 surface to expose `pkg/workflow/` M4 domain workflows is not yet designed — current MCP surface is intentionally minimal.
 

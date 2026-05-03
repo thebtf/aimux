@@ -23,14 +23,18 @@ func TestSnapshotJob_StampsDaemonUUID(t *testing.T) {
 	}
 	defer store.Close()
 
-	jm := session.NewJobManager()
-	jm.SetStore(store)
-	job := jm.Create("sess-1", "codex")
-	jm.StartJob(job.ID, 100)
+	now := time.Now()
+	job := &session.Job{
+		ID:                "job-daemon-uuid",
+		SessionID:         "sess-1",
+		CLI:               "codex",
+		Status:            types.JobStatusRunning,
+		PID:               100,
+		CreatedAt:         now,
+		ProgressUpdatedAt: now,
+	}
 
-	// SnapshotJob is called implicitly by Create when store is set.
-	// Call it explicitly again to snapshot the running state.
-	if err := store.SnapshotJob(jm.Get(job.ID)); err != nil {
+	if err := store.SnapshotJob(job); err != nil {
 		t.Fatalf("SnapshotJob: %v", err)
 	}
 
@@ -59,10 +63,17 @@ func TestSnapshotJob_StampsLastSeenAt(t *testing.T) {
 
 	before := time.Now().UTC().Add(-time.Second)
 
-	jm := session.NewJobManager()
-	job := jm.Create("sess-1", "codex")
+	now := time.Now()
+	job := &session.Job{
+		ID:                "job-last-seen",
+		SessionID:         "sess-1",
+		CLI:               "codex",
+		Status:            types.JobStatusCreated,
+		CreatedAt:         now,
+		ProgressUpdatedAt: now,
+	}
 
-	if err := store.SnapshotJob(jm.Get(job.ID)); err != nil {
+	if err := store.SnapshotJob(job); err != nil {
 		t.Fatalf("SnapshotJob: %v", err)
 	}
 
@@ -119,7 +130,7 @@ func TestSnapshotSession_StampsDaemonUUID(t *testing.T) {
 }
 
 // TestSnapshotAll_StampsDaemonUUID asserts that SnapshotAll stamps
-// daemon_uuid on both session and job rows.
+// daemon_uuid on session rows. Loom owns runtime task snapshots.
 func TestSnapshotAll_StampsDaemonUUID(t *testing.T) {
 	session.ResetDaemonUUID()
 	wantUUID := session.GetDaemonUUID()
@@ -134,11 +145,7 @@ func TestSnapshotAll_StampsDaemonUUID(t *testing.T) {
 	reg := session.NewRegistry()
 	sess := reg.Create("codex", types.SessionModeLive, "/tmp")
 
-	jm := session.NewJobManager()
-	job := jm.Create(sess.ID, "codex")
-	jm.StartJob(job.ID, 9999)
-
-	if err := store.SnapshotAll(reg, jm); err != nil {
+	if err := store.SnapshotAll(reg); err != nil {
 		t.Fatalf("SnapshotAll: %v", err)
 	}
 
@@ -152,14 +159,4 @@ func TestSnapshotAll_StampsDaemonUUID(t *testing.T) {
 		t.Errorf("session daemon_uuid = %q, want %q", sessUUID.String, wantUUID)
 	}
 
-	var jobUUID, lastSeenStr sql.NullString
-	if err := db.QueryRow(`SELECT daemon_uuid, last_seen_at FROM jobs WHERE id = ?`, job.ID).Scan(&jobUUID, &lastSeenStr); err != nil {
-		t.Fatalf("scan job daemon_uuid/last_seen_at: %v", err)
-	}
-	if !jobUUID.Valid || jobUUID.String != wantUUID {
-		t.Errorf("job daemon_uuid = %q, want %q", jobUUID.String, wantUUID)
-	}
-	if !lastSeenStr.Valid || lastSeenStr.String == "" {
-		t.Error("job last_seen_at is NULL or empty after SnapshotAll")
-	}
 }

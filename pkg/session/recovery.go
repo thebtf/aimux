@@ -7,18 +7,20 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-// RecoverFromWAL replays WAL entries to restore in-memory state after restart.
+// RecoverFromWAL replays WAL entries to restore in-memory session state and
+// returns legacy job snapshots for import into Loom.
 // Running sessions are re-spawned via CLI resume if CLISessionID is available.
-func RecoverFromWAL(walPath string, sessions *Registry, jobs *JobManager) error {
+func RecoverFromWAL(walPath string, sessions *Registry) ([]*Job, error) {
 	entries, err := Replay(walPath)
 	if err != nil {
-		return fmt.Errorf("WAL replay: %w", err)
+		return nil, fmt.Errorf("WAL replay: %w", err)
 	}
 
 	if len(entries) == 0 {
-		return nil
+		return nil, nil
 	}
 
+	jobs := make(map[string]*Job)
 	for _, entry := range entries {
 		switch entry.Type {
 		case "session_create":
@@ -58,7 +60,7 @@ func RecoverFromWAL(walPath string, sessions *Registry, jobs *JobManager) error 
 			if err := json.Unmarshal(entry.Data, &job); err != nil {
 				continue
 			}
-			jobs.Import(&job)
+			jobs[job.ID] = &job
 
 		case "job_update":
 			var update struct {
@@ -68,18 +70,25 @@ func RecoverFromWAL(walPath string, sessions *Registry, jobs *JobManager) error 
 			if err := json.Unmarshal(entry.Data, &update); err != nil {
 				continue
 			}
-			jobs.UpdateJobFields(entry.ID, func(j *Job) {
-				if update.Status != "" {
-					j.Status = update.Status
-				}
-				if update.Content != "" {
-					j.Content = update.Content
-				}
-			})
+			job, ok := jobs[entry.ID]
+			if !ok {
+				job = &Job{ID: entry.ID}
+				jobs[entry.ID] = job
+			}
+			if update.Status != "" {
+				job.Status = update.Status
+			}
+			if update.Content != "" {
+				job.Content = update.Content
+			}
 		}
 	}
 
-	return nil
+	result := make([]*Job, 0, len(jobs))
+	for _, job := range jobs {
+		result = append(result, job)
+	}
+	return result, nil
 }
 
 // SessionsForResume returns sessions that were running at crash time

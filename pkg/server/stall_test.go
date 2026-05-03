@@ -10,8 +10,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/config"
-	"github.com/thebtf/aimux/pkg/types"
 )
 
 func TestEvaluateInactivityTier_Boundaries(t *testing.T) {
@@ -161,7 +161,7 @@ func TestApplyStallGuidance_AutoCancelCancelCommandPreFilled(t *testing.T) {
 // to TierAutoCancel. Stall-specific tests must use this helper instead.
 func testServerWithStallCfg(t *testing.T) *Server {
 	t.Helper()
-	srv := testServer(t)
+	srv := testServerWithLoom(t)
 	srv.cfg.Server.StreamingGraceSeconds = 60
 	srv.cfg.Server.StreamingSoftWarningSeconds = 120
 	srv.cfg.Server.StreamingHardStallSeconds = 600
@@ -174,21 +174,12 @@ func testServerWithStallCfg(t *testing.T) *Server {
 func stallStatus(t *testing.T, srv *Server, lastOutputAt time.Time) map[string]any {
 	t.Helper()
 
-	sess := srv.sessions.Create("codex", types.SessionModeLive, t.TempDir())
-	job := srv.jobs.Create(sess.ID, "codex")
-	srv.jobs.StartJob(job.ID, 1)
-
-	// Inject the desired lastOutputAt directly into the live job to avoid sleeping.
-	liveJob := srv.jobs.Get(job.ID)
-	if liveJob == nil {
-		t.Fatal("live job not found after create/start")
-	}
-	liveJob.LastOutputAt = lastOutputAt
+	taskID := importStallTestTask(t, srv, loom.TaskStatusRunning, lastOutputAt)
 
 	req := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      "status",
-			Arguments: map[string]any{"job_id": job.ID},
+			Arguments: map[string]any{"job_id": taskID},
 		},
 	}
 
@@ -301,16 +292,12 @@ func TestHandleStatus_RunningJob_AutoCancel(t *testing.T) {
 
 func TestHandleStatus_CompletedJob_NoStallGuidance(t *testing.T) {
 	srv := testServerWithStallCfg(t)
-
-	sess := srv.sessions.Create("codex", types.SessionModeLive, t.TempDir())
-	job := srv.jobs.Create(sess.ID, "codex")
-	srv.jobs.StartJob(job.ID, 1)
-	srv.jobs.CompleteJob(job.ID, "done", 0)
+	taskID := importStallTestTask(t, srv, loom.TaskStatusCompleted, time.Now().Add(-950*time.Second))
 
 	req := mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name:      "status",
-			Arguments: map[string]any{"job_id": job.ID},
+			Arguments: map[string]any{"job_id": taskID},
 		},
 	}
 
@@ -334,4 +321,34 @@ func TestHandleStatus_CompletedJob_NoStallGuidance(t *testing.T) {
 	if _, ok := data["stall_alert"]; ok {
 		t.Error("completed job should not carry stall_alert")
 	}
+}
+
+func importStallTestTask(t *testing.T, srv *Server, status loom.TaskStatus, progressUpdatedAt time.Time) string {
+	t.Helper()
+
+	now := time.Now().UTC()
+	taskID := "stall-" + strings.NewReplacer("/", "-", " ", "-").Replace(t.Name())
+	completedAt := (*time.Time)(nil)
+	if status.IsTerminal() {
+		completedAt = &now
+	}
+	progressAt := progressUpdatedAt.UTC()
+	if err := srv.loom.Import(&loom.Task{
+		ID:                taskID,
+		Status:            status,
+		WorkerType:        loom.WorkerTypeCLI,
+		ProjectID:         "stall-tests",
+		Prompt:            "stall status test",
+		CLI:               "codex",
+		Metadata:          map[string]any{"session_id": "stall-session"},
+		Result:            "done",
+		CreatedAt:         now.Add(-time.Hour),
+		CompletedAt:       completedAt,
+		LastOutputLine:    "last output",
+		ProgressLines:     1,
+		ProgressUpdatedAt: &progressAt,
+	}); err != nil {
+		t.Fatalf("import loom task: %v", err)
+	}
+	return taskID
 }
