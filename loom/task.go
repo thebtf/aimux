@@ -36,7 +36,7 @@ const (
 // by CanTransitionTo, leaving tasks permanently stuck in retrying. The PRC #2
 // bug-hunter audit caught this regression before merge.
 var validTransitions = map[TaskStatus][]TaskStatus{
-	TaskStatusPending:    {TaskStatusDispatched},
+	TaskStatusPending:    {TaskStatusDispatched, TaskStatusFailed},
 	TaskStatusDispatched: {TaskStatusRunning, TaskStatusFailed, TaskStatusFailedCrash},
 	TaskStatusRunning:    {TaskStatusCompleted, TaskStatusFailed, TaskStatusRetrying, TaskStatusFailedCrash},
 	TaskStatusRetrying:   {TaskStatusDispatched, TaskStatusFailed},
@@ -60,6 +60,16 @@ func (s TaskStatus) CanTransitionTo(target TaskStatus) bool {
 func (s TaskStatus) IsTerminal() bool {
 	switch s {
 	case TaskStatusCompleted, TaskStatusFailed, TaskStatusFailedCrash:
+		return true
+	}
+	return false
+}
+
+// IsActive returns true for statuses that can still be externally interrupted
+// or reaped. Terminal states are intentionally excluded.
+func (s TaskStatus) IsActive() bool {
+	switch s {
+	case TaskStatusPending, TaskStatusDispatched, TaskStatusRunning, TaskStatusRetrying:
 		return true
 	}
 	return false

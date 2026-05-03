@@ -438,6 +438,11 @@ func (l *LoomEngine) AppendProgress(taskID, line string) error {
 	return nil
 }
 
+func (l *LoomEngine) isTerminalTask(taskID string) bool {
+	current, err := l.store.Get(taskID)
+	return err == nil && current.Status.IsTerminal()
+}
+
 // failTask is a best-effort helper that marks a task as failed in the store
 // and emits EventTaskFailed. Errors from store operations are logged but not
 // returned — the caller is typically already handling a failure path.
@@ -445,6 +450,9 @@ func (l *LoomEngine) AppendProgress(taskID, line string) error {
 // emits a fully-populated TaskEvent regardless of store availability.
 func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) {
 	ctx := context.Background()
+	if l.isTerminalTask(task.ID) {
+		return
+	}
 	if err := l.store.SetResult(task.ID, "", errMsg); err != nil {
 		l.logger.ErrorContext(ctx, "failTask: store.SetResult failed",
 			"module", "loom",
@@ -504,6 +512,9 @@ func (l *LoomEngine) dispatch(task *Task) {
 	// marked failed_crash, and the process is not terminated.
 	defer func() {
 		if r := recover(); r != nil {
+			if l.isTerminalTask(task.ID) {
+				return
+			}
 			panicCtx := context.Background()
 			stack := debug.Stack()
 			panicMsg := fmt.Sprintf("panic: %v", r)
@@ -650,6 +661,9 @@ func (l *LoomEngine) dispatch(task *Task) {
 	}
 
 	result, execErr := worker.Execute(taskCtx, latest)
+	if l.isTerminalTask(task.ID) {
+		return
+	}
 	if execErr != nil {
 		l.failTask(task, TaskStatusRunning, execErr.Error())
 		return

@@ -49,7 +49,9 @@ func (s *Server) jobProgressFormatted(jobID, outputFormat string) func(resolvedC
 // This single method is the canonical path for both exec and agent handlers —
 // centralising the format prevents silent divergence between the two.
 func (s *Server) sendJobProgress(jobID, line string) {
-	s.jobs.AppendProgress(jobID, line)
+	if !s.appendLoomProgressIfTask(jobID, line) {
+		s.jobs.AppendProgress(jobID, line)
+	}
 	if s.mcp != nil {
 		s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
 			"progressToken": jobID,
@@ -98,7 +100,9 @@ func (s *Server) progressSink(jobID, outputFormat string) func(string) {
 		if normalized == "" {
 			return
 		}
-		s.jobs.AppendProgress(jobID, normalized)
+		if !s.appendLoomProgressIfTask(jobID, normalized) {
+			s.jobs.AppendProgress(jobID, normalized)
+		}
 		if s.mcp != nil {
 			s.mcp.SendNotificationToAllClients("notifications/progress", map[string]any{
 				"progressToken": jobID,

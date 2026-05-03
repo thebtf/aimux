@@ -24,7 +24,7 @@ type LoomTaskBrief struct {
 	Status            loom.TaskStatus `json:"status"`
 	Kind              string          `json:"kind"`
 	CreatedAt         time.Time       `json:"created_at"`
-	ProgressLineCount int             `json:"progress_line_count"`
+	ProgressLineCount int64           `json:"progress_line_count"`
 }
 
 // JobBrief is the per-job summary for sessions/info responses.

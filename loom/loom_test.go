@@ -83,6 +83,7 @@ func TestTaskTransitions_Valid(t *testing.T) {
 		to   TaskStatus
 	}{
 		{TaskStatusPending, TaskStatusDispatched},
+		{TaskStatusPending, TaskStatusFailed},
 		{TaskStatusDispatched, TaskStatusRunning},
 		{TaskStatusDispatched, TaskStatusFailed},
 		{TaskStatusDispatched, TaskStatusFailedCrash},
@@ -111,7 +112,6 @@ func TestTaskTransitions_Invalid(t *testing.T) {
 	}{
 		{TaskStatusPending, TaskStatusCompleted},
 		{TaskStatusPending, TaskStatusRunning},
-		{TaskStatusPending, TaskStatusFailed},
 		{TaskStatusCompleted, TaskStatusPending},
 		{TaskStatusCompleted, TaskStatusRunning},
 		{TaskStatusFailed, TaskStatusRunning},
