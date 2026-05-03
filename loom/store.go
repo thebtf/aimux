@@ -129,7 +129,7 @@ var migrateV4Columns = []string{
 // migrateV5Columns adds three live progress columns for DEF-13 / AIMUX-16 CR-005.
 // They surface progress_tail / progress_lines / progress_updated_at on the
 // MCP status response for Loom-managed tasks at parity with the legacy
-// JobManager fields. Each statement is idempotent — duplicate-column errors
+// legacy job progress fields. Each statement is idempotent — duplicate-column errors
 // are silently ignored.
 //
 // Reversibility: SQLite ≥ 3.35.0 supports `ALTER TABLE … DROP COLUMN`. The
@@ -289,6 +289,110 @@ func (s *TaskStore) Create(task *Task) error {
 	)
 	if err != nil {
 		return fmt.Errorf("loom store: insert task: %w", err)
+	}
+	return nil
+}
+
+// Import upserts an already-materialized historical task into the store.
+// It is intentionally separate from Create: imports must preserve terminal
+// result/error/progress fields from legacy state instead of starting with an
+// empty active task row.
+func (s *TaskStore) Import(task *Task) error {
+	if task == nil {
+		return fmt.Errorf("loom store: import task: nil task")
+	}
+	if task.ID == "" {
+		return fmt.Errorf("loom store: import task: missing id")
+	}
+	if task.Status == "" {
+		return fmt.Errorf("loom store: import task %s: missing status", task.ID)
+	}
+	if task.WorkerType == "" {
+		return fmt.Errorf("loom store: import task %s: missing worker type", task.ID)
+	}
+
+	envJSON, err := marshalJSON(task.Env)
+	if err != nil {
+		return fmt.Errorf("loom store: import marshal env: %w", err)
+	}
+	metaJSON, err := marshalJSON(task.Metadata)
+	if err != nil {
+		return fmt.Errorf("loom store: import marshal metadata: %w", err)
+	}
+
+	createdAt := task.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	tenantID := task.TenantID
+	if tenantID == "" {
+		tenantID = LegacyTenantID
+	}
+	lastSeenAt := time.Now().UTC().Format(time.RFC3339)
+
+	_, err = s.db.Exec(`
+		INSERT INTO tasks
+			(id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
+			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+			 daemon_uuid, last_seen_at, engine_name, tenant_id, last_output_line, progress_lines, progress_updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			status              = excluded.status,
+			worker_type         = excluded.worker_type,
+			project_id          = excluded.project_id,
+			request_id          = excluded.request_id,
+			prompt              = excluded.prompt,
+			cwd                 = excluded.cwd,
+			env                 = excluded.env,
+			cli                 = excluded.cli,
+			role                = excluded.role,
+			model               = excluded.model,
+			effort              = excluded.effort,
+			timeout             = excluded.timeout,
+			metadata            = excluded.metadata,
+			result              = excluded.result,
+			error               = excluded.error,
+			retries             = excluded.retries,
+			created_at          = excluded.created_at,
+			dispatched_at       = excluded.dispatched_at,
+			completed_at        = excluded.completed_at,
+			daemon_uuid         = excluded.daemon_uuid,
+			last_seen_at        = excluded.last_seen_at,
+			engine_name         = excluded.engine_name,
+			tenant_id           = excluded.tenant_id,
+			last_output_line    = excluded.last_output_line,
+			progress_lines      = excluded.progress_lines,
+			progress_updated_at = excluded.progress_updated_at`,
+		task.ID,
+		string(task.Status),
+		string(task.WorkerType),
+		task.ProjectID,
+		task.RequestID,
+		task.Prompt,
+		task.CWD,
+		envJSON,
+		task.CLI,
+		task.Role,
+		task.Model,
+		task.Effort,
+		task.Timeout,
+		metaJSON,
+		task.Result,
+		redactErrorMsg(task.Error),
+		task.Retries,
+		createdAt,
+		task.DispatchedAt,
+		task.CompletedAt,
+		s.daemonUUID,
+		lastSeenAt,
+		s.engineName,
+		tenantID,
+		task.LastOutputLine,
+		task.ProgressLines,
+		task.ProgressUpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("loom store: import task: %w", err)
 	}
 	return nil
 }

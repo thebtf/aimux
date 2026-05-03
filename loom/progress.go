@@ -11,7 +11,7 @@ import (
 
 // progressLineMaxBytes caps LastOutputLine at 100 UTF-8 bytes to bound the
 // SQL row size and keep the MCP status payload compact. Picked to match the
-// legacy JobManager semantics (DEF-13) so callers comparing the two
+// legacy job-progress semantics (DEF-13) so callers comparing the two
 // representations see identical truncation behaviour.
 const progressLineMaxBytes = 100
 
@@ -72,7 +72,7 @@ type ProgressInfo struct {
 // AppendProgress records a single progress line for taskID. The line is
 // truncated UTF-8-safely to ≤100 bytes before storage; ProgressLines is
 // incremented by 1 plus the count of embedded newlines (matches legacy
-// JobManager semantics — see pkg/session/jobs.go:242 which uses the same
+// legacy job-progress semantics.
 // `1 + strings.Count(line, "\n")` formula). ProgressUpdatedAt is set to
 // time.Now().UTC().
 //
@@ -108,8 +108,8 @@ func (s *TaskStore) AppendProgress(taskID, line string) (ProgressInfo, error) {
 		truncated = truncateUTF8(redactErrorMsg(nextTail), progressLineMaxBytes)
 	}
 
-	// 1 line per call + one per embedded newline. Matches legacy JobManager
-	// arithmetic exactly (pkg/session/jobs.go:242) so callers comparing the
+	// 1 line per call + one per embedded newline. Matches legacy job-progress
+	// arithmetic exactly so callers comparing the
 	// two representations see identical counts; that parity is an explicit
 	// CR-005 NFR. A trailing "\n" therefore counts as a separator AND adds 1
 	// — same as the legacy code, by design.

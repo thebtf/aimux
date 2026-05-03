@@ -4,8 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/thebtf/aimux/pkg/types"
+	"github.com/thebtf/aimux/loom"
 )
 
 // TestHandleStatus_ToolDescription_MentionsProgressTail verifies that the
@@ -29,16 +30,18 @@ func TestHandleStatus_ToolDescription_MentionsProgressTail(t *testing.T) {
 // progress_tail and progress_lines in the response for every job status.
 // AC for T003: fields present regardless of status value (running/completed/failed).
 func TestHandleStatus_ProgressTailFields_Running(t *testing.T) {
-	srv := testServer(t)
-	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
-	job := srv.jobs.Create(sess.ID, "codex")
-	srv.jobs.StartJob(job.ID, 0)
+	srv := testServerWithLoom(t)
+	taskID := importProgressTestTask(t, srv, loom.TaskStatusRunning, "", "", "", 0)
 
 	// Append some progress so LastOutputLine is set.
-	srv.jobs.AppendProgress(job.ID, "foo")
-	srv.jobs.AppendProgress(job.ID, "bar baz")
+	if err := srv.loom.AppendProgress(taskID, "foo"); err != nil {
+		t.Fatalf("AppendProgress foo: %v", err)
+	}
+	if err := srv.loom.AppendProgress(taskID, "bar baz"); err != nil {
+		t.Fatalf("AppendProgress bar baz: %v", err)
+	}
 
-	req := makeRequest("status", map[string]any{"job_id": job.ID})
+	req := makeRequest("status", map[string]any{"job_id": taskID})
 	result, err := srv.handleStatus(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleStatus: %v", err)
@@ -65,16 +68,10 @@ func TestHandleStatus_ProgressTailFields_Running(t *testing.T) {
 }
 
 func TestHandleStatus_ProgressTailFields_Completed(t *testing.T) {
-	srv := testServer(t)
-	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
-	job := srv.jobs.Create(sess.ID, "codex")
-	srv.jobs.StartJob(job.ID, 0)
-	srv.jobs.AppendProgress(job.ID, "processing 1/10")
-	srv.jobs.AppendProgress(job.ID, "processing 10/10")
-	srv.jobs.AppendProgress(job.ID, "done")
-	srv.jobs.CompleteJob(job.ID, "output", 0)
+	srv := testServerWithLoom(t)
+	taskID := importProgressTestTask(t, srv, loom.TaskStatusCompleted, "output", "", "done", 3)
 
-	req := makeRequest("status", map[string]any{"job_id": job.ID})
+	req := makeRequest("status", map[string]any{"job_id": taskID})
 	result, err := srv.handleStatus(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleStatus: %v", err)
@@ -97,14 +94,10 @@ func TestHandleStatus_ProgressTailFields_Completed(t *testing.T) {
 }
 
 func TestHandleStatus_ProgressTailFields_Failed(t *testing.T) {
-	srv := testServer(t)
-	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
-	job := srv.jobs.Create(sess.ID, "codex")
-	srv.jobs.StartJob(job.ID, 0)
-	srv.jobs.AppendProgress(job.ID, "partial output")
-	srv.jobs.FailJob(job.ID, types.NewExecutorError("test failure", nil, ""))
+	srv := testServerWithLoom(t)
+	taskID := importProgressTestTask(t, srv, loom.TaskStatusFailed, "", "ExecutorError: test failure", "partial output", 1)
 
-	req := makeRequest("status", map[string]any{"job_id": job.ID})
+	req := makeRequest("status", map[string]any{"job_id": taskID})
 	result, err := srv.handleStatus(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleStatus: %v", err)
@@ -123,12 +116,10 @@ func TestHandleStatus_ProgressTailFields_ZeroProgress(t *testing.T) {
 	// Job with no progress writes: progress_tail="" and progress_lines=0.
 	// Both fields are explicitly set in the result map from handleStatus even for
 	// zero values, so they must appear in the JSON response.
-	srv := testServer(t)
-	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
-	job := srv.jobs.Create(sess.ID, "codex")
-	srv.jobs.StartJob(job.ID, 0)
+	srv := testServerWithLoom(t)
+	taskID := importProgressTestTask(t, srv, loom.TaskStatusRunning, "", "", "", 0)
 
-	req := makeRequest("status", map[string]any{"job_id": job.ID})
+	req := makeRequest("status", map[string]any{"job_id": taskID})
 	result, err := srv.handleStatus(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleStatus: %v", err)
@@ -156,14 +147,14 @@ func TestHandleStatus_ProgressTailFields_ZeroProgress(t *testing.T) {
 // TestHandleStatus_ProgressTail_FieldsFilter verifies that fields=progress_tail
 // filter works (T004 AC: 'fields=progress_tail filter works').
 func TestHandleStatus_ProgressTail_FieldsFilter(t *testing.T) {
-	srv := testServer(t)
-	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
-	job := srv.jobs.Create(sess.ID, "codex")
-	srv.jobs.StartJob(job.ID, 0)
-	srv.jobs.AppendProgress(job.ID, "hello world")
+	srv := testServerWithLoom(t)
+	taskID := importProgressTestTask(t, srv, loom.TaskStatusRunning, "", "", "", 0)
+	if err := srv.loom.AppendProgress(taskID, "hello world"); err != nil {
+		t.Fatalf("AppendProgress: %v", err)
+	}
 
 	req := makeRequest("status", map[string]any{
-		"job_id": job.ID,
+		"job_id": taskID,
 		"fields": "progress_tail",
 	})
 	result, err := srv.handleStatus(context.Background(), req)
@@ -183,16 +174,16 @@ func TestHandleStatus_ProgressTail_FieldsFilter(t *testing.T) {
 // TestHandleStatus_ProgressTail_Truncation verifies the 100-byte cap is enforced
 // end-to-end through handleStatus (status response never has progress_tail > 100 bytes).
 func TestHandleStatus_ProgressTail_Truncation(t *testing.T) {
-	srv := testServer(t)
-	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
-	job := srv.jobs.Create(sess.ID, "codex")
-	srv.jobs.StartJob(job.ID, 0)
+	srv := testServerWithLoom(t)
+	taskID := importProgressTestTask(t, srv, loom.TaskStatusRunning, "", "", "", 0)
 
 	// 150-byte single line.
 	longLine := strings.Repeat("z", 150)
-	srv.jobs.AppendProgress(job.ID, longLine)
+	if err := srv.loom.AppendProgress(taskID, longLine); err != nil {
+		t.Fatalf("AppendProgress: %v", err)
+	}
 
-	req := makeRequest("status", map[string]any{"job_id": job.ID})
+	req := makeRequest("status", map[string]any{"job_id": taskID})
 	result, err := srv.handleStatus(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleStatus: %v", err)
@@ -212,13 +203,13 @@ func TestHandleStatus_ProgressTail_Truncation(t *testing.T) {
 // If handleStatus were stubbed to return nil/empty, progress_tail would be absent
 // or empty even after appending a non-empty line.
 func TestHandleStatus_ProgressTail_SwapBodyGuard(t *testing.T) {
-	srv := testServer(t)
-	sess := srv.sessions.Create("codex", types.SessionModeOnceStateful, "/tmp")
-	job := srv.jobs.Create(sess.ID, "codex")
-	srv.jobs.StartJob(job.ID, 0)
-	srv.jobs.AppendProgress(job.ID, "guard line")
+	srv := testServerWithLoom(t)
+	taskID := importProgressTestTask(t, srv, loom.TaskStatusRunning, "", "", "", 0)
+	if err := srv.loom.AppendProgress(taskID, "guard line"); err != nil {
+		t.Fatalf("AppendProgress: %v", err)
+	}
 
-	req := makeRequest("status", map[string]any{"job_id": job.ID})
+	req := makeRequest("status", map[string]any{"job_id": taskID})
 	result, err := srv.handleStatus(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleStatus: %v", err)
@@ -235,4 +226,38 @@ func TestHandleStatus_ProgressTail_SwapBodyGuard(t *testing.T) {
 	if lines != 1 {
 		t.Errorf("progress_lines = %v, want 1 — stub guard: must count appended lines", lines)
 	}
+}
+
+func importProgressTestTask(t *testing.T, srv *Server, status loom.TaskStatus, result, errMsg, progressTail string, progressLines int64) string {
+	t.Helper()
+
+	now := time.Now().UTC()
+	taskID := "task-" + strings.NewReplacer("/", "-", " ", "-").Replace(t.Name())
+	completedAt := (*time.Time)(nil)
+	if status.IsTerminal() {
+		completedAt = &now
+	}
+	progressUpdatedAt := (*time.Time)(nil)
+	if progressTail != "" || progressLines > 0 {
+		progressUpdatedAt = &now
+	}
+	if err := srv.loom.Import(&loom.Task{
+		ID:                taskID,
+		Status:            status,
+		WorkerType:        loom.WorkerTypeCLI,
+		ProjectID:         "progress-tests",
+		Prompt:            "progress status test",
+		CLI:               "codex",
+		Metadata:          map[string]any{"session_id": "progress-session"},
+		Result:            result,
+		Error:             errMsg,
+		CreatedAt:         now,
+		CompletedAt:       completedAt,
+		LastOutputLine:    progressTail,
+		ProgressLines:     progressLines,
+		ProgressUpdatedAt: progressUpdatedAt,
+	}); err != nil {
+		t.Fatalf("import loom task: %v", err)
+	}
+	return taskID
 }

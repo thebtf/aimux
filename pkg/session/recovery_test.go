@@ -26,13 +26,14 @@ func TestRecoverFromWAL(t *testing.T) {
 	})
 	wal.Close()
 
-	// Recover
 	reg := session.NewRegistry()
-	jm := session.NewJobManager()
 
-	err = session.RecoverFromWAL(walPath, reg, jm)
+	jobs, err := session.RecoverFromWAL(walPath, reg)
 	if err != nil {
 		t.Fatalf("RecoverFromWAL: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("RecoverFromWAL returned %d jobs, want 0", len(jobs))
 	}
 
 	sess := reg.Get("s1")
@@ -46,11 +47,55 @@ func TestRecoverFromWAL(t *testing.T) {
 
 func TestRecoverFromWAL_Empty(t *testing.T) {
 	reg := session.NewRegistry()
-	jm := session.NewJobManager()
 
-	err := session.RecoverFromWAL("/nonexistent.wal", reg, jm)
+	jobs, err := session.RecoverFromWAL("/nonexistent.wal", reg)
 	if err != nil {
 		t.Fatalf("should not error on missing WAL: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("missing WAL returned %d jobs, want 0", len(jobs))
+	}
+}
+
+func TestRecoverFromWAL_ReturnsLegacyJobSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "jobs.wal")
+
+	wal, err := session.NewWAL(walPath)
+	if err != nil {
+		t.Fatalf("NewWAL: %v", err)
+	}
+	if err := wal.Append("job_create", "job-1", &session.Job{
+		ID:        "job-1",
+		SessionID: "session-1",
+		CLI:       "codex",
+		Status:    types.JobStatusRunning,
+	}); err != nil {
+		t.Fatalf("append job_create: %v", err)
+	}
+	if err := wal.Append("job_update", "job-1", map[string]any{
+		"status":  types.JobStatusCompleted,
+		"content": "wal output",
+	}); err != nil {
+		t.Fatalf("append job_update: %v", err)
+	}
+	wal.Close()
+
+	jobs, err := session.RecoverFromWAL(walPath, session.NewRegistry())
+	if err != nil {
+		t.Fatalf("RecoverFromWAL: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %d, want 1", len(jobs))
+	}
+	if jobs[0].ID != "job-1" {
+		t.Fatalf("job ID = %q, want job-1", jobs[0].ID)
+	}
+	if jobs[0].Status != types.JobStatusCompleted {
+		t.Fatalf("status = %q, want completed", jobs[0].Status)
+	}
+	if jobs[0].Content != "wal output" {
+		t.Fatalf("content = %q, want wal output", jobs[0].Content)
 	}
 }
 

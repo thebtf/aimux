@@ -348,8 +348,8 @@ chain with templated cross-step references.
 
 ### 4.6 State Stores
 
-- `s.sessions`              (`pkg/session.Store`) — per-tool session metadata, jobs (legacy).
-- `s.jobs`                  (`pkg/jobs` legacy `JobManager`) — deprecated; LoomEngine replaces it for new tools.
+- `s.sessions`              (`pkg/session.Store`) — per-tool session metadata.
+- `s.loom`                  (`loom.LoomEngine`) — task state, progress, cancellation, crash recovery.
 - `s.agentReg`              (`pkg/agents.Registry`) — disk-loaded agents. Per-project overlay via `ProjectAgentsFromContext`.
 - `s.registry`              (`pkg/driver.Registry`) — CLI profile registry.
 - `s.metrics`               — Prometheus / OTel counters per CLI.

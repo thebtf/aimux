@@ -8,20 +8,18 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-// GCReaper garbage collects expired sessions and stuck jobs.
+// GCReaper garbage collects expired sessions.
 // Uses context-based lifecycle (Constitution P5), not periodic timers.
 type GCReaper struct {
 	sessions *Registry
-	jobs     *JobManager
 	log      *logger.Logger
 	ttl      time.Duration
 }
 
 // NewGCReaper creates a reaper with the given session TTL.
-func NewGCReaper(sessions *Registry, jobs *JobManager, log *logger.Logger, ttlHours int) *GCReaper {
+func NewGCReaper(sessions *Registry, log *logger.Logger, ttlHours int) *GCReaper {
 	return &GCReaper{
 		sessions: sessions,
-		jobs:     jobs,
 		log:      log,
 		ttl:      time.Duration(ttlHours) * time.Hour,
 	}
@@ -68,18 +66,8 @@ func (g *GCReaper) collect() {
 		}
 	}
 
-	// Reap stuck running jobs with no progress for >15min
-	for _, job := range g.jobs.ListRunning() {
-		staleProgress := now.Sub(job.ProgressUpdatedAt)
-		if staleProgress > 15*time.Minute {
-			g.jobs.FailJob(job.ID, types.NewTimeoutError(
-				"GC reaped: no progress for 15+ minutes", ""))
-			reaped++
-		}
-	}
-
 	if reaped > 0 {
-		g.log.Info("GC: reaped %d expired sessions/jobs", reaped)
+		g.log.Info("GC: reaped %d expired sessions", reaped)
 	}
 }
 

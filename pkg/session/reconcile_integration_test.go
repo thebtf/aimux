@@ -40,9 +40,6 @@ func TestReconcile_SIGKILLRestart(t *testing.T) {
 		t.Fatalf("NewStore (daemon A): %v", err)
 	}
 
-	jmA := session.NewJobManager()
-	jmA.SetStore(storeA)
-
 	// Create a session row so the foreign key constraint is satisfied.
 	regA := session.NewRegistry()
 	sess := regA.Create("codex", types.SessionModeLive, "/tmp")
@@ -50,19 +47,24 @@ func TestReconcile_SIGKILLRestart(t *testing.T) {
 		t.Fatalf("SnapshotSession: %v", err)
 	}
 
-	// Create and start a job (Created → Running).
-	jobA := jmA.Create(sess.ID, "codex")
-	jobAID := jobA.ID
-
-	started := jmA.StartJob(jobAID, 42)
-	if !started {
-		t.Fatal("StartJob returned false — job not transitioned to running")
+	// Snapshot a running legacy job owned by daemon A.
+	now := time.Now()
+	jobA := &session.Job{
+		ID:                "job-sigkill",
+		SessionID:         sess.ID,
+		CLI:               "codex",
+		Status:            types.JobStatusRunning,
+		PID:               42,
+		CreatedAt:         now,
+		ProgressUpdatedAt: now,
+	}
+	if err := storeA.SnapshotJob(jobA); err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
 	}
 
-	// Verify the running state is in SQLite (StartJob now calls SnapshotJob).
 	db := storeA.DB()
 	var statusInDB string
-	if err := db.QueryRow(`SELECT status FROM jobs WHERE id = ?`, jobAID).Scan(&statusInDB); err != nil {
+	if err := db.QueryRow(`SELECT status FROM jobs WHERE id = ?`, jobA.ID).Scan(&statusInDB); err != nil {
 		t.Fatalf("query job status from DB: %v", err)
 	}
 	if statusInDB != "running" {
@@ -94,7 +96,7 @@ func TestReconcile_SIGKILLRestart(t *testing.T) {
 
 	var finalStatus string
 	var abortedAtStr sql.NullString
-	if err := dbB.QueryRow(`SELECT status, aborted_at FROM jobs WHERE id = ?`, jobAID).Scan(&finalStatus, &abortedAtStr); err != nil {
+	if err := dbB.QueryRow(`SELECT status, aborted_at FROM jobs WHERE id = ?`, jobA.ID).Scan(&finalStatus, &abortedAtStr); err != nil {
 		t.Fatalf("query reconciled job: %v", err)
 	}
 

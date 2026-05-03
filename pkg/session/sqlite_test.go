@@ -10,39 +10,19 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-func TestRestoreJobs_RunningBecomeFailed(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+func TestLoadLegacyJobs_RunningBecomeFailed(t *testing.T) {
+	store := newSQLiteTestStore(t, "running.db")
+	job := legacyTestJob("job-running", "session-1", "codex", types.JobStatusRunning)
 
-	store, err := session.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-
-	// Create a job in running state and snapshot it to SQLite.
-	jm := session.NewJobManager()
-	job := jm.Create("session-1", "codex")
-	jm.StartJob(job.ID, 12345)
-
-	if err := store.SnapshotJob(jm.Get(job.ID)); err != nil {
+	if err := store.SnapshotJob(job); err != nil {
 		t.Fatalf("SnapshotJob: %v", err)
 	}
 
-	// Restore into a fresh JobManager (simulating a process restart).
-	jm2 := session.NewJobManager()
-	n, err := store.RestoreJobs(jm2)
+	jobs, err := store.LoadLegacyJobs()
 	if err != nil {
-		t.Fatalf("RestoreJobs: %v", err)
+		t.Fatalf("LoadLegacyJobs: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("restored %d jobs, want 1", n)
-	}
-
-	restored := jm2.Get(job.ID)
-	if restored == nil {
-		t.Fatal("restored job not found in JobManager")
-	}
+	restored := requireLegacyJob(t, jobs, job.ID)
 	if restored.Status != types.JobStatusFailed {
 		t.Errorf("status = %q, want failed", restored.Status)
 	}
@@ -57,118 +37,65 @@ func TestRestoreJobs_RunningBecomeFailed(t *testing.T) {
 	}
 }
 
-func TestRestoreJobs_CompletingBecomeFailed(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+func TestLoadLegacyJobs_CompletingBecomeFailed(t *testing.T) {
+	store := newSQLiteTestStore(t, "completing.db")
+	job := legacyTestJob("job-completing", "session-3", "codex", types.JobStatusCompleting)
 
-	store, err := session.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-
-	// A job caught mid-completion when the server dies.
-	jm := session.NewJobManager()
-	job := jm.Create("session-3", "codex")
-	jm.StartJob(job.ID, 54321)
-	jm.Get(job.ID).Status = types.JobStatusCompleting
-
-	if err := store.SnapshotJob(jm.Get(job.ID)); err != nil {
+	if err := store.SnapshotJob(job); err != nil {
 		t.Fatalf("SnapshotJob: %v", err)
 	}
 
-	jm2 := session.NewJobManager()
-	if _, err := store.RestoreJobs(jm2); err != nil {
-		t.Fatalf("RestoreJobs: %v", err)
+	jobs, err := store.LoadLegacyJobs()
+	if err != nil {
+		t.Fatalf("LoadLegacyJobs: %v", err)
 	}
-
-	restored := jm2.Get(job.ID)
-	if restored == nil {
-		t.Fatal("restored job not found in JobManager")
-	}
+	restored := requireLegacyJob(t, jobs, job.ID)
 	if restored.Status != types.JobStatusFailed {
-		t.Errorf("status = %q, want failed (completing → failed on restart)", restored.Status)
+		t.Errorf("status = %q, want failed (completing -> failed on restart)", restored.Status)
 	}
 	if restored.Error == nil || !strings.Contains(restored.Error.Message, "process restarted") {
 		t.Errorf("error = %+v, want 'process restarted'", restored.Error)
 	}
 }
 
-func TestRestoreJobs_BackdatedRunningRestoredAndFailed(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+func TestLoadLegacyJobs_BackdatedRunningRestoredAndFailed(t *testing.T) {
+	store := newSQLiteTestStore(t, "backdated.db")
+	job := legacyTestJob("job-backdated", "session-4", "codex", types.JobStatusRunning)
+	job.CreatedAt = time.Now().Add(-2 * time.Hour)
+	job.ProgressUpdatedAt = job.CreatedAt
 
-	store, err := session.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-
-	jm := session.NewJobManager()
-	job := jm.Create("session-4", "codex")
-	jm.StartJob(job.ID, 777)
-
-	backdated := jm.Get(job.ID)
-	backdated.CreatedAt = time.Now().Add(-2 * time.Hour)
-	backdated.ProgressUpdatedAt = backdated.CreatedAt
-
-	if err := store.SnapshotJob(backdated); err != nil {
+	if err := store.SnapshotJob(job); err != nil {
 		t.Fatalf("SnapshotJob: %v", err)
 	}
 
-	jm2 := session.NewJobManager()
-	n, err := store.RestoreJobs(jm2)
+	jobs, err := store.LoadLegacyJobs()
 	if err != nil {
-		t.Fatalf("RestoreJobs: %v", err)
+		t.Fatalf("LoadLegacyJobs: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("restored %d jobs, want 1", n)
-	}
-
-	restored := jm2.Get(job.ID)
-	if restored == nil {
-		t.Fatal("backdated running job was not restored")
-	}
+	restored := requireLegacyJob(t, jobs, job.ID)
 	if restored.Status != types.JobStatusFailed {
-		t.Errorf("status = %q, want failed (running → failed on restart)", restored.Status)
+		t.Errorf("status = %q, want failed (running -> failed on restart)", restored.Status)
 	}
 	if restored.Error == nil || !strings.Contains(restored.Error.Message, "process restarted") {
 		t.Errorf("error = %+v, want 'process restarted'", restored.Error)
 	}
 }
 
-func TestRestoreJobs_CompletedPreserved(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+func TestLoadLegacyJobs_CompletedPreserved(t *testing.T) {
+	store := newSQLiteTestStore(t, "completed.db")
+	job := legacyTestJob("job-completed", "session-2", "gemini", types.JobStatusCompleted)
+	job.Content = "some output"
+	job.CompletedAt = ptrTime(time.Now())
 
-	store, err := session.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-
-	jm := session.NewJobManager()
-	job := jm.Create("session-2", "gemini")
-	jm.StartJob(job.ID, 42)
-	jm.CompleteJob(job.ID, "some output", 0)
-
-	if err := store.SnapshotJob(jm.Get(job.ID)); err != nil {
+	if err := store.SnapshotJob(job); err != nil {
 		t.Fatalf("SnapshotJob: %v", err)
 	}
 
-	jm2 := session.NewJobManager()
-	n, err := store.RestoreJobs(jm2)
+	jobs, err := store.LoadLegacyJobs()
 	if err != nil {
-		t.Fatalf("RestoreJobs: %v", err)
+		t.Fatalf("LoadLegacyJobs: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("restored %d jobs, want 1", n)
-	}
-
-	restored := jm2.Get(job.ID)
-	if restored == nil {
-		t.Fatal("restored job not found")
-	}
+	restored := requireLegacyJob(t, jobs, job.ID)
 	if restored.Status != types.JobStatusCompleted {
 		t.Errorf("status = %q, want completed", restored.Status)
 	}
@@ -180,22 +107,58 @@ func TestRestoreJobs_CompletedPreserved(t *testing.T) {
 	}
 }
 
-func TestRestoreJobs_EmptyDB(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "empty.db")
+func TestLoadLegacyJobs_EmptyDB(t *testing.T) {
+	store := newSQLiteTestStore(t, "empty.db")
 
-	store, err := session.NewStore(dbPath)
+	jobs, err := store.LoadLegacyJobs()
+	if err != nil {
+		t.Fatalf("LoadLegacyJobs on empty DB: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Errorf("expected 0 legacy jobs, got %d", len(jobs))
+	}
+}
+
+func newSQLiteTestStore(t *testing.T, name string) *session.Store {
+	t.Helper()
+
+	store, err := session.NewStore(filepath.Join(t.TempDir(), name))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer store.Close()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+	return store
+}
 
-	jm := session.NewJobManager()
-	n, err := store.RestoreJobs(jm)
-	if err != nil {
-		t.Fatalf("RestoreJobs on empty DB: %v", err)
+func legacyTestJob(id, sessionID, cli string, status types.JobStatus) *session.Job {
+	now := time.Now()
+	return &session.Job{
+		ID:                id,
+		SessionID:         sessionID,
+		CLI:               cli,
+		Status:            status,
+		Pheromones:        map[string]string{},
+		PID:               12345,
+		CreatedAt:         now,
+		ProgressUpdatedAt: now,
 	}
-	if n != 0 {
-		t.Errorf("expected 0 restored jobs, got %d", n)
+}
+
+func requireLegacyJob(t *testing.T, jobs []*session.Job, id string) *session.Job {
+	t.Helper()
+	for _, job := range jobs {
+		if job.ID == id {
+			return job
+		}
 	}
+	t.Fatalf("legacy job %s not found in %d jobs", id, len(jobs))
+	return nil
+}
+
+func ptrTime(t time.Time) *time.Time {
+	return &t
 }

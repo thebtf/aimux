@@ -288,8 +288,10 @@ func (s *Store) SnapshotJob(job *Job) error {
 	return err
 }
 
-// SnapshotAll dumps all in-memory sessions and jobs to SQLite atomically.
-func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
+// SnapshotAll dumps in-memory sessions to SQLite atomically.
+// Runtime task persistence is owned by Loom; legacy jobs are imported once at
+// startup and are never used as a live snapshot backend.
+func (s *Store) SnapshotAll(sessions *Registry) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -297,7 +299,6 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 	defer tx.Rollback()
 
 	uuid := GetDaemonUUID()
-	snapshotTime := time.Now().UTC().Format(time.RFC3339)
 
 	for _, sess := range sessions.List("") {
 		metadataJSON, _ := json.Marshal(sess.Metadata)
@@ -328,69 +329,18 @@ func (s *Store) SnapshotAll(sessions *Registry, jobs *JobManager) error {
 		}
 	}
 
-	for _, job := range jobs.ListNonTerminal() {
-		var errorJSON, pheromonesJSON, pipelineJSON []byte
-		if job.Error != nil {
-			// Redact secrets from the error message before persisting to error_json.
-			// Same sanitisation as SnapshotJob — the in-memory struct is NOT mutated.
-			sanitised := *job.Error
-			sanitised.Message = redact.RedactSecrets(sanitised.Message)
-			errorJSON, _ = json.Marshal(&sanitised)
-		}
-		if len(job.Pheromones) > 0 {
-			pheromonesJSON, _ = json.Marshal(job.Pheromones)
-		}
-		if job.Pipeline != nil {
-			pipelineJSON, _ = json.Marshal(job.Pipeline)
-		}
-		completedAt := ""
-		if job.CompletedAt != nil {
-			completedAt = job.CompletedAt.Format(time.RFC3339)
-		}
-		if _, execErr := tx.Exec(`
-			INSERT INTO jobs (id, session_id, cli, status, progress, content, exit_code,
-				error_json, poll_count, pheromones_json, pipeline_json, pid, created_at, progress_updated_at, completed_at,
-				daemon_uuid, last_seen_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET
-				session_id          = excluded.session_id,
-				cli                 = excluded.cli,
-				status              = excluded.status,
-				progress            = excluded.progress,
-				content             = excluded.content,
-				exit_code           = excluded.exit_code,
-				error_json          = excluded.error_json,
-				poll_count          = excluded.poll_count,
-				pheromones_json     = excluded.pheromones_json,
-				pipeline_json       = excluded.pipeline_json,
-				pid                 = excluded.pid,
-				created_at          = excluded.created_at,
-				progress_updated_at = excluded.progress_updated_at,
-				completed_at        = excluded.completed_at,
-				daemon_uuid         = excluded.daemon_uuid,
-				last_seen_at        = excluded.last_seen_at`,
-			job.ID, job.SessionID, job.CLI, job.Status, job.Progress, job.Content, job.ExitCode,
-			string(errorJSON), job.PollCount, string(pheromonesJSON), string(pipelineJSON),
-			job.PID, job.CreatedAt.Format(time.RFC3339), job.ProgressUpdatedAt.Format(time.RFC3339),
-			completedAt,
-			uuid, snapshotTime,
-		); execErr != nil {
-			return execErr
-		}
-	}
-
 	return tx.Commit()
 }
 
-// RestoreJobs loads jobs from SQLite into the JobManager.
-// Running jobs are marked as failed (process died mid-execution).
-// Called once at server startup to survive process restarts.
-// Non-terminal jobs are always restored; terminal historical rows are kept to a 1-hour window.
-func (s *Store) RestoreJobs(jobs *JobManager) (int, error) {
+// LoadLegacyJobs returns historical jobs from the legacy jobs table for import
+// into Loom. Non-terminal jobs are normalized to failed because their original
+// subprocess died with the prior daemon. Terminal historical rows are kept to a
+// 1-hour window for status compatibility.
+func (s *Store) LoadLegacyJobs() ([]*Job, error) {
 	rows, err := s.db.Query(`
 		SELECT id, session_id, cli, status, progress, content, exit_code,
 		       error_json, poll_count, pheromones_json, pipeline_json, pid,
-		       created_at, progress_updated_at, completed_at
+		       created_at, progress_updated_at, completed_at, tenant_id
 		FROM jobs
 		WHERE status NOT IN (?, ?)
 		   OR (status IN (?, ?) AND unixepoch(created_at) > unixepoch('now', '-1 hour'))
@@ -399,26 +349,28 @@ func (s *Store) RestoreJobs(jobs *JobManager) (int, error) {
 		types.JobStatusCompleted, types.JobStatusFailed,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("query jobs: %w", err)
+		return nil, fmt.Errorf("query legacy jobs: %w", err)
 	}
 	defer rows.Close()
 
-	count := 0
+	var jobs []*Job
 	for rows.Next() {
 		var (
 			errorJSON, pheromonesJSON, pipelineJSON sql.NullString
 			completedAtStr                          sql.NullString
 			createdAtStr, progressUpdatedAtStr      string
+			tenantID                                string
 		)
 
 		j := &Job{}
 		if err := rows.Scan(
 			&j.ID, &j.SessionID, &j.CLI, &j.Status, &j.Progress, &j.Content, &j.ExitCode,
 			&errorJSON, &j.PollCount, &pheromonesJSON, &pipelineJSON, &j.PID,
-			&createdAtStr, &progressUpdatedAtStr, &completedAtStr,
+			&createdAtStr, &progressUpdatedAtStr, &completedAtStr, &tenantID,
 		); err != nil {
-			return count, fmt.Errorf("scan job row: %w", err)
+			return jobs, fmt.Errorf("scan legacy job row: %w", err)
 		}
+		j.TenantID = tenantID
 
 		if t, err := time.Parse(time.RFC3339, createdAtStr); err == nil {
 			j.CreatedAt = t
@@ -469,13 +421,12 @@ func (s *Store) RestoreJobs(jobs *JobManager) (int, error) {
 			}
 		}
 
-		jobs.Restore(j)
-		count++
+		jobs = append(jobs, j)
 	}
 	if err := rows.Err(); err != nil {
-		return count, fmt.Errorf("iterate job rows: %w", err)
+		return jobs, fmt.Errorf("iterate legacy job rows: %w", err)
 	}
-	return count, nil
+	return jobs, nil
 }
 
 // TypedErrorJSON is a helper for deserializing TypedError from SQLite (Cause field is not stored).

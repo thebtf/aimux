@@ -391,6 +391,12 @@ func (l *LoomEngine) RecoverCrashed() (int, error) {
 	return l.store.MarkCrashed()
 }
 
+// Import upserts a historical task into Loom persistence without dispatching it.
+// Used by aimux startup migration for legacy job rows and WAL entries.
+func (l *LoomEngine) Import(task *Task) error {
+	return l.store.Import(task)
+}
+
 // Events returns the event bus for subscribing to task lifecycle events.
 func (l *LoomEngine) Events() *EventBus {
 	return l.events
@@ -400,7 +406,7 @@ func (l *LoomEngine) Events() *EventBus {
 // EventTaskProgress on the event bus. Workers (or worker wrappers like
 // workers.StreamingBase) call this for every line of live output so that
 // status() readers see progress_tail / progress_lines / progress_updated_at
-// at parity with the legacy JobManager (DEF-13 / AIMUX-16 CR-005).
+// at parity with the legacy job-progress contract (DEF-13 / AIMUX-16 CR-005).
 //
 // The line is UTF-8-safe truncated to ≤100 bytes by the store, with secrets
 // scrubbed before storage. Errors from the store are propagated; the event

@@ -159,6 +159,9 @@ func loomStatusResult(s *Server, task *loom.Task, bp budget.BudgetParams, jobID 
 	if sessionID := loomTaskSessionID(task); sessionID != "" {
 		result["session_id"] = sessionID
 	}
+	if progress, ok := task.Metadata["legacy_progress"].(string); ok {
+		result["progress"] = progress
+	}
 	if task.ProgressUpdatedAt != nil {
 		progressAt := task.ProgressUpdatedAt.UTC().Format(time.RFC3339)
 		result["progress_updated_at"] = progressAt

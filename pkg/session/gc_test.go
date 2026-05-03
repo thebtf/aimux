@@ -11,7 +11,6 @@ import (
 
 func TestGCReaper_ReapsExpiredSessions(t *testing.T) {
 	reg := session.NewRegistry()
-	jm := session.NewJobManager()
 
 	log, _ := logger.New(t.TempDir()+"/test.log", logger.LevelError, logger.RotationOpts{})
 	defer log.Close()
@@ -23,7 +22,7 @@ func TestGCReaper_ReapsExpiredSessions(t *testing.T) {
 		s.LastActiveAt = time.Now().Add(-25 * time.Hour) // expired
 	})
 
-	gc := session.NewGCReaper(reg, jm, log, 24) // 24h TTL
+	gc := session.NewGCReaper(reg, log, 24) // 24h TTL
 	reaped := gc.CollectOnce()
 
 	if reaped != 1 {
@@ -36,7 +35,6 @@ func TestGCReaper_ReapsExpiredSessions(t *testing.T) {
 
 func TestGCReaper_KeepsActiveSessions(t *testing.T) {
 	reg := session.NewRegistry()
-	jm := session.NewJobManager()
 
 	log, _ := logger.New(t.TempDir()+"/test.log", logger.LevelError, logger.RotationOpts{})
 	defer log.Close()
@@ -47,7 +45,7 @@ func TestGCReaper_KeepsActiveSessions(t *testing.T) {
 		s.Status = types.SessionStatusRunning
 	})
 
-	gc := session.NewGCReaper(reg, jm, log, 24)
+	gc := session.NewGCReaper(reg, log, 24)
 	gc.CollectOnce()
 
 	if reg.Count() != 1 {
