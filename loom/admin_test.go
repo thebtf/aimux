@@ -29,6 +29,9 @@ func TestTaskStore_FailActive_PendingToFailed(t *testing.T) {
 	if err := store.Create(task); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	if _, err := store.db.Exec(`UPDATE tasks SET result = ? WHERE id = ? AND engine_name = ?`, "some output", task.ID, store.engineName); err != nil {
+		t.Fatalf("seed result: %v", err)
+	}
 
 	info, err := store.FailActive(task.ID, "operator cancelled")
 	if err != nil {
@@ -49,6 +52,9 @@ func TestTaskStore_FailActive_PendingToFailed(t *testing.T) {
 	}
 	if got.Error != "operator cancelled" {
 		t.Fatalf("Error = %q, want operator cancelled", got.Error)
+	}
+	if got.Result != "" {
+		t.Fatalf("Result = %q, want empty after admin failure", got.Result)
 	}
 }
 
@@ -123,6 +129,39 @@ func TestLoomEngine_FailStaleRunningUsesDispatchedAtWithoutProgress(t *testing.T
 	task.DispatchedAt = &dispatchedAt
 	if err := store.Create(task); err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+
+	failed, err := engine.FailStaleRunning(15*time.Minute, "stale")
+	if err != nil {
+		t.Fatalf("FailStaleRunning: %v", err)
+	}
+	if failed != 0 {
+		t.Fatalf("failed = %d, want 0", failed)
+	}
+	got, err := store.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != TaskStatusRunning {
+		t.Fatalf("status = %s, want running", got.Status)
+	}
+}
+
+func TestLoomEngine_FailStaleRunningUsesProgressUpdatedAtOverDispatchedAt(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC()
+	engine := New(store, WithClock(deps.NewFakeClock(now)))
+	dispatchedAt := now.Add(-30 * time.Minute)
+	task := makeTask("admin-fresh-progress", "proj-admin", TaskStatusRunning)
+	task.CreatedAt = dispatchedAt.Add(-30 * time.Minute)
+	task.DispatchedAt = &dispatchedAt
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if info, err := store.AppendProgress(task.ID, "still running"); err != nil {
+		t.Fatalf("AppendProgress: %v", err)
+	} else if !info.OK {
+		t.Fatal("AppendProgress OK = false, want true")
 	}
 
 	failed, err := engine.FailStaleRunning(15*time.Minute, "stale")
