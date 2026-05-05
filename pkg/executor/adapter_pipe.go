@@ -69,8 +69,8 @@ func (a *CLIPipeAdapter) Info() types.ExecutorInfo {
 //   - "command" (string)          — executable path/name (required)
 //   - "args"    ([]string/[]any)  — command-line arguments
 //
-// SystemPrompt, when non-empty, is prepended to the payload on both session-bound
-// and stateless paths so the CLI receives full context.
+// SystemPrompt, when non-empty, is prepended in session-bound mode and in
+// stateless mode when stdin is the default msg.Content payload.
 func (a *CLIPipeAdapter) Send(ctx context.Context, msg types.Message) (*types.Response, error) {
 	// Session-bound mode (FR-2): dispatch via persistent session.
 	// SystemPrompt parity with stateless path — prepend before sending so
@@ -91,7 +91,7 @@ func (a *CLIPipeAdapter) Send(ctx context.Context, msg types.Message) (*types.Re
 	// Stateless path — byte-identical to original (AIMUX-13 FR-1).
 	args := messageToSpawnArgs(msg)
 
-	// SystemPrompt: prepend to stdin so the CLI receives full context.
+	// SystemPrompt: prepend only when stdin still carries the default message content.
 	if msg.SystemPrompt != "" && args.Stdin == msg.Content {
 		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, args.Stdin)
 	}

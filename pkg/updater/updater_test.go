@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/updater"
@@ -125,6 +126,41 @@ func TestDownload_MockUpdateSelectsExpectedBinaryFromMultiEntryZip(t *testing.T)
 	}
 	if string(data) != "binary-content" {
 		t.Fatalf("target content = %q; want binary-content", string(data))
+	}
+}
+
+func TestDownload_MockUpdateRejectsUnexpectedSingleEntryZip(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "aimux-dev-next.exe")
+	zipBytes := makeZip(t, map[string]string{
+		"unexpected.exe": "wrong-binary",
+	})
+
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/release.json", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewEncoder(w).Encode(updater.Release{
+			Version:  "9.9.9",
+			AssetURL: server.URL + "/asset.zip",
+		}); err != nil {
+			t.Fatalf("encode release: %v", err)
+		}
+	})
+	mux.HandleFunc("/asset.zip", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write(zipBytes); err != nil {
+			t.Fatalf("write asset: %v", err)
+		}
+	})
+	server = httptest.NewServer(mux)
+	defer server.Close()
+	t.Setenv("AIMUX_TEST_UPDATE_BASE_URL", server.URL)
+
+	_, err := updater.Download(context.Background(), "0.0.1", targetPath)
+	if err == nil {
+		t.Fatal("Download succeeded for zip without the expected binary entry")
+	}
+	if !strings.Contains(err.Error(), `no entry named "aimux-dev-next.exe"`) {
+		t.Fatalf("Download error = %v, want missing expected binary entry", err)
 	}
 }
 

@@ -352,18 +352,14 @@ func extractSingleBinary(zipBytes []byte, expectedName string) ([]byte, error) {
 		return nil, fmt.Errorf("mock asset zip: %w", err)
 	}
 	var target *zip.File
-	if len(zr.File) == 1 {
-		target = zr.File[0]
-	} else {
-		for _, f := range zr.File {
-			if filepath.Base(f.Name) == expectedName {
-				target = f
-				break
-			}
+	for _, f := range zr.File {
+		if filepath.Base(f.Name) == expectedName {
+			target = f
+			break
 		}
-		if target == nil {
-			return nil, fmt.Errorf("mock asset: no entry named %q found in zip with %d entries", expectedName, len(zr.File))
-		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("mock asset: no entry named %q found in zip with %d entries", expectedName, len(zr.File))
 	}
 	rc, err := target.Open()
 	if err != nil {

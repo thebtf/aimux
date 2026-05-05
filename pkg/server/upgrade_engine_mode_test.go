@@ -139,7 +139,11 @@ func TestUpgrade_AutoUsesDeferredInSessionHandlerMode(t *testing.T) {
 	if payload["status"] != "updated_deferred" {
 		t.Fatalf("status = %v, want updated_deferred; payload=%v", payload["status"], payload)
 	}
-	if got := payload["handoff_error"]; !strings.Contains(got.(string), "SessionHandler mode") {
+	got, ok := payload["handoff_error"].(string)
+	if !ok {
+		t.Fatalf("handoff_error missing or not a string: %v", payload)
+	}
+	if !strings.Contains(got, "SessionHandler mode") {
 		t.Fatalf("handoff_error = %v, want SessionHandler mode reason", got)
 	}
 }
@@ -168,7 +172,11 @@ func TestUpgrade_HotSwapRejectedInSessionHandlerMode(t *testing.T) {
 	}
 
 	payload := parseResult(t, result)
-	if got := payload["text"]; !strings.Contains(got.(string), "hot-swap unsupported") {
+	got, ok := payload["text"].(string)
+	if !ok {
+		t.Fatalf("text missing or not a string: %v", payload)
+	}
+	if !strings.Contains(got, "hot-swap unsupported") {
 		t.Fatalf("error payload = %v, want hot-swap unsupported", got)
 	}
 }
