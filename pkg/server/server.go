@@ -102,6 +102,7 @@ type Server struct {
 	applyUpgrade            func(context.Context, *upgrade.Coordinator, upgrade.Mode, bool) (*upgrade.Result, error)
 	muxEngine               *engine.MuxEngine
 	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
+	muxCompatOnce           sync.Once        // ensures configureMuxCompatibility registers its hook exactly once
 	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
 
 	// dispatchMW resolves TenantContext at the MCP tool dispatch entry point
@@ -737,7 +738,7 @@ func (s *Server) registerTools() {
 		mcp.NewTool("upgrade",
 			mcp.WithDescription("[manage — server state, no cost] Check for and apply aimux binary updates from GitHub releases. "+
 				"action=check: detect latest version. action=apply: download, verify checksum, replace binary. "+
-				"After apply, daemon will exit when all CC sessions disconnect (deferred restart). "+
+				"In current muxcore SessionHandler mode, auto uses deferred restart with an explicit handoff_error because live handoff has no transferable upstream. "+
 				"action=check returns compact status fields (fits ~4k chars); release_notes are omitted by default (release_notes_length is reported). "+
 				"Use include_content=true to return the full release_notes body. "+
 				"action=apply with force=true re-runs the full upgrade pipeline even when already up-to-date. "+
@@ -748,7 +749,7 @@ func (s *Server) registerTools() {
 				mcp.Enum("check", "apply"),
 			),
 			mcp.WithString("mode",
-				mcp.Description("action=apply: upgrade mode (default auto). auto tries hot-swap then falls back to deferred, hot_swap requires live handoff, deferred skips hot-swap."),
+				mcp.Description("action=apply: upgrade mode (default auto). auto uses the safest supported path; current SessionHandler mode returns updated_deferred with handoff_error. hot_swap requires live handoff and is rejected when unsupported. deferred skips live handoff."),
 				mcp.Enum(string(upgrade.ModeAuto), string(upgrade.ModeHotSwap), string(upgrade.ModeDeferred)),
 				mcp.DefaultString(string(upgrade.ModeAuto)),
 			),
@@ -1324,19 +1325,28 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		}
 
 		// Detect engine mode and build upgrade.SessionHandler adapter in one assertion.
-		// aimuxHandler is constructed only in engine/session mode; non-engine stdio
-		// transport lacks IPC sockets to hand off, so hot-swap (Phase 3) is disabled
-		// in that mode per clarification C2. aimuxHandler.SetUpdatePending() satisfies
-		// the upgrade.SessionHandler interface directly.
+		// aimuxHandler is constructed only in muxcore SessionHandler mode. That mode
+		// has no child upstream process to transfer during hot-swap; attempting a live
+		// handoff restores the handler owner as an aimux shim and wedges reconnect.
+		// Use deferred semantics for auto upgrades until aimux has a transferable
+		// upstream or a daemon-routed privileged operation path.
 		h, engineMode := s.sessionHandler.(*aimuxHandler)
-		// Diagnostic: log actual runtime state of the type assertion. Tracks engram
-		// issue #174 (hot-swap second-apply false-deferred). Remove once root cause
-		// is verified.
-		s.log.Info("upgrade-diag: handleUpgrade entered on Server=%p sessionHandler=%T (nil=%t) ctrlSocket=%q muxEngine!=nil=%t engineMode=%t",
-			s, s.sessionHandler, s.sessionHandler == nil, s.daemonControlSocketPath, s.muxEngine != nil, engineMode)
 		var sh upgrade.SessionHandler
 		if engineMode {
 			sh = h
+		}
+		effectiveMode := mode
+		forcedDeferredReason := ""
+		if engineMode {
+			const reason = "hot-swap unsupported: aimux muxcore SessionHandler mode has no transferable upstream process"
+			if mode == upgrade.ModeHotSwap {
+				return mcp.NewToolResultError(reason), nil
+			}
+			if mode == upgrade.ModeAuto || mode == "" {
+				effectiveMode = upgrade.ModeDeferred
+				forcedDeferredReason = reason
+				s.log.Warn("upgrade: %s; using deferred restart", reason)
+			}
 		}
 
 		coord := &upgrade.Coordinator{
@@ -1356,14 +1366,19 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 				return coord.Apply(ctx, mode, force)
 			}
 		}
-		result, applyErr := applyUpgrade(ctx, coord, mode, force)
+		result, applyErr := applyUpgrade(ctx, coord, effectiveMode, force)
 		if applyErr != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("update failed: %v", applyErr)), nil
 		}
+		if forcedDeferredReason != "" && result != nil && result.Method == "deferred" {
+			result.HandoffError = forcedDeferredReason
+			if result.Message != "" {
+				result.Message += " Hot-swap unavailable: " + forcedDeferredReason
+			}
+		}
 
-		// Response envelope. Phase 1: Method is always "deferred" or "up_to_date"
-		// (hot-swap not yet implemented — blocked on engram #130 / muxcore v0.21.0+).
-		// Phase 3 will add "hot_swap" branch with HandoffTransferred + HandoffDurationMs.
+		// Response envelope. Auto mode may be forced to deferred above when the
+		// current aimux/muxcore topology cannot safely transfer an upstream process.
 		switch result.Method {
 		case "up_to_date":
 			return marshalToolResult(map[string]any{

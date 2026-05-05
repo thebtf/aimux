@@ -42,11 +42,11 @@ have already produced side effects. Resubmitting an idempotent task is safe;
 resubmitting a non-idempotent task (one that sends emails, charges cards, writes
 to external APIs without deduplication) may cause duplicate effects.
 
-### `cancelled` (event-only in v0.1.0)
+### `cancelled` (event-only in the current API)
 
 The task was explicitly cancelled via `engine.Cancel(taskID)` or
 `engine.CancelAllForProject(projectID)`. The task's worker received context
-cancellation and is expected to return an error. In v0.1.0, the task will
+cancellation and is expected to return an error. In the current API, the task will
 transition to `failed` in the store (the `task.cancelled` lifecycle event is
 still emitted for observability).
 
@@ -62,7 +62,7 @@ When the daemon restarts, call `RecoverCrashed()` once before registering
 workers or accepting new submissions:
 
 ```go
-engine, err := loom.NewEngine(db, opts...)
+engine, err := loom.NewEngine(db, "daemon-name", opts...)
 if err != nil {
     log.Fatalf("engine init: %v", err)
 }
@@ -145,8 +145,11 @@ for _, t := range crashedTasks {
 
 ## Cleanup Strategies
 
-Terminal tasks (completed, failed, failed_crash, cancelled) accumulate in the
-store indefinitely. Implement a periodic cleanup job to keep the database small.
+Terminal tasks (`completed`, `failed`, `failed_crash`) accumulate in the store
+indefinitely. A cancelled task normally reaches `failed` after the worker
+observes context cancellation; `cancelled` itself is an event type, not a stored
+task status in the current API. Implement a periodic cleanup job to keep the
+database small.
 
 ### Recommended retention
 
@@ -155,11 +158,11 @@ store indefinitely. Implement a periodic cleanup job to keep the database small.
 | `completed` | 7–30 days (depends on audit requirements) |
 | `failed` | 30 days (for debugging) |
 | `failed_crash` | 90 days (for post-mortems) |
-| `cancelled` | 7 days |
+| Cancelled tasks stored as `failed` | 7 days when cancellation is routine |
 
 ### Cleanup query
 
-The `TaskStore` does not expose a Delete method in v0.1.0. Access the underlying
+The `TaskStore` does not expose a Delete method in the current API. Access the underlying
 `*sql.DB` directly for cleanup:
 
 ```go

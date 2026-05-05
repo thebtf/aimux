@@ -41,7 +41,7 @@ Pre-purge CLI-launching tools (exec, agent, agents, critique, investigate, conse
 
 **Why:** memory contains verified procedures with anti-patterns table. The filesystem (`scripts/`, comments, file names) shows EVERY attempt — including failed workarounds and dead paths. Memory shows what actually works. Reading filesystem first means picking the workaround over the standard.
 
-**Concrete example caught in this repo:** `scripts/graceful-upgrade-dev.ps1` is a kill+restart workaround for issue #170. The standard path is `mcp__aimux-dev__upgrade(source=..., force=true)`, documented in memory `feedback_dev_update_via_muxcore.md`. Glob over `scripts/*upgrade*` finds the workaround first; recall finds the standard first. Use recall.
+**Concrete example caught in this repo:** `scripts/graceful-upgrade-dev.ps1` is a kill+restart workaround for issue #170. The standard path is a local-source call to the `upgrade` tool. Claude Code with project-scoped MCP tools can call `mcp__aimux-dev__upgrade(source=..., force=true)` directly; Codex or an operator without project MCP tools must use `D:\Dev\mcp-launcher\mcp-launcher.exe -mode install -source ...`. Glob over `scripts/*upgrade*` finds the workaround first; recall finds the standard first. Use recall.
 
 If the memory protocol feels redundant: the redundancy is the safety. A memory hit is 5 seconds. A wrong destructive action is hours.
 
@@ -151,46 +151,51 @@ Max advisor-triggered pattern switches per session: 3.
 
 ### Upgrade Behavior
 - `upgrade(action="apply")` supports `mode="auto|hot_swap|deferred"`.
-- `mode="auto"` is the default: in engine mode it tries daemon-side graceful restart first and falls back safely if live handoff cannot complete.
-- `mode="hot_swap"` requires live handoff and returns an error instead of silently falling back.
+- `mode="auto"` is the default. In the current muxcore `SessionHandler` topology, aimux forces `auto` to deferred restart and returns `handoff_error` because there is no transferable child upstream process for live handoff.
+- `mode="hot_swap"` requires live handoff and returns an error instead of silently falling back. In the current `SessionHandler` topology it is rejected before binary replacement.
 - `mode="deferred"` skips live handoff and preserves the legacy staged-restart path.
-- Response semantics are intentional: `updated_hot_swap` means live daemon handoff succeeded, `updated_deferred` means auto mode fell back after a live-path failure, and `updated` is reserved for explicit deferred mode.
+- Response semantics are intentional: `updated_hot_swap` means live daemon handoff succeeded, `updated_deferred` means auto mode used deferred semantics because live handoff failed or was unsupported, and `updated` is reserved for explicit deferred mode.
 - Inspect `handoff_error` when `status="updated_deferred"`; this is the truthful fallback signal rather than a live-upgrade success.
-- Hot-swap activation work supersedes the earlier structural-prep-only scope from engram #129; do not document the feature as "inactive pending upstream" in current project docs.
+- Do not document current muxcore `SessionHandler` mode as a live hot-swap success path. Document it as binary update with truthful deferred fallback until aimux has a transferable upstream or daemon-routed privileged operation path.
 
 ### Dev Binary Upgrade — STANDARD PROCEDURE (always use this)
 
-When changes need to land on the running `aimux-dev.exe` (or `aimux.exe` for prod hot-deploy), use the live daemon hot-swap path. Do NOT use `scripts/graceful-upgrade-dev.ps1` — it is a kill+restart workaround for issue #170 and **NOT the standard procedure**.
+When changes need to land on the running `aimux-dev.exe` (or `aimux.exe` for prod deploy), use the `upgrade` tool with a local source binary. Do NOT use `scripts/graceful-upgrade-dev.ps1` — it is a kill+restart workaround for issue #170 and **NOT the standard procedure**.
 
 ```powershell
 # 1. Build to a temp file (daemon holds aimux-dev.exe — direct overwrite fails on Windows)
 .\scripts\build.ps1 -Output aimux-dev-next.exe
 
 # 2. Smoke test the new binary in isolation (must succeed before step 3)
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 27
 #    Expect: "tools: 27" (4 server + 23 think patterns) on the post-purge branch.
 #    If handshake fails or count is wrong — DO NOT proceed.
 
 # 3. Clean any stale aimux-dev-next processes left by mcp-launcher
 Get-Process aimux-dev-next -ErrorAction SilentlyContinue | Stop-Process -Force
 
-# 4. Issue the live hot-swap via the MCP tool
+# 4A. Claude Code with project-scoped aimux MCP tools
 mcp__aimux-dev__upgrade(action="apply", source="D:/Dev/aimux/aimux-dev-next.exe", force=true)
-#    Expect MCP error: "upstream restarted, request lost during reconnect" — that IS success.
-#    Daemon restarts on the new binary; the CC session survives across the restart.
+#    Current SessionHandler mode expectation: status="updated_deferred" with
+#    handoff_error="hot-swap unsupported: aimux muxcore SessionHandler mode has no transferable upstream process".
+
+# 4B. Codex/operator path when project-scoped MCP tools are unavailable
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode install -source .\aimux-dev-next.exe -force -expect-tools 27 -expect-version "<version from step 1>"
+#    Expect: [install] PASS after reconnect verification.
 
 # 5. Verify
 mcp__aimux-dev__sessions(action="health")     # daemon answers → upgrade landed
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode resource -uri aimux://health -expect-tools 27 -expect-version "<version from step 1>"
 .\aimux-dev.exe --version                      # version string matches step 1 output
 ```
 
-**Why this is the standard:** the upgrade tool atomically renames `source` over `aimux-dev.exe` daemon-side, no kill required, the running CC session reconnects to the new daemon transparently.
+**Why this is the standard:** the upgrade tool atomically installs `source` over `aimux-dev.exe` daemon-side. In the current muxcore `SessionHandler` topology, the safe result is deferred restart with an explicit `handoff_error`; reconnect plus `sessions(action="health")` and `aimux://health` prove the installed daemon is live on the new binary.
 
 **What NEVER works (anti-patterns):**
 
 | Attempt | Why it fails |
 |---|---|
-| `scripts/graceful-upgrade-dev.ps1` | Kill+restart workaround for issue #170; not the standard path. Use only when hot-swap fails repeatedly with file-lock errors AND you have permission to drop running shims. |
+| `scripts/graceful-upgrade-dev.ps1` | Kill+restart workaround for issue #170; not the standard path. Use only when the `upgrade` tool path fails repeatedly with file-lock errors AND you have permission to drop running shims. |
 | `mcp__aimux-dev__upgrade(action="apply")` without `source=` | Downloads from GitHub, not the local dev build |
 | Manual `Move-Item aimux-dev-next.exe aimux-dev.exe` | Daemon holds the file open — `Access is denied` |
 | `mux_restart` against aimux | aimux is standalone stdio, not mcp-mux managed |

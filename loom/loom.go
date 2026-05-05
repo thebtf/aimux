@@ -119,9 +119,9 @@ func New(store *TaskStore, opts ...Option) *LoomEngine {
 }
 
 // NewEngine constructs a LoomEngine from a raw *sql.DB. It creates a TaskStore
-// internally and returns the engine. This is the v0.1.0-aligned constructor
-// from spec FR-6 — New(store, opts) remains for backwards compatibility with
-// aimux call sites and will be removed during Phase 3 atomic migration.
+// internally and returns the engine. Prefer this constructor for normal
+// consumers; use New(store, opts...) only when tests or advanced integrations
+// need to inject a pre-built TaskStore.
 //
 // engineName identifies the owning daemon for per-daemon task scoping (AIMUX-10).
 // It must not be empty; NewEngine returns an error if it is.

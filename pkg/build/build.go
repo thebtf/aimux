@@ -32,6 +32,7 @@ var Commit = ""
 var BuildDate = ""
 
 func init() {
+	Version = normalizeVersion(Version)
 	// If ldflags already injected a real Version, leave everything alone.
 	if Version != "0.0.0-dev" {
 		return
@@ -45,7 +46,7 @@ func init() {
 	// line writes "aimux v%s" and adds the prefix itself; module versions
 	// (and goreleaser-injected git tags) carry an explicit "v" we must drop.
 	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		Version = strings.TrimPrefix(info.Main.Version, "v")
+		Version = normalizeVersion(info.Main.Version)
 	}
 	// Always populate Commit from VCS info when available, even when Version
 	// stays at "0.0.0-dev" — gives plain `go build` a unique identifier.
@@ -68,7 +69,12 @@ func init() {
 	}
 }
 
-// String returns the verbose version line: "vX.Y.Z (commit abc1234, built 2026-04-27T12:00:00Z)".
+func normalizeVersion(version string) string {
+	version = strings.TrimPrefix(version, "aimux/")
+	return strings.TrimPrefix(version, "v")
+}
+
+// String returns the verbose version line: "X.Y.Z (commit abc1234, built 2026-04-27T12:00:00Z)".
 // Components with empty values are omitted.
 func String() string {
 	out := Version

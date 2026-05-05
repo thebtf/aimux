@@ -1,7 +1,8 @@
 # aimux Production Testing Playbook
 
-**Last updated:** 2026-04-29
-**Tested version:** v5.1.0-rc (HEAD=e2a28af, branch `purge/cli-launching-tools`)
+**Last updated:** 2026-05-05
+**Tested surface:** current post-purge master surface: 4 server tools plus 23
+think pattern tools.
 **Mode:** customer (no internal code knowledge — operator perspective)
 
 ## How to use
@@ -31,7 +32,7 @@ aggregate: PRODUCT_WORKS / PARTIALLY_WORKS / BROKEN.
 
 - Linux, macOS, or Windows host with a POSIX-like shell (bash, zsh, or PowerShell
   with `kill` shimmed).
-- Go 1.25+ available **only for the build step**. After the binary is produced,
+- Go 1.25.9+ available **only for the build step**. After the binary is produced,
   the operator should drop the toolchain assumption — only `./aimux`, `cat`,
   `kill`, and `mcp-launcher` (optional) are used.
 - Two unprivileged user accounts on the host with distinct numeric UIDs (used
@@ -48,6 +49,7 @@ aggregate: PRODUCT_WORKS / PARTIALLY_WORKS / BROKEN.
 From the project root:
 
 ```bash
+export GOTOOLCHAIN=go1.25.9
 go build -o aimux ./cmd/aimux/
 ./aimux --version
 ```
@@ -169,7 +171,7 @@ daemon lifetime.
 **Teardown (after all four):**
 - Stop the daemon: `kill -TERM $(pgrep -af 'aimux serve' | awk '{print $1}')`
 
-### Scenario B1: status tool
+### Scenario B1: sessions health tool
 
 **Steps:**
 1. From an MCP client (mcp-launcher or any MCP-capable client), call:
@@ -179,8 +181,8 @@ daemon lifetime.
    ```
 
 **Expected:**
-- JSON response with fields including `init_phase`, `init_duration_ms`,
-  `available_clis`, and a status indicator.
+- JSON response with fields including `init_phase`, `running_jobs`, and
+  `warmup_deferred_count`.
 - `init_phase` is `2` (Phase B complete) within 30 seconds of cold start.
 
 **Pass criteria:**
@@ -188,7 +190,7 @@ daemon lifetime.
 - `init_phase == 2` within the SLA window.
 - No `error` field at the top level.
 
-### Scenario B2: sessions tool
+### Scenario B2: sessions list tool
 
 **Steps:**
 1. Call:
@@ -198,9 +200,10 @@ daemon lifetime.
    ```
 
 **Expected:**
-- JSON array of sessions (may be empty on a cold daemon).
-- Each entry, if any, has fields `id`, `created_at`, `tenant` (if multi-tenant
-  mode is active).
+- Structured response containing legacy session rows and Loom task rows. Both
+  sources may be empty on a cold daemon.
+- Each row, if any, carries enough identity and status fields for an operator to
+  correlate it with a running or completed task.
 
 **Pass criteria:**
 - Response parses as JSON.
@@ -243,6 +246,9 @@ daemon lifetime.
 - Tool returns within 120 seconds.
 - If GEMINI_API_KEY is unset: clear error message naming the missing key, NOT a
   stack trace.
+- If GEMINI_API_KEY is set but invalid or expired: clear provider error naming
+  invalid credentials, NOT a stack trace. Classify the scenario as
+  `PARTIAL`/credential-blocked for the environment, not as a handler crash.
 - If GEMINI_API_KEY is set: response contains the topic phrase or a synthesized
   paragraph.
 
@@ -504,9 +510,61 @@ the MCP client under different OS user accounts, or (b) using the documented
 - Log line confirms recovery, naming the reclaimed file.
 - `sessions` tool returns valid health within 10 seconds of restart.
 
+## Phase H — Installed binary update
+
+### Scenario H1: Local-source install through MCP upgrade tool
+
+This scenario verifies the installed daemon path, not only a source-tree test
+binary. Use `mcp-launcher` or an equivalent MCP client that can call
+`upgrade(action="apply", source=..., force=true)` and then reconnect.
+
+**Steps:**
+1. Build the candidate binary:
+   ```powershell
+   .\scripts\build.ps1 -Output aimux-dev-next.exe
+   $version = (.\aimux-dev-next.exe --version).Trim()
+   ```
+2. Install through the running daemon:
+   ```powershell
+   D:\Dev\mcp-launcher\mcp-launcher.exe `
+     -binary D:\Dev\aimux\aimux-dev.exe `
+     -cwd D:\Dev\aimux `
+     -env-mode clean `
+     -mode install `
+     -source D:\Dev\aimux\aimux-dev-next.exe `
+     -force `
+     -expect-tools 27 `
+     -expect-version $version `
+     -timeout 30
+   ```
+3. Confirm the rollback backup slot is present and not a stale blocker:
+   ```powershell
+   Test-Path D:\Dev\aimux\aimux-dev.exe.old
+   ```
+
+**Expected:**
+- The upgrade payload reports `status: "updated_deferred"` in current muxcore
+  `SessionHandler` mode.
+- The payload includes `handoff_error` explaining that live hot-swap is
+  unsupported because `SessionHandler` mode has no transferable upstream
+  process.
+- Reconnect verification reaches `sessions(action="health")`, reads
+  `aimux://health`, sees `tools: 27`, and reports the expected version.
+- The final installer line is `[install] PASS`.
+- `aimux-dev.exe.old` may remain as the rollback backup created by the atomic
+  replace path. Its presence is not a failure; a locked stale old-slot that
+  prevents the next install is a failure.
+
+**Pass criteria:**
+- `mcp-launcher` exits `0`.
+- `aimux://health.version` matches the candidate binary version from step 1.
+- `sessions(action="health").init_phase == 2`.
+- If `aimux-dev.exe.old` exists after the install, classify it as expected
+  rollback state unless the next install reports an old-slot lock.
+
 ## Customer-mode questions to answer
 
-After the full walkthrough, the operator must answer these eight questions in
+After the full walkthrough, the operator must answer these nine questions in
 prose. Each answer should cite the scenario(s) that informed it.
 
 1. Does the daemon start cleanly in single-tenant mode without any config?
@@ -521,6 +579,8 @@ prose. Each answer should cite the scenario(s) that informed it.
 7. Does SIGHUP reload work from a stable operator script (no daemon restart
    needed, malformed config does not bring the daemon down)?
 8. Does shutdown drain in-flight requests vs hard-cut?
+9. Does local-source binary install work through the MCP upgrade tool from a
+   fresh operator session, including reconnect and health verification?
 
 ## Verdict template
 
@@ -537,7 +597,7 @@ For each scenario, record one verdict:
 
 - All scenarios PASS → **PRODUCT_WORKS**.
 - Any BROKEN in Phase A, C, or D → **BROKEN** (these are load-bearing).
-- Any BROKEN in Phase B, E, F, or G OR any PARTIAL in any phase →
+- Any BROKEN in Phase B, E, F, G, or H OR any PARTIAL in any phase →
   **PARTIALLY_WORKS**.
 - A NO_SURFACE result does NOT downgrade the verdict on its own — note it as a
   documentation gap and proceed.

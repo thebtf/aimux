@@ -7,8 +7,8 @@ import (
 )
 
 // AuditEvent is emitted by TenantScopedLoomEngine on security-relevant decisions
-// (quota rejections, cross-tenant denials). Phase 4 will provide a concrete
-// AuditLog implementation; until then callers inject a fake recorder in tests.
+// such as quota rejections. Consumers can adapt AuditEmitter to their logging,
+// audit, or SIEM pipeline.
 type AuditEvent struct {
 	// Type is the event category (e.g. "loom_submit_rejected").
 	Type string
@@ -29,10 +29,9 @@ type AuditEvent struct {
 	ToolName string
 }
 
-// AuditEmitter is the minimal interface that Phase 4 AuditLog will implement.
-// TenantScopedLoomEngine depends on this interface rather than the concrete type
-// to avoid a compile-time dependency on the not-yet-implemented pkg/audit package.
-// Stub it in tests with fakeAuditEmitter.
+// AuditEmitter is the minimal interface consumed by TenantScopedLoomEngine.
+// It keeps loom independent from any concrete audit package while allowing
+// applications to record quota and isolation decisions.
 type AuditEmitter interface {
 	Emit(e AuditEvent)
 }

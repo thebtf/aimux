@@ -45,6 +45,52 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_AcceptsCaseInsensitiveBearerScheme(t *testing.T) {
+	log := newTestLogger(t)
+	handlerCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := bearerAuthMiddleware("secret123", log, next)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "bearer secret123")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if !handlerCalled {
+		t.Fatal("expected next handler to be called, but it was not")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_AcceptsBearerExtraWhitespace(t *testing.T) {
+	log := newTestLogger(t)
+	handlerCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := bearerAuthMiddleware("secret123", log, next)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer    secret123")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if !handlerCalled {
+		t.Fatal("expected next handler to be called, but it was not")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
 func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	log := newTestLogger(t)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

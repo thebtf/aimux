@@ -79,7 +79,7 @@ func main() {
     db, _ := sql.Open("sqlite", "file:sub?cache=shared&mode=memory")
     defer db.Close()
 
-    engine, err := loom.NewEngine(db)
+    engine, err := loom.NewEngine(db, "subprocess-example")
     if err != nil {
         log.Fatal(err)
     }
@@ -192,7 +192,7 @@ func main() {
     db, _ := sql.Open("sqlite", "file:http?cache=shared&mode=memory")
     defer db.Close()
 
-    engine, err := loom.NewEngine(db)
+    engine, err := loom.NewEngine(db, "http-example")
     if err != nil {
         log.Fatal(err)
     }
@@ -582,12 +582,12 @@ engine.RegisterWorker(WorkerTypeCLISlow, slowWorker)
 
 ```go
 // WRONG — tasks from the previous run stay in 'dispatched' or 'running' forever
-engine, _ := loom.NewEngine(db)
+engine, _ := loom.NewEngine(db, "daemon-name")
 engine.RegisterWorker(...)
 // start accepting new tasks...
 
 // CORRECT — always call RecoverCrashed before accepting new tasks
-engine, _ := loom.NewEngine(db)
+engine, _ := loom.NewEngine(db, "daemon-name")
 n, err := engine.RecoverCrashed()
 if err != nil {
     log.Fatalf("crash recovery failed: %v", err)
@@ -618,7 +618,7 @@ clock  := deps.SystemClock()    // or deps.NewFakeClock(t) in tests
 idGen  := deps.UUIDGenerator()  // or deps.NewSequentialIDGenerator() in tests
 // meter from your OTel provider, or deps.NoopMeter() to silence metrics
 
-engine, err := loom.NewEngine(db,
+engine, err := loom.NewEngine(db, "daemon-name",
     loom.WithLogger(logger),
     loom.WithClock(clock),
     loom.WithIDGenerator(idGen),

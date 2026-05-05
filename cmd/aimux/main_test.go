@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -373,13 +372,13 @@ func TestBootstrapSuccessorHandoff_RelaysIntoMuxcoreRestorePath(t *testing.T) {
 		Version:   mcpsnapshot.SnapshotVersion,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Owners: []mcpsnapshot.OwnerSnapshot{{
-			ServerID:       sid,
-			Command:        "echo",
-			Args:           []string{"relay"},
-			Cwd:            t.TempDir(),
-			Mode:           "global",
-			CachedInit:     "e30=",
-			CachedTools:    "e30=",
+			ServerID:    sid,
+			Command:     "echo",
+			Args:        []string{"relay"},
+			Cwd:         t.TempDir(),
+			Mode:        "global",
+			CachedInit:  "e30=",
+			CachedTools: "e30=",
 		}},
 	}
 	data, err := json.Marshal(snapshot)
@@ -506,8 +505,4 @@ func restoreEnvVar(t *testing.T, key, value string) {
 	if err := os.Setenv(key, value); err != nil {
 		t.Fatalf("restore %s: %v", key, err)
 	}
-}
-
-func listenPlatformHandoffRelayAtPath(socketPath string) (net.Listener, error) {
-	return listenPlatformHandoffRelayForTest(socketPath)
 }

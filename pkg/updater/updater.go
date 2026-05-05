@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -59,7 +60,7 @@ type ApplyError struct {
 
 func (e *ApplyError) Error() string {
 	if e == nil || e.Err == nil {
-		return ""
+		return "apply error: unknown"
 	}
 	return e.Err.Error()
 }
@@ -335,7 +336,7 @@ func downloadMockUpdate(ctx context.Context, currentVersion string, targetPath s
 	if err != nil {
 		return nil, fmt.Errorf("mock asset read: %w", err)
 	}
-	binary, err := extractSingleBinary(zipBytes)
+	binary, err := extractSingleBinary(zipBytes, filepath.Base(targetPath))
 	if err != nil {
 		return nil, err
 	}
@@ -345,15 +346,22 @@ func downloadMockUpdate(ctx context.Context, currentVersion string, targetPath s
 	return release, nil
 }
 
-func extractSingleBinary(zipBytes []byte) ([]byte, error) {
+func extractSingleBinary(zipBytes []byte, expectedName string) ([]byte, error) {
 	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
 	if err != nil {
 		return nil, fmt.Errorf("mock asset zip: %w", err)
 	}
-	if len(zr.File) != 1 {
-		return nil, fmt.Errorf("mock asset expected 1 zip entry, got %d", len(zr.File))
+	var target *zip.File
+	for _, f := range zr.File {
+		if filepath.Base(f.Name) == expectedName {
+			target = f
+			break
+		}
 	}
-	rc, err := zr.File[0].Open()
+	if target == nil {
+		return nil, fmt.Errorf("mock asset: no entry named %q found in zip with %d entries", expectedName, len(zr.File))
+	}
+	rc, err := target.Open()
 	if err != nil {
 		return nil, fmt.Errorf("mock asset open: %w", err)
 	}
