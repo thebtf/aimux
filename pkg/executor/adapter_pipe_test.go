@@ -11,9 +11,10 @@ import (
 
 // mockSession is a test double implementing types.Session.
 // It records Send calls and returns a pre-configured response.
-// Used across all three adapter session-bound tests in this package.
+// Used across adapter session-bound tests in this package.
 type mockSession struct {
 	sendCalls   int
+	lastContent string
 	sendResp    *types.Result
 	sendErr     error
 	aliveResult bool
@@ -22,8 +23,9 @@ type mockSession struct {
 
 func (m *mockSession) ID() string { return "mock-session" }
 
-func (m *mockSession) Send(_ context.Context, _ string) (*types.Result, error) {
+func (m *mockSession) Send(_ context.Context, content string) (*types.Result, error) {
 	m.sendCalls++
+	m.lastContent = content
 	return m.sendResp, m.sendErr
 }
 
@@ -46,7 +48,7 @@ func (m *mockSession) PID() int    { return 12345 }
 // returns the configured Result.  Used to verify per-line SendStream behaviour
 // without spawning a real subprocess.
 type mockLegacyExecutor struct {
-	outputLines []string     // lines delivered via SpawnArgs.OnOutput
+	outputLines []string // lines delivered via SpawnArgs.OnOutput
 	result      *types.Result
 	runErr      error
 	runCalls    int
@@ -66,8 +68,8 @@ func (m *mockLegacyExecutor) Start(_ context.Context, _ types.SpawnArgs) (types.
 	return nil, nil
 }
 
-func (m *mockLegacyExecutor) Name() string      { return "mock" }
-func (m *mockLegacyExecutor) Available() bool   { return true }
+func (m *mockLegacyExecutor) Name() string    { return "mock" }
+func (m *mockLegacyExecutor) Available() bool { return true }
 
 // TestCLIPipeAdapter_CompileCheck verifies that CLIPipeAdapter satisfies
 // ExecutorV2 at compile time (redundant with the package-level var _ check,
@@ -124,6 +126,31 @@ func TestCLIPipeAdapter_SessionBound_DispatchesViaSession(t *testing.T) {
 	}
 	if sess.closeCalls != 1 {
 		t.Errorf("session.Close call count = %d; want 1", sess.closeCalls)
+	}
+}
+
+func TestCLIPipeAdapter_SessionBound_PrependsSystemPrompt(t *testing.T) {
+	t.Parallel()
+
+	sess := &mockSession{
+		sendResp: &types.Result{Content: "ok"},
+	}
+	adapter := executor.NewCLIPipeAdapterWithSession(pipe.New(), sess)
+
+	resp, err := adapter.Send(context.Background(), types.Message{
+		SystemPrompt: "follow project rules",
+		Content:      "hello",
+	})
+	if err != nil {
+		t.Fatalf("Send: unexpected error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Errorf("resp.Content = %q; want %q", resp.Content, "ok")
+	}
+
+	const want = "System: follow project rules\n\nhello"
+	if sess.lastContent != want {
+		t.Errorf("session.Send content = %q; want %q", sess.lastContent, want)
 	}
 }
 

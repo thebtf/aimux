@@ -1,6 +1,6 @@
 # loom Contract
 
-Formal specification for the `loom` library (v0.1.0). Sections marked **stable**
+Formal specification for the current `loom` library API. Sections marked **stable**
 will not change in minor versions. Additions are allowed; renames require a
 deprecation cycle.
 
@@ -90,7 +90,7 @@ transitions are rejected with an error.
 `pending` → `dispatched` → `running` → `completed` (terminal).
 Failed outcomes: `failed` (terminal), `failed_crash` (terminal).
 Gate-driven loop: `running` → `retrying` → `dispatched` (up to maxRetries).
-Cancellation: signals context cancellation; task ends as `failed` in v0.1.0.
+Cancellation: signals context cancellation; task normally ends as `failed`.
 
 Terminal states: `completed`, `failed`, `failed_crash`. No store transitions
 out of terminal states are valid. The store layer enforces this invariant.
@@ -187,7 +187,7 @@ type TaskEvent struct {
 All six fields are always populated. `RequestID` is empty if none was injected
 via `WithRequestID(ctx, id)` before `Submit`.
 
-### Event Types (8 values)
+### Event Types (9 values)
 
 | EventType | When emitted |
 |---|---|
@@ -199,6 +199,7 @@ via `WithRequestID(ctx, id)` before `Submit`.
 | `task.failed_crash` | After crash recovery or dispatch panic |
 | `task.retrying` | After running→retrying transition |
 | `task.cancelled` | After Cancel or CancelAllForProject signals a task (before worker returns) |
+| `task.progress` | After `AppendProgress` records a progress line for a running task |
 
 ---
 

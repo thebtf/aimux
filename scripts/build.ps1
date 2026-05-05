@@ -12,7 +12,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
-$version   = ((git describe --tags --always --dirty 2>$null) -join "").TrimStart('v')
+$rawVersion = ((git describe --tags --always --dirty 2>$null) -join "")
+$version = $rawVersion.Trim()
+if ($version.StartsWith("aimux/")) { $version = $version.Substring("aimux/".Length) }
+$version = $version.TrimStart('v')
 $commit    = (git rev-parse --short HEAD 2>$null) -join ""
 $buildDate = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ" -AsUTC)
 

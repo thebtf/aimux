@@ -69,7 +69,8 @@ func (a *CLIPipeAdapter) Info() types.ExecutorInfo {
 //   - "command" (string)          — executable path/name (required)
 //   - "args"    ([]string/[]any)  — command-line arguments
 //
-// SystemPrompt, when non-empty, is prepended to the stdin payload (stateless path only).
+// SystemPrompt, when non-empty, is prepended to the payload on both session-bound
+// and stateless paths so the CLI receives full context.
 func (a *CLIPipeAdapter) Send(ctx context.Context, msg types.Message) (*types.Response, error) {
 	// Session-bound mode (FR-2): dispatch via persistent session.
 	// SystemPrompt parity with stateless path — prepend before sending so

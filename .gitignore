@@ -3,6 +3,7 @@
 /aimux.exe
 /dist/
 *.exe
+*.exe.old
 
 # MCP config (machine-specific paths)
 .mcp.json

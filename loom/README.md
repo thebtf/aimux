@@ -25,12 +25,12 @@ Key properties:
 
 ## Install
 
-    go get github.com/thebtf/aimux/loom@v0.1.0
+    go get github.com/thebtf/aimux/loom@v0.2.0
 
 The module path is `github.com/thebtf/aimux/loom`. It is a standalone nested
 module — it does NOT pull in the full aimux server or any MCP dependencies.
 
-Minimum Go version: 1.25.
+Minimum Go version: 1.25.9.
 
 ## Quick Start
 
@@ -63,7 +63,7 @@ func main() {
     db, _ := sql.Open("sqlite", "file:hello?cache=shared&mode=memory")
     defer db.Close()
 
-    engine, err := loom.NewEngine(db)
+    engine, err := loom.NewEngine(db, "hello-example")
     if err != nil {
         log.Fatal(err)
     }
@@ -127,10 +127,11 @@ The library ships three composable bases in `loom/workers/`:
 ### Engine
 
 `LoomEngine` owns dispatch, persistence, event delivery, and cancellation. It is
-created once per process via `NewEngine(db, opts...)`.
+created once per process via `NewEngine(db, engineName, opts...)`. The
+`engineName` scopes task queries when several daemons share the same database.
 
 ```go
-engine, _ := loom.NewEngine(db,
+engine, _ := loom.NewEngine(db, "my-daemon",
     loom.WithLogger(myLogger),
     loom.WithMeter(myMeter),
 )
@@ -185,7 +186,8 @@ No MCP SDK, no aimux server code, no external HTTP clients beyond stdlib.
 ## Links
 
 - [CONTRACT.md](CONTRACT.md) — formal interface specification, state machine, and stability contract
+- [USAGE.md](USAGE.md) — consumer guide for adopting loom as a standalone library
 - [PLAYBOOK.md](PLAYBOOK.md) — 7+ complete recipes for common patterns
 - [TESTING.md](TESTING.md) — unit and integration test patterns
 - [RECOVERY.md](RECOVERY.md) — terminal states and operator playbook
-- [CHANGELOG.md](CHANGELOG.md) — v0.1.0 release notes and full public API surface
+- [CHANGELOG.md](CHANGELOG.md) — versioned release notes and API changes

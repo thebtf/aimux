@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -38,10 +39,6 @@ func (s *Server) SessionHandler() muxcore.SessionHandler {
 	h.delegate.Store(&d)
 
 	s.sessionHandler = h
-	// Diagnostic: track set-site for engram issue #174 (hot-swap false-deferred).
-	if s.log != nil {
-		s.log.Info("upgrade-diag: SessionHandler() called, Phase A delegate installed, Server=%p", s)
-	}
 	return h
 }
 
@@ -119,10 +116,19 @@ func readDaemonHandoffStatus(d *muxdaemon.Daemon) (upgrade.HandoffStatus, error)
 	case uint64:
 		fallback = v
 	case float64:
+		if v < 0 || math.Trunc(v) != v {
+			return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff fallback counter malformed: %v", v)
+		}
 		fallback = uint64(v)
 	case int:
+		if v < 0 {
+			return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff fallback counter malformed: %d", v)
+		}
 		fallback = uint64(v)
 	case int64:
+		if v < 0 {
+			return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff fallback counter malformed: %d", v)
+		}
 		fallback = uint64(v)
 	default:
 		return upgrade.HandoffStatus{}, fmt.Errorf("daemon handoff fallback counter has unexpected type %T", fallbackValue)
@@ -134,18 +140,20 @@ func (s *Server) configureMuxCompatibility() {
 	if s.mcp == nil {
 		return
 	}
-	hooks := s.mcp.GetHooks()
-	if hooks == nil {
-		return
-	}
-	hooks.AddAfterInitialize(func(ctx context.Context, id any, message *mcp.InitializeRequest, result *mcp.InitializeResult) {
-		if result.Capabilities.Experimental == nil {
-			result.Capabilities.Experimental = make(map[string]any)
+	s.muxCompatOnce.Do(func() {
+		hooks := s.mcp.GetHooks()
+		if hooks == nil {
+			return
 		}
-		result.Capabilities.Experimental["x-mux"] = map[string]any{
-			"sharing":    "session-aware",
-			"persistent": true,
-		}
+		hooks.AddAfterInitialize(func(ctx context.Context, id any, message *mcp.InitializeRequest, result *mcp.InitializeResult) {
+			if result.Capabilities.Experimental == nil {
+				result.Capabilities.Experimental = make(map[string]any)
+			}
+			result.Capabilities.Experimental["x-mux"] = map[string]any{
+				"sharing":    "session-aware",
+				"persistent": true,
+			}
+		})
 	})
 }
 
@@ -235,10 +243,13 @@ func bearerAuthMiddleware(token string, log *logger.Logger, next http.Handler) h
 	if token == "" {
 		return next
 	}
-	expected := "Bearer " + token
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := r.Header.Get("Authorization")
-		if len(got) != len(expected) || subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+		parts := strings.Fields(got)
+		authorized := len(parts) == 2 &&
+			strings.EqualFold(parts[0], "Bearer") &&
+			subtle.ConstantTimeCompare([]byte(parts[1]), []byte(token)) == 1
+		if !authorized {
 			if log != nil {
 				log.Warn("auth: unauthorized request path=%s remote=%s", r.URL.Path, r.RemoteAddr)
 			}

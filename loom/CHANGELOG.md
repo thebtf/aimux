@@ -3,6 +3,29 @@
 All notable changes to this module will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+
+- **`TenantScopedLoomEngine`** — tenant-scoped wrapper over `*LoomEngine` with
+  tenant-injected `Submit`, tenant-filtered `Get` / `List`, tenant-verified
+  `Cancel`, quota enforcement, and `AuditEmitter` hooks for quota rejections.
+- **Live progress surface** — `Task.LastOutputLine`, `Task.ProgressLines`,
+  `Task.ProgressUpdatedAt`, `EventTaskProgress`, `LoomEngine.AppendProgress`,
+  and `workers.StreamingBase.Sink` for durable progress tail updates.
+- **Administrative failure helpers** — `ListEngine`, `FailActive`,
+  `FailActiveByProject`, `FailActiveAll`, and `FailStaleRunning` for shutdown,
+  kill, and stale-running-task cleanup paths.
+- **Tenant and progress schema migrations** — automatic `tenant_id`,
+  `last_output_line`, `progress_lines`, and `progress_updated_at` migrations.
+
+### Documentation
+
+- Added `USAGE.md` as the consumer-facing guide for using `loom` as a standalone
+  library.
+- Updated examples to use the current `NewEngine(db, engineName, opts...)`
+  constructor.
+
 ## [v0.2.0] — 2026-04-27
 
 ### Added (AIMUX-10 loom-task-scoping)
@@ -135,7 +158,8 @@ Multi-daemon deployments (e.g. `aimux.exe` + `aimux-dev.exe` sharing `sessions.d
 
 ## [v0.1.0] — 2026-04-15
 
-Initial release. The full public API is listed below.
+Initial release. The historical v0.1.0 public API is listed below. See
+[USAGE.md](USAGE.md) for the current source API map.
 
 ### Public API
 

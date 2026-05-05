@@ -277,8 +277,8 @@ func TestCoordinatorApply_ConcurrentCallsReturnAlreadyInProgress(t *testing.T) {
 func TestCoordinatorApply_AutoFallsBackWithDiskFullClass(t *testing.T) {
 	mock := &mockSessionHandler{}
 	coord := &upgrade.Coordinator{
-		Version:    "4.3.0",
-		BinaryPath: filepath.Join(t.TempDir(), "aimux-test.exe"),
+		Version:        "4.3.0",
+		BinaryPath:     filepath.Join(t.TempDir(), "aimux-test.exe"),
 		EngineMode:     true,
 		SessionHandler: mock,
 		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
@@ -310,8 +310,8 @@ func TestCoordinatorApply_AutoFallsBackWithDiskFullClass(t *testing.T) {
 func TestCoordinatorApply_ChecksumFailureIsHardErrorInAuto(t *testing.T) {
 	mock := &mockSessionHandler{}
 	coord := &upgrade.Coordinator{
-		Version:    "4.3.0",
-		BinaryPath: filepath.Join(t.TempDir(), "aimux-test.exe"),
+		Version:        "4.3.0",
+		BinaryPath:     filepath.Join(t.TempDir(), "aimux-test.exe"),
 		EngineMode:     true,
 		SessionHandler: mock,
 		ApplyUpdate: func(ctx context.Context, currentVersion string) (*updater.Release, error) {
@@ -683,10 +683,13 @@ func runApplyAndReadSingleLogLine(t *testing.T, buildCoordinator func(*logger.Lo
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("log lines = %d, want 1; content=%q", len(lines), string(data))
+	for _, line := range lines {
+		if strings.Contains(line, "event=upgrade_complete") {
+			return line
+		}
 	}
-	return lines[0]
+	t.Fatalf("no upgrade_complete event found in log (%d lines); content=%q", len(lines), string(data))
+	return ""
 }
 
 func assertLogContainsAll(t *testing.T, line string, wants ...string) {

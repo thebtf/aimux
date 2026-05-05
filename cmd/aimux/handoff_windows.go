@@ -35,24 +35,26 @@ func listenPlatformHandoffRelay() (net.Listener, string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
 		suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-		listener, listenErr := listenPlatformHandoffRelayForTest(suffix)
+		pipePath := normalizePlatformHandoffSocket(suffix)
+		listener, listenErr := listenPlatformHandoffRelayForTest(pipePath)
 		if listenErr != nil {
 			return nil, "", listenErr
 		}
-		return listener, suffix, nil
+		return listener, pipePath, nil
 	}
 	suffix := hex.EncodeToString(b)
-	listener, err := listenPlatformHandoffRelayForTest(suffix)
+	pipePath := normalizePlatformHandoffSocket(suffix)
+	listener, err := listenPlatformHandoffRelayForTest(pipePath)
 	if err != nil {
 		return nil, "", err
 	}
-	return listener, suffix, nil
+	return listener, pipePath, nil
 }
 
-func listenPlatformHandoffRelayForTest(socketPath string) (net.Listener, error) {
-	listener, err := winio.ListenPipe(normalizePlatformHandoffSocket(socketPath), nil)
+func listenPlatformHandoffRelayForTest(pipePath string) (net.Listener, error) {
+	listener, err := winio.ListenPipe(pipePath, nil)
 	if err != nil {
-		return nil, fmt.Errorf("listen relay pipe %q: %w", socketPath, err)
+		return nil, fmt.Errorf("listen relay pipe %q: %w", pipePath, err)
 	}
 	return listener, nil
 }
