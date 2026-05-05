@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.0] — 2026-05-05 — current surface readiness and Loom library docs
+
+Minor release for the current post-purge production surface: 4 server tools plus
+23 think pattern tools, Loom as the canonical runtime state backend, and a
+truthful installed-daemon upgrade path.
+
+### Added
+
+- `loom/USAGE.md` documents Loom as a standalone reusable Go library: what it is,
+  what it is for, common use cases, lifecycle examples, API map, events, metrics,
+  and operational rules for future consumers.
+- Production readiness playbook coverage for local-source installed binary
+  verification through an MCP client, including the `mcp-launcher -mode install`
+  operator path.
+- Build-version normalization tests for namespaced release tags such as
+  `aimux/vX.Y.Z`.
+
+### Changed
+
+- `upgrade(action="apply", mode="auto")` now uses deferred semantics with an
+  explicit `handoff_error` in the current muxcore `SessionHandler` topology,
+  because that topology has no transferable child upstream process for live
+  handoff.
+- Explicit `mode="hot_swap"` is rejected before binary replacement when the
+  current runtime topology cannot support live handoff.
+- Public README files now describe only the current live MCP surface and mark the
+  removed CLI-launching tools as out of current runtime scope.
+- Local build scripts normalize `aimux/vX.Y.Z` and `vX.Y.Z` tags to the same
+  runtime version string (`X.Y.Z`), preventing doubled log prefixes.
+
+### Fixed
+
+- Salvaged applicable dirty-worktree hardening changes for pipe adapter prompt
+  parity, relay socket cleanup, Windows pipe path normalization, upgrade fallback
+  tests, auth robustness, updater zip selection, and mux compatibility
+  idempotence.
+- Removed stale `upgrade-diag` production logging and the diagnostic-only e2e
+  test that existed solely for the previous hot-swap investigation.
+- Ignored `*.exe.old` rollback backup binaries so successful Windows atomic
+  replacement does not dirty the release tree.
+
+### Deferred validation
+
+- Successful `deepresearch` provider call is deferred by operator decision. The
+  release gate verified that an invalid inherited Gemini key reaches the provider
+  and returns a clear `API_KEY_INVALID` error rather than a panic or hang.
+- Multi-UID tenant customer walkthrough is deferred by operator decision to a
+  host with separate unprivileged OS users. Automated tenant and audit tests pass
+  in the release gate.
+
 ## [5.6.1] — 2026-05-02 — executor pipe drain hotfix
 
 Fixes the post-merge v5.6.0 CI failure where `TestPipeExecutor_Run_CompletionPattern`
@@ -1560,7 +1610,8 @@ _Two targeted improvements following v3.3.0._
 
 - Fixed resolve layer to always pipe prompt via stdin, removed length threshold logic (#52)
 
-[Unreleased]: https://github.com/thebtf/aimux/compare/v5.6.1...HEAD
+[Unreleased]: https://github.com/thebtf/aimux/compare/v5.7.0...HEAD
+[5.7.0]: https://github.com/thebtf/aimux/compare/v5.6.1...v5.7.0
 [5.6.1]: https://github.com/thebtf/aimux/compare/v5.6.0...v5.6.1
 [5.6.0]: https://github.com/thebtf/aimux/compare/v5.5.0...v5.6.0
 [5.5.0]: https://github.com/thebtf/aimux/compare/v5.4.0...v5.5.0
