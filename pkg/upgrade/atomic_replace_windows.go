@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -20,14 +23,15 @@ var retryDelays = [3]time.Duration{100 * time.Millisecond, 500 * time.Millisecon
 //
 // Uses the stage-then-swap pattern per ADR-001:
 //  1. Stage: copy source → currentPath+".new" (plain write, no rename yet)
-//  2. Remove: delete currentPath+".old" with bounded retry
-//  3. Rotate: MoveFileExW(currentPath → .old) with bounded retry
+//  2. Prepare rollback slot: prefer currentPath+".old", fall back to a unique
+//     .old.<pid>.<nanos> path when the fixed .old file is still held by an
+//     older live process after a deferred restart
+//  3. Rotate: MoveFileExW(currentPath → rollback slot) with bounded retry
 //  4. Install: MoveFileExW(.new → currentPath, REPLACE_EXISTING)
 //  5. Cleanup: remove .new on success; on failure the .new is removed in defer
 //
 // Structured errors are returned with best-effort Restart Manager holder PIDs.
 func platformAtomicReplace(currentPath, sourcePath string) error {
-	oldPath := currentPath + ".old"
 	newPath := currentPath + ".new"
 
 	// Step 1: Stage the new binary as .new. Defer cleanup so .new is always
@@ -42,16 +46,14 @@ func platformAtomicReplace(currentPath, sourcePath string) error {
 		}
 	}()
 
-	// Step 2: Remove the .old slot with bounded retry.
-	// The .old file may be in "delete pending" state if a prior rotation left
-	// a shim still holding the image handle. Retry gives shims time to exit.
-	if err := retryRemove(oldPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		holders := restartManagerProbe(oldPath)
-		return &ErrOldSlotLocked{
-			OldPath: oldPath,
-			Holders: holders,
-			Cause:   err,
-		}
+	// Step 2: Prepare a rollback slot. A fixed .old slot is nice for humans,
+	// but deferred Windows updates can leave old daemon/shim processes running
+	// from aimux.exe.old. Do not block a second update on that stale image
+	// handle; use a unique rollback name and clean old slots opportunistically.
+	cleanupStaleOldSlots(currentPath)
+	oldPath, err := prepareOldSlot(currentPath)
+	if err != nil {
+		return err
 	}
 
 	// Step 3: Rotate current binary → .old via MoveFileExW.
@@ -76,6 +78,45 @@ func platformAtomicReplace(currentPath, sourcePath string) error {
 
 	stagedOK = true // suppress .new cleanup in defer (it was moved away)
 	return nil
+}
+
+func prepareOldSlot(currentPath string) (string, error) {
+	fixedOldPath := currentPath + ".old"
+	err := retryRemove(fixedOldPath)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return fixedOldPath, nil
+	}
+
+	info, statErr := os.Stat(fixedOldPath)
+	if statErr == nil && info.Mode().IsRegular() {
+		return uniqueOldPath(currentPath), nil
+	}
+
+	holders := restartManagerProbe(fixedOldPath)
+	return "", &ErrOldSlotLocked{
+		OldPath: fixedOldPath,
+		Holders: holders,
+		Cause:   err,
+	}
+}
+
+func uniqueOldPath(currentPath string) string {
+	return currentPath + ".old." + strconv.Itoa(os.Getpid()) + "." + strconv.FormatInt(time.Now().UnixNano(), 10)
+}
+
+func cleanupStaleOldSlots(currentPath string) {
+	dir := filepath.Dir(currentPath)
+	base := filepath.Base(currentPath) + ".old."
+	matches, err := filepath.Glob(filepath.Join(dir, base+"*"))
+	if err != nil {
+		return
+	}
+	for _, match := range matches {
+		if !strings.HasPrefix(filepath.Base(match), base) {
+			continue
+		}
+		_ = os.Remove(match)
+	}
 }
 
 // retryRemove attempts os.Remove up to len(retryDelays) times with exponential
@@ -232,16 +273,16 @@ func restartManagerProbe(filePath string) []ProcessHolder {
 	// Process.dwProcessId and strAppName). The struct is 308 bytes on 64-bit.
 	type rmProcessInfo struct {
 		Process struct {
-			PID        uint32
-			StartTime  windows.Filetime
+			PID       uint32
+			StartTime windows.Filetime
 		}
-		AppName    [256]uint16
+		AppName          [256]uint16
 		ServiceShortName [63]uint16
-		AppType    uint32
-		AppStatus  uint32
-		TSSessionID uint32
-		Restartable uint8
-		_          [3]byte // padding
+		AppType          uint32
+		AppStatus        uint32
+		TSSessionID      uint32
+		Restartable      uint8
+		_                [3]byte // padding
 	}
 
 	buf := make([]rmProcessInfo, count)

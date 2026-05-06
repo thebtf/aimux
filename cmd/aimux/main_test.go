@@ -13,6 +13,7 @@ import (
 
 	"github.com/thebtf/aimux/pkg/logger"
 	muxdaemon "github.com/thebtf/mcp-mux/muxcore/daemon"
+	"github.com/thebtf/mcp-mux/muxcore/owner"
 	mcpsnapshot "github.com/thebtf/mcp-mux/muxcore/snapshot"
 )
 
@@ -115,6 +116,40 @@ func TestDetectMode_AllowLegacyProxyEscape(t *testing.T) {
 	}
 	if got != ModeShim {
 		t.Errorf("mode = %d, want ModeShim (%d)", got, ModeShim)
+	}
+}
+
+func TestResolveShimStdinEOFPolicy_DefaultsToWaitForDisconnect(t *testing.T) {
+	t.Parallel()
+
+	got := resolveShimStdinEOFPolicy(func(string) string { return "" })
+	if got != owner.StdinEOFWaitForDisconnect {
+		t.Fatalf("policy = %v, want StdinEOFWaitForDisconnect", got)
+	}
+}
+
+func TestResolveShimStdinEOFPolicy_CodexDefaultsToEagerExit(t *testing.T) {
+	t.Parallel()
+
+	env := map[string]string{"CODEX_THREAD_ID": "thread-1"}
+	got := resolveShimStdinEOFPolicy(func(k string) string { return env[k] })
+	if got != owner.StdinEOFEagerExit {
+		t.Fatalf("policy = %v, want StdinEOFEagerExit", got)
+	}
+}
+
+func TestResolveShimStdinEOFPolicy_EnvOverrideWins(t *testing.T) {
+	t.Parallel()
+
+	env := map[string]string{
+		"CODEX_THREAD_ID":         "thread-1",
+		"AIMUX_STDIN_EOF_POLICY":  "wait_for_disconnect",
+		"CODEX_MANAGED_BY_NPM":    "1",
+		"UNRELATED_ENV_FOR_SHIMS": "ignored",
+	}
+	got := resolveShimStdinEOFPolicy(func(k string) string { return env[k] })
+	if got != owner.StdinEOFWaitForDisconnect {
+		t.Fatalf("policy = %v, want override StdinEOFWaitForDisconnect", got)
 	}
 }
 

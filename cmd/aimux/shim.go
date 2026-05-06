@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,6 +94,8 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger, ipc *l
 		}
 	}
 
+	stdinEOFPolicy := resolveShimStdinEOFPolicy(os.Getenv)
+
 	eng, engErr := engine.New(engine.Config{
 		Name:           engineName,
 		Command:        exePath,
@@ -100,7 +103,7 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger, ipc *l
 		DaemonFlag:     daemonFlagValue(),
 		Persistent:     true,
 		SessionHandler: &stubSessionHandler{log: log},
-		StdinEOFPolicy: owner.StdinEOFWaitForDisconnect,
+		StdinEOFPolicy: stdinEOFPolicy,
 		Logger:         log.StdLogger(),
 		OnInject:       onInject,
 	})
@@ -111,6 +114,26 @@ func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger, ipc *l
 		return fmt.Errorf("shim engine: %w", runErr)
 	}
 	return nil
+}
+
+func resolveShimStdinEOFPolicy(env func(string) string) owner.StdinEOFPolicy {
+	switch strings.ToLower(strings.TrimSpace(env("AIMUX_STDIN_EOF_POLICY"))) {
+	case "eager", "eager_exit", "exit":
+		return owner.StdinEOFEagerExit
+	case "wait", "wait_for_disconnect", "wait-for-disconnect":
+		return owner.StdinEOFWaitForDisconnect
+	}
+
+	// Codex closes and recreates stdio MCP transports aggressively after a
+	// transport error. In that environment, treating stdin EOF as "wait forever
+	// for IPC disconnect" leaks one shim per failed retry. Claude Code's older
+	// reconnect path still needs WaitForDisconnect by default, so keep the
+	// Codex-specific branch narrow and overridable.
+	if env("CODEX_THREAD_ID") != "" || env("CODEX_MANAGED_BY_NPM") != "" {
+		return owner.StdinEOFEagerExit
+	}
+
+	return owner.StdinEOFWaitForDisconnect
 }
 
 // stubSessionHandler is a defence-in-depth stub for shim-mode engine.New.

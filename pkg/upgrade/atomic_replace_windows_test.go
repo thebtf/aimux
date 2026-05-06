@@ -98,6 +98,76 @@ func TestAtomicReplaceBinary_Windows_ErrorTypesWrapped(t *testing.T) {
 	}
 }
 
+// TestAtomicReplaceBinary_Windows_LockedOldSlotFallsBackToUniqueBackup verifies
+// the deferred-update regression: a previous aimux.exe.old can remain locked by
+// an older daemon/shim image. That stale rollback file must not block the next
+// local-source update.
+func TestAtomicReplaceBinary_Windows_LockedOldSlotFallsBackToUniqueBackup(t *testing.T) {
+	dir := t.TempDir()
+
+	currentPath := filepath.Join(dir, "aimux.exe")
+	sourcePath := filepath.Join(dir, "aimux-new.exe")
+	oldPath := currentPath + ".old"
+
+	if err := os.WriteFile(oldPath, []byte("stale-locked-old"), 0o755); err != nil {
+		t.Fatalf("setup oldPath: %v", err)
+	}
+	lockedOld, err := os.Open(oldPath)
+	if err != nil {
+		t.Fatalf("open locked oldPath: %v", err)
+	}
+	defer lockedOld.Close()
+
+	if err := os.WriteFile(currentPath, []byte("original-v1"), 0o755); err != nil {
+		t.Fatalf("setup currentPath: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("new-v2"), 0o755); err != nil {
+		t.Fatalf("setup sourcePath: %v", err)
+	}
+
+	if err := upgrade.AtomicReplaceBinaryForTest(currentPath, sourcePath); err != nil {
+		t.Fatalf("AtomicReplaceBinaryForTest with locked .old: %v", err)
+	}
+
+	got, err := os.ReadFile(currentPath)
+	if err != nil {
+		t.Fatalf("ReadFile currentPath: %v", err)
+	}
+	if string(got) != "new-v2" {
+		t.Fatalf("currentPath = %q, want new-v2", got)
+	}
+
+	stale, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatalf("ReadFile locked oldPath: %v", err)
+	}
+	if string(stale) != "stale-locked-old" {
+		t.Fatalf("locked oldPath = %q, want stale-locked-old", stale)
+	}
+
+	matches, err := filepath.Glob(currentPath + ".old.*")
+	if err != nil {
+		t.Fatalf("Glob unique old slots: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatal("expected unique rollback slot when fixed .old is locked")
+	}
+	foundOriginal := false
+	for _, match := range matches {
+		data, readErr := os.ReadFile(match)
+		if readErr != nil {
+			t.Fatalf("ReadFile unique old slot %s: %v", match, readErr)
+		}
+		if string(data) == "original-v1" {
+			foundOriginal = true
+			break
+		}
+	}
+	if !foundOriginal {
+		t.Fatalf("unique rollback slots %v did not contain original-v1", matches)
+	}
+}
+
 // TestAtomicReplaceBinary_Windows_NewFileCleanedOnStagingFailure verifies that
 // the .new staging file is not left on disk when the source does not exist.
 func TestAtomicReplaceBinary_Windows_NewFileCleanedOnStagingFailure(t *testing.T) {
