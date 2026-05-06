@@ -20,9 +20,13 @@ func TestTraceFixtureBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", expectedPath, err)
 	}
-	if strings.TrimSpace(string(raw)) != strings.TrimSpace(string(expected)) {
+	if normalizeFixtureJSON(string(raw)) != normalizeFixtureJSON(string(expected)) {
 		t.Fatalf("trace fixture drifted.\nGot:\n%s\nWant:\n%s", raw, expected)
 	}
+}
+
+func normalizeFixtureJSON(value string) string {
+	return strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
 }
 
 func TestTraceFixtureBasicContainsAuditFields(t *testing.T) {
