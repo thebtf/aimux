@@ -33,7 +33,6 @@ func BenchmarkHarnessFinalizeGateEvaluation(b *testing.B) {
 		if !resp.CanFinalize {
 			b.Fatalf("Finalize blocked: %+v", resp)
 		}
-		b.StartTimer()
 	}
 
 	b.StopTimer()

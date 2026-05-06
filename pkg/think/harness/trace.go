@@ -4,6 +4,7 @@ type ThinkingRunTrace struct {
 	SessionID         string             `json:"session_id"`
 	Phase             Phase              `json:"phase"`
 	Frame             TaskFrame          `json:"frame"`
+	ProposedAnswer    string             `json:"proposed_answer,omitempty"`
 	Ledger            KnowledgeLedger    `json:"ledger"`
 	Moves             []MovePlan         `json:"moves,omitempty"`
 	Observations      []Observation      `json:"observations,omitempty"`
@@ -34,6 +35,7 @@ func NewThinkingRunTrace(session ThinkingSession) ThinkingRunTrace {
 		SessionID:         snapshot.ID,
 		Phase:             snapshot.Phase,
 		Frame:             snapshot.Frame,
+		ProposedAnswer:    snapshot.ProposedAnswer,
 		Ledger:            snapshot.Ledger,
 		Moves:             snapshot.MoveHistory,
 		Observations:      snapshot.Observations,

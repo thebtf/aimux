@@ -173,6 +173,10 @@ func (c *Controller) Session(ctx context.Context, sessionID string) (ThinkingSes
 	return c.store.Get(ctx, sessionID)
 }
 
+func (c *Controller) Prune(ctx context.Context, ttl time.Duration) (int, error) {
+	return c.store.Prune(ctx, ttl)
+}
+
 func (c *Controller) Step(ctx context.Context, req StepRequest) (StepResponse, error) {
 	if req.SessionID == "" {
 		return StepResponse{}, invalidInputError("step requires session_id", "Pass the session_id returned by think(action=start).")
@@ -181,10 +185,6 @@ func (c *Controller) Step(ctx context.Context, req StepRequest) (StepResponse, e
 		return StepResponse{}, invalidInputError("step requires chosen_move", "Choose one cognitive move from the allowed moves.")
 	}
 
-	session, err := c.store.Get(ctx, req.SessionID)
-	if err != nil {
-		return StepResponse{}, err
-	}
 	move, ok := c.catalog.Find(req.ChosenMove)
 	if !ok {
 		return StepResponse{}, moveMismatchError(req.ChosenMove)
@@ -195,6 +195,10 @@ func (c *Controller) Step(ctx context.Context, req StepRequest) (StepResponse, e
 		execute = *req.Execute
 	}
 	if !execute {
+		session, err := c.store.Get(ctx, req.SessionID)
+		if err != nil {
+			return StepResponse{}, err
+		}
 		return StepResponse{
 			SessionID:          session.ID,
 			Phase:              session.Phase,
@@ -229,79 +233,86 @@ func (c *Controller) Step(ctx context.Context, req StepRequest) (StepResponse, e
 	}
 
 	exec, execErr := c.adapter.Execute(ctx, move, req.WorkProduct, req.SessionID)
-	ledgerAdds := KnowledgeLedger{
-		Known: []LedgerEntry{{
-			ID:     fmt.Sprintf("work_product_%d", len(session.Observations)+1),
-			Text:   req.WorkProduct,
-			Source: move.Name,
-			Status: "observed",
-		}},
-	}
-	for i, evidence := range req.Evidence {
-		ledgerAdds.Checkable = append(ledgerAdds.Checkable, LedgerEntry{
-			ID:     fmt.Sprintf("evidence_%d", i+1),
-			Text:   evidence.Summary,
-			Source: evidence.Ref,
-			Status: evidence.VerificationStatus,
-		})
-	}
-	if execErr == nil {
-		var mergeErr error
-		ledgerAdds, mergeErr = ledgerAdds.merge(exec.LedgerAdds)
-		if mergeErr != nil {
-			return StepResponse{}, mergeErr
-		}
-	}
 
-	gate := GateReport{Status: GatePass}
+	var ledgerAdds KnowledgeLedger
+	var gate GateReport
 	var objections []Objection
-	if len(req.Evidence) == 0 {
-		gate = GateReport{Status: GateWarn, MissingWork: []string{"evidence"}}
-		if req.CallerConfidence > 0.6 {
-			objections = append(objections, Objection{
-				ID:       "evidence_gap",
-				Severity: ObjectionMajor,
-				Text:     "caller confidence is high relative to missing evidence",
+	var confidence ConfidenceReview
+	var factors []ConfidenceFactor
+	updated, err := c.store.Update(ctx, req.SessionID, func(current ThinkingSession) (ThinkingSession, error) {
+		stepIndex := len(current.Observations) + 1
+		ledgerAdds = KnowledgeLedger{
+			Known: []LedgerEntry{{
+				ID:     fmt.Sprintf("work_product_%d", stepIndex),
+				Text:   req.WorkProduct,
+				Source: move.Name,
+				Status: "observed",
+			}},
+		}
+		for i, evidence := range req.Evidence {
+			ledgerAdds.Checkable = append(ledgerAdds.Checkable, LedgerEntry{
+				ID:     fmt.Sprintf("evidence_%d_%d", stepIndex, i+1),
+				Text:   evidence.Summary,
+				Source: evidence.Ref,
+				Status: evidence.VerificationStatus,
 			})
 		}
-	}
-	if execErr != nil {
-		gate = GateReport{Status: GateBlocked, Blockers: []string{"selected cognitive move could not execute"}}
-		objections = append(objections, Objection{
-			ID:       "move_execution_failed",
-			Severity: ObjectionMajor,
-			Text:     execErr.Error(),
+		objections = nil
+		if execErr == nil {
+			var mergeErr error
+			ledgerAdds, mergeErr = ledgerAdds.merge(exec.LedgerAdds)
+			if mergeErr != nil {
+				return ThinkingSession{}, mergeErr
+			}
+			objections = append(objections, exec.Objections...)
+		}
+
+		gate = GateReport{Status: GatePass}
+		if len(req.Evidence) == 0 {
+			gate = GateReport{Status: GateWarn, MissingWork: []string{"evidence"}}
+			if req.CallerConfidence > 0.6 {
+				objections = append(objections, Objection{
+					ID:       fmt.Sprintf("evidence_gap_%d", stepIndex),
+					Severity: ObjectionMajor,
+					Text:     "caller confidence is high relative to missing evidence",
+				})
+			}
+		}
+		if execErr != nil {
+			gate = GateReport{Status: GateBlocked, Blockers: []string{"selected cognitive move could not execute"}}
+			objections = append(objections, Objection{
+				ID:       fmt.Sprintf("move_execution_failed_%d", stepIndex),
+				Severity: ObjectionMajor,
+				Text:     execErr.Error(),
+			})
+		}
+
+		activeObjections := append(unresolvedObjections(current.Objections), objections...)
+		confidence = EvaluateConfidence(ConfidenceInput{
+			CallerConfidence: req.CallerConfidence,
+			Evidence:         req.Evidence,
+			GateReport:       gate,
+			Objections:       activeObjections,
+			Ledger:           ledgerAdds,
 		})
-	}
-
-	activeObjections := append(unresolvedObjections(session.Objections), objections...)
-	confidence := EvaluateConfidence(ConfidenceInput{
-		CallerConfidence: req.CallerConfidence,
-		Evidence:         req.Evidence,
-		GateReport:       gate,
-		Objections:       activeObjections,
-		Ledger:           ledgerAdds,
-	})
-	factors := confidence.Factors
-	if execErr == nil {
-		factors = append(factors, exec.ConfidenceFactors...)
-	}
-	patch := KnowledgePatch{
-		Phase:             PhaseIntegrate,
-		LedgerAdds:        ledgerAdds,
-		Move:              &MovePlan{Name: move.Name, Group: move.Group, Reason: move.Purpose, ExpectedArtifactDelta: "session ledger, observation, gate report, and confidence factors update", Execute: true},
-		Observation:       &observation,
-		GateReport:        &gate,
-		Objections:        objections,
-		ConfidenceFactors: factors,
-		StopDecision: &StopDecision{
-			Action:      StopContinue,
-			Reason:      "move completed; integrate the new artifacts before finalization",
-			CanFinalize: false,
-		},
-	}
-
-	updated, err := c.store.Update(ctx, req.SessionID, func(current ThinkingSession) (ThinkingSession, error) {
+		factors = cloneFactors(confidence.Factors)
+		if execErr == nil {
+			factors = append(factors, exec.ConfidenceFactors...)
+		}
+		patch := KnowledgePatch{
+			Phase:             PhaseIntegrate,
+			LedgerAdds:        ledgerAdds,
+			Move:              &MovePlan{Name: move.Name, Group: move.Group, Reason: move.Purpose, ExpectedArtifactDelta: "session ledger, observation, gate report, and confidence factors update", Execute: true},
+			Observation:       &observation,
+			GateReport:        &gate,
+			Objections:        objections,
+			ConfidenceFactors: factors,
+			StopDecision: &StopDecision{
+				Action:      StopContinue,
+				Reason:      "move completed; integrate the new artifacts before finalization",
+				CanFinalize: false,
+			},
+		}
 		return current.ApplyPatch(patch)
 	})
 	if err != nil {
@@ -338,67 +349,69 @@ func (c *Controller) Finalize(ctx context.Context, req FinalizeRequest) (Finaliz
 		return FinalizeResponse{}, invalidInputError("finalize requires proposed_answer", "Provide the caller-owned proposed final answer for gate evaluation.")
 	}
 
-	session, err := c.store.Get(ctx, req.SessionID)
-	if err != nil {
-		return FinalizeResponse{}, err
-	}
-
-	evidence := collectEvidence(session)
-	latestGate := latestGateReport(session)
-	confidence := EvaluateConfidence(ConfidenceInput{
-		CallerConfidence: latestCallerConfidence(session),
-		Evidence:         evidence,
-		GateReport:       latestGate,
-		Objections:       unresolvedObjections(session.Objections),
-		Ledger:           session.Ledger,
-	})
-	budget := ReviewBudget(BalancedBudgetProfile(), BudgetState{
-		StartedAt:          session.StartedAt,
-		Now:                time.Now().UTC(),
-		StepCount:          len(session.MoveHistory),
-		ConsecutiveNoDelta: consecutiveNoDelta(session),
-		MeaningfulDelta:    hasMeaningfulDelta(session),
-		LastDelta:          lastDelta(session),
-		ExpectedNextDelta:  "resolved gate, new evidence, objection update, or final integration",
-	})
-	gates := EvaluateFinalizationGates(FinalizationGateInput{
-		Session:        session,
-		ProposedAnswer: req.ProposedAnswer,
-		ForceFinalize:  req.ForceFinalize,
-		Confidence:     confidence,
-		Budget:         budget,
-	})
-
-	gateReport := GateReport{Status: GatePass}
-	stopAction := StopFinalize
-	stopReason := "finalized"
-	if !gates.CanFinalize {
-		gateReport = GateReport{
-			Status:      GateBlocked,
-			Blockers:    cloneStrings(gates.MissingGates),
-			MissingWork: cloneStrings(gates.MissingGates),
-		}
-		stopAction = StopContinue
-		stopReason = "missing_gates"
-		if containsExact(gates.MissingGates, "budget_exhausted") {
-			stopAction = StopHalt
-			stopReason = "budget_exhausted"
-		}
-	} else if len(gates.Warnings) > 0 {
-		gateReport = GateReport{Status: GateWarn, Warnings: cloneStrings(gates.Warnings)}
-	}
-
-	stop := StopDecision{
-		Action:               stopAction,
-		Reason:               finalizationReason(gates, confidence, budget, stopReason),
-		CanFinalize:          gates.CanFinalize,
-		UnresolvedObjections: gates.UnresolvedObjections,
-		BudgetState:          budget.BudgetState,
-	}
-
+	var gates FinalizationGateReview
+	var confidence ConfidenceReview
+	var gateReport GateReport
+	var stop StopDecision
+	var stopReason string
 	updated, err := c.store.Update(ctx, req.SessionID, func(current ThinkingSession) (ThinkingSession, error) {
+		evidence := collectEvidence(current)
+		latestGate := latestGateReport(current)
+		confidence = EvaluateConfidence(ConfidenceInput{
+			CallerConfidence: latestCallerConfidence(current),
+			Evidence:         evidence,
+			GateReport:       latestGate,
+			Objections:       unresolvedObjections(current.Objections),
+			Ledger:           current.Ledger,
+		})
+		budget := ReviewBudget(BalancedBudgetProfile(), BudgetState{
+			StartedAt:          current.StartedAt,
+			Now:                time.Now().UTC(),
+			StepCount:          len(current.MoveHistory),
+			ConsecutiveNoDelta: consecutiveNoDelta(current),
+			MeaningfulDelta:    hasMeaningfulDelta(current),
+			LastDelta:          lastDelta(current),
+			ExpectedNextDelta:  "resolved gate, new evidence, objection update, or final integration",
+		})
+		gates = EvaluateFinalizationGates(FinalizationGateInput{
+			Session:        current,
+			ProposedAnswer: req.ProposedAnswer,
+			ForceFinalize:  req.ForceFinalize,
+			Confidence:     confidence,
+			Budget:         budget,
+		})
+
+		gateReport = GateReport{Status: GatePass}
+		stopAction := StopFinalize
+		stopReason = "finalized"
+		if !gates.CanFinalize {
+			gateReport = GateReport{
+				Status:      GateBlocked,
+				Blockers:    cloneStrings(gates.MissingGates),
+				MissingWork: cloneStrings(gates.MissingGates),
+			}
+			stopAction = StopContinue
+			stopReason = "missing_gates"
+			if containsExact(gates.MissingGates, "budget_exhausted") {
+				stopAction = StopHalt
+				stopReason = "budget_exhausted"
+			}
+		} else if len(gates.Warnings) > 0 {
+			gateReport = GateReport{Status: GateWarn, Warnings: cloneStrings(gates.Warnings)}
+		}
+
+		stop = StopDecision{
+			Action:               stopAction,
+			Reason:               finalizationReason(gates, confidence, budget, stopReason),
+			CanFinalize:          gates.CanFinalize,
+			UnresolvedObjections: gates.UnresolvedObjections,
+			BudgetState:          budget.BudgetState,
+		}
+		answerID := fmt.Sprintf("proposed_answer_%d", len(current.GateReports)+1)
 		return current.ApplyPatch(KnowledgePatch{
 			Phase:             PhaseFinalize,
+			ProposedAnswer:    req.ProposedAnswer,
+			LedgerAdds:        KnowledgeLedger{Checkable: []LedgerEntry{{ID: answerID, Text: req.ProposedAnswer, Source: "caller", Status: "proposed"}}},
 			GateReport:        &gateReport,
 			ConfidenceFactors: confidence.Factors,
 			StopDecision:      &stop,

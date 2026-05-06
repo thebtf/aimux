@@ -70,10 +70,12 @@ func TestE2E_ThinkHarnessFullFlow(t *testing.T) {
 func callE2EToolJSON(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, toolName string, args map[string]any) map[string]any {
 	t.Helper()
 
-	fmt.Fprint(stdin, jsonRPCRequest(id, "tools/call", map[string]any{
+	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "tools/call", map[string]any{
 		"name":      toolName,
 		"arguments": args,
-	}))
+	})); err != nil {
+		t.Fatalf("%s request write: %v", toolName, err)
+	}
 	resp, err := readResponse(reader, 10*time.Second)
 	if err != nil {
 		t.Fatalf("%s response: %v", toolName, err)

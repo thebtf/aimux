@@ -65,7 +65,8 @@ func basicTraceFixture(t *testing.T) ThinkingRunTrace {
 
 	session := NewThinkingSession("trace-basic", validFrame(t))
 	updated, err := session.ApplyPatch(KnowledgePatch{
-		Phase: PhaseFinalize,
+		Phase:          PhaseFinalize,
+		ProposedAnswer: "Visible supported answer.",
 		LedgerAdds: KnowledgeLedger{
 			Known: []LedgerEntry{{
 				ID:     "answer",

@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/thebtf/aimux/pkg/guidance"
+	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/think/harness"
 )
 
@@ -67,6 +70,9 @@ func (s *Server) registerThinkHarnessTool() {
 			),
 			mcp.WithBoolean("force_finalize",
 				mcp.Description("Request finalization even with unresolved non-critical objections; critical blockers still fail closed."),
+			),
+			mcp.WithString("fields",
+				mcp.Description("Comma-separated response fields to return. Unknown fields fail closed."),
 			),
 			mcp.WithToolAnnotation(mcp.ToolAnnotation{
 				ReadOnlyHint:    mcp.ToBoolPtr(false),
@@ -131,7 +137,7 @@ func (s *Server) handleThinkHarnessStart(ctx context.Context, request mcp.CallTo
 	if err != nil {
 		return marshalThinkHarnessError(err)
 	}
-	return marshalToolResult(resp)
+	return marshalBudgetedThinkHarnessResult(request, resp)
 }
 
 func (s *Server) handleThinkHarnessStep(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -156,7 +162,7 @@ func (s *Server) handleThinkHarnessStep(ctx context.Context, request mcp.CallToo
 	if err != nil {
 		return marshalThinkHarnessError(err)
 	}
-	return marshalToolResult(resp)
+	return marshalBudgetedThinkHarnessResult(request, resp)
 }
 
 func (s *Server) handleThinkHarnessFinalize(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -168,13 +174,15 @@ func (s *Server) handleThinkHarnessFinalize(ctx context.Context, request mcp.Cal
 	if err != nil {
 		return marshalThinkHarnessError(err)
 	}
-	return marshalToolResult(resp)
+	return marshalBudgetedThinkHarnessResult(request, resp)
 }
 
 func (s *Server) thinkController() *harness.Controller {
-	if s.thinkHarness == nil {
-		s.thinkHarness = harness.NewController(harness.NewInMemoryStore())
-	}
+	s.thinkHarnessOnce.Do(func() {
+		if s.thinkHarness == nil {
+			s.thinkHarness = harness.NewController(harness.NewInMemoryStore())
+		}
+	})
 	return s.thinkHarness
 }
 
@@ -237,4 +245,46 @@ func marshalToolErrorResult(payload map[string]any) (*mcp.CallToolResult, error)
 		result.IsError = true
 	}
 	return result, err
+}
+
+func marshalBudgetedThinkHarnessResult(request mcp.CallToolRequest, payload any) (*mcp.CallToolResult, error) {
+	bp, budgetErr := budget.ParseBudgetParams(request)
+	if budgetErr != nil {
+		return mcp.NewToolResultError(budgetErr.Error()), nil
+	}
+
+	result, err := resultMap(payload)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	filtered, omitted, applyErr := budget.ApplyFields(result, bp.Fields, budget.FieldWhitelist["think"])
+	if applyErr != nil {
+		return mcp.NewToolResultError(applyErr.Error()), nil
+	}
+	envelope := guidance.ResponseEnvelope{Result: filtered}
+	meta := budget.BuildTruncationMeta(omitted, 0, "Use fields=<comma-separated field list> to request a narrower think response.")
+	budget.AttachTruncation(&envelope, meta)
+	return marshalToolResult(envelope.Result)
+}
+
+func resultMap(payload any) (map[string]any, error) {
+	if payload == nil {
+		return map[string]any{}, nil
+	}
+	if m, ok := payload.(map[string]any); ok {
+		out := make(map[string]any, len(m))
+		for key, value := range m {
+			out[key] = value
+		}
+		return out, nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

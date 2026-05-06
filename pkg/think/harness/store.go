@@ -3,12 +3,14 @@ package harness
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type Store interface {
 	Create(ctx context.Context, session ThinkingSession) (ThinkingSession, error)
 	Get(ctx context.Context, id string) (ThinkingSession, error)
 	Update(ctx context.Context, id string, fn func(ThinkingSession) (ThinkingSession, error)) (ThinkingSession, error)
+	Prune(ctx context.Context, ttl time.Duration) (int, error)
 }
 
 type InMemoryStore struct {
@@ -82,4 +84,30 @@ func (s *InMemoryStore) Update(ctx context.Context, id string, fn func(ThinkingS
 	}
 	s.sessions[id] = next.clone()
 	return next.clone(), nil
+}
+
+func (s *InMemoryStore) Prune(ctx context.Context, ttl time.Duration) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if ttl <= 0 {
+		return 0, invalidInputError("prune requires positive ttl", "Provide a positive session ttl.")
+	}
+
+	cutoff := time.Now().UTC().Add(-ttl)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	removed := 0
+	for id, session := range s.sessions {
+		lastSeen := session.UpdatedAt
+		if lastSeen.IsZero() {
+			lastSeen = session.StartedAt
+		}
+		if lastSeen.IsZero() || lastSeen.Before(cutoff) {
+			delete(s.sessions, id)
+			removed++
+		}
+	}
+	return removed, nil
 }

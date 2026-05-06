@@ -168,7 +168,7 @@ daemon lifetime.
 2. `./aimux serve --transport=stdio &`
 3. `sleep 2`
 
-**Teardown (after all four):**
+**Teardown (after all five):**
 - Stop the daemon: `kill -TERM $(pgrep -af 'aimux serve' | awk '{print $1}')`
 
 ### Scenario B1: sessions health tool

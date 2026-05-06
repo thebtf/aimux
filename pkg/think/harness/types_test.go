@@ -141,6 +141,35 @@ func TestInvalidArtifactsFailClosed(t *testing.T) {
 	}
 }
 
+func TestInvalidEnumLikeArtifactsFailClosed(t *testing.T) {
+	session := NewThinkingSession("s1", validFrame(t))
+
+	for name, patch := range map[string]KnowledgePatch{
+		"phase": {Phase: Phase("unknown")},
+		"move_group": {Move: &MovePlan{
+			Name:                  "bad_group",
+			Group:                 MoveGroup("unknown"),
+			Reason:                "invalid enum should fail",
+			ExpectedArtifactDelta: "none",
+		}},
+		"objection_severity": {Objections: []Objection{{
+			Severity: ObjectionSeverity("unknown"),
+			Text:     "invalid severity should fail",
+		}}},
+		"stop_action": {StopDecision: &StopDecision{
+			Action:      StopAction("unknown"),
+			Reason:      "invalid action should fail",
+			CanFinalize: false,
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := session.ApplyPatch(patch); err == nil {
+				t.Fatalf("%s accepted invalid enum value", name)
+			}
+		})
+	}
+}
+
 func validFrame(t *testing.T) TaskFrame {
 	t.Helper()
 

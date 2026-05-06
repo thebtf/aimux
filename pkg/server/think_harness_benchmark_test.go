@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 )
@@ -32,7 +33,6 @@ func BenchmarkThinkHarnessFinalizeHandlerOverhead(b *testing.B) {
 		if payload["can_finalize"] != true {
 			b.Fatalf("finalize blocked: %v", payload)
 		}
-		b.StartTimer()
 	}
 
 	b.StopTimer()
@@ -114,11 +114,7 @@ func serverPercentileDuration(values []time.Duration, percentile float64) time.D
 		return 0
 	}
 	sorted := append([]time.Duration(nil), values...)
-	for i := 1; i < len(sorted); i++ {
-		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
-			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
-		}
-	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	idx := int(float64(len(sorted)-1) * percentile)
 	return sorted[idx]
 }

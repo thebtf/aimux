@@ -197,8 +197,15 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 			requestedMode = m
 		}
 	}
+	if requestedMode != "solo" && requestedMode != "consensus" && requestedMode != "auto" {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid mode %q; use solo, consensus, or auto", requestedMode)), nil
+	}
 
-	sessionID := request.GetString("session_id", "")
+	sessionID := ""
+	isStateful := think.IsStatefulPattern(patternName)
+	if isStateful {
+		sessionID = request.GetString("session_id", "")
+	}
 
 	// Fast-fail: reject consensus mode on solo-only patterns before executing handler.
 	if requestedMode == "consensus" && think.GetDialogConfig(patternName) == nil {
@@ -273,7 +280,7 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 			},
 		},
 	}
-	if thinkResult.SessionID != "" {
+	if isStateful && thinkResult.SessionID != "" {
 		response["session_id"] = thinkResult.SessionID
 	}
 	if thinkResult.SuggestedNextPattern != "" {
@@ -317,7 +324,7 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 	thinkState := &policies.ThinkPolicyInput{
 		Pattern:    patternName,
 		SessionID:  thinkResult.SessionID,
-		IsStateful: policies.IsStatefulPattern(patternName),
+		IsStateful: isStateful,
 		StepNumber: stepNumber,
 	}
 	return s.marshalGuidedToolResult("think", patternName, thinkState, response)
@@ -334,7 +341,7 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 //     integration is wired; caller has already validated pattern supports consensus).
 //   - "auto"      → "consensus_recommended" when complexity recommends consensus AND
 //     the pattern has a dialog config; "solo" otherwise.
-//   - default     → treated as "auto".
+//   - default     → error.
 func resolveEffectiveMode(requestedMode, patternName, complexityRec string) (string, error) {
 	switch requestedMode {
 	case "solo":
@@ -343,10 +350,12 @@ func resolveEffectiveMode(requestedMode, patternName, complexityRec string) (str
 		// Graceful degradation: dialog manager not yet wired — advertise but don't block.
 		// Solo-only patterns are already rejected before this function is reached.
 		return "consensus_recommended", nil
-	default: // "auto" or unrecognised values
+	case "auto":
 		if complexityRec == "consensus" && think.GetDialogConfig(patternName) != nil {
 			return "consensus_recommended", nil
 		}
 		return "solo", nil
+	default:
+		return "", fmt.Errorf("invalid mode %q; use solo, consensus, or auto", requestedMode)
 	}
 }

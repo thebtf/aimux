@@ -149,6 +149,9 @@ func (m MovePlan) validate() error {
 	if m.Group == "" {
 		return invalidInputError("move plan requires group", "Choose a move group such as frame, explore, test, evaluate, calibrate, or finalize.")
 	}
+	if !validMoveGroup(m.Group) {
+		return invalidInputError("move plan requires valid group", "Use frame, explore, test, evaluate, calibrate, or finalize.")
+	}
 	if m.Reason == "" {
 		return invalidInputError("move plan requires reason", "Explain why this move fits the current gap.")
 	}
@@ -238,6 +241,9 @@ func (o Objection) validate() error {
 	if o.Severity == "" {
 		return invalidInputError("objection requires severity", "Classify the objection before adding it.")
 	}
+	if !validObjectionSeverity(o.Severity) {
+		return invalidInputError("objection requires valid severity", "Use critical, major, or minor.")
+	}
 	if o.Text == "" {
 		return invalidInputError("objection requires text", "Describe the unresolved issue.")
 	}
@@ -269,6 +275,9 @@ func (d StopDecision) validate() error {
 	if d.Action == "" {
 		return invalidInputError("stop decision requires action", "Choose continue, redirect, compress, finalize, or stop.")
 	}
+	if !validStopAction(d.Action) {
+		return invalidInputError("stop decision requires valid action", "Use continue, redirect, compress, finalize, or stop.")
+	}
 	if d.Reason == "" {
 		return invalidInputError("stop decision requires reason", "Explain why the session should continue, redirect, compress, finalize, or stop.")
 	}
@@ -287,6 +296,7 @@ func (d StopDecision) clone() StopDecision {
 
 type KnowledgePatch struct {
 	Phase             Phase              `json:"phase,omitempty"`
+	ProposedAnswer    string             `json:"proposed_answer,omitempty"`
 	LedgerAdds        KnowledgeLedger    `json:"ledger_adds,omitempty"`
 	Move              *MovePlan          `json:"move,omitempty"`
 	Observation       *Observation       `json:"observation,omitempty"`
@@ -301,6 +311,8 @@ type ThinkingSession struct {
 	Phase             Phase              `json:"phase"`
 	Frame             TaskFrame          `json:"frame"`
 	StartedAt         time.Time          `json:"started_at,omitempty"`
+	UpdatedAt         time.Time          `json:"updated_at,omitempty"`
+	ProposedAnswer    string             `json:"proposed_answer,omitempty"`
 	Ledger            KnowledgeLedger    `json:"ledger"`
 	MoveHistory       []MovePlan         `json:"move_history,omitempty"`
 	Observations      []Observation      `json:"observations,omitempty"`
@@ -311,11 +323,13 @@ type ThinkingSession struct {
 }
 
 func NewThinkingSession(id string, frame TaskFrame) ThinkingSession {
+	now := time.Now().UTC()
 	return ThinkingSession{
 		ID:        id,
 		Phase:     PhaseFrame,
 		Frame:     frame.clone(),
-		StartedAt: time.Now().UTC(),
+		StartedAt: now,
+		UpdatedAt: now,
 		Ledger:    KnowledgeLedger{},
 	}
 }
@@ -323,7 +337,13 @@ func NewThinkingSession(id string, frame TaskFrame) ThinkingSession {
 func (s ThinkingSession) ApplyPatch(patch KnowledgePatch) (ThinkingSession, error) {
 	next := s.clone()
 	if patch.Phase != "" {
+		if !validPhase(patch.Phase) {
+			return ThinkingSession{}, invalidInputError("patch requires valid phase", "Use frame, inventory, move, observe, test, integrate, or finalize.")
+		}
 		next.Phase = patch.Phase
+	}
+	if patch.ProposedAnswer != "" {
+		next.ProposedAnswer = patch.ProposedAnswer
 	}
 
 	ledger, err := next.Ledger.merge(patch.LedgerAdds)
@@ -369,6 +389,7 @@ func (s ThinkingSession) ApplyPatch(patch KnowledgePatch) (ThinkingSession, erro
 		cloned := patch.StopDecision.clone()
 		next.StopDecision = &cloned
 	}
+	next.UpdatedAt = time.Now().UTC()
 	return next, nil
 }
 
@@ -461,4 +482,40 @@ func cloneFactors(in []ConfidenceFactor) []ConfidenceFactor {
 	out := make([]ConfidenceFactor, len(in))
 	copy(out, in)
 	return out
+}
+
+func validPhase(phase Phase) bool {
+	switch phase {
+	case PhaseFrame, PhaseInventory, PhaseMove, PhaseObserve, PhaseTest, PhaseIntegrate, PhaseFinalize:
+		return true
+	default:
+		return false
+	}
+}
+
+func validMoveGroup(group MoveGroup) bool {
+	switch group {
+	case MoveGroupFrame, MoveGroupExplore, MoveGroupTest, MoveGroupEvaluate, MoveGroupCalibrate, MoveGroupFinalize:
+		return true
+	default:
+		return false
+	}
+}
+
+func validObjectionSeverity(severity ObjectionSeverity) bool {
+	switch severity {
+	case ObjectionCritical, ObjectionMajor, ObjectionMinor:
+		return true
+	default:
+		return false
+	}
+}
+
+func validStopAction(action StopAction) bool {
+	switch action {
+	case StopContinue, StopRedirect, StopCompress, StopFinalize, StopHalt:
+		return true
+	default:
+		return false
+	}
 }

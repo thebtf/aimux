@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestInMemoryStoreCreateGetAndUnknownSession(t *testing.T) {
@@ -111,5 +112,33 @@ func TestInMemoryStoreConcurrentSessionIsolation(t *testing.T) {
 	}
 	if len(b.Ledger.Known) != 0 {
 		t.Fatalf("session b was contaminated: %+v", b.Ledger.Known)
+	}
+}
+
+func TestInMemoryStorePruneRemovesExpiredSessions(t *testing.T) {
+	store := NewInMemoryStore()
+	expired := NewThinkingSession("expired", validFrame(t))
+	expired.UpdatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	fresh := NewThinkingSession("fresh", validFrame(t))
+
+	if _, err := store.Create(context.Background(), expired); err != nil {
+		t.Fatalf("create expired: %v", err)
+	}
+	if _, err := store.Create(context.Background(), fresh); err != nil {
+		t.Fatalf("create fresh: %v", err)
+	}
+
+	removed, err := store.Prune(context.Background(), time.Hour)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if _, err := store.Get(context.Background(), "expired"); !errors.Is(err, ErrUnknownSession) {
+		t.Fatalf("expired session error = %v, want ErrUnknownSession", err)
+	}
+	if _, err := store.Get(context.Background(), "fresh"); err != nil {
+		t.Fatalf("fresh session removed: %v", err)
 	}
 }

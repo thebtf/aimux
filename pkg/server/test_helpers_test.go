@@ -17,7 +17,7 @@ import (
 
 // testServer constructs a minimal Server suitable for unit tests of the
 // reduced post-purge tool surface (status, sessions, deepresearch, upgrade,
-// 23 think patterns). Heavyweight wiring used by the removed Layer 5 tools
+// think harness, 22 cognitive moves). Heavyweight wiring used by the removed Layer 5 tools
 // (executor, swarm, orchestrator, agent registry) is intentionally omitted.
 func testServer(t testing.TB) *Server {
 	t.Helper()

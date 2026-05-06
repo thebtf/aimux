@@ -23,6 +23,13 @@ func TestControllerFinalizeAcceptsSupportedRun(t *testing.T) {
 	if resp.TraceSummary.StopReason == "" {
 		t.Fatalf("trace summary missing stop reason: %+v", resp.TraceSummary)
 	}
+	session, err := controller.Session(t.Context(), start.SessionID)
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+	if session.ProposedAnswer != "The supported answer is ready." {
+		t.Fatalf("proposed answer not persisted: %+v", session.ProposedAnswer)
+	}
 }
 
 func TestControllerFinalizeForceDisclosesNonCriticalObjections(t *testing.T) {
