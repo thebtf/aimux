@@ -698,8 +698,8 @@ func (s *Server) registerTools() {
 		s.handleSessions,
 	)
 
-	// Pattern tools: 23 individual MCP tools, one per think pattern.
-	// Replaces the single "think" tool with per-pattern tools.
+	// Canonical caller-centered think harness plus 22 low-level cognitive move tools.
+	s.registerThinkHarnessTool()
 	s.registerPatternTools()
 
 	// deepresearch tool

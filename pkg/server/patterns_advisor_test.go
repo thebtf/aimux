@@ -274,9 +274,9 @@ func TestHandlePattern_ModeConsensus_SoloOnlyPattern_ReturnsError(t *testing.T) 
 	patterns.RegisterAll()
 	srv := testServer(t)
 
-	// "think" is a solo-only pattern (no dialog config).
-	req := makeRequest("think", map[string]any{
-		"thought": "test thought",
+	// recursive_thinking is a solo-only cognitive move (no dialog config).
+	req := makeRequest("recursive_thinking", map[string]any{
+		"problem": "parse nested structures",
 		"mode":    "consensus",
 	})
 

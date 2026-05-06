@@ -15,8 +15,13 @@ func TestRegisterPatternTools_AllPatternsRegistered(t *testing.T) {
 	_ = srv // ensure server builds without panic
 
 	allPatterns := think.GetAllPatterns()
-	if len(allPatterns) != 23 {
-		t.Errorf("expected 23 patterns registered, got %d: %v", len(allPatterns), allPatterns)
+	if len(allPatterns) != 22 {
+		t.Errorf("expected 22 cognitive move patterns registered, got %d: %v", len(allPatterns), allPatterns)
+	}
+	for _, name := range allPatterns {
+		if name == "think" {
+			t.Fatal("base think keyword-router must not be registered as a low-level cognitive move")
+		}
 	}
 }
 
@@ -35,8 +40,8 @@ func TestRegisterPatternTools_DescriptionFormat(t *testing.T) {
 		if len(preview) > 50 {
 			preview = preview[:50]
 		}
-		if !strings.HasPrefix(desc, "[solo — free]") {
-			t.Errorf("pattern %q: description does not start with '[solo — free]', got: %q", name, preview)
+		if !strings.HasPrefix(desc, "[cognitive move — solo/free]") {
+			t.Errorf("pattern %q: description does not start with '[cognitive move — solo/free]', got: %q", name, preview)
 		}
 	}
 }
@@ -61,15 +66,15 @@ func TestRegisterPatternTools_HasSchemaFields(t *testing.T) {
 func TestRegisterPatternTools_ThinkToolRemoved(t *testing.T) {
 	srv := newTestServer(t)
 	desc := srv.ToolDescription("think")
-	// "think" is now a per-pattern tool itself (one of the 23), so it should be registered
-	// as an individual tool with the [solo — free] prefix, NOT the old WHAT/WHEN format.
 	if desc == "" {
-		t.Error("think tool not registered as individual pattern tool")
+		t.Error("think harness tool not registered")
 		return
 	}
-	// Must NOT have old stateful format headers
-	if strings.Contains(desc, "WHAT:") {
-		t.Error("think tool still has old WHAT:/WHEN: stateful format — should have [solo — free] format now")
+	if strings.HasPrefix(desc, "[cognitive move") {
+		t.Error("think is still registered as a low-level cognitive move")
+	}
+	if strings.Contains(desc, "suggestedPattern") || strings.Contains(strings.ToLower(desc), "keyword") {
+		t.Errorf("think description still describes keyword routing: %q", desc)
 	}
 }
 
@@ -148,7 +153,7 @@ func TestRegisterPatternTools_TotalCount(t *testing.T) {
 	patterns.RegisterAll()
 
 	allPatterns := think.GetAllPatterns()
-	expected := 23
+	expected := 22
 	if len(allPatterns) != expected {
 		t.Errorf("expected %d patterns, got %d", expected, len(allPatterns))
 	}

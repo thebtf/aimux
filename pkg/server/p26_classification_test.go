@@ -54,7 +54,7 @@ func TestP26ClassificationCoverage(t *testing.T) {
 		p26Unknown:        {},
 	}
 
-	requiredActionTools := []string{"sessions", "upgrade"}
+	requiredActionTools := []string{"sessions", "think", "upgrade"}
 	requiredActionSet := make(map[string]struct{}, len(requiredActionTools))
 	for _, tool := range requiredActionTools {
 		requiredActionSet[tool] = struct{}{}
@@ -197,45 +197,63 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 	if err != nil {
 		return nil, nil, err
 	}
+	files := []*ast.File{file}
+	thinkHarnessPath := filepath.Join(filepath.Dir(serverPath), "think_harness.go")
+	if _, statErr := os.Stat(thinkHarnessPath); statErr == nil {
+		thinkHarnessFile, parseErr := parser.ParseFile(fset, thinkHarnessPath, nil, parser.SkipObjectResolution)
+		if parseErr != nil {
+			return nil, nil, parseErr
+		}
+		files = append(files, thinkHarnessFile)
+	}
 
 	registerTools := p26FindFuncDecl(file, "registerTools")
 	if registerTools == nil {
 		return nil, nil, fmt.Errorf("registerTools function not found in %s", serverPath)
 	}
+	thinkHarnessTools := p26FindFuncDeclInFiles(files, "registerThinkHarnessTool")
 
 	tools := make(map[string]struct{})
 	actionsByTool := make(map[string]map[string]struct{})
+	parseRegistration := func(fn *ast.FuncDecl) error {
+		var parseErr error
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if parseErr != nil {
+				return false
+			}
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if !p26IsSelectorCall(call.Fun, "AddTool") {
+				return true
+			}
 
-	var parseErr error
-	ast.Inspect(registerTools.Body, func(n ast.Node) bool {
-		if parseErr != nil {
-			return false
-		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
+			toolName, actions, err := p26ParseAddToolCall(call, fset)
+			if err != nil {
+				parseErr = err
+				return false
+			}
+			if _, exists := tools[toolName]; exists {
+				parseErr = fmt.Errorf("duplicate tool registration for %q", toolName)
+				return false
+			}
+			tools[toolName] = struct{}{}
+			if len(actions) > 0 {
+				actionsByTool[toolName] = actions
+			}
 			return true
-		}
-		if !p26IsSelectorCall(call.Fun, "AddTool") {
-			return true
-		}
+		})
+		return parseErr
+	}
 
-		toolName, actions, err := p26ParseAddToolCall(call, fset)
-		if err != nil {
-			parseErr = err
-			return false
+	if err := parseRegistration(registerTools); err != nil {
+		return nil, nil, err
+	}
+	if thinkHarnessTools != nil {
+		if err := parseRegistration(thinkHarnessTools); err != nil {
+			return nil, nil, err
 		}
-		if _, exists := tools[toolName]; exists {
-			parseErr = fmt.Errorf("duplicate tool registration for %q", toolName)
-			return false
-		}
-		tools[toolName] = struct{}{}
-		if len(actions) > 0 {
-			actionsByTool[toolName] = actions
-		}
-		return true
-	})
-	if parseErr != nil {
-		return nil, nil, parseErr
 	}
 	if len(tools) == 0 {
 		return nil, nil, fmt.Errorf("no tools discovered in registerTools; unsupported registration shape")
@@ -250,6 +268,15 @@ func p26FindFuncDecl(file *ast.File, name string) *ast.FuncDecl {
 			continue
 		}
 		if fn.Name != nil && fn.Name.Name == name {
+			return fn
+		}
+	}
+	return nil
+}
+
+func p26FindFuncDeclInFiles(files []*ast.File, name string) *ast.FuncDecl {
+	for _, file := range files {
+		if fn := p26FindFuncDecl(file, name); fn != nil {
 			return fn
 		}
 	}

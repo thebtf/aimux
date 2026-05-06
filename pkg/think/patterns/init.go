@@ -18,10 +18,6 @@ func RegisterAll() {
 }
 
 func registerAll() {
-	register(NewThinkPattern(), think.PatternMeta{
-		IsStateful:      false,
-		HasDialogConfig: false,
-	})
 	register(NewCriticalThinkingPattern(), think.PatternMeta{
 		IsStateful:      false,
 		HasDialogConfig: true,

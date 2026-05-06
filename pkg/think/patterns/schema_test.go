@@ -79,20 +79,11 @@ func TestSchemaFieldsDecisionFramework(t *testing.T) {
 	}
 }
 
-func TestSchemaFieldsThink(t *testing.T) {
+func TestSchemaFieldsBaseThinkNotRegistered(t *testing.T) {
 	ensurePatternsRegistered()
 
-	p := think.GetPattern("think")
-	if p == nil {
-		t.Fatal("think pattern not registered")
-	}
-
-	thought, ok := p.SchemaFields()["thought"]
-	if !ok {
-		t.Fatal("think SchemaFields missing 'thought' field")
-	}
-	if !thought.Required {
-		t.Error("think 'thought' field should be Required=true")
+	if p := think.GetPattern("think"); p != nil {
+		t.Fatal("base think keyword-router must not be registered as a low-level cognitive move")
 	}
 }
 

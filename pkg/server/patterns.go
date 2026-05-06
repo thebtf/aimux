@@ -11,32 +11,31 @@ import (
 	"github.com/thebtf/aimux/pkg/think/patterns"
 )
 
-// patternDescriptions maps pattern names to FR-8 formatted descriptions.
-// Format: "[solo — free] {situation}. {function}."
+// patternDescriptions maps low-level cognitive move names to public MCP descriptions.
+// Format: "[cognitive move — solo/free] {situation}. {function}."
 var patternDescriptions = map[string]string{
-	"think":                    "[solo — free] STRUCTURAL analysis only — no LLM inference. Record and reflect on a thought. Use as a scratchpad when reasoning through a problem. For semantic critique, use critique/consensus/debate.",
-	"critical_thinking":        "[solo — free] When you suspect bias in your reasoning. Scans text for cognitive biases using trigger-phrase detection.",
-	"sequential_thinking":      "[solo — free] When a problem needs step-by-step reasoning with possible revision. Chains thoughts with branching support.",
-	"debugging_approach":       "[solo — free] When you're stuck on a bug and need to narrow down the cause systematically. Tracks hypotheses, suggests 18 known methods. Use before asking the user for help.",
-	"decision_framework":       "[solo — free] When you need to choose between options and can't decide. Scores alternatives against weighted criteria.",
-	"problem_decomposition":    "[solo — free] When a problem feels too big to tackle at once. Breaks it into sub-problems with dependencies and risks.",
-	"scientific_method":        "[solo — free] When you need rigorous hypothesis testing. Guides through observation → hypothesis → experiment → analysis → conclusion.",
-	"mental_model":             "[solo — free] When you want a different perspective on a problem. Applies one of 15 mental models (first principles, inversion, etc.).",
-	"metacognitive_monitoring": "[solo — free] When you're unsure if your reasoning is sound. Checks for overconfidence and blind spots.",
-	"structured_argumentation": "[solo — free] When building or evaluating an argument. Structures claims, evidence, and rebuttals with severity ratings.",
-	"collaborative_reasoning":  "[solo — free] When multiple perspectives would help. Multi-persona reasoning with stage tracking.",
-	"recursive_thinking":       "[solo — free] When a problem has self-similar sub-problems. Recursive decomposition with base cases and depth tracking.",
-	"domain_modeling":          "[solo — free] When understanding a domain's structure. Models entities, relationships, rules, and constraints.",
-	"architecture_analysis":    "[solo — free] Before making architectural decisions. ATAM-lite analysis with coupling detection.",
-	"stochastic_algorithm":     "[solo — free] When dealing with probabilistic decisions. Analyzes MDP, MCTS, bandit, Bayesian, and HMM approaches.",
-	"temporal_thinking":        "[solo — free] When analyzing how a system behaves over time. Models states, events, transitions, and constraints.",
-	"visual_reasoning":         "[solo — free] When analyzing diagrams or spatial relationships. Reasons about visual structures and transformations.",
-	"source_comparison":        "[solo — free] When you have multiple sources and need to find agreement/disagreement. Produces confidence matrix.",
-	"literature_review":        "[solo — free] When surveying a topic across multiple sources. Identifies themes, gaps, and research directions.",
-	"peer_review":              "[solo — free] Before committing to a solution, stress-test it. Finds objections a senior engineer would raise.",
-	"replication_analysis":     "[solo — free] When planning to replicate a claim or experiment. Identifies requirements and risks.",
-	"experimental_loop":        "[solo — free] When running experiments iteratively. Tracks hypothesize → test → measure → iterate cycles.",
-	"research_synthesis":       "[solo — free] When synthesizing findings from multiple sources. Produces structured claims with evidence and confidence.",
+	"critical_thinking":        "[cognitive move — solo/free] When you suspect bias in your reasoning. Scans text for cognitive biases using trigger-phrase detection.",
+	"sequential_thinking":      "[cognitive move — solo/free] When a problem needs step-by-step reasoning with possible revision. Chains thoughts with branching support.",
+	"debugging_approach":       "[cognitive move — solo/free] When you're stuck on a bug and need to narrow down the cause systematically. Tracks hypotheses and known debugging methods.",
+	"decision_framework":       "[cognitive move — solo/free] When you need to choose between options. Scores alternatives against weighted criteria.",
+	"problem_decomposition":    "[cognitive move — solo/free] When a problem feels too big to tackle at once. Breaks it into sub-problems with dependencies and risks.",
+	"scientific_method":        "[cognitive move — solo/free] When you need rigorous hypothesis testing. Guides through observation, hypothesis, experiment, analysis, and conclusion.",
+	"mental_model":             "[cognitive move — solo/free] When you want a different perspective on a problem. Applies one of 15 mental models.",
+	"metacognitive_monitoring": "[cognitive move — solo/free] When you're unsure if your reasoning is sound. Checks for overconfidence and blind spots.",
+	"structured_argumentation": "[cognitive move — solo/free] When building or evaluating an argument. Structures claims, evidence, and rebuttals with severity ratings.",
+	"collaborative_reasoning":  "[cognitive move — solo/free] When multiple perspectives would help. Multi-persona reasoning with stage tracking.",
+	"recursive_thinking":       "[cognitive move — solo/free] When a problem has self-similar sub-problems. Recursive decomposition with base cases and depth tracking.",
+	"domain_modeling":          "[cognitive move — solo/free] When understanding a domain's structure. Models entities, relationships, rules, and constraints.",
+	"architecture_analysis":    "[cognitive move — solo/free] Before making architectural decisions. ATAM-lite analysis with coupling detection.",
+	"stochastic_algorithm":     "[cognitive move — solo/free] When dealing with probabilistic decisions. Analyzes MDP, MCTS, bandit, Bayesian, and HMM approaches.",
+	"temporal_thinking":        "[cognitive move — solo/free] When analyzing how a system behaves over time. Models states, events, transitions, and constraints.",
+	"visual_reasoning":         "[cognitive move — solo/free] When analyzing diagrams or spatial relationships. Reasons about visual structures and transformations.",
+	"source_comparison":        "[cognitive move — solo/free] When you have multiple sources and need to find agreement or disagreement. Produces confidence matrix.",
+	"literature_review":        "[cognitive move — solo/free] When surveying a topic across multiple sources. Identifies themes, gaps, and research directions.",
+	"peer_review":              "[cognitive move — solo/free] Before committing to a solution, stress-test it. Finds objections a senior engineer would raise.",
+	"replication_analysis":     "[cognitive move — solo/free] When planning to replicate a claim or experiment. Identifies requirements and risks.",
+	"experimental_loop":        "[cognitive move — solo/free] When running experiments iteratively. Tracks hypothesize, test, measure, and iterate cycles.",
+	"research_synthesis":       "[cognitive move — solo/free] When synthesizing findings from multiple sources. Produces structured claims with evidence and confidence.",
 }
 
 // patternDescription returns the FR-8 description for a pattern handler.
@@ -69,11 +68,13 @@ func validatePatternFieldSchema(patternName, fieldName string, schema think.Fiel
 	}
 }
 
-// registerPatternTools registers all 23 think patterns as individual MCP tools.
-// Called from registerTools() replacing the single "think" tool.
+// registerPatternTools registers low-level cognitive moves as individual MCP tools.
 func (s *Server) registerPatternTools() {
 	patterns.RegisterAll() // idempotent via sync.Once
 	for _, name := range think.GetAllPatterns() {
+		if name == "think" {
+			continue
+		}
 		handler := think.GetPattern(name)
 		if handler == nil {
 			continue
@@ -169,7 +170,7 @@ func (s *Server) registerPatternTools() {
 	}
 }
 
-// handlePattern is the unified dispatcher for all 23 per-pattern MCP tools.
+// handlePattern is the unified dispatcher for low-level cognitive move MCP tools.
 // It extracts the tool name from the request to identify the PatternHandler,
 // then executes the same logic as handleThink.
 func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -254,12 +255,12 @@ func (s *Server) handlePattern(ctx context.Context, request mcp.CallToolRequest)
 	// Build response with mode indicator
 	summary := think.GenerateSummary(thinkResult, complexity.Recommendation)
 	response := map[string]any{
-		"pattern":   thinkResult.Pattern,
-		"status":    thinkResult.Status,
-		"summary":   summary,
-		"timestamp": thinkResult.Timestamp,
-		"data":                   thinkResult.Data,
-		"mode":                   effectiveMode,
+		"pattern":                  thinkResult.Pattern,
+		"status":                   thinkResult.Status,
+		"summary":                  summary,
+		"timestamp":                thinkResult.Timestamp,
+		"data":                     thinkResult.Data,
+		"mode":                     effectiveMode,
 		"complexityRecommendation": complexity.Recommendation,
 		"complexity": map[string]any{
 			"total":     complexity.Total,
