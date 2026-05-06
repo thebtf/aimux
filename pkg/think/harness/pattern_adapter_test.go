@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -48,5 +49,26 @@ func TestInputForPatternUsesStructuredVisibleWorkProduct(t *testing.T) {
 	findings, ok := input["findings"].([]any)
 	if !ok || len(findings) != 2 {
 		t.Fatalf("findings = %#v", input["findings"])
+	}
+}
+
+func TestPatternAdapterSkipsPostCheckArtifactsWithoutPatternSession(t *testing.T) {
+	execution, err := (PatternAdapter{}).Execute(context.Background(), CognitiveMove{
+		Name:    "critical_thinking",
+		Pattern: "critical_thinking",
+	}, "visible claim", "harness-session")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	for _, entry := range execution.LedgerAdds.Checkable {
+		if entry.ID == "pattern_gate" || entry.ID == "pattern_advisor" {
+			t.Fatalf("post-check ledger entry emitted without pattern session: %+v", entry)
+		}
+	}
+	for _, factor := range execution.ConfidenceFactors {
+		if factor.Name == "pattern_gate" || factor.Name == "pattern_advisor" {
+			t.Fatalf("post-check confidence factor emitted without pattern session: %+v", factor)
+		}
 	}
 }

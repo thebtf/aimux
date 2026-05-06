@@ -1,6 +1,9 @@
 package harness
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Phase string
 
@@ -62,19 +65,28 @@ type TaskFrame struct {
 }
 
 func NewTaskFrame(frame TaskFrame) (TaskFrame, error) {
-	if frame.Task == "" {
-		return TaskFrame{}, invalidInputError("task frame requires task", "Provide the task being reasoned about.")
+	var err error
+	if frame.Task, err = requiredTrimmedString(frame.Task, "task frame requires task", "Provide the task being reasoned about."); err != nil {
+		return TaskFrame{}, err
 	}
-	if frame.Goal == "" {
-		return TaskFrame{}, invalidInputError("task frame requires goal", "Describe the desired outcome.")
+	if frame.Goal, err = requiredTrimmedString(frame.Goal, "task frame requires goal", "Describe the desired outcome."); err != nil {
+		return TaskFrame{}, err
 	}
-	if frame.ContextSummary == "" {
-		return TaskFrame{}, invalidInputError("task frame requires context_summary", "Provide visible context for the run.")
+	if frame.ContextSummary, err = requiredTrimmedString(frame.ContextSummary, "task frame requires context_summary", "Provide visible context for the run."); err != nil {
+		return TaskFrame{}, err
 	}
-	if frame.SuccessSignal == "" {
-		return TaskFrame{}, invalidInputError("task frame requires success_signal", "State how the caller will know the work is complete.")
+	if frame.SuccessSignal, err = requiredTrimmedString(frame.SuccessSignal, "task frame requires success_signal", "State how the caller will know the work is complete."); err != nil {
+		return TaskFrame{}, err
 	}
 	return frame.clone(), nil
+}
+
+func requiredTrimmedString(value, message, nextStep string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", invalidInputError(message, nextStep)
+	}
+	return trimmed, nil
 }
 
 func (f TaskFrame) clone() TaskFrame {
@@ -113,8 +125,8 @@ func (l KnowledgeLedger) clone() KnowledgeLedger {
 func (l KnowledgeLedger) validate() error {
 	for _, entries := range [][]LedgerEntry{l.Known, l.Unknown, l.Assumptions, l.Conflicts, l.Checkable, l.Blocked} {
 		for _, entry := range entries {
-			if entry.Text == "" {
-				return invalidInputError("ledger entry requires text", "Report a visible knowledge entry before updating the ledger.")
+			if _, err := requiredTrimmedString(entry.Text, "ledger entry requires text", "Report a visible knowledge entry before updating the ledger."); err != nil {
+				return err
 			}
 		}
 	}
@@ -144,8 +156,8 @@ type MovePlan struct {
 }
 
 func (m MovePlan) validate() error {
-	if m.Name == "" {
-		return invalidInputError("move plan requires name", "Choose a named cognitive move.")
+	if _, err := requiredTrimmedString(m.Name, "move plan requires name", "Choose a named cognitive move."); err != nil {
+		return err
 	}
 	if m.Group == "" {
 		return invalidInputError("move plan requires group", "Choose a move group such as frame, explore, test, evaluate, calibrate, or finalize.")
@@ -153,11 +165,11 @@ func (m MovePlan) validate() error {
 	if !validMoveGroup(m.Group) {
 		return invalidInputError("move plan requires valid group", "Use frame, explore, test, evaluate, calibrate, or finalize.")
 	}
-	if m.Reason == "" {
-		return invalidInputError("move plan requires reason", "Explain why this move fits the current gap.")
+	if _, err := requiredTrimmedString(m.Reason, "move plan requires reason", "Explain why this move fits the current gap."); err != nil {
+		return err
 	}
-	if m.ExpectedArtifactDelta == "" {
-		return invalidInputError("move plan requires expected_artifact_delta", "Name the artifact the move should change.")
+	if _, err := requiredTrimmedString(m.ExpectedArtifactDelta, "move plan requires expected_artifact_delta", "Name the artifact the move should change."); err != nil {
+		return err
 	}
 	return nil
 }
@@ -170,8 +182,10 @@ type EvidenceRef struct {
 }
 
 func (e EvidenceRef) validate() error {
-	if e.Kind == "" || e.Ref == "" || e.Summary == "" {
-		return invalidInputError("evidence requires kind, ref, and summary", "Attach visible evidence before using it to advance the session.")
+	for _, value := range []string{e.Kind, e.Ref, e.Summary} {
+		if _, err := requiredTrimmedString(value, "evidence requires kind, ref, and summary", "Attach visible evidence before using it to advance the session."); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -185,11 +199,11 @@ type Observation struct {
 }
 
 func (o Observation) validate() error {
-	if o.MoveName == "" {
-		return invalidInputError("observation requires move_name", "Name the move that produced this observation.")
+	if _, err := requiredTrimmedString(o.MoveName, "observation requires move_name", "Name the move that produced this observation."); err != nil {
+		return err
 	}
-	if o.WorkProduct == "" {
-		return invalidInputError("observation requires work_product", "Report visible work product before marking a move observed.")
+	if _, err := requiredTrimmedString(o.WorkProduct, "observation requires work_product", "Report visible work product before marking a move observed."); err != nil {
+		return err
 	}
 	if o.CallerConfidence < 0 || o.CallerConfidence > 1 {
 		return invalidInputError("caller_confidence must be between 0 and 1", "Provide confidence as a normalized value.")
@@ -245,8 +259,8 @@ func (o Objection) validate() error {
 	if !validObjectionSeverity(o.Severity) {
 		return invalidInputError("objection requires valid severity", "Use critical, major, or minor.")
 	}
-	if o.Text == "" {
-		return invalidInputError("objection requires text", "Describe the unresolved issue.")
+	if _, err := requiredTrimmedString(o.Text, "objection requires text", "Describe the unresolved issue."); err != nil {
+		return err
 	}
 	return nil
 }
@@ -258,8 +272,11 @@ type ConfidenceFactor struct {
 }
 
 func (f ConfidenceFactor) validate() error {
-	if f.Name == "" || f.Reason == "" {
-		return invalidInputError("confidence factor requires name and reason", "Explain the evidence or objection changing confidence.")
+	if _, err := requiredTrimmedString(f.Name, "confidence factor requires name and reason", "Explain the evidence or objection changing confidence."); err != nil {
+		return err
+	}
+	if _, err := requiredTrimmedString(f.Reason, "confidence factor requires name and reason", "Explain the evidence or objection changing confidence."); err != nil {
+		return err
 	}
 	return nil
 }
@@ -279,10 +296,13 @@ func (d StopDecision) validate() error {
 	if !validStopAction(d.Action) {
 		return invalidInputError("stop decision requires valid action", "Use continue, redirect, compress, finalize, or stop.")
 	}
-	if d.Reason == "" {
-		return invalidInputError("stop decision requires reason", "Explain why the session should continue, redirect, compress, finalize, or stop.")
+	if _, err := requiredTrimmedString(d.Reason, "stop decision requires reason", "Explain why the session should continue, redirect, compress, finalize, or stop."); err != nil {
+		return err
 	}
 	for _, objection := range d.UnresolvedObjections {
+		if objection.Resolved {
+			return invalidInputError("stop decision requires unresolved objections", "Remove resolved objections from unresolved_objections before stopping.")
+		}
 		if err := objection.validate(); err != nil {
 			return err
 		}

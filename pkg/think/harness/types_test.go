@@ -21,6 +21,31 @@ func TestTaskFrameValidation(t *testing.T) {
 	}
 }
 
+func TestTaskFrameTrimsRequiredFieldsAndRejectsWhitespace(t *testing.T) {
+	frame, err := NewTaskFrame(TaskFrame{
+		Task:           "  choose the right implementation path  ",
+		Goal:           "  ship a caller-centered thinking harness  ",
+		ContextSummary: "  CR-002 replaces the base think router  ",
+		SuccessSignal:  "  gates block unsupported finalization  ",
+	})
+	if err != nil {
+		t.Fatalf("valid task frame rejected: %v", err)
+	}
+	if frame.Task != "choose the right implementation path" {
+		t.Fatalf("task was not trimmed: %q", frame.Task)
+	}
+
+	_, err = NewTaskFrame(TaskFrame{
+		Task:           "  ",
+		Goal:           "ship",
+		ContextSummary: "context",
+		SuccessSignal:  "done",
+	})
+	if err == nil {
+		t.Fatal("whitespace-only task accepted")
+	}
+}
+
 func TestArtifactPatchUpdatesEveryLoopStage(t *testing.T) {
 	frame, err := NewTaskFrame(TaskFrame{
 		Task:           "reason about a risky change",
@@ -110,6 +135,25 @@ func TestArtifactPatchUpdatesEveryLoopStage(t *testing.T) {
 
 	if len(session.Ledger.Known) != 0 || len(session.MoveHistory) != 0 {
 		t.Fatalf("original session mutated: %+v", session)
+	}
+}
+
+func TestStopDecisionRejectsResolvedUnresolvedObjection(t *testing.T) {
+	session := NewThinkingSession("s1", validFrame(t))
+	_, err := session.ApplyPatch(KnowledgePatch{
+		StopDecision: &StopDecision{
+			Action:      StopContinue,
+			Reason:      "an objection remains",
+			CanFinalize: false,
+			UnresolvedObjections: []Objection{{
+				Severity: ObjectionMajor,
+				Text:     "already handled",
+				Resolved: true,
+			}},
+		},
+	})
+	if err == nil {
+		t.Fatal("resolved objection accepted in unresolved_objections")
 	}
 }
 

@@ -48,13 +48,15 @@ func (PatternAdapter) Execute(ctx context.Context, move CognitiveMove, workProdu
 		return PatternExecution{}, err
 	}
 
-	gateDecision := thinkcore.GateDecision{Status: "complete"}
-	advisorRec := thinkcore.Recommendation{Action: "continue", Reason: "stateless invocation"}
 	patternSessionID := result.SessionID
 	if patternSessionID == "" {
 		patternSessionID = sessionID
 	}
+	var gateDecision thinkcore.GateDecision
+	var advisorRec thinkcore.Recommendation
+	postChecksAvailable := false
 	if sess := thinkcore.GetSession(patternSessionID); sess != nil {
+		postChecksAvailable = true
 		gateDecision = thinkcore.NewEnforcementGate().Check(move.Pattern, sess)
 		advisorRec = thinkcore.NewPatternAdvisor().Evaluate(sess, result)
 		if advisorRec.StatePatch != nil {
@@ -66,48 +68,56 @@ func (PatternAdapter) Execute(ctx context.Context, move CognitiveMove, workProdu
 	}
 
 	summary := thinkcore.GenerateSummary(result, "solo")
-	return PatternExecution{
-		Summary: summary,
-		Data:    result.Data,
-		LedgerAdds: KnowledgeLedger{
-			Checkable: []LedgerEntry{
-				{
-					ID:     "move_output",
-					Text:   summary,
-					Source: move.Pattern,
-					Status: "observed",
-				},
-				{
-					ID:     "pattern_gate",
-					Text:   patternGateText(gateDecision),
-					Source: move.Pattern,
-					Status: gateDecision.Status,
-				},
-				{
-					ID:     "pattern_advisor",
-					Text:   patternAdvisorText(advisorRec),
-					Source: move.Pattern,
-					Status: advisorRec.Action,
-				},
-			},
+	checkable := []LedgerEntry{
+		{
+			ID:     "move_output",
+			Text:   summary,
+			Source: move.Pattern,
+			Status: "observed",
 		},
-		ConfidenceFactors: []ConfidenceFactor{
-			{
-				Name:   "move_execution",
-				Impact: 0.05,
-				Reason: "selected cognitive move executed through the low-level pattern adapter",
+	}
+	factors := []ConfidenceFactor{
+		{
+			Name:   "move_execution",
+			Impact: 0.05,
+			Reason: "selected cognitive move executed through the low-level pattern adapter",
+		},
+	}
+	if postChecksAvailable {
+		checkable = append(checkable,
+			LedgerEntry{
+				ID:     "pattern_gate",
+				Text:   patternGateText(gateDecision),
+				Source: move.Pattern,
+				Status: gateDecision.Status,
 			},
-			{
+			LedgerEntry{
+				ID:     "pattern_advisor",
+				Text:   patternAdvisorText(advisorRec),
+				Source: move.Pattern,
+				Status: advisorRec.Action,
+			},
+		)
+		factors = append(factors,
+			ConfidenceFactor{
 				Name:   "pattern_gate",
 				Impact: gateConfidenceImpact(gateDecision),
 				Reason: patternGateText(gateDecision),
 			},
-			{
+			ConfidenceFactor{
 				Name:   "pattern_advisor",
 				Impact: advisorConfidenceImpact(advisorRec),
 				Reason: patternAdvisorText(advisorRec),
 			},
+		)
+	}
+	return PatternExecution{
+		Summary: summary,
+		Data:    result.Data,
+		LedgerAdds: KnowledgeLedger{
+			Checkable: checkable,
 		},
+		ConfidenceFactors: factors,
 	}, nil
 }
 

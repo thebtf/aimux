@@ -36,7 +36,8 @@ func BenchmarkThinkHarnessFinalizeHandlerOverhead(b *testing.B) {
 	}
 
 	b.StopTimer()
-	p95 := measureServerFinalizeP95(b, srv, 32, 32)
+	p95Srv := testServer(b)
+	p95 := measureServerFinalizeP95(b, p95Srv, 32, 32)
 	b.ReportMetric(float64(p95)/float64(time.Millisecond), "p95_ms")
 }
 
