@@ -48,7 +48,8 @@ const (
 	StopRedirect StopAction = "redirect"
 	StopCompress StopAction = "compress"
 	StopFinalize StopAction = "finalize"
-	StopHalt     StopAction = "stop"
+	// StopHalt serializes as "stop" because it is a caller-facing terminal action.
+	StopHalt StopAction = "stop"
 )
 
 type TaskFrame struct {

@@ -42,20 +42,22 @@ func BenchmarkThinkHarnessFinalizeHandlerOverhead(b *testing.B) {
 
 func measureServerFinalizeP95(tb testing.TB, srv *Server, sampleCount int, batchSize int) time.Duration {
 	tb.Helper()
-	samples := make([]time.Duration, 0, sampleCount)
+	samples := make([]time.Duration, 0, sampleCount*batchSize)
 	for sample := 0; sample < sampleCount; sample++ {
 		sessionIDs := make([]string, batchSize)
 		for i := 0; i < batchSize; i++ {
 			sessionIDs[i] = prepareThinkHarnessFinalizeSession(tb, srv, sample*batchSize+i)
 		}
 
-		start := time.Now()
 		for i := 0; i < batchSize; i++ {
-			result, err := srv.handleThinkHarness(context.Background(), makeRequest("think", map[string]any{
+			request := makeRequest("think", map[string]any{
 				"action":          "finalize",
 				"session_id":      sessionIDs[i],
 				"proposed_answer": "The supported answer can ship.",
-			}))
+			})
+			start := time.Now()
+			result, err := srv.handleThinkHarness(context.Background(), request)
+			samples = append(samples, time.Since(start))
 			if err != nil {
 				tb.Fatalf("finalize: %v", err)
 			}
@@ -63,7 +65,6 @@ func measureServerFinalizeP95(tb testing.TB, srv *Server, sampleCount int, batch
 				tb.Fatalf("finalize returned tool error: %+v", result.Content)
 			}
 		}
-		samples = append(samples, time.Since(start)/time.Duration(batchSize))
 	}
 	return serverPercentileDuration(samples, 0.95)
 }

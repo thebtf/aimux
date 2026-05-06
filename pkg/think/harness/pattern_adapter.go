@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 
 	thinkcore "github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
@@ -21,12 +22,14 @@ type PatternExecution struct {
 
 type PatternAdapter struct{}
 
+var patternAdapterRegisterOnce sync.Once
+
 func (PatternAdapter) Execute(ctx context.Context, move CognitiveMove, workProduct string, sessionID string) (PatternExecution, error) {
 	if err := ctx.Err(); err != nil {
 		return PatternExecution{}, err
 	}
 
-	patterns.RegisterAll()
+	patternAdapterRegisterOnce.Do(patterns.RegisterAll)
 	handler := thinkcore.GetPattern(move.Pattern)
 	if handler == nil {
 		return PatternExecution{}, fmt.Errorf("pattern %q not registered", move.Pattern)

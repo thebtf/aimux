@@ -62,8 +62,9 @@ func TestE2E_ThinkHarnessFullFlow(t *testing.T) {
 	if !ok {
 		t.Fatalf("finalize missing trace_summary: %v", finalized)
 	}
-	if traceSummary["stop_reason"] == "" {
-		t.Fatalf("trace_summary missing stop_reason: %v", traceSummary)
+	stopReason, ok := traceSummary["stop_reason"].(string)
+	if !ok || stopReason == "" {
+		t.Fatalf("trace_summary.stop_reason missing or not a non-empty string: %v", traceSummary["stop_reason"])
 	}
 }
 
