@@ -143,7 +143,7 @@ func TestShim_NoSQLiteWrites(t *testing.T) {
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
-				t.Log("daemon Wait() did not return within 2s after Kill")
+				t.Fatal("daemon Wait() did not return within 2s after Kill")
 			}
 		}
 	})
