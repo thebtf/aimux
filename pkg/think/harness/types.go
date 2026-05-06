@@ -1,5 +1,7 @@
 package harness
 
+import "time"
+
 type Phase string
 
 const (
@@ -298,6 +300,7 @@ type ThinkingSession struct {
 	ID                string             `json:"id"`
 	Phase             Phase              `json:"phase"`
 	Frame             TaskFrame          `json:"frame"`
+	StartedAt         time.Time          `json:"started_at,omitempty"`
 	Ledger            KnowledgeLedger    `json:"ledger"`
 	MoveHistory       []MovePlan         `json:"move_history,omitempty"`
 	Observations      []Observation      `json:"observations,omitempty"`
@@ -309,10 +312,11 @@ type ThinkingSession struct {
 
 func NewThinkingSession(id string, frame TaskFrame) ThinkingSession {
 	return ThinkingSession{
-		ID:     id,
-		Phase:  PhaseFrame,
-		Frame:  frame.clone(),
-		Ledger: KnowledgeLedger{},
+		ID:        id,
+		Phase:     PhaseFrame,
+		Frame:     frame.clone(),
+		StartedAt: time.Now().UTC(),
+		Ledger:    KnowledgeLedger{},
 	}
 }
 

@@ -51,6 +51,26 @@ type StepResponse struct {
 	PatternExecutionError string               `json:"pattern_execution_error,omitempty"`
 }
 
+type FinalizeRequest struct {
+	SessionID      string `json:"session_id"`
+	ProposedAnswer string `json:"proposed_answer"`
+	ForceFinalize  bool   `json:"force_finalize,omitempty"`
+}
+
+type FinalizeResponse struct {
+	SessionID            string             `json:"session_id"`
+	CanFinalize          bool               `json:"can_finalize"`
+	Accepted             bool               `json:"accepted"`
+	MissingGates         []string           `json:"missing_gates,omitempty"`
+	GateReport           GateReport         `json:"gate_report"`
+	ConfidenceCeiling    float64            `json:"confidence_ceiling"`
+	ConfidenceTier       string             `json:"confidence_tier"`
+	ConfidenceFactors    []ConfidenceFactor `json:"confidence_factors,omitempty"`
+	UnresolvedObjections []Objection        `json:"unresolved_objections,omitempty"`
+	StopDecision         StopDecision       `json:"stop_decision"`
+	TraceSummary         TraceSummary       `json:"trace_summary"`
+}
+
 type Controller struct {
 	store       Store
 	catalog     MoveCatalog
@@ -250,11 +270,18 @@ func (c *Controller) Step(ctx context.Context, req StepRequest) (StepResponse, e
 		})
 	}
 
-	factors := confidenceFactors(req.Evidence, gate, objections, req.CallerConfidence)
+	activeObjections := append(unresolvedObjections(session.Objections), objections...)
+	confidence := EvaluateConfidence(ConfidenceInput{
+		CallerConfidence: req.CallerConfidence,
+		Evidence:         req.Evidence,
+		GateReport:       gate,
+		Objections:       activeObjections,
+		Ledger:           ledgerAdds,
+	})
+	factors := confidence.Factors
 	if execErr == nil {
 		factors = append(factors, exec.ConfidenceFactors...)
 	}
-	ceiling := confidenceCeiling(req.CallerConfidence, req.Evidence, gate, objections)
 	patch := KnowledgePatch{
 		Phase:             PhaseIntegrate,
 		LedgerAdds:        ledgerAdds,
@@ -285,7 +312,7 @@ func (c *Controller) Step(ctx context.Context, req StepRequest) (StepResponse, e
 		Observation:          &observation,
 		LedgerPatch:          ledgerAdds,
 		GateReport:           gate,
-		ConfidenceCeiling:    ceiling,
+		ConfidenceCeiling:    confidence.Ceiling,
 		ConfidenceFactors:    factors,
 		UnresolvedObjections: unresolvedObjections(updated.Objections),
 		AllowedMoveGroups:    c.catalog.AllowedGroups(updated.Phase),
@@ -298,47 +325,182 @@ func (c *Controller) Step(ctx context.Context, req StepRequest) (StepResponse, e
 	return resp, nil
 }
 
-func confidenceFactors(evidence []EvidenceRef, gate GateReport, objections []Objection, caller float64) []ConfidenceFactor {
-	factors := []ConfidenceFactor{{
-		Name:   "caller_confidence",
-		Impact: caller,
-		Reason: "caller supplied normalized confidence",
-	}}
-	if len(evidence) == 0 {
-		factors = append(factors, ConfidenceFactor{Name: "missing_evidence", Impact: -0.25, Reason: "no evidence references were attached"})
-	} else {
-		factors = append(factors, ConfidenceFactor{Name: "visible_evidence", Impact: 0.15, Reason: "one or more evidence references were attached"})
+func (c *Controller) Finalize(ctx context.Context, req FinalizeRequest) (FinalizeResponse, error) {
+	if req.SessionID == "" {
+		return FinalizeResponse{}, invalidInputError("finalize requires session_id", "Pass the session_id returned by think(action=start).")
 	}
-	if gate.Status != GatePass {
-		factors = append(factors, ConfidenceFactor{Name: "gate_not_passed", Impact: -0.2, Reason: "gate produced warnings or blockers"})
+	if req.ProposedAnswer == "" {
+		return FinalizeResponse{}, invalidInputError("finalize requires proposed_answer", "Provide the caller-owned proposed final answer for gate evaluation.")
 	}
-	if len(objections) > 0 {
-		factors = append(factors, ConfidenceFactor{Name: "unresolved_objections", Impact: -0.2, Reason: "unresolved objections constrain confidence"})
+
+	session, err := c.store.Get(ctx, req.SessionID)
+	if err != nil {
+		return FinalizeResponse{}, err
 	}
-	return factors
+
+	evidence := collectEvidence(session)
+	latestGate := latestGateReport(session)
+	confidence := EvaluateConfidence(ConfidenceInput{
+		CallerConfidence: latestCallerConfidence(session),
+		Evidence:         evidence,
+		GateReport:       latestGate,
+		Objections:       unresolvedObjections(session.Objections),
+		Ledger:           session.Ledger,
+	})
+	budget := ReviewBudget(BalancedBudgetProfile(), BudgetState{
+		StartedAt:          session.StartedAt,
+		Now:                time.Now().UTC(),
+		StepCount:          len(session.MoveHistory),
+		ConsecutiveNoDelta: consecutiveNoDelta(session),
+		MeaningfulDelta:    hasMeaningfulDelta(session),
+		LastDelta:          lastDelta(session),
+		ExpectedNextDelta:  "resolved gate, new evidence, objection update, or final integration",
+	})
+	gates := EvaluateFinalizationGates(FinalizationGateInput{
+		Session:        session,
+		ProposedAnswer: req.ProposedAnswer,
+		ForceFinalize:  req.ForceFinalize,
+		Confidence:     confidence,
+		Budget:         budget,
+	})
+
+	gateReport := GateReport{Status: GatePass}
+	stopAction := StopFinalize
+	stopReason := "finalized"
+	if !gates.CanFinalize {
+		gateReport = GateReport{
+			Status:      GateBlocked,
+			Blockers:    cloneStrings(gates.MissingGates),
+			MissingWork: cloneStrings(gates.MissingGates),
+		}
+		stopAction = StopContinue
+		stopReason = "missing_gates"
+		if containsExact(gates.MissingGates, "budget_exhausted") {
+			stopAction = StopHalt
+			stopReason = "budget_exhausted"
+		}
+	} else if len(gates.Warnings) > 0 {
+		gateReport = GateReport{Status: GateWarn, Warnings: cloneStrings(gates.Warnings)}
+	}
+
+	stop := StopDecision{
+		Action:               stopAction,
+		Reason:               finalizationReason(gates, confidence, budget, stopReason),
+		CanFinalize:          gates.CanFinalize,
+		UnresolvedObjections: gates.UnresolvedObjections,
+		BudgetState:          budget.BudgetState,
+	}
+
+	updated, err := c.store.Update(ctx, req.SessionID, func(current ThinkingSession) (ThinkingSession, error) {
+		return current.ApplyPatch(KnowledgePatch{
+			Phase:             PhaseFinalize,
+			GateReport:        &gateReport,
+			ConfidenceFactors: confidence.Factors,
+			StopDecision:      &stop,
+		})
+	})
+	if err != nil {
+		return FinalizeResponse{}, err
+	}
+
+	return FinalizeResponse{
+		SessionID:            updated.ID,
+		CanFinalize:          gates.CanFinalize,
+		Accepted:             gates.CanFinalize,
+		MissingGates:         cloneStrings(gates.MissingGates),
+		GateReport:           gateReport,
+		ConfidenceCeiling:    confidence.Ceiling,
+		ConfidenceTier:       confidence.Tier,
+		ConfidenceFactors:    confidence.Factors,
+		UnresolvedObjections: gates.UnresolvedObjections,
+		StopDecision:         stop,
+		TraceSummary:         NewTraceSummary(updated, confidence.Tier, stopReason, gates.MissingGates),
+	}, nil
 }
 
-func confidenceCeiling(caller float64, evidence []EvidenceRef, gate GateReport, objections []Objection) float64 {
-	cap := 0.85
-	if len(evidence) == 0 {
-		cap = 0.45
+func collectEvidence(session ThinkingSession) []EvidenceRef {
+	var evidence []EvidenceRef
+	for _, observation := range session.Observations {
+		evidence = append(evidence, cloneEvidence(observation.Evidence)...)
 	}
-	if gate.Status == GateWarn && cap > 0.65 {
-		cap = 0.65
+	return evidence
+}
+
+func latestGateReport(session ThinkingSession) GateReport {
+	if len(session.GateReports) == 0 {
+		return GateReport{Status: GateWarn, MissingWork: []string{"full_loop", "evidence"}}
 	}
-	if gate.Status == GateBlocked && cap > 0.35 {
-		cap = 0.35
+	return session.GateReports[len(session.GateReports)-1].clone()
+}
+
+func latestCallerConfidence(session ThinkingSession) float64 {
+	if len(session.Observations) == 0 {
+		return 0
 	}
-	if len(objections) > 0 && cap > 0.55 {
-		cap = 0.55
+	return session.Observations[len(session.Observations)-1].CallerConfidence
+}
+
+func consecutiveNoDelta(session ThinkingSession) int {
+	if len(session.Observations) == 0 {
+		return 0
 	}
-	if caller <= 0 {
-		return cap
+	last := session.Observations[len(session.Observations)-1]
+	if len(last.Evidence) > 0 {
+		return 0
 	}
-	if caller < cap {
-		return caller
+	count := 1
+	for i := len(session.Observations) - 1; i > 0; i-- {
+		current := session.Observations[i]
+		previous := session.Observations[i-1]
+		if current.WorkProduct == previous.WorkProduct && len(previous.Evidence) == 0 {
+			count++
+			continue
+		}
+		break
 	}
-	return cap
+	return count
+}
+
+func hasMeaningfulDelta(session ThinkingSession) bool {
+	if len(session.Observations) == 0 {
+		return false
+	}
+	last := session.Observations[len(session.Observations)-1]
+	if len(last.Evidence) > 0 {
+		return true
+	}
+	if len(session.Observations) == 1 {
+		return last.WorkProduct != ""
+	}
+	previous := session.Observations[len(session.Observations)-2]
+	return last.WorkProduct != "" && last.WorkProduct != previous.WorkProduct
+}
+
+func lastDelta(session ThinkingSession) string {
+	if len(session.Observations) == 0 {
+		return ""
+	}
+	last := session.Observations[len(session.Observations)-1]
+	if last.WorkProduct != "" {
+		return last.WorkProduct
+	}
+	if len(last.Evidence) > 0 {
+		return last.Evidence[len(last.Evidence)-1].Summary
+	}
+	return ""
+}
+
+func finalizationReason(gates FinalizationGateReview, confidence ConfidenceReview, budget BudgetReview, stopReason string) string {
+	if gates.CanFinalize {
+		if len(gates.UnresolvedObjections) > 0 {
+			return "finalization accepted with disclosed non-critical objections"
+		}
+		return "finalization accepted with visible evidence and calibrated confidence"
+	}
+	if stopReason == "budget_exhausted" {
+		return budget.ResumableSummary
+	}
+	return fmt.Sprintf("finalization blocked by missing gates %v with confidence tier %s", gates.MissingGates, confidence.Tier)
 }
 
 func unresolvedObjections(objections []Objection) []Objection {

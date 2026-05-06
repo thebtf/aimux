@@ -109,13 +109,7 @@ func (s *Server) handleThinkHarness(ctx context.Context, request mcp.CallToolReq
 	case "step":
 		return s.handleThinkHarnessStep(ctx, request)
 	case "finalize":
-		return marshalToolErrorResult(map[string]any{
-			"status":    "error",
-			"code":      "controller_unavailable",
-			"message":   "This think harness action requires session controller state that is not available in this binary.",
-			"next_step": "Use the low-level cognitive move tools directly, or use a build with the think session controller wired.",
-			"action":    action,
-		})
+		return s.handleThinkHarnessFinalize(ctx, request)
 	default:
 		return marshalToolErrorResult(map[string]any{
 			"status":    "error",
@@ -158,6 +152,18 @@ func (s *Server) handleThinkHarnessStep(ctx context.Context, request mcp.CallToo
 		Evidence:         evidence,
 		CallerConfidence: request.GetFloat("confidence", 0),
 		Execute:          &execute,
+	})
+	if err != nil {
+		return marshalThinkHarnessError(err)
+	}
+	return marshalToolResult(resp)
+}
+
+func (s *Server) handleThinkHarnessFinalize(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	resp, err := s.thinkController().Finalize(ctx, harness.FinalizeRequest{
+		SessionID:      request.GetString("session_id", ""),
+		ProposedAnswer: request.GetString("proposed_answer", ""),
+		ForceFinalize:  request.GetBool("force_finalize", false),
 	})
 	if err != nil {
 		return marshalThinkHarnessError(err)
