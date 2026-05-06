@@ -22,6 +22,7 @@ type StartResponse struct {
 	MissingInputs     []string             `json:"missing_inputs"`
 	NextPrompt        string               `json:"next_prompt"`
 	KnowledgeState    KnowledgeLedger      `json:"knowledge_state"`
+	TraceSummary      TraceSummary         `json:"trace_summary"`
 }
 
 type StepRequest struct {
@@ -48,6 +49,7 @@ type StepResponse struct {
 	RecommendedMoves      []MoveRecommendation `json:"recommended_moves"`
 	RequiredReportBack    []string             `json:"required_report_back,omitempty"`
 	NextPrompt            string               `json:"next_prompt"`
+	TraceSummary          TraceSummary         `json:"trace_summary"`
 	PatternExecutionError string               `json:"pattern_execution_error,omitempty"`
 }
 
@@ -163,6 +165,7 @@ func (c *Controller) Start(ctx context.Context, req StartRequest) (StartResponse
 		MissingInputs:     []string{"chosen_move", "work_product", "evidence", "confidence"},
 		NextPrompt:        "Inventory what is known, unknown, assumed, conflicting, checkable, or blocked, then choose the next cognitive move and report its visible work product.",
 		KnowledgeState:    created.Ledger.clone(),
+		TraceSummary:      NewTraceSummary(created, "", "", nil),
 	}, nil
 }
 
@@ -202,6 +205,7 @@ func (c *Controller) Step(ctx context.Context, req StepRequest) (StepResponse, e
 			RecommendedMoves:   c.catalog.Recommend(session),
 			RequiredReportBack: []string{"work_product", "evidence", "confidence"},
 			NextPrompt:         fmt.Sprintf("Use %s as guidance, then report the visible work_product, evidence, and confidence in a later think(action=step) call.", move.Name),
+			TraceSummary:       NewTraceSummary(session, "", "guidance_only", nil),
 		}, nil
 	}
 
@@ -318,6 +322,7 @@ func (c *Controller) Step(ctx context.Context, req StepRequest) (StepResponse, e
 		AllowedMoveGroups:    c.catalog.AllowedGroups(updated.Phase),
 		RecommendedMoves:     c.catalog.Recommend(updated),
 		NextPrompt:           "Integrate the updated knowledge state, resolve blockers or objections, then choose the next cognitive move or request finalization when support is sufficient.",
+		TraceSummary:         NewTraceSummary(updated, confidence.Tier, "continue", nil),
 	}
 	if execErr != nil {
 		resp.PatternExecutionError = execErr.Error()

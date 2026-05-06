@@ -1,8 +1,8 @@
 # aimux Production Testing Playbook
 
-**Last updated:** 2026-05-05
-**Tested surface:** current post-purge master surface: 4 server tools plus 23
-think pattern tools.
+**Last updated:** 2026-05-06
+**Tested surface:** current post-purge master surface: 4 server tools,
+`think(action=start|step|finalize)`, and 22 cognitive move tools.
 **Mode:** customer (no internal code knowledge — operator perspective)
 
 ## How to use
@@ -160,7 +160,7 @@ cat ./.aimux/tenants.yaml
 
 ## Phase B — Happy path (single-tenant)
 
-Single-tenant context: no `tenants.yaml` on disk. Run all four scenarios in one
+Single-tenant context: no `tenants.yaml` on disk. Run all five scenarios in one
 daemon lifetime.
 
 **Setup (run once):**
@@ -228,7 +228,46 @@ daemon lifetime.
 - Both responses include the input thought in some form.
 - No `panic` or `internal error` substring in either response.
 
-### Scenario B4: deepresearch query
+### Scenario B4: think(action=start|step|finalize) gated finalization
+
+**Steps:**
+1. Call:
+   ```
+   tool: think
+   args: {"action":"start","task":"Decide whether the answer can ship","context_summary":"Caller must provide evidence before finalization"}
+   ```
+   Capture `session_id`.
+2. Attempt premature finalization:
+   ```
+   tool: think
+   args: {"action":"finalize","session_id":"<session_id>","proposed_answer":"Ship it now"}
+   ```
+3. Submit one supported move:
+   ```
+   tool: think
+   args: {"action":"step","session_id":"<session_id>","chosen_move":"critical_thinking","work_product":"The answer has visible support and no critical objection.","confidence":0.78,"evidence":[{"kind":"file","ref":"spec.md","summary":"finalization requires visible support","verification_status":"verified"}]}
+   ```
+4. Finalize again:
+   ```
+   tool: think
+   args: {"action":"finalize","session_id":"<session_id>","proposed_answer":"The supported answer can ship."}
+   ```
+
+**Expected:**
+- Step 2 returns `can_finalize: false` and `missing_gates`.
+- Step 3 returns `executed: true`, `gate_report`, `confidence_ceiling`, and
+  bounded `trace_summary`.
+- Step 4 returns `can_finalize: true`, `stop_decision.action: "finalize"`,
+  `confidence_tier`, and `trace_summary.stop_reason`.
+- No response exposes a full unbounded trace by default.
+
+**Pass criteria:**
+- Premature finalization is a gate response, not an MCP tool error.
+- Supported finalization succeeds only after a visible work product and verified
+  evidence are submitted.
+- `trace_summary` is present and bounded in every action-mode response.
+
+### Scenario B5: deepresearch query
 
 **Steps:**
 1. Call:

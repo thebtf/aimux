@@ -1,0 +1,62 @@
+{
+  "session_id": "trace-basic",
+  "phase": "finalize",
+  "frame": {
+    "task": "frame a task",
+    "goal": "produce a useful result",
+    "context_summary": "test context",
+    "success_signal": "typed artifacts change"
+  },
+  "ledger": {
+    "known": [
+      {
+        "id": "answer",
+        "text": "Visible supported answer.",
+        "source": "caller",
+        "status": "observed"
+      }
+    ]
+  },
+  "moves": [
+    {
+      "name": "critical_thinking",
+      "group": "evaluate",
+      "reason": "test the answer before accepting it",
+      "expected_artifact_delta": "gate report and confidence factors update",
+      "execute": true
+    }
+  ],
+  "observations": [
+    {
+      "move_name": "critical_thinking",
+      "work_product": "Visible supported answer.",
+      "evidence": [
+        {
+          "kind": "file",
+          "ref": "spec.md",
+          "summary": "finalization requires visible support",
+          "verification_status": "verified"
+        }
+      ],
+      "caller_confidence": 0.82
+    }
+  ],
+  "evidence_count": 1,
+  "gate_reports": [
+    {
+      "status": "pass"
+    }
+  ],
+  "confidence_factors": [
+    {
+      "name": "visible_evidence",
+      "impact": 0.2,
+      "reason": "verified evidence supports finalization"
+    }
+  ],
+  "stop_decision": {
+    "action": "finalize",
+    "reason": "finalization accepted with visible evidence",
+    "can_finalize": true
+  }
+}

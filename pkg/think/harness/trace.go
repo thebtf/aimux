@@ -7,6 +7,7 @@ type ThinkingRunTrace struct {
 	Ledger            KnowledgeLedger    `json:"ledger"`
 	Moves             []MovePlan         `json:"moves,omitempty"`
 	Observations      []Observation      `json:"observations,omitempty"`
+	EvidenceCount     int                `json:"evidence_count"`
 	GateReports       []GateReport       `json:"gate_reports,omitempty"`
 	Objections        []Objection        `json:"objections,omitempty"`
 	ConfidenceFactors []ConfidenceFactor `json:"confidence_factors,omitempty"`
@@ -36,6 +37,7 @@ func NewThinkingRunTrace(session ThinkingSession) ThinkingRunTrace {
 		Ledger:            snapshot.Ledger,
 		Moves:             snapshot.MoveHistory,
 		Observations:      snapshot.Observations,
+		EvidenceCount:     evidenceCount(snapshot),
 		GateReports:       snapshot.GateReports,
 		Objections:        snapshot.Objections,
 		ConfidenceFactors: snapshot.ConfidenceFactors,

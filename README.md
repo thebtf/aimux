@@ -7,12 +7,12 @@
 [![MCP Tools](https://img.shields.io/badge/MCP-27%20tools-blueviolet)](https://modelcontextprotocol.io)
 
 aimux is an MCP server for durable task state, session operations, deep
-research, binary upgrades, and structured reasoning patterns.
+research, binary upgrades, and caller-centered structured reasoning.
 
 The current post-purge live surface is intentionally small:
 
 - 4 server tools: `status`, `sessions`, `deepresearch`, `upgrade`
-- 23 think pattern tools
+- 1 caller-centered `think` harness plus 22 cognitive move tools
 
 The former CLI-launching MCP tools (`exec`, `agent`, `agents`, `critique`,
 `investigate`, `consensus`, `debate`, `dialog`, `audit`, `workflow`) were
@@ -51,7 +51,7 @@ Add the binary to your MCP client configuration:
 ### Verify The Tool Surface
 
 Run `tools/list` from any MCP-capable client. A current build should expose
-27 tools: the 4 server tools plus the 23 think pattern tools.
+27 tools: the 4 server tools, the `think` harness, and 22 cognitive move tools.
 
 ```json
 {
@@ -93,10 +93,31 @@ for customer-mode release walkthroughs.
 | `deepresearch` | Run Gemini-backed research with structured output. |
 | `upgrade` | Check or apply aimux binary updates, including local source installs with truthful deferred fallback. |
 
-### Think Pattern Tools
+### Think Harness
 
-The 23 think tools provide in-process structured reasoning. They do not spawn
-AI CLIs.
+`think(action=start|step|finalize)` is the canonical caller-centered thinking
+harness. The caller owns the final answer; aimux tracks visible work products,
+evidence, gate status, confidence ceilings, unresolved objections, budget state,
+and a bounded `trace_summary`.
+
+Typical flow:
+
+1. `think(action=start, task=..., context_summary=...)` creates a session and
+   returns allowed cognitive moves plus a first prompt.
+2. `think(action=step, session_id=..., chosen_move=..., work_product=...,
+   evidence=[...], confidence=...)` records a visible move result and returns
+   gate/confidence feedback.
+3. `think(action=finalize, session_id=..., proposed_answer=...)` accepts only
+   when the loop, evidence, confidence, objections, and budget gates support it.
+
+Legacy `think(thought=...)` calls fail closed with a migration error. They do
+not route by keywords, create implicit sessions, or return pattern suggestion
+fields.
+
+### Cognitive Move Tools
+
+The 22 cognitive move tools provide in-process structured reasoning moves. They
+do not spawn AI CLIs.
 
 | Tool | Use |
 |---|---|
@@ -121,7 +142,6 @@ AI CLIs.
 | `stochastic_algorithm` | Explore randomized or probabilistic approaches. |
 | `structured_argumentation` | Claims, evidence, objections, and rebuttals. |
 | `temporal_thinking` | Timeline, sequencing, and time-based effects. |
-| `think` | General structured reasoning entry point. |
 | `visual_reasoning` | Spatial or visual structure reasoning. |
 
 Each per-pattern result includes gate status and an advisor recommendation.
@@ -138,7 +158,7 @@ flowchart TD
     Budget --> Sessions[sessions/status handlers]
     Budget --> Research[deepresearch handler]
     Budget --> Upgrade[upgrade handler]
-    Budget --> Think[think pattern handlers]
+    Budget --> Think[think harness and cognitive move handlers]
 
     Sessions --> Loom[LoomEngine]
     Loom --> SQLite[(SQLite task/session state)]
@@ -182,7 +202,7 @@ Current production surface:
 - Session and task health/status operations.
 - Deep research through Gemini SDK.
 - Binary update with local source install and deferred fallback when live handoff is not supported.
-- 23 local think pattern tools.
+- Caller-centered `think` harness and 22 local cognitive move tools.
 - Loom-backed task state and recovery.
 
 Out of current scope:
