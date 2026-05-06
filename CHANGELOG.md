@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.0] — 2026-05-06 — caller-centered think harness
+
+Minor release for the AIMUX-9 CR-002 Layer 5 surface redesign. The public
+`think` entrypoint now acts as a caller-centered reasoning harness instead of a
+keyword-routed pattern picker.
+
+### Added
+
+- Public `think(action=start|step|finalize)` flow with explicit sessions,
+  visible work products, evidence, gate reports, confidence ceilings,
+  unresolved objections, budget state, and bounded `trace_summary` output.
+- `pkg/think/harness` domain package for `ThinkingSession`, typed reasoning
+  artifacts, copy-on-write in-memory storage, cognitive move catalog,
+  finalization gates, confidence review, adaptive budget review, and trace
+  summaries.
+- Server, unit, benchmark, and e2e coverage for start, step, guidance-only,
+  finalize, trace privacy, response shape, MCP inventory, and full harness flow.
+- Production playbook coverage for blocked premature finalization followed by
+  supported finalization.
+
+### Changed
+
+- The live MCP surface remains 27 tools, now described as 4 server tools, one
+  canonical `think` harness, and 22 low-level cognitive move tools.
+- Low-level think pattern tools are presented as cognitive moves rather than a
+  deterministic workflow router.
+- Documentation now describes the current caller-centered `think` contract in
+  English and Russian README variants.
+
+### Removed
+
+- The legacy base `think(thought=...)` keyword-router implementation was removed
+  from the pattern registry. Legacy minimal calls now fail closed with a
+  migration error instead of creating implicit sessions or returning
+  `suggestedPattern`.
+
+### Fixed
+
+- Review-hardening fixes for harness edge cases: structured work products now
+  fail closed when required JSON fields are missing, pattern advisor side
+  effects cannot run after an incomplete enforcement gate, benchmark p95 samples
+  assert successful finalization, and validation tests cover all required
+  trimmed fields plus fail-closed immutability.
+
 ## [5.7.0] — 2026-05-05 — current surface readiness and Loom library docs
 
 Minor release for the current post-purge production surface: 4 server tools plus
