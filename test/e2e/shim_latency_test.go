@@ -47,15 +47,12 @@ func latencyProjectRoot() string {
 }
 
 // shimReadyPattern matches the log line emitted by runShim() before engine.Run(ctx).
-// Post-AIMUX-11 + IPC OnInject wiring (mcp-mux v0.23.0): the line is emitted by
-// the shim's logger, buffered in IPCSink, drained AFTER the IPC handshake
-// completes (OnInject fires → SetSendFunc), and lands in the daemon's
-// aimux.log via notifications/aimux/log_forward → LogIngester → LocalSink:
-//
-//   <RFC3339> [INFO] [shim-?<id>-<id>] aimux v<ver> shim ready (name=<name>)
+// That line is the latency marker. Depending on whether IPCSink has received its
+// post-handshake send function by the time the drain goroutine processes the
+// entry, it can land either in the shim's stderr fallback or in the daemon log.
 //
 // Version may carry suffixes (-dev, +dirty, pseudo-version timestamp+hash) per pkg/build/build.go.
-var shimReadyPattern = regexp.MustCompile(`\[shim-\S+\] aimux v\d+\.\d+\.\d+\S*\s+shim ready`)
+var shimReadyPattern = regexp.MustCompile(`aimux v\d+\.\d+\.\d+\S*\s+shim ready`)
 
 // daemonReadyPattern matches the log line emitted by main.go daemon branch.
 // main.go: log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", ...)
@@ -119,14 +116,10 @@ func TestShim_Latency(t *testing.T) {
 	waitForLogPattern(t, logFile, daemonReadyPattern, 30*time.Second)
 	t.Logf("daemon ready; starting %d shim measurements", shimIterations)
 
-	_ = logFileSize // silence unused warning post-refactor (not on every flow)
-
-	// Phase 3: measurement loop. Scan the daemon's aimux.log starting at the
-	// byte offset captured before each shim spawn. After OnInject fires, the
-	// shim's "shim ready" line travels through IPC to LogIngester → LocalSink
-	// → lumberjack — landing as an `[shim-...]`-tagged entry in the same file.
-	// File-based scan via lumberjack writer dodges ConPTY/pipe artefacts
-	// entirely.
+	// Phase 3: measurement loop. Scan both possible sinks for the early
+	// runShim() marker. The logger is asynchronous: pre-handshake entries route
+	// to stderr fallback, while entries drained after OnInject may be forwarded
+	// to the daemon log. Either path proves the shim reached runShim().
 	latencies := make([]time.Duration, 0, shimIterations)
 	for i := 0; i < shimIterations; i++ {
 		// Pacing: give the daemon a beat to clean up the previous iteration's
@@ -141,11 +134,15 @@ func TestShim_Latency(t *testing.T) {
 		// Per-iteration stderr file is captured for diagnostics on FATAL only.
 		stderrPath := filepath.Join(tmpDir, fmt.Sprintf("shim-stderr-%02d.log", i+1))
 		start := time.Now()
-		shimCmd := spawnShimWithStderrFile(t, binPath, configDir, stderrPath)
+		shimCmd, closeShimStdin := spawnShimWithStderrFile(t, binPath, configDir, stderrPath)
 
-		err := waitForLogPatternFrom(logFile, offset, shimReadyPattern, 10*time.Second)
+		err := waitForAnyLogPatternFrom([]logCandidate{
+			{name: "shim stderr", path: stderrPath, offset: 0},
+			{name: "daemon log", path: logFile, offset: offset},
+		}, shimReadyPattern, 10*time.Second)
 		latency := time.Since(start)
 
+		closeShimStdin()
 		if shimCmd.Process != nil {
 			shimCmd.Process.Kill()
 			shimCmd.Wait() //nolint:errcheck // process was killed; non-zero exit is expected
@@ -153,7 +150,7 @@ func TestShim_Latency(t *testing.T) {
 
 		if err != nil {
 			stderrTail, _ := os.ReadFile(stderrPath)
-			t.Fatalf("iteration %d: shim ready signal not seen in daemon log after %v: %v\n--- shim stderr (%d bytes) ---\n%s",
+			t.Fatalf("iteration %d: shim ready signal not seen after %v: %v\n--- shim stderr (%d bytes) ---\n%s",
 				i+1, latency, err, len(stderrTail), string(stderrTail))
 		}
 
@@ -322,9 +319,10 @@ func startLatencyDaemon(t *testing.T, binPath, configDir string) *exec.Cmd {
 	t.Helper()
 
 	cmd := exec.Command(binPath, "--muxcore-daemon")
-	// Strip MCP_MUX_SESSION_ID — see filterEnv usage in spawnShimWithStderrFile
-	// for rationale. Daemon mode dispatches via DaemonFlag so isProxyMode is
-	// not consulted, but stripping here keeps the env clean and matches shim.
+	// Strip inherited harness variables — see filterEnv usage in
+	// spawnShimWithStderrFile for rationale. Daemon mode dispatches via
+	// DaemonFlag so proxy-mode detection is not consulted, but keeping daemon
+	// and shim envs consistent prevents harness-specific behavior drift.
 	cmd.Env = append(filterEnv(os.Environ(), "MCP_MUX_SESSION_ID"),
 		"AIMUX_CONFIG_DIR="+configDir,
 		// Isolate this test daemon from any production daemon sharing the default name.
@@ -354,7 +352,7 @@ func startLatencyDaemon(t *testing.T, binPath, configDir string) *exec.Cmd {
 // pipe-buffering interactions that caused cmd.StderrPipe-based scans to time
 // out on most iterations. The caller tail-scans stderrPath for the ready
 // marker via waitForLogPatternFrom.
-func spawnShimWithStderrFile(t *testing.T, binPath, configDir, stderrPath string) *exec.Cmd {
+func spawnShimWithStderrFile(t *testing.T, binPath, configDir, stderrPath string) (*exec.Cmd, func()) {
 	t.Helper()
 
 	stderrFile, err := os.Create(stderrPath)
@@ -364,10 +362,10 @@ func spawnShimWithStderrFile(t *testing.T, binPath, configDir, stderrPath string
 	t.Cleanup(func() { stderrFile.Close() })
 
 	cmd := exec.Command(binPath)
-	// Strip MCP_MUX_SESSION_ID from inherited env — when the test runs inside
-	// a CC session under mcp-mux, this var is set by the parent multiplexer
-	// and would push our spawned shim into ModeProxy instead of ModeShim
-	// (engine.go isProxyMode check). The shim-ready marker would never fire.
+	// Strip inherited harness variables. MCP_MUX_SESSION_ID would push this
+	// spawned process into ModeProxy under mcp-mux; Codex variables would select
+	// eager stdin-EOF behavior and can make this test exit before IPC-forwarded
+	// startup logs reach the daemon log.
 	cmd.Env = append(filterEnv(os.Environ(), "MCP_MUX_SESSION_ID"),
 		"AIMUX_CONFIG_DIR="+configDir,
 		// Must match the daemon's engine name so shim IPC connects to our test daemon.
@@ -383,18 +381,27 @@ func spawnShimWithStderrFile(t *testing.T, binPath, configDir, stderrPath string
 	cmd.Stderr = stderrFile
 
 	if err := cmd.Start(); err != nil {
+		stdin.Close()
 		t.Fatalf("spawn shim: %v", err)
 	}
 
-	stdin.Close()
-	return cmd
+	return cmd, func() {
+		_ = stdin.Close()
+	}
 }
 
 // filterEnv returns a copy of env with all entries whose KEY matches any of
-// the supplied names removed. Case-insensitive on Windows; case-sensitive on
-// Unix (matching OS env semantics).
+// the supplied names removed. It also drops harness variables that would alter
+// aimux shim/daemon behavior under the test process. Case-insensitive on
+// Windows; case-sensitive on Unix (matching OS env semantics).
 func filterEnv(env []string, names ...string) []string {
 	keep := make([]string, 0, len(env))
+	defaultDrops := []string{
+		"AIMUX_STDIN_EOF_POLICY",
+		"CODEX_MANAGED_BY_NPM",
+		"CODEX_THREAD_ID",
+	}
+	names = append(defaultDrops, names...)
 	skip := make(map[string]struct{}, len(names))
 	for _, n := range names {
 		if runtime.GOOS == "windows" {
@@ -420,6 +427,12 @@ func filterEnv(env []string, names ...string) []string {
 	return keep
 }
 
+type logCandidate struct {
+	name   string
+	path   string
+	offset int64
+}
+
 // waitForLogPattern blocks until the shared log file contains a line matching
 // pattern, or timeout elapses. Used to wait for daemon readiness.
 func waitForLogPattern(t *testing.T, logFile string, pattern *regexp.Regexp, timeout time.Duration) {
@@ -427,6 +440,30 @@ func waitForLogPattern(t *testing.T, logFile string, pattern *regexp.Regexp, tim
 	if err := waitForLogPatternFrom(logFile, 0, pattern, timeout); err != nil {
 		t.Fatalf("log pattern %q not seen in %v: %v", pattern.String(), timeout, err)
 	}
+}
+
+// waitForAnyLogPatternFrom scans multiple log files until any contains pattern,
+// or timeout elapses. Used by the latency test because early shim logs can
+// legitimately land in either stderr fallback or daemon-side IPC forwarding.
+func waitForAnyLogPatternFrom(candidates []logCandidate, pattern *regexp.Regexp, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		for _, c := range candidates {
+			if logFileContainsPattern(c.path, c.offset, pattern) {
+				return nil
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	parts := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		tail := tailLogFile(c.path, c.offset, 20)
+		parts = append(parts, fmt.Sprintf("--- %s (%s) ---\n%s", c.name, c.path, strings.Join(tail, "\n")))
+	}
+	return fmt.Errorf("pattern %q not seen within timeout in any candidate:\n%s",
+		pattern.String(), strings.Join(parts, "\n"))
 }
 
 // waitForLogPatternFrom scans logFile starting at byteOffset until a line
@@ -470,6 +507,28 @@ func waitForLogPatternFrom(logFile string, byteOffset int64, pattern *regexp.Reg
 	tail := tailLogFile(logFile, byteOffset, 20)
 	return fmt.Errorf("pattern %q not seen within timeout; last log lines:\n%s",
 		pattern.String(), strings.Join(tail, "\n"))
+}
+
+func logFileContainsPattern(logFile string, byteOffset int64, pattern *regexp.Regexp) bool {
+	f, err := os.Open(logFile)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	if byteOffset > 0 {
+		if _, seekErr := f.Seek(byteOffset, 0); seekErr != nil {
+			return false
+		}
+	}
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if pattern.MatchString(scanner.Text()) {
+			return true
+		}
+	}
+	return false
 }
 
 // logFileSize returns the current byte size of logFile, or 0 if it doesn't exist.
