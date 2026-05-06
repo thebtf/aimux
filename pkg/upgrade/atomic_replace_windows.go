@@ -106,17 +106,31 @@ func uniqueOldPath(currentPath string) string {
 
 func cleanupStaleOldSlots(currentPath string) {
 	dir := filepath.Dir(currentPath)
-	base := filepath.Base(currentPath) + ".old."
-	matches, err := filepath.Glob(filepath.Join(dir, base+"*"))
+	prefix := filepath.Base(currentPath) + ".old."
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	for _, match := range matches {
-		if !strings.HasPrefix(filepath.Base(match), base) {
+	for _, entry := range entries {
+		if entry.IsDir() || !isUniqueOldSlotName(entry.Name(), prefix) {
 			continue
 		}
-		_ = os.Remove(match)
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
 	}
+}
+
+func isUniqueOldSlotName(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(name, prefix)
+	pidPart, nanosPart, ok := strings.Cut(rest, ".")
+	if !ok || pidPart == "" || nanosPart == "" || strings.Contains(nanosPart, ".") {
+		return false
+	}
+	pid, pidErr := strconv.Atoi(pidPart)
+	nanos, nanosErr := strconv.ParseInt(nanosPart, 10, 64)
+	return pidErr == nil && nanosErr == nil && pid > 0 && nanos > 0
 }
 
 // retryRemove attempts os.Remove up to len(retryDelays) times with exponential

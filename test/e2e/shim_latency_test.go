@@ -454,7 +454,7 @@ func waitForAnyLogPatternFrom(candidates []logCandidate, pattern *regexp.Regexp,
 				return nil
 			}
 		}
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	parts := make([]string, 0, len(candidates))
