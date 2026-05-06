@@ -177,9 +177,11 @@ When changes need to land on the running `aimux-dev.exe` (or `aimux.exe` for pro
 ```powershell
 # 1. Build to a temp file (daemon holds aimux-dev.exe — direct overwrite fails on Windows)
 .\scripts\build.ps1 -Output aimux-dev-next.exe
+$cliVersion = (.\aimux-dev-next.exe --version).Trim()
+$mcpVersion = if ($cliVersion -match '^aimux\s+(\S+)') { $Matches[1] } else { $cliVersion }
 
 # 2. Smoke test the new binary in isolation (must succeed before step 3)
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 27
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 27 -expect-version $mcpVersion
 #    Expect: "tools: 27" (4 server + 1 think harness + 22 cognitive moves).
 #    If handshake fails or count is wrong — DO NOT proceed.
 
@@ -192,12 +194,12 @@ mcp__aimux-dev__upgrade(action="apply", source="D:/Dev/aimux/aimux-dev-next.exe"
 #    handoff_error="hot-swap unsupported: aimux muxcore SessionHandler mode has no transferable upstream process".
 
 # 4B. Codex/operator path when project-scoped MCP tools are unavailable
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode install -source .\aimux-dev-next.exe -force -expect-tools 27 -expect-version "<version from step 1>"
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode install -source .\aimux-dev-next.exe -force -expect-tools 27 -expect-version $mcpVersion
 #    Expect: [install] PASS after reconnect verification.
 
 # 5. Verify
 mcp__aimux-dev__sessions(action="health")     # daemon answers → upgrade landed
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode resource -uri aimux://health -expect-tools 27 -expect-version "<version from step 1>"
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode resource -uri aimux://health -expect-tools 27 -expect-version $mcpVersion
 .\aimux-dev.exe --version                      # version string matches step 1 output
 ```
 

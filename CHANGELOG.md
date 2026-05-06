@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.1] — 2026-05-07 — muxcore restore and installed-update smoke
+
+Patch release for the installed-daemon update path after the graceful update
+incident. The release consumes the upstream muxcore `SessionHandler` restore fix
+and tightens operator-facing safeguards around unsafe restarts.
+
+### Changed
+
+- Updated `github.com/thebtf/mcp-mux/muxcore` from `v0.24.0` to `v0.24.1`.
+- `aimux-ctl -cmd graceful-restart` now fails closed unless
+  `-allow-unsafe-graceful-restart` is explicitly provided, because `ctl` cannot
+  prove that an already-running daemon includes the fixed muxcore dependency.
+
+### Fixed
+
+- Local-source installed binary update verification now documents the safe MCP
+  `upgrade` / `mcp-launcher -mode install` path instead of raw graceful restart.
+- Production playbook and agent operating notes now distinguish the full CLI
+  `aimux --version` string from the MCP `serverInfo.version` value expected by
+  `mcp-launcher -expect-version`.
+
 ## [5.8.0] — 2026-05-06 — caller-centered think harness
 
 Minor release for the AIMUX-9 CR-002 Layer 5 surface redesign. The public

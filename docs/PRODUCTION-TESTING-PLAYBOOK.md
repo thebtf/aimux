@@ -567,7 +567,8 @@ installed-daemon paths.
 1. Build the candidate binary:
    ```powershell
    .\scripts\build.ps1 -Output aimux-dev-next.exe
-   $version = (.\aimux-dev-next.exe --version).Trim()
+   $cliVersion = (.\aimux-dev-next.exe --version).Trim()
+   $mcpVersion = if ($cliVersion -match '^aimux\s+(\S+)') { $Matches[1] } else { $cliVersion }
    ```
 2. Install through the running daemon:
    ```powershell
@@ -579,7 +580,7 @@ installed-daemon paths.
      -source D:\Dev\aimux\aimux-dev-next.exe `
      -force `
      -expect-tools 27 `
-     -expect-version $version `
+     -expect-version $mcpVersion `
      -timeout 30
    ```
 3. Confirm the rollback backup slot is present and not a stale blocker:
@@ -602,7 +603,8 @@ installed-daemon paths.
 
 **Pass criteria:**
 - `mcp-launcher` exits `0`.
-- `aimux://health.version` matches the candidate binary version from step 1.
+- `aimux://health.version` matches `$mcpVersion` from step 1.
+- `aimux-dev-next.exe --version` matches `$cliVersion` from step 1.
 - `sessions(action="health").init_phase == 2`.
 - If `aimux-dev.exe.old` exists after the install, classify it as expected
   rollback state unless the next install reports an old-slot lock.
