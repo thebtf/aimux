@@ -557,6 +557,12 @@ This scenario verifies the installed daemon path, not only a source-tree test
 binary. Use `mcp-launcher` or an equivalent MCP client that can call
 `upgrade(action="apply", source=..., force=true)` and then reconnect.
 
+**Safety note:** do not use `aimux-ctl -cmd graceful-restart` for this scenario
+against a daemon that has not been confirmed to include the muxcore
+SessionHandler snapshot-restore fix tracked as Engram issue `#190`. The
+`upgrade` MCP tool and `mcp-launcher -mode install` remain the safe
+installed-daemon paths.
+
 **Steps:**
 1. Build the candidate binary:
    ```powershell
