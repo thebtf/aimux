@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.2] — 2026-05-07 — Windows deferred update recovery
+
+Patch release for the Windows local-source update path after the Codex direct
+MCP update incident. The release keeps the documented deferred-update semantics
+while making repeated updates safe when older live processes still hold rollback
+binary images.
+
+### Changed
+
+- Codex-launched shims now default to eager stdin-EOF exit when `CODEX_THREAD_ID`
+  or `CODEX_MANAGED_BY_NPM` is present, while keeping
+  `AIMUX_STDIN_EOF_POLICY` as an explicit operator override.
+- Windows rollback cleanup now only removes rollback files matching aimux's
+  generated `.old.<pid>.<nanos>` format, preserving unrelated operator-created
+  files with similar prefixes.
+
+### Fixed
+
+- Repeated Windows local-source updates no longer fail when `aimux.exe.old` is
+  locked by live daemon or shim processes from a previous deferred update; aimux
+  falls back to a unique rollback slot instead.
+- The shim latency e2e gate is now isolated from inherited Codex harness
+  environment and accepts the startup marker from either stderr fallback or the
+  daemon IPC log, matching the asynchronous logger contract.
+
 ## [5.8.1] — 2026-05-07 — muxcore restore and installed-update smoke
 
 Patch release for the installed-daemon update path after the graceful update
