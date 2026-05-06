@@ -1,4 +1,4 @@
-<!-- synced: 2026-05-06 source-commit: dc83067 -->
+<!-- synced: 2026-05-06 source-commit: 6ce932a -->
 [English](README.md) | [Русский](README.ru.md)
 
 # aimux
