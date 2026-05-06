@@ -65,6 +65,10 @@ func measureServerFinalizeP95(tb testing.TB, srv *Server, sampleCount int, batch
 			if result.IsError {
 				tb.Fatalf("finalize returned tool error: %+v", result.Content)
 			}
+			payload := parseResult(tb, result)
+			if payload["can_finalize"] != true {
+				tb.Fatalf("finalize blocked during p95 sample: %v", payload)
+			}
 		}
 	}
 	return serverPercentileDuration(samples, 0.95)

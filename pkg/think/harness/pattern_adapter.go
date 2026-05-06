@@ -58,12 +58,12 @@ func (PatternAdapter) Execute(ctx context.Context, move CognitiveMove, workProdu
 	if sess := thinkcore.GetSession(patternSessionID); sess != nil {
 		postChecksAvailable = true
 		gateDecision = thinkcore.NewEnforcementGate().Check(move.Pattern, sess)
+		if gateDecision.Status == "incomplete" {
+			return PatternExecution{}, fmt.Errorf("pattern %q enforcement incomplete: %s", move.Pattern, gateDecision.Reason)
+		}
 		advisorRec = thinkcore.NewPatternAdvisor().Evaluate(sess, result)
 		if advisorRec.StatePatch != nil {
 			thinkcore.UpdateSessionState(sess.ID, advisorRec.StatePatch)
-		}
-		if gateDecision.Status == "incomplete" {
-			return PatternExecution{}, fmt.Errorf("pattern %q enforcement incomplete: %s", move.Pattern, gateDecision.Reason)
 		}
 	}
 
@@ -129,7 +129,7 @@ func inputForPattern(fields map[string]thinkcore.FieldSchema, primary string) (m
 			continue
 		}
 		value, ok := structuredValueForPatternField(structured, name, schema)
-		if !ok {
+		if !ok && structured == nil {
 			value, ok = exactValueForPatternField(name, schema, primary)
 		}
 		if !ok {

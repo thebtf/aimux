@@ -52,6 +52,21 @@ func TestInputForPatternUsesStructuredVisibleWorkProduct(t *testing.T) {
 	}
 }
 
+func TestInputForPatternStructuredWorkProductFailsClosedWhenRequiredKeyMissing(t *testing.T) {
+	fields := map[string]thinkcore.FieldSchema{
+		"topic":    {Type: "string", Required: true},
+		"findings": {Type: "array", Required: true},
+	}
+
+	_, err := inputForPattern(fields, `{"findings":["ttl is configured"]}`)
+	if err == nil {
+		t.Fatal("structured payload missing required topic was accepted")
+	}
+	if !strings.Contains(err.Error(), "topic") {
+		t.Fatalf("error = %q, want missing topic", err)
+	}
+}
+
 func TestPatternAdapterSkipsPostCheckArtifactsWithoutPatternSession(t *testing.T) {
 	execution, err := (PatternAdapter{}).Execute(context.Background(), CognitiveMove{
 		Name:    "critical_thinking",

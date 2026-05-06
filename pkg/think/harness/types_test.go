@@ -1,6 +1,9 @@
 package harness
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestTaskFrameValidation(t *testing.T) {
 	if _, err := NewTaskFrame(TaskFrame{}); err == nil {
@@ -34,15 +37,47 @@ func TestTaskFrameTrimsRequiredFieldsAndRejectsWhitespace(t *testing.T) {
 	if frame.Task != "choose the right implementation path" {
 		t.Fatalf("task was not trimmed: %q", frame.Task)
 	}
+	if frame.Goal != "ship a caller-centered thinking harness" {
+		t.Fatalf("goal was not trimmed: %q", frame.Goal)
+	}
+	if frame.ContextSummary != "CR-002 replaces the base think router" {
+		t.Fatalf("context summary was not trimmed: %q", frame.ContextSummary)
+	}
+	if frame.SuccessSignal != "gates block unsupported finalization" {
+		t.Fatalf("success signal was not trimmed: %q", frame.SuccessSignal)
+	}
 
-	_, err = NewTaskFrame(TaskFrame{
-		Task:           "  ",
-		Goal:           "ship",
-		ContextSummary: "context",
-		SuccessSignal:  "done",
-	})
-	if err == nil {
-		t.Fatal("whitespace-only task accepted")
+	for name, candidate := range map[string]TaskFrame{
+		"task": {
+			Task:           "  ",
+			Goal:           "ship",
+			ContextSummary: "context",
+			SuccessSignal:  "done",
+		},
+		"goal": {
+			Task:           "task",
+			Goal:           "  ",
+			ContextSummary: "context",
+			SuccessSignal:  "done",
+		},
+		"context_summary": {
+			Task:           "task",
+			Goal:           "ship",
+			ContextSummary: "  ",
+			SuccessSignal:  "done",
+		},
+		"success_signal": {
+			Task:           "task",
+			Goal:           "ship",
+			ContextSummary: "context",
+			SuccessSignal:  "  ",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewTaskFrame(candidate); err == nil {
+				t.Fatalf("whitespace-only %s accepted", name)
+			}
+		})
 	}
 }
 
@@ -186,8 +221,6 @@ func TestInvalidArtifactsFailClosed(t *testing.T) {
 }
 
 func TestInvalidEnumLikeArtifactsFailClosed(t *testing.T) {
-	session := NewThinkingSession("s1", validFrame(t))
-
 	for name, patch := range map[string]KnowledgePatch{
 		"phase": {Phase: Phase("unknown")},
 		"move_group": {Move: &MovePlan{
@@ -207,8 +240,13 @@ func TestInvalidEnumLikeArtifactsFailClosed(t *testing.T) {
 		}},
 	} {
 		t.Run(name, func(t *testing.T) {
+			session := NewThinkingSession("s1", validFrame(t))
+			before := session.clone()
 			if _, err := session.ApplyPatch(patch); err == nil {
 				t.Fatalf("%s accepted invalid enum value", name)
+			}
+			if !reflect.DeepEqual(session, before) {
+				t.Fatalf("%s mutated session on rejected patch: before=%+v after=%+v", name, before, session)
 			}
 		})
 	}
