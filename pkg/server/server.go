@@ -36,6 +36,7 @@ import (
 	"github.com/thebtf/aimux/pkg/skills"
 	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/think"
+	"github.com/thebtf/aimux/pkg/think/harness"
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 	"github.com/thebtf/aimux/pkg/types"
@@ -54,10 +55,10 @@ import (
 var Version = build.Version
 
 // legacyInstructions is kept as fallback for proxy/shim mode where live state is unavailable.
-const legacyInstructions = `aimux — AI CLI Multiplexer (4 MCP tools + 23 think patterns, post Layer 5 purge)
+const legacyInstructions = `aimux — AI CLI Multiplexer (4 server tools + think harness + 22 cognitive moves, post Layer 5 purge)
 
 Reduced MCP surface: server state management, deep research via Gemini SDK,
-and structured reasoning via 23 dedicated think pattern tools.
+and structured reasoning via think(action=start|step|finalize) plus 22 dedicated cognitive move tools.
 
 ## Tool Selection — "I need to..."
 
@@ -65,7 +66,8 @@ and structured reasoning via 23 dedicated think pattern tools.
 |---|---|---|
 | Check async job status | status | job_id |
 | Manage sessions | sessions | action (list/health/gc/cancel/kill/info/refresh-warmup) |
-| Structured reasoning / analysis | <pattern_name> | 23 individual think pattern tools |
+| Caller-centered thinking workflow | think | action (start/step/finalize) |
+| Low-level cognitive move | <pattern_name> | 22 individual cognitive move tools |
 | Deep research via Gemini API | deepresearch | topic |
 | Check / apply binary updates | upgrade | action (check/apply) |
 
@@ -104,6 +106,8 @@ type Server struct {
 	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
 	muxCompatOnce           sync.Once        // ensures configureMuxCompatibility registers its hook exactly once
 	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
+	thinkHarness            *harness.Controller
+	thinkHarnessOnce        sync.Once
 
 	// dispatchMW resolves TenantContext at the MCP tool dispatch entry point
 	// and emits audit events (AIMUX-12 Phase 5, T031).
@@ -218,6 +222,9 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		registry: reg,
 		router:   router,
 		sessions: session.NewRegistry(),
+		thinkHarness: harness.NewController(
+			harness.NewInMemoryStore(),
+		),
 		breakers: executor.NewBreakerRegistry(executor.BreakerConfig{
 			FailureThreshold: cfg.CircuitBreaker.FailureThreshold,
 			CooldownSeconds:  cfg.CircuitBreaker.CooldownSeconds,
@@ -360,6 +367,11 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 				thinkTTL := time.Duration(ttl) * time.Hour
 				if removed := think.GCSessions(thinkTTL); removed > 0 {
 					log.Info("think session GC: removed %d expired sessions", removed)
+				}
+				if removed, err := s.thinkController().Prune(gcCtx, thinkTTL); err != nil && gcCtx.Err() == nil {
+					log.Warn("think harness GC: %v", err)
+				} else if removed > 0 {
+					log.Info("think harness GC: removed %d expired sessions", removed)
 				}
 			}
 		}
@@ -698,8 +710,8 @@ func (s *Server) registerTools() {
 		s.handleSessions,
 	)
 
-	// Pattern tools: 23 individual MCP tools, one per think pattern.
-	// Replaces the single "think" tool with per-pattern tools.
+	// Canonical caller-centered think harness plus 22 low-level cognitive move tools.
+	s.registerThinkHarnessTool()
 	s.registerPatternTools()
 
 	// deepresearch tool

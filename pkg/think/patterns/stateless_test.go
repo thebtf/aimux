@@ -9,7 +9,6 @@ import (
 // allPatterns returns every stateless pattern for table-driven tests.
 func allPatterns() []think.PatternHandler {
 	return []think.PatternHandler{
-		NewThinkPattern(),
 		NewCriticalThinkingPattern(),
 		NewDecisionFrameworkPattern(),
 		NewProblemDecompositionPattern(),
@@ -27,8 +26,6 @@ func allPatterns() []think.PatternHandler {
 // validInputFor returns a minimal valid input map for each pattern name.
 func validInputFor(name string) map[string]any {
 	switch name {
-	case "think":
-		return map[string]any{"thought": "hello world"}
 	case "critical_thinking":
 		return map[string]any{"issue": "this confirms my hypothesis"}
 	case "decision_framework":
@@ -76,8 +73,6 @@ func validInputFor(name string) map[string]any {
 // requiredFieldFor returns the name of one required field for each pattern.
 func requiredFieldFor(name string) string {
 	switch name {
-	case "think":
-		return "thought"
 	case "critical_thinking":
 		return "issue"
 	case "decision_framework":

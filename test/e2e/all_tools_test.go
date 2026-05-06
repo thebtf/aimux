@@ -133,7 +133,7 @@ func TestE2E_Think_AllPatterns(t *testing.T) {
 		tool, _ := raw.(map[string]any)
 		name, _ := tool["name"].(string)
 		desc, _ := tool["description"].(string)
-		if !strings.HasPrefix(desc, "[solo") {
+		if !strings.HasPrefix(desc, "[cognitive move") {
 			continue
 		}
 
@@ -159,8 +159,8 @@ func TestE2E_Think_AllPatterns(t *testing.T) {
 		patternCount++
 	}
 
-	if patternCount != 23 {
-		t.Fatalf("pattern tool count = %d, want 23", patternCount)
+	if patternCount != 22 {
+		t.Fatalf("pattern tool count = %d, want 22", patternCount)
 	}
 }
 

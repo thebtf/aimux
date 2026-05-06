@@ -37,7 +37,7 @@ var FieldWhitelist = map[string][]string{
 	"audit":                   {"job_id", "status", "turns", "content", "transcript"},
 	"deepresearch":            {},
 	"workflow":                {"job_id", "status", "session_id", "turns", "content", "transcript"},
-	"think":                   {},
+	"think":                   {"session_id", "phase", "allowed_move_groups", "recommended_moves", "missing_inputs", "next_prompt", "knowledge_state", "trace_summary", "executed", "chosen_move", "observation", "ledger_patch", "gate_report", "confidence_ceiling", "confidence_factors", "unresolved_objections", "required_report_back", "pattern_execution_error", "can_finalize", "accepted", "missing_gates", "confidence_tier", "stop_decision"},
 	"upgrade":                 {},
 }
 

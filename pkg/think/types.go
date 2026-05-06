@@ -1,5 +1,5 @@
-// Package think implements the think MCP tool with 17 reasoning patterns,
-// session state management, and complexity scoring for auto-consensus mode.
+// Package think implements low-level cognitive move patterns, session state
+// management, and complexity scoring for auto-consensus mode.
 package think
 
 import (

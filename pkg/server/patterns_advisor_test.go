@@ -206,7 +206,7 @@ func TestHandlePattern_ModeAuto_SimpleInput_Solo(t *testing.T) {
 //   - long "decision" text (>500 chars → textLen=100, contributes 30)
 //   - 10+ "options" items (subItems=100, contributes 30)
 //   - bias=30, contributes 6
-//   Total = 66 ≥ 60 → recommendation "consensus".
+//     Total = 66 ≥ 60 → recommendation "consensus".
 func TestHandlePattern_ModeAuto_ComplexInput_ConsensusRecommended(t *testing.T) {
 	patterns.RegisterAll()
 	srv := testServer(t)
@@ -274,9 +274,9 @@ func TestHandlePattern_ModeConsensus_SoloOnlyPattern_ReturnsError(t *testing.T) 
 	patterns.RegisterAll()
 	srv := testServer(t)
 
-	// "think" is a solo-only pattern (no dialog config).
-	req := makeRequest("think", map[string]any{
-		"thought": "test thought",
+	// recursive_thinking is a solo-only cognitive move (no dialog config).
+	req := makeRequest("recursive_thinking", map[string]any{
+		"problem": "parse nested structures",
 		"mode":    "consensus",
 	})
 
@@ -316,5 +316,44 @@ func TestHandlePattern_ModeDefault_ActsLikeAuto(t *testing.T) {
 	// Default with simple input → solo (same as explicit mode=auto).
 	if mode != "solo" {
 		t.Errorf("no mode param with simple input: expected solo (auto default), got %q", mode)
+	}
+}
+
+func TestHandlePattern_InvalidModeFailsClosed(t *testing.T) {
+	patterns.RegisterAll()
+	srv := testServer(t)
+
+	result, err := srv.handlePattern(context.Background(), makeRequest("critical_thinking", map[string]any{
+		"issue": "short",
+		"mode":  "surprise",
+	}))
+	if err != nil {
+		t.Fatalf("handlePattern returned Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("invalid mode should fail closed: %+v", result)
+	}
+}
+
+func TestHandlePattern_StatelessMoveIgnoresIncomingSessionID(t *testing.T) {
+	patterns.RegisterAll()
+	srv := testServer(t)
+
+	result, err := srv.handlePattern(context.Background(), makeRequest("critical_thinking", map[string]any{
+		"issue":      "short",
+		"session_id": "caller-owned-harness-session",
+	}))
+	if err != nil {
+		t.Fatalf("handlePattern: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+	inner := parseGuidedResult(t, result)
+	if _, ok := inner["session_id"]; ok {
+		t.Fatalf("stateless move leaked incoming session_id: %v", inner)
+	}
+	if inner["gate_status"] != "complete" {
+		t.Fatalf("stateless move gate_status = %v, want complete", inner["gate_status"])
 	}
 }

@@ -9,13 +9,14 @@ STACKS: [GO]
 ## Project Context
 
 aimux is an MCP server. After the v5.0.3 Layer 5 purge, the live MCP surface is
-**4 server tools + 23 think pattern tools**:
+**4 server tools + 1 caller-centered think harness + 22 cognitive move tools**:
 
 - `status` — async job status
 - `sessions` — session/job management (action: list/health/gc/cancel/kill/info/refresh-warmup)
 - `deepresearch` — Gemini SDK
 - `upgrade` — binary update (action: check/apply, mode: auto/hot_swap/deferred)
-- 23 think pattern tools (architecture_analysis, collaborative_reasoning, critical_thinking, debugging_approach, decision_framework, domain_modeling, experimental_loop, literature_review, mental_model, metacognitive_monitoring, peer_review, problem_decomposition, recursive_thinking, replication_analysis, research_synthesis, scientific_method, sequential_thinking, source_comparison, stochastic_algorithm, structured_argumentation, temporal_thinking, think, visual_reasoning)
+- `think` — caller-centered thinking harness (action: start/step/finalize)
+- 22 cognitive move tools (architecture_analysis, collaborative_reasoning, critical_thinking, debugging_approach, decision_framework, domain_modeling, experimental_loop, literature_review, mental_model, metacognitive_monitoring, peer_review, problem_decomposition, recursive_thinking, replication_analysis, research_synthesis, scientific_method, sequential_thinking, source_comparison, stochastic_algorithm, structured_argumentation, temporal_thinking, visual_reasoning)
 
 Pre-purge CLI-launching tools (exec, agent, agents, critique, investigate, consensus, debate, dialog, audit, workflow) — **REMOVED**. Pipeline v5 packages (`pkg/workflow/`, `pkg/dialogue/`, `pkg/swarm/`, `pkg/executor/`, `pkg/resolve/`, `pkg/driver/`, `pkg/routing/`, `loom/`) remain in-repo as dormant seams pending the next Layer 5 design. Pre-purge architecture frozen at branch `snapshot/v5.0.3-pre-cli-purge` and documented in `docs/architecture/cli-tools-current.md`.
 
@@ -101,9 +102,20 @@ returns a validation error.
 - `agent` (singular) still works but includes a `deprecated` field in its response directing
   callers to `agents(action="run")`. It will be removed in a future major version.
 
-### Think Tool: Advisor + Enforcement Gates
+### Think Harness + Cognitive Move Gates
 
-Every per-pattern think tool call (e.g. `debugging_approach`, `decision_framework`) runs two
+The public `think` tool is a caller-centered harness:
+
+- `think(action=start, task=..., context_summary=...)` creates a session and returns allowed moves.
+- `think(action=step, session_id=..., chosen_move=..., work_product=..., evidence=[...], confidence=...)` records visible progress and gate feedback.
+- `think(action=finalize, session_id=..., proposed_answer=...)` accepts only when evidence, confidence, objections, loop state, and budget support the answer.
+
+Default action-mode responses include bounded `trace_summary`; full visible
+trace state stays in the session store/test fixture path for auditing and future
+Loom metadata. The harness must not reintroduce keyword routing or
+pattern suggestion fields.
+
+Every low-level cognitive move tool call (e.g. `debugging_approach`, `decision_framework`) runs two
 post-processing layers before returning:
 
 1. **Enforcement gate** (`pkg/think/gates.go`) — checks per-pattern thresholds
@@ -168,7 +180,7 @@ When changes need to land on the running `aimux-dev.exe` (or `aimux.exe` for pro
 
 # 2. Smoke test the new binary in isolation (must succeed before step 3)
 D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 27
-#    Expect: "tools: 27" (4 server + 23 think patterns) on the post-purge branch.
+#    Expect: "tools: 27" (4 server + 1 think harness + 22 cognitive moves).
 #    If handshake fails or count is wrong — DO NOT proceed.
 
 # 3. Clean any stale aimux-dev-next processes left by mcp-launcher

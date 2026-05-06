@@ -17,9 +17,9 @@ import (
 
 // testServer constructs a minimal Server suitable for unit tests of the
 // reduced post-purge tool surface (status, sessions, deepresearch, upgrade,
-// 23 think patterns). Heavyweight wiring used by the removed Layer 5 tools
+// think harness, 22 cognitive moves). Heavyweight wiring used by the removed Layer 5 tools
 // (executor, swarm, orchestrator, agent registry) is intentionally omitted.
-func testServer(t *testing.T) *Server {
+func testServer(t testing.TB) *Server {
 	t.Helper()
 
 	cfg := &config.Config{
@@ -89,7 +89,7 @@ func makeRequest(name string, args map[string]any) mcp.CallToolRequest {
 
 // parseResult decodes the JSON text payload of an MCP tool result into a map.
 // Returns the parsed map, or {"text": <raw>} when the payload is not JSON.
-func parseResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
+func parseResult(t testing.TB, result *mcp.CallToolResult) map[string]any {
 	t.Helper()
 	if result == nil {
 		t.Fatal("result is nil")
@@ -111,7 +111,7 @@ func parseResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
 // parseGuidedResult unwraps the guidance envelope (data.result map) returned
 // by guided handlers like the think patterns. Fails the test when the result
 // payload is not a map under the "result" key.
-func parseGuidedResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
+func parseGuidedResult(t testing.TB, result *mcp.CallToolResult) map[string]any {
 	t.Helper()
 	data := parseResult(t, result)
 	inner, ok := data["result"].(map[string]any)

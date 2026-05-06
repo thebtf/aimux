@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/executor"
@@ -13,13 +14,13 @@ import (
 
 // fakeExecutor is a minimal types.ExecutorV2 for unit tests.
 type fakeExecutor struct {
-	info        types.ExecutorInfo
-	sendResp    *types.Response
-	sendErr     error
+	info         types.ExecutorInfo
+	sendResp     *types.Response
+	sendErr      error
 	streamChunks []types.Chunk
-	streamErr   error
-	closeErr    error
-	closeCalled bool
+	streamErr    error
+	closeErr     error
+	closeCalled  bool
 }
 
 func (f *fakeExecutor) Info() types.ExecutorInfo { return f.info }
@@ -46,6 +47,7 @@ func (f *fakeExecutor) SendStream(_ context.Context, _ types.Message, onChunk fu
 
 // captureSink records all Emit calls in order for assertion.
 type captureSink struct {
+	mu     sync.Mutex
 	events []capturedEvent
 }
 
@@ -56,10 +58,14 @@ type capturedEvent struct {
 
 func (c *captureSink) Emit(kind string, payload any) {
 	raw, _ := json.Marshal(payload)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.events = append(c.events, capturedEvent{Kind: kind, Payload: raw})
 }
 
 func (c *captureSink) kindsOf() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	out := make([]string, len(c.events))
 	for i, e := range c.events {
 		out[i] = e.Kind

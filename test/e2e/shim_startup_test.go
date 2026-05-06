@@ -140,7 +140,11 @@ func TestShim_NoSQLiteWrites(t *testing.T) {
 		case <-done:
 		case <-time.After(4 * time.Second):
 			daemonCmd.Process.Kill() //nolint:errcheck
-			daemonCmd.Wait()        //nolint:errcheck
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("daemon Wait() did not return within 2s after Kill")
+			}
 		}
 	})
 

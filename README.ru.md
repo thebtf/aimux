@@ -1,4 +1,4 @@
-<!-- synced: 2026-05-05 source-commit: b1c2b59 -->
+<!-- synced: 2026-05-06 source-commit: dc83067 -->
 [English](README.md) | [Русский](README.ru.md)
 
 # aimux
@@ -8,13 +8,13 @@
 [![MCP Tools](https://img.shields.io/badge/MCP-27%20tools-blueviolet)](https://modelcontextprotocol.io)
 
 aimux — MCP-сервер для устойчивого состояния задач, операций с сессиями,
-глубокого исследования, обновления бинарника и структурированных reasoning
-patterns.
+глубокого исследования, обновления бинарника и caller-centered structured
+reasoning.
 
 Текущая live surface после purge намеренно небольшая:
 
 - 4 server tools: `status`, `sessions`, `deepresearch`, `upgrade`
-- 23 think pattern tools
+- 1 caller-centered `think` harness и 22 cognitive move tools
 
 Прежние CLI-launching MCP tools (`exec`, `agent`, `agents`, `critique`,
 `investigate`, `consensus`, `debate`, `dialog`, `audit`, `workflow`) удалены из
@@ -53,7 +53,7 @@ go build -o aimux.exe ./cmd/aimux/
 ### Проверка tool surface
 
 Вызовите `tools/list` из любого MCP-capable client. Актуальная сборка должна
-показывать 27 tools: 4 server tools и 23 think pattern tools.
+показывать 27 tools: 4 server tools, `think` harness и 22 cognitive move tools.
 
 ```json
 {
@@ -95,9 +95,32 @@ go test ./... -count=1
 | `deepresearch` | Gemini-backed исследование со structured output. |
 | `upgrade` | Проверка или применение обновлений aimux binary, включая local source install с честным deferred fallback. |
 
-### Think Pattern Tools
+### Think Harness
 
-23 think tools дают in-process structured reasoning. Они не запускают AI CLIs.
+`think(action=start|step|finalize)` — canonical caller-centered thinking
+harness. Caller владеет final answer; aimux отслеживает visible work products,
+evidence, gate status, confidence ceilings, unresolved objections, budget state
+и bounded `trace_summary`.
+
+Типичный flow:
+
+1. `think(action=start, task=..., context_summary=...)` создаёт session и
+   возвращает allowed cognitive moves плюс первый prompt.
+2. `think(action=step, session_id=..., chosen_move=..., work_product=...,
+   evidence=[...], confidence=...)` записывает visible move result и возвращает
+   gate/confidence feedback.
+3. `think(action=finalize, session_id=..., proposed_answer=...)` принимает
+   ответ только когда loop, evidence, confidence, objections и budget gates его
+   поддерживают.
+
+Legacy `think(thought=...)` calls fail closed с migration error. Они не делают
+keyword routing, не создают implicit sessions и не возвращают pattern
+suggestion fields.
+
+### Cognitive Move Tools
+
+22 cognitive move tools дают in-process structured reasoning moves. Они не
+запускают AI CLIs.
 
 | Tool | Использование |
 |---|---|
@@ -122,7 +145,6 @@ go test ./... -count=1
 | `stochastic_algorithm` | Разбор randomized или probabilistic approaches. |
 | `structured_argumentation` | Claims, evidence, objections и rebuttals. |
 | `temporal_thinking` | Timeline, sequencing и time-based effects. |
-| `think` | Общая точка входа для structured reasoning. |
 | `visual_reasoning` | Spatial или visual structure reasoning. |
 
 Каждый per-pattern result включает gate status и advisor recommendation.
@@ -139,7 +161,7 @@ flowchart TD
     Budget --> Sessions[sessions/status handlers]
     Budget --> Research[deepresearch handler]
     Budget --> Upgrade[upgrade handler]
-    Budget --> Think[think pattern handlers]
+    Budget --> Think[think harness and cognitive move handlers]
 
     Sessions --> Loom[LoomEngine]
     Loom --> SQLite[(SQLite task/session state)]
@@ -182,7 +204,7 @@ Current production surface:
 - Session и task health/status operations.
 - Deep research через Gemini SDK.
 - Binary update с local source install и deferred fallback, когда live handoff не поддержан.
-- 23 local think pattern tools.
+- Caller-centered `think` harness и 22 local cognitive move tools.
 - Loom-backed task state и recovery.
 
 Out of current scope:
