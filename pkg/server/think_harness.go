@@ -106,7 +106,9 @@ func (s *Server) handleThinkHarness(ctx context.Context, request mcp.CallToolReq
 	switch action {
 	case "start":
 		return s.handleThinkHarnessStart(ctx, request)
-	case "step", "finalize":
+	case "step":
+		return s.handleThinkHarnessStep(ctx, request)
+	case "finalize":
 		return marshalToolErrorResult(map[string]any{
 			"status":    "error",
 			"code":      "controller_unavailable",
@@ -138,6 +140,31 @@ func (s *Server) handleThinkHarnessStart(ctx context.Context, request mcp.CallTo
 	return marshalToolResult(resp)
 }
 
+func (s *Server) handleThinkHarnessStep(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	evidence, evidenceErr := parseThinkHarnessEvidence(request.GetRawArguments())
+	if evidenceErr != nil {
+		return marshalToolErrorResult(map[string]any{
+			"status":    "error",
+			"code":      harness.ErrorCodeInvalidInput,
+			"message":   evidenceErr.Error(),
+			"next_step": "Pass evidence as an array of objects with kind, ref, and summary fields.",
+		})
+	}
+	execute := request.GetBool("execute", true)
+	resp, err := s.thinkController().Step(ctx, harness.StepRequest{
+		SessionID:        request.GetString("session_id", ""),
+		ChosenMove:       request.GetString("chosen_move", ""),
+		WorkProduct:      request.GetString("work_product", ""),
+		Evidence:         evidence,
+		CallerConfidence: request.GetFloat("confidence", 0),
+		Execute:          &execute,
+	})
+	if err != nil {
+		return marshalThinkHarnessError(err)
+	}
+	return marshalToolResult(resp)
+}
+
 func (s *Server) thinkController() *harness.Controller {
 	if s.thinkHarness == nil {
 		s.thinkHarness = harness.NewController(harness.NewInMemoryStore())
@@ -156,6 +183,46 @@ func marshalThinkHarnessError(err error) (*mcp.CallToolResult, error) {
 		})
 	}
 	return mcp.NewToolResultError(err.Error()), nil
+}
+
+func parseThinkHarnessEvidence(rawArgs any) ([]harness.EvidenceRef, error) {
+	args, ok := rawArgs.(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	raw, exists := args["evidence"]
+	if !exists || raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, errors.New("evidence must be an array")
+	}
+	evidence := make([]harness.EvidenceRef, 0, len(items))
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			return nil, errors.New("evidence items must be objects")
+		}
+		ref := harness.EvidenceRef{
+			Kind:               stringField(obj, "kind"),
+			Ref:                stringField(obj, "ref"),
+			Summary:            stringField(obj, "summary"),
+			VerificationStatus: stringField(obj, "verification_status"),
+		}
+		if ref.Kind == "" || ref.Ref == "" || ref.Summary == "" {
+			return nil, errors.New("evidence items require kind, ref, and summary")
+		}
+		evidence = append(evidence, ref)
+	}
+	return evidence, nil
+}
+
+func stringField(values map[string]any, key string) string {
+	if value, ok := values[key].(string); ok {
+		return value
+	}
+	return ""
 }
 
 func marshalToolErrorResult(payload map[string]any) (*mcp.CallToolResult, error) {
