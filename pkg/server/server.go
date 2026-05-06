@@ -36,6 +36,7 @@ import (
 	"github.com/thebtf/aimux/pkg/skills"
 	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/think"
+	"github.com/thebtf/aimux/pkg/think/harness"
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 	"github.com/thebtf/aimux/pkg/types"
@@ -104,6 +105,7 @@ type Server struct {
 	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
 	muxCompatOnce           sync.Once        // ensures configureMuxCompatibility registers its hook exactly once
 	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
+	thinkHarness            *harness.Controller
 
 	// dispatchMW resolves TenantContext at the MCP tool dispatch entry point
 	// and emits audit events (AIMUX-12 Phase 5, T031).
@@ -218,6 +220,9 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		registry: reg,
 		router:   router,
 		sessions: session.NewRegistry(),
+		thinkHarness: harness.NewController(
+			harness.NewInMemoryStore(),
+		),
 		breakers: executor.NewBreakerRegistry(executor.BreakerConfig{
 			FailureThreshold: cfg.CircuitBreaker.FailureThreshold,
 			CooldownSeconds:  cfg.CircuitBreaker.CooldownSeconds,

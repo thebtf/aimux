@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/thebtf/aimux/pkg/think/harness"
 )
 
 func (s *Server) registerThinkHarnessTool() {
@@ -101,7 +104,9 @@ func (s *Server) handleThinkHarness(ctx context.Context, request mcp.CallToolReq
 	}
 
 	switch action {
-	case "start", "step", "finalize":
+	case "start":
+		return s.handleThinkHarnessStart(ctx, request)
+	case "step", "finalize":
 		return marshalToolErrorResult(map[string]any{
 			"status":    "error",
 			"code":      "controller_unavailable",
@@ -118,6 +123,39 @@ func (s *Server) handleThinkHarness(ctx context.Context, request mcp.CallToolReq
 			"action":    action,
 		})
 	}
+}
+
+func (s *Server) handleThinkHarnessStart(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	resp, err := s.thinkController().Start(ctx, harness.StartRequest{
+		Task:           request.GetString("task", ""),
+		Goal:           request.GetString("goal", ""),
+		ContextSummary: request.GetString("context_summary", ""),
+		SuccessSignal:  request.GetString("success_signal", ""),
+	})
+	if err != nil {
+		return marshalThinkHarnessError(err)
+	}
+	return marshalToolResult(resp)
+}
+
+func (s *Server) thinkController() *harness.Controller {
+	if s.thinkHarness == nil {
+		s.thinkHarness = harness.NewController(harness.NewInMemoryStore())
+	}
+	return s.thinkHarness
+}
+
+func marshalThinkHarnessError(err error) (*mcp.CallToolResult, error) {
+	var harnessErr *harness.HarnessError
+	if errors.As(err, &harnessErr) {
+		return marshalToolErrorResult(map[string]any{
+			"status":    "error",
+			"code":      harnessErr.Code,
+			"message":   harnessErr.Message,
+			"next_step": harnessErr.NextStep,
+		})
+	}
+	return mcp.NewToolResultError(err.Error()), nil
 }
 
 func marshalToolErrorResult(payload map[string]any) (*mcp.CallToolResult, error) {
