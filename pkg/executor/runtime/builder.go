@@ -158,7 +158,21 @@ func (b ProfileBuilder) WithMCPServers(servers []MCPServerConfig) ProfileBuilder
 		return ProfileBuilder{p: p}
 	}
 	s := make([]MCPServerConfig, len(servers))
-	copy(s, servers)
+	for i := range servers {
+		s[i] = servers[i]
+		if len(servers[i].Args) > 0 {
+			args := make([]string, len(servers[i].Args))
+			copy(args, servers[i].Args)
+			s[i].Args = args
+		}
+		if len(servers[i].Env) > 0 {
+			env := make(map[string]string, len(servers[i].Env))
+			for k, v := range servers[i].Env {
+				env[k] = v
+			}
+			s[i].Env = env
+		}
+	}
 	p.MCPServers = s
 	return ProfileBuilder{p: p}
 }

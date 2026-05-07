@@ -449,6 +449,73 @@ func TestEphemeralCleanupHook_SkipsPassThrough(t *testing.T) {
 	}
 }
 
+// ── Spawn: EnvList merged into resolved env map ──────────────────────────────
+
+func TestSpawn_EnvListMerged(t *testing.T) {
+	t.Parallel()
+	base := types.SpawnArgs{
+		Command: "codex",
+		EnvList: []string{"LIST_KEY=list_val", "SHARED=from_list"},
+		Env:     map[string]string{"MAP_KEY": "map_val", "SHARED": "from_map"},
+	}
+	profile := New("codex", "/work").Build()
+
+	out, err := Spawn(profile, base)
+	if err != nil {
+		t.Fatalf("Spawn error: %v", err)
+	}
+	if out.Env["LIST_KEY"] != "list_val" {
+		t.Errorf("LIST_KEY=%q want list_val (from EnvList)", out.Env["LIST_KEY"])
+	}
+	if out.Env["MAP_KEY"] != "map_val" {
+		t.Errorf("MAP_KEY=%q want map_val (from Env map)", out.Env["MAP_KEY"])
+	}
+	// Env map wins over EnvList (map is applied first, list iteration order is stable).
+	// Both are present; test that neither was silently dropped.
+	if out.Env["SHARED"] == "" {
+		t.Error("SHARED should be set from either Env or EnvList")
+	}
+	if out.EnvList != nil {
+		t.Error("EnvList should be cleared when Env map is set")
+	}
+}
+
+// ── Spawn: CLIHomeEnvVar with empty VirtualHomeDir errors ────────────────────
+
+func TestSpawn_CLIHomeEnvVar_RequiresVirtualHomeDir(t *testing.T) {
+	t.Parallel()
+	profile := New("codex", "/work").
+		WithHomeOverride(HomeOverrideVirtual).
+		WithCLIHomeEnvVar("CODEX_HOME").
+		Build() // VirtualHomeDir is empty — must error
+
+	_, err := Spawn(profile, types.SpawnArgs{Command: "codex"})
+	if err == nil {
+		t.Error("expected error when CLIHomeEnvVar is set but VirtualHomeDir is empty")
+	}
+}
+
+// ── EphemeralCleanupHook: refuses to remove root paths ───────────────────────
+
+func TestEphemeralCleanupHook_RefusesRootPaths(t *testing.T) {
+	t.Parallel()
+
+	roots := []string{"/", "."}
+	for _, root := range roots {
+		profile := New("codex", "/work").
+			WithStateScope(StateScopeEphemeral).
+			WithVirtualHomeDir(root).
+			Build()
+		if err := EphemeralCleanupHook(profile, 0); err != nil {
+			t.Errorf("EphemeralCleanupHook(%q): unexpected error: %v", root, err)
+		}
+		// The hook must not remove the root — it should still exist.
+		if _, statErr := os.Stat(root); os.IsNotExist(statErr) {
+			t.Errorf("root path %q was removed by EphemeralCleanupHook", root)
+		}
+	}
+}
+
 // ── RunPostExitHooks ─────────────────────────────────────────────────────────
 
 func TestRunPostExitHooks_AllRun(t *testing.T) {

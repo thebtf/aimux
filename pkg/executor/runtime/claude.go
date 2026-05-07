@@ -32,8 +32,9 @@ func DefaultClaudeProfile(workDir string) CLIRuntimeProfile {
 // CAUTION: --bare forces API-key-only auth. If the user depends on OAuth, callers
 // must inject ANTHROPIC_API_KEY via EnvOverrides before spawning.
 //
-// The --mcp-config flag value is left as an empty string placeholder. A PreSpawnHook
-// must fill it with the path to an empty JSON file. This is wired in Phase 3.
+// The --mcp-config flag value is set to "{}" (empty JSON object) so that Claude CLI
+// validation succeeds even before any PreSpawnHook runs. A PreSpawnHook may overwrite
+// this with the path to a real MCP config file. This is wired in Phase 3.
 func IsolatedClaudeProfile(workDir string) CLIRuntimeProfile {
 	return From(DefaultClaudeProfile(workDir)).
 		WithMCPMode(MCPModeNone).
@@ -42,9 +43,9 @@ func IsolatedClaudeProfile(workDir string) CLIRuntimeProfile {
 		// CWD CLAUDE.md is the only instruction source when --bare is active.
 		// Write task instructions via VirtualInstructionFiles: {"CLAUDE.md": "..."}.
 		WithExtraFlags([]string{
-			"--bare",                  // VERIFIED: disables hooks/LSP/plugins/keychain
-			"--strict-mcp-config",    // VERIFIED: ignore all MCP outside --mcp-config
-			"--mcp-config", "",       // path placeholder — filled by PreSpawnHook (Phase 3)
+			"--bare",                   // VERIFIED: disables hooks/LSP/plugins/keychain
+			"--strict-mcp-config",     // VERIFIED: ignore all MCP outside --mcp-config
+			"--mcp-config", "{}",      // empty-MCP placeholder — PreSpawnHook may replace (Phase 3)
 			"--no-session-persistence", // VERIFIED: disable session saves
 		}).
 		Build()

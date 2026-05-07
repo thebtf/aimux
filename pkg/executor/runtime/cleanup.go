@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // EphemeralCleanupHook is a PostExitHook that removes the VirtualHomeDir when
@@ -27,11 +29,23 @@ func EphemeralCleanupHook(profile CLIRuntimeProfile, _ int) error {
 	if profile.VirtualHomeDir == "" {
 		return nil
 	}
-	if err := os.RemoveAll(profile.VirtualHomeDir); err != nil {
+	clean := filepath.Clean(profile.VirtualHomeDir)
+	if clean == "." || clean == string(filepath.Separator) {
+		log.Printf("runtime: EphemeralCleanupHook: refusing to remove unsafe path %q", profile.VirtualHomeDir)
+		return nil
+	}
+	if vol := filepath.VolumeName(clean); vol != "" {
+		rest := strings.TrimPrefix(clean, vol)
+		if rest == `\` || rest == "/" {
+			log.Printf("runtime: EphemeralCleanupHook: refusing to remove volume root %q", profile.VirtualHomeDir)
+			return nil
+		}
+	}
+	if err := os.RemoveAll(clean); err != nil {
 		// os.RemoveAll returns nil when the path does not exist, so any error
 		// here indicates a genuine removal failure (e.g., permission denied).
 		if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("runtime: EphemeralCleanupHook: failed to remove %q: %v", profile.VirtualHomeDir, err)
+			log.Printf("runtime: EphemeralCleanupHook: failed to remove %q: %v", clean, err)
 		}
 	}
 	return nil

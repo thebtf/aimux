@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"runtime"
+	"strings"
 
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -32,9 +33,16 @@ func Spawn(profile CLIRuntimeProfile, base types.SpawnArgs) (types.SpawnArgs, er
 		out.CWD = profile.WorkDir
 	}
 
-	// Build a mutable env map from base.Env (base is not mutated).
-	env := make(map[string]string, len(base.Env)+len(profile.EnvOverrides)+4)
+	// Build a mutable env map from base.Env and base.EnvList (base is not mutated).
+	env := make(map[string]string, len(base.Env)+len(base.EnvList)+len(profile.EnvOverrides)+4)
 	for k, v := range base.Env {
+		env[k] = v
+	}
+	for _, kv := range base.EnvList {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
 		env[k] = v
 	}
 
@@ -62,9 +70,13 @@ func Spawn(profile CLIRuntimeProfile, base types.SpawnArgs) (types.SpawnArgs, er
 	if profile.HomeOverride == HomeOverrideVirtual || profile.HomeOverride == HomeOverrideSymlink {
 		if profile.CLIHomeEnvVar != "" {
 			// CLI-specific home redirect (most precise — e.g., CODEX_HOME for codex).
-			if profile.VirtualHomeDir != "" {
-				env[profile.CLIHomeEnvVar] = profile.VirtualHomeDir
+			if profile.VirtualHomeDir == "" {
+				return types.SpawnArgs{}, fmt.Errorf(
+					"runtime.Spawn: HomeOverride requires VirtualHomeDir when CLIHomeEnvVar=%q for CLI %q",
+					profile.CLIHomeEnvVar, profile.CLIName,
+				)
 			}
+			env[profile.CLIHomeEnvVar] = profile.VirtualHomeDir
 		} else if profile.DangerIsolated {
 			// Broad HOME/USERPROFILE redirect. Only applied when explicitly opted in.
 			// Risk: OAuth token discovery, shell init scripts may break.
@@ -83,10 +95,14 @@ func Spawn(profile CLIRuntimeProfile, base types.SpawnArgs) (types.SpawnArgs, er
 		// If CLIHomeEnvVar=="" and DangerIsolated==false: no HOME override. Documented degradation.
 	}
 
-	// Replace out.Env with the resolved map (does not mutate base.Env).
-	// Only set if we actually built an env — preserve nil when base had no env and
-	// no transforms were applied (keeps existing behavior for callers using EnvList).
-	if len(env) > 0 || len(profile.EnvOverrides) > 0 || len(profile.UnsetEnvVars) > 0 {
+	// Replace out.Env with the resolved map (does not mutate base.Env or base.EnvList).
+	// Trigger when any env source was populated or any transform was applied so that
+	// the executor uses the Env map path (not a stale EnvList).
+	envTransformed := len(profile.PreSpawnHooks) > 0 ||
+		len(profile.EnvOverrides) > 0 ||
+		len(profile.UnsetEnvVars) > 0 ||
+		profile.HomeOverride != HomeOverrideNone
+	if len(base.Env) > 0 || len(base.EnvList) > 0 || envTransformed {
 		out.Env = env
 		out.EnvList = nil // clear EnvList so executor uses Env map path
 	}
