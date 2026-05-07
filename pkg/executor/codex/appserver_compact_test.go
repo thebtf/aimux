@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -129,8 +130,9 @@ func TestAppServerProcess_Compact_WaitsForTurnCompleted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	compactErrCh := make(chan error, 1)
 	go func() {
-		_ = proc.Compact(ctx, "thread-wait")
+		compactErrCh <- proc.Compact(ctx, "thread-wait")
 		compactReturnedAt <- time.Now()
 	}()
 
@@ -149,6 +151,9 @@ func TestAppServerProcess_Compact_WaitsForTurnCompleted(t *testing.T) {
 	// Compact must return AFTER turn/completed was emitted.
 	if crAt.Before(tcAt) {
 		t.Errorf("Compact returned before turn/completed: Compact=%v turnCompleted=%v", crAt, tcAt)
+	}
+	if err := <-compactErrCh; err != nil {
+		t.Fatalf("Compact returned unexpected error: %v", err)
 	}
 }
 
@@ -241,8 +246,8 @@ func TestAppServerProcess_Compact_ContextCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected context error from Compact, got nil")
 	}
-	if !strings.Contains(err.Error(), "Compact") {
-		t.Errorf("error should mention Compact; got: %v", err)
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context cancellation/deadline error, got: %v", err)
 	}
 }
 

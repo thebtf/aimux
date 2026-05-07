@@ -72,8 +72,12 @@ type CodexWorker struct {
 	// Keyed by threadId. Protected by compactMu.
 	// This field is per-worker-instance (not per-task) because the pool binds
 	// one process per projectID and the worker drives turns sequentially.
-	compactMu            sync.Mutex
-	lastCompactedAtTurn  map[string]int64
+	compactMu           sync.Mutex
+	lastCompactedAtTurn map[string]int64
+	// compactionInProgress guards against concurrent compaction on the same thread
+	// (TOCTOU race: two concurrent Execute() calls that both pass the throttle check
+	// could both launch proc.Compact — CodeRabbit MAJOR fix). Protected by compactMu.
+	compactionInProgress map[string]bool
 	// turnCount tracks total turns dispatched per thread by this worker instance.
 	// Used to enforce MinTurnsBetween throttle.
 	turnCount map[string]int64
@@ -387,26 +391,49 @@ func (w *CodexWorker) maybeCompact(ctx context.Context, proc *AppServerProcess, 
 		return nil
 	}
 
+	// Acquire the lock to atomically check throttle, in-progress state, and set
+	// the in-progress marker before releasing. This prevents the TOCTOU race
+	// where two concurrent Execute() calls for the same threadID both pass the
+	// hasCompacted check and both launch proc.Compact (CodeRabbit MAJOR).
 	w.compactMu.Lock()
 	turns := w.turnCount[threadID]
 	lastAt, hasCompacted := w.lastCompactedAtTurn[threadID]
-	w.compactMu.Unlock()
 
 	// Throttle only applies after the first compaction on this thread.
 	// On first compaction (hasCompacted==false), skip the throttle check.
 	if hasCompacted && turns-lastAt < int64(w.compaction.MinTurnsBetween) {
+		w.compactMu.Unlock()
 		// Throttled — too soon since the last compaction.
 		return nil
 	}
 
-	if err := proc.Compact(ctx, threadID); err != nil {
-		return fmt.Errorf("codex worker: compact: %w", err)
+	// Return early if another goroutine is already compacting this thread.
+	if w.compactionInProgress[threadID] {
+		w.compactMu.Unlock()
+		return nil
 	}
 
-	w.compactMu.Lock()
-	w.lastCompactedAtTurn[threadID] = turns
+	// Reserve compaction for this goroutine before releasing the lock.
+	if w.compactionInProgress == nil {
+		w.compactionInProgress = make(map[string]bool)
+	}
+	w.compactionInProgress[threadID] = true
 	w.compactMu.Unlock()
 
+	// Call proc.Compact without holding the lock (it may block for seconds).
+	err := proc.Compact(ctx, threadID)
+
+	// Always clear the in-progress marker and, on success, record the turn.
+	w.compactMu.Lock()
+	delete(w.compactionInProgress, threadID)
+	if err == nil {
+		w.lastCompactedAtTurn[threadID] = turns
+	}
+	w.compactMu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("codex worker: compact: %w", err)
+	}
 	meta.CompactionCount++
 	return nil
 }

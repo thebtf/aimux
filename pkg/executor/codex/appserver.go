@@ -405,9 +405,11 @@ func (p *AppServerProcess) Compact(ctx context.Context, threadID string) error {
 	p.state = AppServerStateTurnInFlight
 	p.mu.Unlock()
 
-	defer func() {
-		p.setState(AppServerStateReady)
-	}()
+	// Do NOT use defer to set Ready — we only transition to Ready on successful
+	// completion of the compaction turn. ctx.Done() or error paths leave the
+	// process in TurnInFlight so that StartTurn cannot run against an active
+	// compaction subprocess (CodeRabbit MAJOR: unconditional defer).
+	// The pool will drain/kill this process on acquire if it is not Ready.
 
 	// Send thread/compact/start. Returns {} (empty result) on success.
 	params := ThreadCompactStartParams{ThreadID: threadID}
@@ -416,8 +418,12 @@ func (p *AppServerProcess) Compact(ctx context.Context, threadID string) error {
 		return fmt.Errorf("codex: thread/compact/start: %w", err)
 	}
 
-	// Wait for turn/completed (the compaction turn). No item/completed is emitted
-	// for contextCompaction items — turn/completed is the only terminal signal.
+	// Wait for turn/completed for the compaction turn on this threadID.
+	// No item/completed is emitted for contextCompaction items — turn/completed
+	// is the only terminal signal.
+	//
+	// We filter by ThreadID to avoid acting on stale turn/completed notifications
+	// that may have been queued from a previous turn (CodeRabbit MAJOR: stale notif).
 	for {
 		select {
 		case <-ctx.Done():
@@ -444,7 +450,25 @@ func (p *AppServerProcess) Compact(ctx context.Context, threadID string) error {
 				continue
 			}
 			if notif.Method == MethodTurnCompleted {
-				// Compaction turn finished — ready for next user turn.
+				// Only accept the turn/completed that belongs to our compaction thread.
+				// This guards against stale notifications from a prior user turn that
+				// may still be buffered in the channel (CodeRabbit MAJOR: stale notif).
+				var tcn TurnCompletedNotification
+				if err := json.Unmarshal(notif.Params, &tcn); err != nil {
+					// Cannot decode — treat as unrelated notification and continue.
+					continue
+				}
+				if tcn.ThreadID != threadID {
+					// Belongs to a different thread — skip.
+					continue
+				}
+				// Verify the compaction turn actually succeeded (Codex MINOR: status check).
+				if tcn.Turn.Status == TurnStatusFailed || tcn.Turn.Status == TurnStatusCancelled {
+					return fmt.Errorf("codex: Compact: compaction turn %s ended with status %s",
+						tcn.Turn.ID, tcn.Turn.Status)
+				}
+				// Compaction turn finished successfully — transition to Ready.
+				p.setState(AppServerStateReady)
 				return nil
 			}
 			// All other notifications (hook/started, thread/status/changed, etc.) are
