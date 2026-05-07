@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -177,7 +178,13 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 			interruptCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = proc.Interrupt(interruptCtx)
 			cancel()
-			return nil, types.NewCanceled("codex worker: context cancelled", ctx.Err())
+			// Distinguish deliberate cancellation from deadline expiry so the
+			// FailureClassifier can apply the correct retry/fallback policy.
+			ctxErr := ctx.Err()
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				return nil, types.NewTimeout("codex worker: context deadline exceeded", ctxErr)
+			}
+			return nil, types.NewCanceled("codex worker: context cancelled", ctxErr)
 		}
 	}
 

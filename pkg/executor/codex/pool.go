@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sync"
@@ -124,7 +125,13 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 			p.mu.Lock()
 			entry.activeUsers--
 			p.mu.Unlock()
-			return nil, types.NewCanceled("codex: CodexPool.Acquire: context cancelled while waiting for process start", ctx.Err())
+			// Distinguish deadline expiry from deliberate cancellation so the
+			// FailureClassifier can apply the correct retry/fallback policy.
+			ctxErr := ctx.Err()
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				return nil, types.NewTimeout("codex: CodexPool.Acquire: context deadline exceeded while waiting for process start", ctxErr)
+			}
+			return nil, types.NewCanceled("codex: CodexPool.Acquire: context cancelled while waiting for process start", ctxErr)
 		}
 
 		p.mu.Lock()
