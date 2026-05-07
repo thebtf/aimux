@@ -86,8 +86,10 @@ func Spawn(profile CLIRuntimeProfile, base types.SpawnArgs) (types.SpawnArgs, er
 					profile.CLIName)
 			}
 			if runtime.GOOS == "windows" {
+				// USERPROFILE is the modern Windows home standard; HOMEPATH is the
+				// legacy path-only component (without drive letter) — setting it to
+				// a full absolute path is incorrect. Set USERPROFILE only.
 				env["USERPROFILE"] = profile.VirtualHomeDir
-				env["HOMEPATH"] = profile.VirtualHomeDir
 			} else {
 				env["HOME"] = profile.VirtualHomeDir
 			}
