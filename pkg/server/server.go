@@ -22,6 +22,7 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
+	codexexec "github.com/thebtf/aimux/pkg/executor/codex"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/guidance"
 	"github.com/thebtf/aimux/pkg/guidance/policies"
@@ -139,6 +140,14 @@ type Server struct {
 	// construct Server without NewDaemon.
 	capCache     *driver.CapabilityCache
 	capRefresher *driver.CapabilityRefresher
+
+	// AIMUX-18 Phase 6: Codex executor surface.
+	// codexPool owns one AppServerProcess per ProjectContext.ID. It is nil when
+	// the `codex` binary is not on PATH (non-fatal — codex_* tools return errors
+	// rather than panicking).
+	// codexHandlers wires the pool + loom into the 5 MCP tool handlers (FR-1..FR-5).
+	codexPool     *codexexec.CodexPool
+	codexHandlers *codexexec.CodexHandlers
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -380,6 +389,39 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	// Register LoomEngine workers for the reduced surface.
 	if s.loom != nil {
 		s.loom.RegisterWorker(loom.WorkerTypeThinker, loomworkers.NewThinkerWorker())
+
+		// AIMUX-18 Phase 6: CodexWorker + CodexPool.
+		// Pool construction validates that the codex binary is on PATH. When codex
+		// is absent (e.g. CI without codex installed) the pool is nil and the 5
+		// codex_* tools return actionable errors rather than panicking.
+		codexPath, pathErr := lookupCodexBinary()
+		if pathErr != nil {
+			log.Info("codex: binary not found on PATH — codex_* tools will return errors (%v)", pathErr)
+		} else {
+			pool, poolErr := codexexec.NewCodexPool(codexPath, codexexec.DefaultPoolConfig())
+			if poolErr != nil {
+				log.Warn("codex: pool init failed: %v", poolErr)
+			} else {
+				s.codexPool = pool
+				worker, workerErr := codexexec.NewCodexWorker(codexexec.CodexWorkerConfig{
+					Pool:    pool,
+					Loom:    s.loom,
+					LoomGet: s.loom,
+				})
+				if workerErr != nil {
+					log.Warn("codex: worker init failed: %v", workerErr)
+				} else {
+					s.loom.RegisterWorker(codexexec.WorkerTypeCodex, worker)
+					handlers, hErr := codexexec.NewCodexHandlers(pool, s.loom)
+					if hErr != nil {
+						log.Warn("codex: handlers init failed: %v", hErr)
+					} else {
+						s.codexHandlers = handlers
+						log.Info("codex: pool + worker + handlers initialized (binary: %s)", codexPath)
+					}
+				}
+			}
+		}
 
 		// Recover tasks that were dispatched/running when daemon last crashed.
 		if n, err := s.loom.RecoverCrashed(); err != nil {
@@ -783,6 +825,11 @@ func (s *Server) registerTools() {
 		),
 		s.handleUpgrade,
 	)
+
+	// AIMUX-18 Phase 6: 5 Codex executor tools (FR-1 through FR-5).
+	// Handlers are nil when codex binary is not on PATH — registered as stubs
+	// that return an actionable error so tool discovery still succeeds.
+	s.registerCodexTools()
 }
 
 func (s *Server) registerResources() {

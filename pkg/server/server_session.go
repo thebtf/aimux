@@ -289,6 +289,13 @@ func (d *fullDelegate) disconnectProject(projectID string) bool {
 	d.srv.mcp.UnregisterSession(context.Background(), state.session.SessionID())
 	d.projects.Delete(projectID)
 
+	// AIMUX-18 Phase 6: release codex process for this project on last disconnect.
+	if d.srv.codexPool != nil {
+		if err := d.srv.codexPool.Remove(context.Background(), projectID); err != nil {
+			d.srv.log.Warn("codex: pool.Remove(%s): %v", projectID, err)
+		}
+	}
+
 	d.srv.log.Info("session-handler: project %s fully disconnected, session unregistered", projectID)
 	return true // last session cleaned up
 }
