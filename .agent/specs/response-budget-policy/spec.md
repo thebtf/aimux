@@ -39,13 +39,17 @@ Every tool that returns structured data MUST accept the following optional param
 | `include_content` | boolean | `false` | `status`, `sessions(info)`, `exec` (sync), `agent` (sync), `investigate(recall)`, `agents(info)` |
 | `tail` | integer | `0` (disabled) | same as `include_content`-eligible actions |
 
-**`fields`**: comma-separated whitelist of top-level response fields. When omitted or empty, handlers return the defined brief field set for that action (FR-2). When non-empty, only listed fields appear. Policy metadata fields (`truncated`, `hint`, pagination keys) are always included regardless of `fields`.
+**`fields`**: comma-separated whitelist of fields to include in the response. The scope of `fields` depends on the action type:
+- **Object actions** (e.g., `status`, `sessions info`, `agents info`): `fields` selects top-level response keys (e.g., `fields=job_id,status,content_length`).
+- **List actions** (e.g., `sessions list`, `agents list`, `investigate list`): `fields` selects per-row fields within each element of the response array (e.g., `fields=id,status,cli` selects those columns from each session row). Top-level envelope keys (`sessions`, `tasks`, `total`, `limit`, `offset`, `has_more`) are always returned; `fields` does not affect them.
+
+When omitted or empty, handlers return the defined brief field set for that action (FR-2). Policy metadata fields (`truncated`, `hint`, `limit_clamped`) are always included regardless of `fields`.
 
 **`limit` / `offset`**: paginate list responses. Default limit is 20. Maximum limit is 100; values above 100 are clamped with `limit_clamped=true` in the response. `offset` is zero-based.
 
 **`include_content`**: when `false` (default), content-bearing fields are omitted. When `true`, full content is returned. Applicable only on actions that have a content-bearing field.
 
-**`tail`**: when `> 0`, returns the last N characters of the content field as `content_tail` instead of full content. Requires `tail >= 1`; zero or negative values are an error. `tail` and `include_content=true` are mutually exclusive on the same call: if both are supplied, `tail` takes precedence.
+**`tail`**: when `> 0`, returns the last N characters of the content field as `content_tail` instead of full content. Requires `tail >= 1`; zero or negative values are an error. `tail` and `include_content=true` are mutually exclusive on the same call: if both are supplied, `tail` takes precedence and `include_content` is silently ignored. **Rationale:** `tail` is the more specific request (a bounded slice vs. the full payload); honouring the more specific intent avoids returning unexpectedly large responses when both flags are set accidentally. Callers that need both behaviours must make two calls. See EC-10 for the explicit example.
 
 ### FR-2: Default Brief Field Sets Per Action
 
@@ -60,7 +64,7 @@ Each action defines its brief output. Brief output must fit within ~4k chars on 
 | `sessions cancel / kill / gc` | all fields (already compact) |
 | `investigate list` | per row: `session_id`, `topic`, `domain`, `status`, `finding_count` |
 | `investigate status` | `session_id`, `topic`, `domain`, `status`, `finding_count`, `coverage_progress` |
-| `investigate recall` | `session_id`, `topic`, `finding_count`; full report omitted unless `include_content=true` |
+| `investigate recall` | `session_id`, `topic`, `finding_count`, `content_length`; full report omitted unless `include_content=true` |
 | `agents list` | `name`, `description`, `role`, `domain` (existing summary behavior — already compliant) |
 | `agents info` | `name`, `description`, `role`, `domain`, `tools`, `when`; `system_prompt` excluded unless `include_content=true` |
 | `agents find` | same as agents list per match |
@@ -103,6 +107,8 @@ All list responses that apply `limit`/`offset` MUST include:
 
 `total` is the full count before pagination. `has_more` is `true` when `offset + limit < total`.
 
+**Sort order for merged list actions:** When a list response merges two heterogeneous collections (e.g., `sessions list` merges legacy `session.Store` rows and Loom tasks), the unified list MUST be sorted by `created_at` descending (newest first) before pagination is applied. This ensures consistent, deterministic page boundaries across calls. See Open Question #2 for implementation implications.
+
 ### FR-5: MCP Tool Description Contract
 
 The MCP tool description string for each tool MUST document the brief/full contract. Each affected description MUST state:
@@ -121,7 +127,7 @@ When `fields` is supplied, each field name is validated against the known field 
 
 | Parameter | Invalid value | Required response |
 |---|---|---|
-| `limit` | `> 100` | Clamp to 100, add `limit_clamped=true` |
+| `limit` | `> 100` | Clamp to 100, add `limit_clamped=true`, and include `hint: "limit clamped to 100 (maximum); requested <N>"` |
 | `limit` | `< 1` | Error: "limit must be >= 1" |
 | `offset` | `< 0` | Error: "offset must be >= 0" |
 | `tail` | `<= 0` | Error: "tail must be >= 1" |
@@ -130,7 +136,13 @@ When `fields` is supplied, each field name is validated against the known field 
 
 ### FR-8: deepresearch Budget Exception
 
-`deepresearch` returns a synthesized research report that is inherently long. It is exempt from the ~4k default budget. Its tool description MUST document this exception: `"Returns full synthesized report; not subject to the 4k default budget."` `include_content` and `tail` do not apply to this tool.
+`deepresearch` returns a synthesized research report that is inherently long. It is exempt from the ~4k default budget. Its tool description MUST document this exception: `"Returns full synthesized report; not subject to the 4k default budget."`
+
+Per FR-1, `deepresearch` MUST accept the full uniform optional parameter set (`include_content`, `tail`, `fields`, `limit`, `offset`) to avoid callers receiving unknown-parameter errors. However:
+- `include_content` and `tail` are accepted but have **no effect** — they are silently ignored. No validation error is returned.
+- `fields`, `limit`, and `offset` DO apply to the top-level result structure: `fields` selects which top-level keys are returned (e.g., `report`, `sources`, `cached`); `limit` and `offset` apply to the `sources` list when present.
+
+**Edge case:** `deepresearch(topic=X, include_content=true, tail=500)` returns the same full synthesized report as `deepresearch(topic=X)`. Neither `include_content` nor `tail` changes the response — they are accepted without error and ignored.
 
 ### FR-9: Default Response Budget
 
@@ -220,6 +232,8 @@ Acceptance criteria:
 - `agents(action=list)` without new params returns JSON with an `agents` array key.
 - No tool returns an error when called without the new optional parameters.
 
+**Known intentional breaking change:** Callers of `status(job_id=X)` that read the top-level `content` field from a completed job response will no longer receive it by default after this change — `content` is omitted from the brief default. This is a deliberate trade-off to fix the context-overflow problem (FR-1/FR-2). **Migration:** callers must add `include_content=true` to their `status` calls to restore the previous full-content behaviour. This migration is documented here rather than deferred.
+
 ### US5 (P2): Orchestrator retrieves agent system prompt on demand
 
 **As an** orchestrator LLM calling `agents(action=info, agent=implementer)`,
@@ -229,7 +243,7 @@ Acceptance criteria:
 Acceptance criteria:
 - `agents(action=info, agent=<any>)` without extra params returns <= 4096 chars.
 - Response includes `truncated=true` and `hint` describing how to retrieve the system prompt.
-- `agents(action=info, agent=<any>, include_content=true)` returns the `system_prompt` field.
+- `agents(action=info, agent=<any>, include_content=true)` returns the prompt body field. **Implementation note:** the `agents.Agent` struct exposes the prompt as the JSON field `content` (not `system_prompt`). Implementations MUST either (a) use `content` as the field name and update this acceptance criterion accordingly, or (b) add a `system_prompt` alias in the handler response alongside `content`. The locked field name is `content`; `system_prompt` is a planned alias that requires an explicit migration step. See Open Question #3.
 
 ## Edge Cases
 
@@ -250,6 +264,8 @@ Acceptance criteria:
 **EC-8: `tail` larger than content.** `status(job_id=X, tail=999999)` when content is 500 chars returns the full content as `content_tail`. `truncated` MUST be `false`.
 
 **EC-9: `include_content=true` on an action with no content-bearing field.** The response remains valid; no new field is invented. `truncated` is `false`.
+
+**EC-10: `tail` and `include_content=true` both provided.** `status(job_id=X, tail=500, include_content=true)` MUST return `content_tail` with the last 500 characters and `truncated=true` (`tail` takes precedence; `include_content` is silently ignored). The `content` field is NOT included in the response. This behaviour is consistent with FR-1: `tail` is treated as the more specific request. If the caller intends full content, they must omit `tail` and use `include_content=true` alone.
 
 ## Out of Scope
 
@@ -274,7 +290,7 @@ Acceptance criteria:
 2. `sessions(action=list)` with 50+ sessions in the fixture returns <= 4096 chars with no optional params.
 3. `status(job_id=X)` with a 100k-char content job returns <= 4096 chars with no optional params; full content is returned when `include_content=true`.
 4. All 14 tool descriptions in `registerTools()` document the brief/full contract (or the deepresearch exception).
-5. All edge cases EC-1 through EC-9 have passing tests.
+5. All edge cases EC-1 through EC-10 have passing tests.
 6. No existing test (857 total) regresses due to this change.
 7. Existing calls using only required parameters return valid JSON with the same top-level keys as before.
 
