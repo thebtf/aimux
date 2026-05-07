@@ -23,6 +23,7 @@ import (
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor"
 	codexexec "github.com/thebtf/aimux/pkg/executor/codex"
+	"github.com/thebtf/aimux/pkg/executor/fallback"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/guidance"
 	"github.com/thebtf/aimux/pkg/guidance/policies"
@@ -148,6 +149,11 @@ type Server struct {
 	// codexHandlers wires the pool + loom into the 5 MCP tool handlers (FR-1..FR-5).
 	codexPool     *codexexec.CodexPool
 	codexHandlers *codexexec.CodexHandlers
+
+	// AIMUX-4: cross-CLI fallback re-rank engine (FR-10).
+	// Nil when no CLIs are available at daemon startup — task tool surfaces a clear
+	// error at call time rather than panicking.
+	fallbackPicker *fallback.FallbackPicker
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -497,6 +503,11 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	// Enable sampling capability — allows think patterns to request LLM calls from the client.
 	s.mcp.EnableSampling()
 
+	// AIMUX-4: build FallbackPicker after the driver registry is probed so
+	// EnabledCLIs() returns the real available set. Runs after MCP server construction
+	// but before registerTools so the task tool can reference s.fallbackPicker.
+	s.fallbackPicker = buildFallbackPicker(s)
+
 	s.registerTools()
 	s.registerResources()
 	s.registerPrompts()
@@ -842,6 +853,9 @@ func (s *Server) registerTools() {
 	// Handlers are nil when codex binary is not on PATH — registered as stubs
 	// that return an actionable error so tool discovery still succeeds.
 	s.registerCodexTools()
+
+	// AIMUX-4: cross-CLI fallback re-rank engine (FR-10).
+	s.registerTaskTool()
 }
 
 func (s *Server) registerResources() {
