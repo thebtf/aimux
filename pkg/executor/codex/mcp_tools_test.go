@@ -577,3 +577,175 @@ func TestBuildCodexStatusResult_NoContent(t *testing.T) {
 		t.Errorf("content_length: got %v, want 11", m["content_length"])
 	}
 }
+
+// TestBuildCodexStatusResult_CompactionFields verifies that last_input_tokens and
+// compaction_count are returned in the status result when include_content=true and
+// the task metadata contains non-zero values for those fields (FR-12).
+func TestBuildCodexStatusResult_CompactionFields_IncludeContent(t *testing.T) {
+	meta := CodexTaskMeta{
+		JobClass:        JobClassTask,
+		ThreadID:        "thread-t1",
+		LastInputTokens: 200_000,
+		CompactionCount: 2,
+	}
+	metaMap, err := codeTaskMetaToMap(meta)
+	if err != nil {
+		t.Fatalf("codeTaskMetaToMap: %v", err)
+	}
+
+	now := time.Now()
+	task := &loom.Task{
+		ID:        "task-compact",
+		Status:    loom.TaskStatusCompleted,
+		Result:    "done",
+		CreatedAt: now,
+		Metadata:  metaMap,
+	}
+	task.CompletedAt = &now
+
+	m := buildCodexStatusResult(task, true /* includeContent */, 0)
+
+	if v, ok := m["last_input_tokens"]; !ok {
+		t.Error("last_input_tokens missing from status result")
+	} else {
+		// buildCodexStatusResult stores the value directly (int64), not via JSON round-trip.
+		switch tv := v.(type) {
+		case int64:
+			if tv != 200_000 {
+				t.Errorf("last_input_tokens: got %d, want 200_000", tv)
+			}
+		case float64:
+			if int64(tv) != 200_000 {
+				t.Errorf("last_input_tokens: got %v, want 200_000", tv)
+			}
+		default:
+			t.Errorf("last_input_tokens: unexpected type %T value %v", v, v)
+		}
+	}
+	if v, ok := m["compaction_count"]; !ok {
+		t.Error("compaction_count missing from status result")
+	} else {
+		switch tv := v.(type) {
+		case int:
+			if tv != 2 {
+				t.Errorf("compaction_count: got %d, want 2", tv)
+			}
+		case float64:
+			if int(tv) != 2 {
+				t.Errorf("compaction_count: got %v, want 2", tv)
+			}
+		default:
+			t.Errorf("compaction_count: unexpected type %T value %v", v, v)
+		}
+	}
+}
+
+// TestBuildCodexStatusResult_CompactionFields_NotReturnedWithoutIncludeContent verifies
+// that compaction fields are NOT present when include_content=false (FR-12).
+func TestBuildCodexStatusResult_CompactionFields_NotReturnedWithoutIncludeContent(t *testing.T) {
+	meta := CodexTaskMeta{
+		JobClass:        JobClassTask,
+		ThreadID:        "thread-t2",
+		LastInputTokens: 200_000,
+		CompactionCount: 3,
+	}
+	metaMap, _ := codeTaskMetaToMap(meta)
+
+	now := time.Now()
+	task := &loom.Task{
+		ID:        "task-compact-hidden",
+		Status:    loom.TaskStatusCompleted,
+		Result:    "done",
+		CreatedAt: now,
+		Metadata:  metaMap,
+	}
+	task.CompletedAt = &now
+
+	m := buildCodexStatusResult(task, false /* includeContent */, 0)
+
+	if _, ok := m["last_input_tokens"]; ok {
+		t.Error("last_input_tokens must not be present when include_content=false")
+	}
+	if _, ok := m["compaction_count"]; ok {
+		t.Error("compaction_count must not be present when include_content=false")
+	}
+}
+
+// TestBuildCodexStatusResult_CompactionFields_ZeroValuesOmitted verifies that
+// last_input_tokens and compaction_count are omitted when their values are zero
+// (omitempty semantics — avoids cluttering status responses for non-compacted tasks).
+func TestBuildCodexStatusResult_CompactionFields_ZeroValuesOmitted(t *testing.T) {
+	meta := CodexTaskMeta{
+		JobClass: JobClassTask,
+		ThreadID: "thread-t3",
+		// LastInputTokens and CompactionCount are zero (default).
+	}
+	metaMap, _ := codeTaskMetaToMap(meta)
+
+	now := time.Now()
+	task := &loom.Task{
+		ID:        "task-compact-zero",
+		Status:    loom.TaskStatusCompleted,
+		Result:    "done",
+		CreatedAt: now,
+		Metadata:  metaMap,
+	}
+	task.CompletedAt = &now
+
+	m := buildCodexStatusResult(task, true /* includeContent */, 0)
+
+	if _, ok := m["last_input_tokens"]; ok {
+		t.Error("last_input_tokens must be omitted when value is 0")
+	}
+	if _, ok := m["compaction_count"]; ok {
+		t.Error("compaction_count must be omitted when value is 0")
+	}
+}
+
+// TestHandleCodexStatus_CompactionFields_ViaHandler verifies that the MCP handler
+// surfaces last_input_tokens and compaction_count when include_content=true (FR-12).
+func TestHandleCodexStatus_CompactionFields_ViaHandler(t *testing.T) {
+	meta := CodexTaskMeta{
+		JobClass:        JobClassTask,
+		ThreadID:        "thread-handler",
+		LastInputTokens: 181_881,
+		CompactionCount: 1,
+	}
+	metaMap, _ := codeTaskMetaToMap(meta)
+
+	l := newFakeLoom()
+	now := time.Now()
+	l.tasks["task-handler-compact"] = &loom.Task{
+		ID:         "task-handler-compact",
+		WorkerType: WorkerTypeCodex,
+		Status:     loom.TaskStatusCompleted,
+		Result:     "compacted result",
+		CreatedAt:  now,
+		Metadata:   metaMap,
+	}
+	l.tasks["task-handler-compact"].CompletedAt = &now
+
+	h := newHandlers(t, l)
+
+	req := buildReq(t, map[string]any{
+		"task_id":         "task-handler-compact",
+		"include_content": true,
+	})
+	result, err := h.HandleCodexStatus(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	m := decodeResult(t, result)
+
+	if v, ok := m["last_input_tokens"]; !ok {
+		t.Error("last_input_tokens missing from codex_status response")
+	} else if int64(v.(float64)) != 181_881 {
+		t.Errorf("last_input_tokens: got %v, want 181_881", v)
+	}
+
+	if v, ok := m["compaction_count"]; !ok {
+		t.Error("compaction_count missing from codex_status response")
+	} else if int(v.(float64)) != 1 {
+		t.Errorf("compaction_count: got %v, want 1", v)
+	}
+}

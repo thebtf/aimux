@@ -394,6 +394,20 @@ func buildCodexStatusResult(task *loom.Task, includeContent bool, tail int) map[
 			result["error"] = task.Error
 		}
 	}
+	// FR-12: expose compaction metadata when include_content=true.
+	if includeContent && task.Metadata != nil {
+		var meta CodexTaskMeta
+		if b, err := json.Marshal(task.Metadata); err == nil {
+			if err := json.Unmarshal(b, &meta); err == nil {
+				if meta.LastInputTokens > 0 {
+					result["last_input_tokens"] = meta.LastInputTokens
+				}
+				if meta.CompactionCount > 0 {
+					result["compaction_count"] = meta.CompactionCount
+				}
+			}
+		}
+	}
 	return result
 }
 
