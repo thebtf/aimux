@@ -249,8 +249,20 @@ func (h *CodexHandlers) HandleCodexReviewGate(ctx context.Context, req mcp.CallT
 
 // pollGateResult polls Loom until the task reaches a terminal state or ctx expires.
 // Returns ("allow"/"block", reason). Fail-open on timeout or unrecoverable error.
+//
+// An initial check is performed immediately before starting the ticker so that
+// tasks that complete very quickly (or are already terminal on entry) do not
+// incur a full 500ms delay.
 func pollGateResult(ctx context.Context, l loomSubmitter, taskID string) (string, string) {
 	const pollInterval = 500 * time.Millisecond
+
+	// Check once immediately to avoid unnecessary delay for fast/already-terminal tasks.
+	if task, err := l.Get(taskID); err == nil && task.Status.IsTerminal() {
+		if task.Status == loom.TaskStatusFailed || task.Status == loom.TaskStatusFailedCrash {
+			return "allow", fmt.Sprintf("gate error: task %s", string(task.Status))
+		}
+		return parseGateDecision(task.Result)
+	}
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
