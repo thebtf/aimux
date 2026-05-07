@@ -2,6 +2,7 @@ package picker
 
 import (
 	"context"
+	"math"
 )
 
 // TaskSpec describes a task submitted for CLI routing.
@@ -35,6 +36,9 @@ type Picker struct {
 //   - activeCLIs: ordered list of CLI names to consider (e.g., ["codex","claude","gemini"])
 //     The order is used as a tie-break when two CLIs have equal scores (first wins).
 func NewPicker(cfg *PickerConfig, score *CapabilityScore, health *HealthChecker, activeCLIs []string) *Picker {
+	if cfg == nil || score == nil || health == nil {
+		panic("picker: cfg, score, and health must not be nil")
+	}
 	return &Picker{
 		cfg:        cfg,
 		score:      score,
@@ -53,10 +57,10 @@ func NewPicker(cfg *PickerConfig, score *CapabilityScore, health *HealthChecker,
 func (p *Picker) Pick(_ context.Context, spec TaskSpec) (string, error) {
 	// Step 1: config override.
 	if cli := p.preferredCLI(spec.TaskClass); cli != "" {
-		if !p.cfg.isDisabled(cli) && p.health.IsHealthy(cli) {
+		if contains(p.activeCLIs, cli) && !p.cfg.isDisabled(cli) && p.health.IsHealthy(cli) {
 			return cli, nil
 		}
-		// Config override CLI is unhealthy — fall through to scored selection.
+		// Config override CLI is not active, disabled, or unhealthy — fall through to scored selection.
 	}
 
 	// Step 2: health filter across active CLIs.
@@ -66,13 +70,12 @@ func (p *Picker) Pick(_ context.Context, spec TaskSpec) (string, error) {
 	}
 
 	// Step 3 + 4: score and pick highest; tie-break by activeCLIs order.
+	// healthy preserves activeCLIs order (filterHealthy iterates activeCLIs),
+	// so iterating healthy directly gives O(N) and correct tie-break semantics.
 	best := ""
-	bestScore := -1
+	bestScore := math.MinInt
 
-	for _, cli := range p.activeCLIs {
-		if !contains(healthy, cli) {
-			continue
-		}
+	for _, cli := range healthy {
 		s := p.score.Score(cli, spec.TaskClass)
 		if s > bestScore {
 			bestScore = s

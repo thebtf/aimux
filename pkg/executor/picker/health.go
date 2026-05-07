@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// defaultHealthCacheTTL is the fallback TTL used when PickerConfig.HealthCacheTTL is zero.
+const defaultHealthCacheTTL = 60 * time.Second
+
 // healthEntry is one cached health check result.
 type healthEntry struct {
 	healthy   bool
@@ -29,12 +32,18 @@ type HealthChecker struct {
 
 // NewHealthChecker constructs a HealthChecker.
 //
-//   - cfg: picker configuration (for HealthCacheTTL)
-//   - binaryFor: maps a CLI name (e.g., "codex") to a binary name (e.g., "codex")
+//   - cfg: picker configuration (for HealthCacheTTL); must not be nil
+//   - binaryFor: maps a CLI name (e.g., "codex") to a binary name (e.g., "codex"); must not be nil
 //   - activeCLIs: the ordered list of CLIs to probe in WarmAll
 //
 // Pass nil for lookPath to use exec.LookPath.
 func NewHealthChecker(cfg *PickerConfig, binaryFor func(string) string, activeCLIs []string, lookPath func(string) (string, error)) *HealthChecker {
+	if cfg == nil {
+		panic("picker: cfg must not be nil")
+	}
+	if binaryFor == nil {
+		panic("picker: binaryFor must not be nil")
+	}
 	lp := lookPath
 	if lp == nil {
 		lp = exec.LookPath
@@ -70,7 +79,7 @@ func (h *HealthChecker) isHealthyWithReason(cli string) (bool, string) {
 	healthy, reason := h.Probe(cli)
 	ttl := h.cfg.HealthCacheTTL
 	if ttl <= 0 {
-		ttl = 60 * time.Second
+		ttl = defaultHealthCacheTTL
 	}
 	h.cache.Store(cli, &healthEntry{
 		healthy:   healthy,
@@ -108,7 +117,7 @@ func (h *HealthChecker) WarmAll(ctx context.Context) {
 		healthy, reason := h.Probe(cli)
 		ttl := h.cfg.HealthCacheTTL
 		if ttl <= 0 {
-			ttl = 60 * time.Second
+			ttl = defaultHealthCacheTTL
 		}
 		h.cache.Store(cli, &healthEntry{
 			healthy:   healthy,

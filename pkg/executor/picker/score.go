@@ -58,14 +58,26 @@ func NewCapabilityScore(cfg *PickerConfig) *CapabilityScore {
 	return &CapabilityScore{cfg: cfg}
 }
 
+// clampScore clamps v to the documented [0, 100] range.
+func clampScore(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
 // Score returns the fitness score for (cli, taskClass) as an integer in [0, 100].
 // Priority: config override → built-in default → defaultScoreForUnknown.
+// Config overrides are clamped to [0, 100] to preserve the Scoref invariant.
 func (cs *CapabilityScore) Score(cli, taskClass string) int {
 	// Config override wins over built-in defaults.
 	if cs.cfg.Scores != nil {
 		if cliScores, ok := cs.cfg.Scores[cli]; ok {
 			if score, ok := cliScores[taskClass]; ok {
-				return score
+				return clampScore(score)
 			}
 		}
 	}

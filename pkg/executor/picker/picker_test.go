@@ -217,8 +217,8 @@ func TestPicker_DisabledCLI_NotSelectedEvenIfOverridden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got == "codex" {
-		t.Error("disabled CLI codex was selected despite being in DisabledCLIs")
+	if got != "claude" {
+		t.Errorf("Pick(task) with codex disabled = %q, want claude (score 85, highest among enabled)", got)
 	}
 }
 

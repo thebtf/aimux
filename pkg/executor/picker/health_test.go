@@ -137,11 +137,10 @@ func TestHealthChecker_WarmAll_ContextCancel(t *testing.T) {
 	cancel() // cancel immediately
 
 	hc.WarmAll(ctx)
-	// With immediate cancel, WarmAll should abort — at most 0 probes.
-	if callCount > 0 {
-		// Also acceptable: first probe may have run before cancel was detected.
-		// Just ensure we didn't run all 3 when cancelled immediately.
-		t.Logf("WarmAll ran %d probe(s) before cancel (acceptable if <= 1)", callCount)
+	// With immediate cancel, WarmAll should abort before processing all CLIs.
+	// At most 1 probe is acceptable — cancel may race with the first iteration.
+	if callCount >= len(active) {
+		t.Errorf("WarmAll ran all %d probes despite immediate cancel; expected early exit", callCount)
 	}
 }
 
