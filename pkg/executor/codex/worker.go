@@ -3,11 +3,13 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/executor/types"
 )
 
 // WorkerTypeCodex is the loom.WorkerType for codex tasks.
@@ -92,13 +94,13 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 	// --- 1. Parse metadata ---
 	meta, err := parseCodexTaskMeta(task)
 	if err != nil {
-		return nil, fmt.Errorf("codex worker: parse metadata: %w", err)
+		return nil, mapToCliError(fmt.Errorf("codex worker: parse metadata: %w", err))
 	}
 
 	// --- 2. Sandbox policy ---
 	sandboxCfg, err := ForClass(meta.JobClass)
 	if err != nil {
-		return nil, fmt.Errorf("codex worker: sandbox: %w", err)
+		return nil, mapToCliError(fmt.Errorf("codex worker: sandbox: %w", err))
 	}
 
 	// --- 3. Acquire process ---
@@ -109,7 +111,8 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 
 	proc, err := w.pool.Acquire(ctx, task.ProjectID, workDir)
 	if err != nil {
-		return nil, fmt.Errorf("codex worker: acquire process: %w", err)
+		// pool.Acquire already returns *types.CLIError; mapToCliError passes through.
+		return nil, mapToCliError(err)
 	}
 	defer w.pool.Release(task.ProjectID)
 
@@ -121,7 +124,7 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 
 	thread, updatedMeta, err := w.acquireThread(ctx, proc, task, meta, workDir, model, sandboxCfg)
 	if err != nil {
-		return nil, fmt.Errorf("codex worker: acquire thread: %w", err)
+		return nil, mapToCliError(err)
 	}
 
 	// --- 5. Start turn, stream progress ---
@@ -134,7 +137,7 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 	}
 	completedCh, progressCh, err := proc.StartTurn(ctx, turnParams)
 	if err != nil {
-		return nil, fmt.Errorf("codex worker: start turn: %w", err)
+		return nil, mapToCliError(fmt.Errorf("codex worker: start turn: %w", err))
 	}
 
 	// Fan progress lines to loom.AppendProgress and accumulate text.
@@ -175,7 +178,13 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 			interruptCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = proc.Interrupt(interruptCtx)
 			cancel()
-			return nil, ctx.Err()
+			// Distinguish deliberate cancellation from deadline expiry so the
+			// FailureClassifier can apply the correct retry/fallback policy.
+			ctxErr := ctx.Err()
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				return nil, types.NewTimeout("codex worker: context deadline exceeded", ctxErr)
+			}
+			return nil, types.NewCanceled("codex worker: context cancelled", ctxErr)
 		}
 	}
 
@@ -185,7 +194,7 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 	// exited prematurely (crash, idle eviction, or shutdown). Return an error
 	// so Loom records a failure instead of an empty/partial success.
 	if !turnCompletedReceived {
-		return nil, fmt.Errorf("codex worker: turn stream closed without completion (process exited prematurely)")
+		return nil, types.NewUnknown("codex worker: turn stream closed without completion (process exited prematurely)", nil)
 	}
 
 	if turnCompleted.Turn.Status == TurnStatusFailed {
@@ -194,7 +203,7 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 			errMsg = fmt.Sprintf("codex: turn failed: %s (code: %s)",
 				turnCompleted.Turn.Error.Message, turnCompleted.Turn.Error.Code)
 		}
-		return nil, fmt.Errorf("%s", errMsg)
+		return nil, mapToCliError(fmt.Errorf("%s", errMsg))
 	}
 
 	content := strings.Join(lines, "\n")
