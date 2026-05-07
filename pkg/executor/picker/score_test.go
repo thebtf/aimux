@@ -78,3 +78,48 @@ func TestCapabilityScore_UnknownCLI(t *testing.T) {
 		t.Errorf("Score(nonexistent-cli, code) = %d, want %d", got, defaultScoreForUnknown)
 	}
 }
+
+func TestCapabilityScore_Scoref_Boundaries(t *testing.T) {
+	cfg := DefaultPickerConfig()
+
+	tests := []struct {
+		rawScore int
+		want     float64
+	}{
+		{0, 0.0},
+		{50, 0.5},
+		{95, 0.95},
+		{100, 1.0},
+	}
+
+	for _, tc := range tests {
+		// Inject override so we can drive arbitrary raw scores.
+		cfg.Scores = map[string]map[string]int{
+			"codex": {"code": tc.rawScore},
+		}
+		cs := NewCapabilityScore(&cfg)
+		got := cs.Scoref("codex", "code")
+		if got != tc.want {
+			t.Errorf("Scoref for Score=%d: got %v, want %v", tc.rawScore, got, tc.want)
+		}
+	}
+}
+
+func TestCapabilityScore_Scoref_MatchesScore(t *testing.T) {
+	cfg := DefaultPickerConfig()
+	cs := NewCapabilityScore(&cfg)
+
+	clis := []string{"codex", "claude", "gemini"}
+	taskClasses := []string{"code", "review", "write-task", "task", "research"}
+
+	for _, cli := range clis {
+		for _, task := range taskClasses {
+			intScore := cs.Score(cli, task)
+			want := float64(intScore) / 100.0
+			got := cs.Scoref(cli, task)
+			if got != want {
+				t.Errorf("Scoref(%q, %q) = %v, want %v (from Score=%d)", cli, task, got, want, intScore)
+			}
+		}
+	}
+}

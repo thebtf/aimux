@@ -1,3 +1,10 @@
+// Package picker provides CLI selection logic for the executor layer.
+//
+// CapabilityScore exposes two APIs for CLI × task fitness:
+//
+//   - Score(cli, task) int    ∈ [0, 100]       — human-readable integer; used by Picker tie-break
+//   - Scoref(cli, task) float64 ∈ [0.0, 1.0]  — normalized float; intended for downstream composite
+//     scoring (e.g. AIMUX-4 Orderer composite formula). Scoref is strictly Score/100.0.
 package picker
 
 // defaultScores is the built-in capability score table from architecture.md §6.
@@ -51,7 +58,7 @@ func NewCapabilityScore(cfg *PickerConfig) *CapabilityScore {
 	return &CapabilityScore{cfg: cfg}
 }
 
-// Score returns the fitness score for (cli, taskClass).
+// Score returns the fitness score for (cli, taskClass) as an integer in [0, 100].
 // Priority: config override → built-in default → defaultScoreForUnknown.
 func (cs *CapabilityScore) Score(cli, taskClass string) int {
 	// Config override wins over built-in defaults.
@@ -72,4 +79,13 @@ func (cs *CapabilityScore) Score(cli, taskClass string) int {
 
 	// Unknown CLI or task class.
 	return defaultScoreForUnknown
+}
+
+// Scoref returns the fitness score for (cli, taskClass) normalized to [0.0, 1.0].
+// It is exactly float64(Score(cli, taskClass)) / 100.0.
+//
+// Range invariant: 0.0 ≤ Scoref(cli, taskClass) ≤ 1.0 for any valid Score input in [0, 100].
+// Intended for downstream composite scoring formulas (e.g. AIMUX-4 Orderer).
+func (cs *CapabilityScore) Scoref(cli, taskClass string) float64 {
+	return float64(cs.Score(cli, taskClass)) / 100.0
 }
