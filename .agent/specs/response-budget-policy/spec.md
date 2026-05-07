@@ -139,7 +139,7 @@ When `fields` is supplied, each field name is validated against the known field 
 `deepresearch` returns a synthesized research report that is inherently long. It is exempt from the ~4k default budget. Its tool description MUST document this exception: `"Returns full synthesized report; not subject to the 4k default budget."`
 
 Per FR-1, `deepresearch` MUST accept the full uniform optional parameter set (`include_content`, `tail`, `fields`, `limit`, `offset`) to avoid callers receiving unknown-parameter errors. However:
-- `include_content` and `tail` are accepted but have **no effect** — they are silently ignored. No validation error is returned.
+- `include_content` and `tail` are accepted but have **no effect** — they are silently ignored. No validation error is returned, including for values that would otherwise fail FR-7 validation for other tools (e.g., `tail <= 0` is treated as omitted, not an error). **FR-8 overrides FR-7 for `deepresearch`: non-positive or otherwise invalid `tail` values MUST NOT produce an error — they are silently treated as if omitted.**
 - `fields`, `limit`, and `offset` DO apply to the top-level result structure: `fields` selects which top-level keys are returned (e.g., `report`, `sources`, `cached`); `limit` and `offset` apply to the `sources` list when present.
 
 **Edge case:** `deepresearch(topic=X, include_content=true, tail=500)` returns the same full synthesized report as `deepresearch(topic=X)`. Neither `include_content` nor `tail` changes the response — they are accepted without error and ignored.
@@ -282,7 +282,7 @@ Acceptance criteria:
 - **`pkg/session` Store**: `List()` currently returns `[]Session` slice (no pre-pagination count). FR-4 `total` field requires either a separate `Count()` call or counting before slicing. [NEEDS CLARIFICATION: does `session.Store` expose a `Count(status)` method, or must the handler call `List()` and slice in-memory? This determines whether FR-4 is a pure handler change or requires a `Store` interface update.]
 - **`pkg/loom` LoomEngine**: `loom.List(projectID)` returns `[]Task`. Same count gap as sessions. The `sessions list` response currently merges both slices — pagination policy across two heterogeneous stores requires clarification.
 - **`pkg/types` JobSnapshot**: `Content` field is the source of the 140k overflow. Brief path omits this field at the handler layer; the struct itself is unchanged.
-- **`pkg/server/server_agents.go` `agents.Agent` struct**: `agents info` brief path must exclude the system prompt field. [NEEDS CLARIFICATION: confirm the exact field name on the `agents.Agent` struct that holds the prompt body — is it `SystemPrompt`, `Prompt`, or `Content`? `server_agents.go:85` calls `marshalToolResult(agent)` directly with no field selection.]
+- **`pkg/server/server_agents.go` `agents.Agent` struct**: `agents info` brief path must exclude the system prompt field. Prompt body field in the response contract is locked as `content` (see Open Question `#3` resolution); `system_prompt` is only a planned explicit alias. `server_agents.go:85` calls `marshalToolResult(agent)` directly — the brief path MUST drop the `content` field from the serialized output.
 
 ## Success Criteria
 
