@@ -29,10 +29,16 @@ func DefaultPoolConfig() PoolConfig {
 	}
 }
 
-// poolEntry wraps an AppServerProcess with idle tracking.
+// poolEntry wraps an AppServerProcess with idle tracking and startup synchronization.
 type poolEntry struct {
 	process  *AppServerProcess
 	lastUsed time.Time
+
+	// readyCh is closed when the process has finished starting (either successfully or with an error).
+	// Concurrent Acquire callers wait on readyCh before returning the process.
+	readyCh chan struct{}
+	// startErr holds the error from proc.Start(), if any. Read after readyCh is closed.
+	startErr error
 }
 
 // CodexPool maintains one AppServerProcess per project ID.
@@ -99,28 +105,59 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 	if ok {
 		entry.lastUsed = time.Now()
 		proc := entry.process
+		readyCh := entry.readyCh
 		p.mu.Unlock()
+
+		// Wait for the process to finish starting before returning it to the caller.
+		// This prevents a concurrent Acquire from receiving a still-Initializing process.
+		select {
+		case <-readyCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+
+		p.mu.Lock()
+		startErr := entry.startErr
+		p.mu.Unlock()
+		if startErr != nil {
+			return nil, fmt.Errorf("codex: CodexPool.Acquire: start process for project %q: %w", projectID, startErr)
+		}
 		return proc, nil
 	}
 
 	// Build profile and create process while lock is held to prevent double-spawn.
 	profile := p.cfg.DefaultProfile(workDir)
 	proc := NewAppServerProcess(p.codexPath, profile)
-	p.entries[projectID] = &poolEntry{
+	readyCh := make(chan struct{})
+	e := &poolEntry{
 		process:  proc,
 		lastUsed: time.Now(),
+		readyCh:  readyCh,
 	}
+	p.entries[projectID] = e
 	p.mu.Unlock()
 
 	// Start the process outside the lock (I/O and RPC).
-	if err := proc.Start(ctx); err != nil {
+	startErr := proc.Start(ctx)
+	if startErr != nil {
 		// Remove the failed entry so the next Acquire can retry.
 		p.mu.Lock()
-		delete(p.entries, projectID)
+		// Only delete if it's still our entry (another concurrent caller may have replaced it).
+		if cur, still := p.entries[projectID]; still && cur == e {
+			delete(p.entries, projectID)
+		}
 		p.mu.Unlock()
-		return nil, fmt.Errorf("codex: CodexPool.Acquire: start process for project %q: %w", projectID, err)
 	}
 
+	// Record the start result and unblock any concurrent waiters.
+	p.mu.Lock()
+	e.startErr = startErr
+	p.mu.Unlock()
+	close(readyCh)
+
+	if startErr != nil {
+		return nil, fmt.Errorf("codex: CodexPool.Acquire: start process for project %q: %w", projectID, startErr)
+	}
 	return proc, nil
 }
 
@@ -208,6 +245,16 @@ func (p *CodexPool) evictIdle() {
 		proc *AppServerProcess
 	}
 	for id, entry := range p.entries {
+		// Skip processes that have not finished starting yet.
+		select {
+		case <-entry.readyCh:
+		default:
+			continue // still initializing — do not evict
+		}
+		// Skip processes that are actively processing a turn.
+		if s := entry.process.State(); s == AppServerStateTurnInFlight || s == AppServerStateInitializing {
+			continue
+		}
 		if now.Sub(entry.lastUsed) > p.cfg.IdleTimeout {
 			toEvict = append(toEvict, struct {
 				id   string

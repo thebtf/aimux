@@ -139,12 +139,15 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 	// Fan progress lines to loom.AppendProgress and accumulate text.
 	var lines []string
 	var turnCompleted TurnCompletedNotification
+	turnCompletedReceived := false
 	done := false
 	for !done {
 		select {
 		case text, ok := <-progressCh:
 			if !ok {
-				// Channel closed without turn completion — treat as done.
+				// Channel closed by the fanout goroutine. If we never received a
+				// turn/completed notification, the process exited or was evicted
+				// mid-turn — treat as an error so Loom can retry or fail the task.
 				done = true
 				break
 			}
@@ -158,6 +161,7 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 				break
 			}
 			turnCompleted = completed
+			turnCompletedReceived = true
 			// Drain remaining progress.
 			for text := range progressCh {
 				lines = append(lines, text)
@@ -175,6 +179,14 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 	}
 
 	// --- 6. Build result ---
+
+	// If the turn stream closed without a turn/completed notification the process
+	// exited prematurely (crash, idle eviction, or shutdown). Return an error
+	// so Loom records a failure instead of an empty/partial success.
+	if !turnCompletedReceived {
+		return nil, fmt.Errorf("codex worker: turn stream closed without completion (process exited prematurely)")
+	}
+
 	if turnCompleted.Turn.Status == TurnStatusFailed {
 		errMsg := "codex: turn failed"
 		if turnCompleted.Turn.Error != nil {

@@ -61,12 +61,21 @@ func (tp *testPool) acquireWithFake(ctx context.Context, projectID, workDir stri
 		return proc, nil
 	}
 	proc := tp.spawnFn(projectID, workDir)
-	tp.entries[projectID] = &poolEntry{
-		process:  proc,
-		lastUsed: time.Now(),
-	}
+	tp.entries[projectID] = readyEntry(proc)
 	tp.mu.Unlock()
 	return proc, nil
+}
+
+// readyEntry creates a poolEntry with a pre-closed readyCh (process is already ready).
+// Used by test helpers that inject fake processes without going through proc.Start().
+func readyEntry(proc *AppServerProcess) *poolEntry {
+	ch := make(chan struct{})
+	close(ch)
+	return &poolEntry{
+		process:  proc,
+		lastUsed: time.Now(),
+		readyCh:  ch,
+	}
 }
 
 // --- Tests ---
@@ -266,5 +275,100 @@ func TestCodexPool_IdleEviction_RemovesStaleEntries(t *testing.T) {
 
 	if tp.Len() != 0 {
 		t.Errorf("expected 0 after idle eviction, got %d", tp.Len())
+	}
+}
+
+// TestCodexPool_IdleEviction_SkipsTurnInFlight verifies that a process actively
+// processing a turn is not evicted even if its lastUsed exceeds the idle timeout.
+func TestCodexPool_IdleEviction_SkipsTurnInFlight(t *testing.T) {
+	tp := newTestPool(t, nil)
+
+	const idleTimeout = 50 * time.Millisecond
+	tp.cfg.IdleTimeout = idleTimeout
+	tp.wg.Add(1)
+	go tp.idleEvictLoop()
+	defer tp.Shutdown(context.Background())
+
+	// Inject a process that appears to be in-flight.
+	proc := fakePoolEntry(t)
+	proc.setState(AppServerStateTurnInFlight)
+
+	tp.mu.Lock()
+	entry := readyEntry(proc)
+	// Backdate lastUsed so it looks idle.
+	entry.lastUsed = time.Now().Add(-10 * idleTimeout)
+	tp.entries["inflight-proj"] = entry
+	tp.mu.Unlock()
+
+	// Wait longer than the idle timeout.
+	time.Sleep(3 * idleTimeout)
+
+	if tp.Len() != 1 {
+		t.Errorf("TurnInFlight process must not be evicted; pool size = %d, want 1", tp.Len())
+	}
+}
+
+// TestCodexPool_ConcurrentAcquire_WaitsForStartup verifies that a second concurrent
+// Acquire call for the same project ID waits until the first completes Start()
+// before returning the process (rather than returning an Initializing process).
+func TestCodexPool_ConcurrentAcquire_WaitsForStartup(t *testing.T) {
+	// Channels to control the fake Start timing.
+	startGate := make(chan struct{})
+	startDone := make(chan struct{})
+
+	// Count how many times spawnFn is called.
+	var spawnCount int
+
+	tp := newTestPool(t, func(_, _ string) *AppServerProcess {
+		spawnCount++
+		return fakePoolEntry(t)
+	})
+	defer tp.Shutdown(context.Background())
+
+	// Replace the pool's Acquire for this test with a version that adds a readyCh-aware entry.
+	// We simulate the real Acquire's concurrency pattern by inserting an entry with an open
+	// readyCh, then unblocking it after a short delay.
+	readyCh := make(chan struct{})
+	proc := fakePoolEntry(t)
+
+	tp.mu.Lock()
+	tp.entries["concurrent-proj"] = &poolEntry{
+		process:  proc,
+		lastUsed: time.Now(),
+		readyCh:  readyCh,
+	}
+	tp.mu.Unlock()
+
+	// Unblock readyCh after a short delay (simulating slow Start).
+	go func() {
+		close(startGate) // signal that we started the goroutine
+		time.Sleep(20 * time.Millisecond)
+		tp.mu.Lock()
+		tp.entries["concurrent-proj"].startErr = nil
+		tp.mu.Unlock()
+		close(readyCh)
+		close(startDone)
+	}()
+
+	// Wait until the goroutine starts so timing is deterministic.
+	<-startGate
+
+	// A second Acquire should block on readyCh until startup completes.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	acquired, err := tp.CodexPool.Acquire(ctx, "concurrent-proj", "/work")
+	if err != nil {
+		t.Fatalf("Acquire returned error: %v", err)
+	}
+	if acquired != proc {
+		t.Error("Acquire must return the same process pointer")
+	}
+
+	// Verify startup completed before we received the process.
+	select {
+	case <-startDone:
+	default:
+		t.Error("Acquire returned before readyCh was closed (returned Initializing process)")
 	}
 }

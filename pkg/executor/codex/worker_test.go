@@ -65,7 +65,7 @@ func buildWorkerWithFakePool(t *testing.T, dialer *fakeAppServerDialer) (*CodexW
 
 	pool := newTestPool(t, func(_, _ string) *AppServerProcess { return proc })
 	pool.mu.Lock()
-	pool.entries["proj-1"] = &poolEntry{process: proc, lastUsed: time.Now()}
+	pool.entries["proj-1"] = readyEntry(proc)
 	pool.mu.Unlock()
 
 	w, err := NewCodexWorker(CodexWorkerConfig{
@@ -289,7 +289,7 @@ func TestCodexWorker_Execute_ReviewClass_EphemeralThread(t *testing.T) {
 	proc := buildProcessFromPipePair(t, clientWrite, clientRead)
 	pool := newTestPool(t, nil)
 	pool.mu.Lock()
-	pool.entries["proj-review"] = &poolEntry{process: proc, lastUsed: time.Now()}
+	pool.entries["proj-review"] = readyEntry(proc)
 	pool.mu.Unlock()
 
 	w, _ := NewCodexWorker(CodexWorkerConfig{
@@ -349,7 +349,7 @@ func TestCodexWorker_Execute_ResumePath(t *testing.T) {
 	proc := pool.entries["proj-1"].process
 	pool.mu.Lock()
 	delete(pool.entries, "proj-1")
-	pool.entries["proj-resume"] = &poolEntry{process: proc, lastUsed: time.Now()}
+	pool.entries["proj-resume"] = readyEntry(proc)
 	pool.mu.Unlock()
 
 	task := buildTask(JobClassTask, "continue", "proj-resume", map[string]any{
@@ -399,7 +399,7 @@ func TestCodexWorker_Execute_ResumeFallback(t *testing.T) {
 	proc := pool.entries["proj-1"].process
 	pool.mu.Lock()
 	delete(pool.entries, "proj-1")
-	pool.entries["proj-fallback"] = &poolEntry{process: proc, lastUsed: time.Now()}
+	pool.entries["proj-fallback"] = readyEntry(proc)
 	pool.mu.Unlock()
 
 	task := buildTask(JobClassTask, "try to resume", "proj-fallback", map[string]any{
@@ -477,6 +477,69 @@ func TestCodexWorker_Execute_TurnFailed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "turn failed") {
 		t.Errorf("error must mention 'turn failed': %v", err)
+	}
+}
+
+// TestCodexWorker_Execute_StreamClosedEarly verifies that if the turn stream closes
+// without a turn/completed notification (e.g. process crash or idle eviction), the
+// worker returns an error instead of a silent partial/empty success.
+func TestCodexWorker_Execute_StreamClosedEarly(t *testing.T) {
+	serverRead, clientWrite := io.Pipe()
+	clientRead, serverWrite := io.Pipe()
+
+	go func() {
+		dec := json.NewDecoder(serverRead)
+		for {
+			var msg struct {
+				JSONRPC string  `json:"jsonrpc"`
+				ID      *int64  `json:"id,omitempty"`
+				Method  string  `json:"method"`
+			}
+			if err := dec.Decode(&msg); err != nil {
+				return
+			}
+			if msg.ID == nil {
+				continue
+			}
+			switch msg.Method {
+			case "thread/start":
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"thread":{"id":"t-crash","cwd":"/work"}}}`+"\n", *msg.ID)
+			case "turn/start":
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"turn":{"id":"turn-crash","status":"running"}}}`+"\n", *msg.ID)
+				// Simulate process crash: close the server-side write pipe without
+				// sending turn/completed. This closes the client's read pipe.
+				go func() {
+					time.Sleep(10 * time.Millisecond)
+					serverWrite.Close()
+				}()
+			default:
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":null}`+"\n", *msg.ID)
+			}
+		}
+	}()
+
+	proc := buildProcessFromPipePair(t, clientWrite, clientRead)
+	pool := newTestPool(t, nil)
+	pool.mu.Lock()
+	pool.entries["proj-crash"] = readyEntry(proc)
+	pool.mu.Unlock()
+
+	w, _ := NewCodexWorker(CodexWorkerConfig{
+		Pool:    pool.CodexPool,
+		Loom:    &fakeProgressSink{},
+		LoomGet: &fakeTaskGetter{tasks: make(map[string]*loom.Task)},
+	})
+
+	task := buildTask(JobClassTask, "crash test", "proj-crash", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := w.Execute(ctx, task)
+	if err == nil {
+		t.Fatal("expected error when turn stream closes without turn/completed")
+	}
+	if !strings.Contains(err.Error(), "prematurely") {
+		t.Errorf("error should mention premature closure; got: %v", err)
 	}
 }
 
