@@ -1,3 +1,29 @@
+## v5.10.0 — 2026-05-07
+
+### New Features
+
+- **AIMUX-3 — CLI Default Picker** (#166). New package `pkg/executor/picker/` provides routing function `Picker.Pick(ctx, TaskSpec) (CLIName, error)` selecting optimal CLI by config override + health check + capability score. Static score table with codex/claude/gemini per task class. `CapabilityScore.Score(cli, task) int` ∈ [0,100] for human-readable; `Scoref(cli, task) float64` ∈ [0,1] for downstream composite arithmetic. HealthChecker with 60s TTL cache. ErrNoHealthyCLI hard fail (no silent degradation).
+
+- **AIMUX-4 — Cross-CLI Fallback Runtime Engine** (#168). New package `pkg/executor/fallback/` provides runtime re-rank when picker-selected CLI fails at dispatch. Components: FailureClassifier (typed CLIErrorCode switch), Orderer (composite score capability+success+latency+recency, all `[0,1]` normalized), InMemoryScoreStore (sync.Map, v2 Loom SQLite deferred), PassThroughTranslator, Fallback engine, FallbackPicker. Generic `task` MCP tool registered (32 → 33 MCP tools). Per-task `fallback: false` opt-out. Bounded `max_attempts` (default 2).
+
+- **AIMUX-18 CR-003 — Codex Thread Compaction** (#169). AppServerProcess.Compact RPC sends `thread/compact/start { threadId }`, waits for `turn/completed`. Worker-side threshold trigger at 181,880 input tokens (70% of 258,400 context window) with 5-turn throttle. CodexTaskMeta gains LastInputTokens + CompactionCount visible via codex_status when include_content=true. userPromptSubmit hook side-effect documented in tool descriptions (no suppression).
+
+### Internal Refactors
+
+- **AIMUX-18 CR-004 — Typed CLIError Contract** (#167). New package `pkg/executor/types/CLIError` + 9-variant `CLIErrorCode` enum (Unknown/RateLimit/AuthExpiry/Timeout/CapabilityMismatch/UserInputError/SandboxDenial/BinaryNotFound/Canceled). All public CodexWorker errors now return `*types.CLIError` — callers use `errors.As(err, &cliErr)` to switch over typed codes. Replaces brittle string matching on stderr. Required by AIMUX-4 FailureClassifier.
+
+### MCP Surface
+
+32 → 33 tools. New: `task` (generic CLI router with fallback).
+
+### Quality
+
+- 3 MAJOR concurrency bugs caught + fixed in CR-003 review (`Compact` state-leak, stale notification filter, TOCTOU race in `maybeCompact`)
+- 9 CRIT/MAJOR review fixes across PRs (Picker config-override scope leak, Score[]InMemorySa clamp, OutputSchema wiring, env handling)
+- All test gates green: 48 packages, race detector enabled, critical suite, loom standalone
+
+---
+
 ## v5.9.0 — 2026-05-07
 
 ### Breaking Changes
