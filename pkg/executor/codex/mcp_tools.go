@@ -114,6 +114,7 @@ func (h *CodexHandlers) HandleCodexReview(ctx context.Context, req mcp.CallToolR
 	meta := map[string]any{
 		"job_class":     JobClassReview,
 		"review_target": target,
+		"output_schema": reviewOutputSchema,
 	}
 
 	taskReq := loom.TaskRequest{
@@ -221,6 +222,7 @@ func (h *CodexHandlers) HandleCodexReviewGate(ctx context.Context, req mcp.CallT
 		"job_class":     JobClassReview,
 		"review_target": target,
 		"review_gate":   true,
+		"output_schema": reviewOutputSchema,
 	}
 	taskReq := loom.TaskRequest{
 		WorkerType: WorkerTypeCodex,
@@ -286,6 +288,32 @@ func pollGateResult(ctx context.Context, l loomSubmitter, taskID string) (string
 			return parseGateDecision(task.Result)
 		}
 	}
+}
+
+// reviewOutputSchema is the JSON Schema passed to TurnStartParams.OutputSchema for review jobs.
+// It constrains Codex output to the structured findings/decision shape so that parseGateDecision
+// receives well-formed JSON even when the model is verbose.
+var reviewOutputSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"findings": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"severity": map[string]any{"type": "string", "enum": []string{"error", "warning", "info"}},
+					"file":     map[string]any{"type": "string"},
+					"line":     map[string]any{"type": []any{"integer", "null"}},
+					"body":     map[string]any{"type": "string"},
+				},
+				"required": []string{"severity", "body"},
+			},
+		},
+		"summary":  map[string]any{"type": "string"},
+		"decision": map[string]any{"type": "string", "enum": []string{"ALLOW", "BLOCK"}},
+		"reason":   map[string]any{"type": "string"},
+	},
+	"required": []string{"findings", "summary", "decision", "reason"},
 }
 
 // gateDecisionResponse is the JSON schema produced by buildReviewPrompt for gate decisions.

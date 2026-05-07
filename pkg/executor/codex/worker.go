@@ -126,10 +126,11 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 
 	// --- 5. Start turn, stream progress ---
 	turnParams := TurnStartParams{
-		ThreadID: thread.ID,
-		Input:    []UserInput{{Type: "text", Text: task.Prompt}},
-		CWD:      workDir,
-		Model:    model,
+		ThreadID:     thread.ID,
+		Input:        []UserInput{{Type: "text", Text: task.Prompt}},
+		CWD:          workDir,
+		Model:        model,
+		OutputSchema: meta.OutputSchema,
 	}
 	completedCh, progressCh, err := proc.StartTurn(ctx, turnParams)
 	if err != nil {

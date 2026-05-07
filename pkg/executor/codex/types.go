@@ -262,6 +262,11 @@ type CodexTaskMeta struct {
 
 	// ResumeFallback is set to true when thread/resume failed and a fresh thread was used.
 	ResumeFallback bool `json:"resume_fallback,omitempty"`
+
+	// OutputSchema is an optional JSON Schema object passed to TurnStartParams.OutputSchema.
+	// Used by review jobs to constrain Codex output to the expected findings/decision shape,
+	// reducing the chance of parseGateDecision receiving malformed JSON.
+	OutputSchema any `json:"output_schema,omitempty"`
 }
 
 // --- Thread list types (for Resumer fallback path) ---

@@ -174,10 +174,23 @@ func (p *CodexPool) Release(projectID string) {
 
 // Remove shuts down and removes the process for a project.
 // It is a no-op if no process exists for projectID.
+//
+// If the process is currently executing a turn (AppServerStateTurnInFlight), Remove
+// leaves it in the pool so the active Loom task can complete without interruption.
+// Idle eviction (idleEvictLoop) will clean it up once the turn finishes and the
+// idle timeout expires. This preserves the Loom contract that background tasks
+// survive session disconnects (AIMUX-18 FR-1).
 func (p *CodexPool) Remove(ctx context.Context, projectID string) error {
 	p.mu.Lock()
 	entry, ok := p.entries[projectID]
 	if !ok {
+		p.mu.Unlock()
+		return nil
+	}
+	// Do not evict a process that is actively executing a turn — the Loom worker
+	// holds a reference and will call Release when done. Idle eviction will
+	// reclaim the entry once the turn finishes and the idle timeout expires.
+	if entry.process.State() == AppServerStateTurnInFlight {
 		p.mu.Unlock()
 		return nil
 	}
