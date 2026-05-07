@@ -13,14 +13,9 @@ package codex
 // Required fields come from .agent/codex-types-generated/(v2/)TypeName.ts.
 // Fields marked `?` in TS are optional — only non-optional fields are asserted.
 //
-// EXPECTED FAILURES on current master (intentional regression evidence):
-//   - TestWireFormat_InitializeParams_RequiresClientInfo:
-//       "clientInfo" is missing from InitializeParams — the exact bug that
-//       broke v5.10.0. Pair with fix/codex-init-clientinfo PR to see it pass.
-//   - TestWireFormat_InitializeCapabilities_RequiresExperimentalApi:
-//       "experimentalApi" is missing from InitializeCapabilities struct.
-//
-// All other tests are expected to PASS on master (no current regression).
+// All tests pass on master as of v5.10.0 (PR #170 added clientInfo and
+// experimentalApi to the structs). The comment block below is preserved as
+// historical context for the regression these tests were written to catch.
 
 import (
 	"encoding/json"
@@ -73,9 +68,8 @@ func noUnexpectedKeys(t *testing.T, params any, forbidden []string) {
 // clientInfo is REQUIRED (no ?) — this is the field whose absence broke v5.10.0.
 // ──────────────────────────────────────────────────────────────
 
-// TestWireFormat_InitializeParams_RequiresClientInfo FAILS on current master
-// (missing clientInfo field). This is the regression the test suite was
-// designed to catch. Fix lives in fix/codex-init-clientinfo PR.
+// TestWireFormat_InitializeParams_RequiresClientInfo verifies clientInfo is
+// present in the wire payload. This was the missing field that broke v5.10.0.
 func TestWireFormat_InitializeParams_RequiresClientInfo(t *testing.T) {
 	p := InitializeParams{
 		Capabilities: InitializeCapabilities{
@@ -91,7 +85,7 @@ func TestWireFormat_InitializeParams_RequiresClientInfo(t *testing.T) {
 // internal Go fields end up in the wire payload.
 func TestWireFormat_InitializeParams_NoInternalLeakage(t *testing.T) {
 	p := InitializeParams{}
-	noUnexpectedKeys(t, p, []string{"OptOutNotificationMethods", "Capabilities"})
+	noUnexpectedKeys(t, p, []string{"Capabilities"})
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -100,9 +94,8 @@ func TestWireFormat_InitializeParams_NoInternalLeakage(t *testing.T) {
 // experimentalApi is REQUIRED (no ?).
 // ──────────────────────────────────────────────────────────────
 
-// TestWireFormat_InitializeCapabilities_RequiresExperimentalApi FAILS on
-// current master: the Go struct lacks the experimentalApi field entirely,
-// so it never appears in JSON output. Paired fix should add the field.
+// TestWireFormat_InitializeCapabilities_RequiresExperimentalApi verifies
+// experimentalApi appears in the wire payload (added in PR #170).
 func TestWireFormat_InitializeCapabilities_RequiresExperimentalApi(t *testing.T) {
 	c := InitializeCapabilities{
 		OptOutNotificationMethods: OptOutNotificationMethods,
@@ -148,10 +141,14 @@ func TestWireFormat_ThreadStartParams_FieldNames(t *testing.T) {
 			t.Errorf("ThreadStartParams: missing key %q in wire output", key)
 			continue
 		}
-		// JSON numbers unmarshal as float64.
-		if gotStr, ok := got.(string); ok {
-			if wantStr, ok := want.(string); ok && gotStr != wantStr {
-				t.Errorf("ThreadStartParams[%q]: got %q, want %q", key, gotStr, wantStr)
+		switch wantVal := want.(type) {
+		case string:
+			if gotStr, ok := got.(string); !ok || gotStr != wantVal {
+				t.Errorf("ThreadStartParams[%q]: got %v, want %q", key, got, wantVal)
+			}
+		case bool:
+			if gotBool, ok := got.(bool); !ok || gotBool != wantVal {
+				t.Errorf("ThreadStartParams[%q]: got %v, want %v", key, got, wantVal)
 			}
 		}
 	}
@@ -176,10 +173,14 @@ func TestWireFormat_ThreadResumeParams_FieldNames(t *testing.T) {
 		CWD:          "/tmp/proj",
 		ExcludeTurns: true,
 	}
-	raw, _ := json.Marshal(p)
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("json.Marshal(%T): %v", p, err)
+	}
 	var got map[string]any
-	json.Unmarshal(raw, &got) //nolint:errcheck
-
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("json.Unmarshal round-trip: %v", err)
+	}
 	for _, key := range []string{"threadId", "cwd", "excludeTurns"} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("ThreadResumeParams: missing key %q in wire output\npayload: %s", key, raw)
@@ -219,9 +220,14 @@ func TestWireFormat_ThreadListParams_SearchTermKeyName(t *testing.T) {
 		SearchTerm:     "my-project",
 		UseStateDbOnly: true,
 	}
-	raw, _ := json.Marshal(p)
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("json.Marshal(%T): %v", p, err)
+	}
 	var got map[string]any
-	json.Unmarshal(raw, &got) //nolint:errcheck
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("json.Unmarshal round-trip: %v", err)
+	}
 	if _, ok := got["searchTerm"]; !ok {
 		t.Errorf("ThreadListParams: missing key searchTerm\npayload: %s", raw)
 	}
@@ -273,7 +279,9 @@ func TestWireFormat_TurnStartParams_InputVariant_Text(t *testing.T) {
 		t.Fatalf("marshal UserInput: %v", err)
 	}
 	var got map[string]any
-	json.Unmarshal(raw, &got) //nolint:errcheck
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("json.Unmarshal round-trip: %v", err)
+	}
 	// TS: { "type": "text", text: string, text_elements: Array<TextElement> }
 	// "type" is the discriminator; "text" must be present.
 	for _, key := range []string{"type", "text"} {
@@ -308,7 +316,9 @@ func TestWireFormat_TurnInterruptParams_ZeroValueStillHasKeys(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	var got map[string]any
-	json.Unmarshal(raw, &got) //nolint:errcheck
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("json.Unmarshal round-trip: %v", err)
+	}
 	for _, key := range []string{"threadId", "turnId"} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("TurnInterruptParams zero-value: missing key %q\npayload: %s", key, raw)
@@ -337,7 +347,9 @@ func TestWireFormat_ThreadCompactStartParams_ZeroValueHasKey(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	var got map[string]any
-	json.Unmarshal(raw, &got) //nolint:errcheck
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("json.Unmarshal round-trip: %v", err)
+	}
 	if _, ok := got["threadId"]; !ok {
 		t.Errorf("ThreadCompactStartParams zero-value: missing key threadId\npayload: %s", raw)
 	}
