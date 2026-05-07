@@ -104,8 +104,18 @@ type InitializeCapabilities struct {
 	OptOutNotificationMethods []string `json:"optOutNotificationMethods,omitempty"`
 }
 
+// ClientInfo identifies the aimux client to the codex app-server.
+// Required by initialize RPC per v2/ClientInfo.ts — must not be omitted.
+type ClientInfo struct {
+	Name    string `json:"name"`
+	Title   string `json:"title,omitempty"`
+	Version string `json:"version"`
+}
+
 // InitializeParams is sent as the first request to codex app-server.
+// ClientInfo has no omitempty — codex rejects a missing or null clientInfo.
 type InitializeParams struct {
+	ClientInfo   ClientInfo             `json:"clientInfo"`
 	Capabilities InitializeCapabilities `json:"capabilities,omitempty"`
 }
 

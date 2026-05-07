@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/executor/runtime"
 )
 
@@ -182,6 +183,11 @@ func (p *AppServerProcess) spawn(ctx context.Context) error {
 // On auth failure, returns an error with an actionable message.
 func (p *AppServerProcess) initialize(ctx context.Context) error {
 	params := InitializeParams{
+		ClientInfo: ClientInfo{
+			Name:    "aimux",
+			Title:   "aimux Codex Executor",
+			Version: build.Version,
+		},
 		Capabilities: InitializeCapabilities{
 			OptOutNotificationMethods: OptOutNotificationMethods,
 		},
