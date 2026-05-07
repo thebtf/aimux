@@ -150,13 +150,26 @@ func TestMapToCliError_PassThrough(t *testing.T) {
 	}
 }
 
-// TestMapToCliError_PassThroughWrapped verifies pass-through when CLIError is wrapped in fmt.Errorf.
+// TestMapToCliError_PassThroughWrapped verifies that wrapping a *CLIError in fmt.Errorf
+// preserves the outer message context while keeping the inner error code.
+// The result must NOT be the same pointer as original (a new CLIError is returned),
+// but it must carry the same Code and include the full wrapped message.
 func TestMapToCliError_PassThroughWrapped(t *testing.T) {
 	original := types.NewTimeout("timed out", nil)
 	wrapped := fmt.Errorf("worker execute: %w", original)
 	result := mapToCliError(wrapped)
-	if result != original {
-		t.Errorf("expected pass-through to original *CLIError, got different instance")
+	if result == nil {
+		t.Fatal("unexpected nil result")
+	}
+	if result.Code != types.CLIErrorCodeTimeout {
+		t.Errorf("Code = %v, want Timeout", result.Code)
+	}
+	if result.Message != wrapped.Error() {
+		t.Errorf("Message = %q, want %q (outer wrap context must be preserved)", result.Message, wrapped.Error())
+	}
+	var inner *types.CLIError
+	if !errors.As(result.Wrapped, &inner) {
+		t.Errorf("Wrapped should chain back to original *CLIError via errors.As")
 	}
 }
 

@@ -124,7 +124,7 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 			p.mu.Lock()
 			entry.activeUsers--
 			p.mu.Unlock()
-			return nil, types.NewTimeout("codex: CodexPool.Acquire: context cancelled while waiting for process start", ctx.Err())
+			return nil, types.NewCanceled("codex: CodexPool.Acquire: context cancelled while waiting for process start", ctx.Err())
 		}
 
 		p.mu.Lock()

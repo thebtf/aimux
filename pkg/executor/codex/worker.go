@@ -177,7 +177,7 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 			interruptCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = proc.Interrupt(interruptCtx)
 			cancel()
-			return nil, types.NewTimeout("context cancelled", ctx.Err())
+			return nil, types.NewCanceled("codex worker: context cancelled", ctx.Err())
 		}
 	}
 

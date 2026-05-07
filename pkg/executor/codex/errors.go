@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -14,14 +15,14 @@ import (
 //
 // Mapping priority (first match wins):
 //  1. Already a *types.CLIError — returned as-is (no double-wrap).
-//  2. exec.ErrNotFound / "executable file not found" → BinaryNotFound
+//  2. exec.ErrNotFound / os.ErrNotExist / "executable file not found" → BinaryNotFound
 //  3. context.DeadlineExceeded / "deadline exceeded" / "timeout" → Timeout
 //  4. "rate limit" / "rate_limit" / "429" / "quota" → RateLimit
-//  5. "auth" + ("fail" / "expir" / "invalid") → AuthExpiry
-//  6. "401" / "unauthor" → AuthExpiry
-//  7. "patch rejected" / ("sandbox" + "block") → SandboxDenial
-//  8. "-32601" / "method not found" / "unsupported" → CapabilityMismatch
-//  9. "invalid prompt" / "validation" / "param" → UserInputError
+//  5. "invalid prompt" / "validation" / "param" → UserInputError  (before AuthExpiry to avoid false positives)
+//  6. "auth" + ("fail" / "expir" / "invalid") → AuthExpiry
+//  7. "401" / "unauthor" → AuthExpiry
+//  8. "patch rejected" / ("sandbox" + "block") → SandboxDenial
+//  9. "-32601" / "method not found" / "unsupported" → CapabilityMismatch
 //  10. Anything else → Unknown (terminal; safer than auto-fallback)
 //
 // mapToCliError never returns nil when err is non-nil.
@@ -31,16 +32,25 @@ func mapToCliError(err error) *types.CLIError {
 	}
 
 	// Already typed — pass through without double-wrapping.
+	// If err is a wrapper (e.g. fmt.Errorf("prefix: %w", cliErr)), preserve the full
+	// message so callers see the wrapping context, not just the inner CLIError message.
 	var existing *types.CLIError
 	if errors.As(err, &existing) {
-		return existing
+		if err == existing {
+			return existing
+		}
+		// err wraps existing: preserve the outer message, keep the inner code.
+		return &types.CLIError{Code: existing.Code, Message: err.Error(), Wrapped: err}
 	}
 
 	msg := err.Error()
 	lower := strings.ToLower(msg)
 
-	// BinaryNotFound: exec.LookPath failure or binary-not-found message.
-	if errors.Is(err, exec.ErrNotFound) || strings.Contains(lower, "executable file not found") {
+	// BinaryNotFound: exec.LookPath failure (PATH lookup) or os.ErrNotExist (absolute path)
+	// or binary-not-found message in stderr.
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) ||
+		strings.Contains(lower, "executable file not found") ||
+		strings.Contains(lower, "no such file") {
 		return types.NewBinaryNotFound(msg, err)
 	}
 
@@ -57,6 +67,15 @@ func mapToCliError(err error) *types.CLIError {
 		strings.Contains(lower, "429") ||
 		strings.Contains(lower, "quota") {
 		return types.NewRateLimit(msg, err)
+	}
+
+	// UserInputError: invalid prompt or parameter validation failure.
+	// Checked before AuthExpiry to prevent broad "auth"+"invalid" heuristic from
+	// misclassifying messages like "author provided an invalid parameter".
+	if strings.Contains(lower, "invalid prompt") ||
+		strings.Contains(lower, "validation") ||
+		strings.Contains(lower, "param") {
+		return types.NewUserInputError(msg, err)
 	}
 
 	// AuthExpiry: codex auth failure / 401 / token expiry.
@@ -81,13 +100,6 @@ func mapToCliError(err error) *types.CLIError {
 		strings.Contains(lower, "method not found") ||
 		strings.Contains(lower, "unsupported") {
 		return types.NewCapabilityMismatch(msg, err)
-	}
-
-	// UserInputError: invalid prompt or parameter validation failure.
-	if strings.Contains(lower, "invalid prompt") ||
-		strings.Contains(lower, "validation") ||
-		strings.Contains(lower, "param") {
-		return types.NewUserInputError(msg, err)
 	}
 
 	// Default: Unknown — terminal classification, safer than auto-fallback.

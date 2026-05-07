@@ -34,6 +34,10 @@ const (
 	CLIErrorCodeSandboxDenial
 	// CLIErrorCodeBinaryNotFound indicates exec.LookPath failure (binary not installed).
 	CLIErrorCodeBinaryNotFound
+	// CLIErrorCodeCanceled indicates the operation was canceled by the caller or system.
+	// Distinct from CLIErrorCodeTimeout: cancellation is deliberate, not a deadline breach.
+	// AIMUX-4 FailureClassifier treats Canceled as terminal — no retry or fallback.
+	CLIErrorCodeCanceled
 )
 
 // String returns a human-readable label for logging.
@@ -55,6 +59,8 @@ func (c CLIErrorCode) String() string {
 		return "SandboxDenial"
 	case CLIErrorCodeBinaryNotFound:
 		return "BinaryNotFound"
+	case CLIErrorCodeCanceled:
+		return "Canceled"
 	default:
 		return fmt.Sprintf("CLIErrorCode(%d)", int(c))
 	}
@@ -117,6 +123,12 @@ func NewSandboxDenial(msg string, wrapped error) *CLIError {
 // NewBinaryNotFound creates a CLIError with CLIErrorCodeBinaryNotFound.
 func NewBinaryNotFound(msg string, wrapped error) *CLIError {
 	return &CLIError{Code: CLIErrorCodeBinaryNotFound, Message: msg, Wrapped: wrapped}
+}
+
+// NewCanceled creates a CLIError with CLIErrorCodeCanceled.
+// Use when the caller or system deliberately canceled the operation.
+func NewCanceled(msg string, wrapped error) *CLIError {
+	return &CLIError{Code: CLIErrorCodeCanceled, Message: msg, Wrapped: wrapped}
 }
 
 // NewUnknown creates a CLIError with CLIErrorCodeUnknown.
