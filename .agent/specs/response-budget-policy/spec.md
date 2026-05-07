@@ -36,7 +36,7 @@ Every tool that returns structured data MUST accept the following optional param
 | `fields` | string (CSV) | `""` (brief defaults) | all tools returning objects |
 | `limit` | integer | 20 | all list actions |
 | `offset` | integer | 0 | all list actions |
-| `include_content` | boolean | `false` | `status`, `sessions(info)`, `exec` (sync), `agent` (sync), `investigate(recall)`, `agents(info)` |
+| `include_content` | boolean | `false` | `status`, `sessions(info)`, `exec` (sync), `agent` (sync), `investigate(recall)`, `agents(info)`, `consensus` (sync), `debate` (sync), `dialog` (sync), `audit` (sync), `workflow` (sync) |
 | `tail` | integer | `0` (disabled) | same as `include_content`-eligible actions |
 
 **`fields`**: comma-separated whitelist of fields to include in the response. The scope of `fields` depends on the action type:
@@ -265,7 +265,7 @@ Acceptance criteria:
 
 **EC-9: `include_content=true` on an action with no content-bearing field.** The response remains valid; no new field is invented. `truncated` is `false`.
 
-**EC-10: `tail` and `include_content=true` both provided.** `status(job_id=X, tail=500, include_content=true)` MUST return `content_tail` with the last 500 characters and `truncated=true` (`tail` takes precedence; `include_content` is silently ignored). The `content` field is NOT included in the response. This behaviour is consistent with FR-1: `tail` is treated as the more specific request. If the caller intends full content, they must omit `tail` and use `include_content=true` alone.
+**EC-10: `tail` and `include_content=true` both provided.** `status(job_id=X, tail=500, include_content=true)` MUST return `content_tail` (`tail` takes precedence; `include_content` is silently ignored). `truncated` MUST follow EC-8 semantics: `true` only if the content was actually shortened by `tail` (i.e., content length > tail), `false` if `tail` >= content length. The `content` field is NOT included in the response. This behaviour is consistent with FR-1: `tail` is treated as the more specific request. If the caller intends full content, they must omit `tail` and use `include_content=true` alone.
 
 ## Out of Scope
 
@@ -298,6 +298,6 @@ Acceptance criteria:
 
 1. [NEEDS CLARIFICATION: `session.Store.List()` — does the current implementation support a pre-pagination total count, or does it require the handler to call `List()` and count in memory? This determines whether FR-4 is a pure handler layer change or requires a `Store` interface addition.]
 
-2. [NEEDS CLARIFICATION: `sessions list` merges legacy sessions from `session.Store` and Loom tasks from `loom.List()` into a single response. Should `limit`/`offset` apply to each collection independently (two pagination cursors) or to a merged view? A merged view requires a defined sort order. This shapes the FR-4 pagination metadata structure.]
+2. [RESOLVED: FR-4 mandates a unified merged list sorted by `created_at` descending before pagination is applied (see FR-4 sort order clause). `limit`/`offset` MUST apply to the merged view, not independently per collection. Implementations MUST NOT use two independent pagination cursors — that would allow a compliant-looking response while violating the required merged-page semantics.]
 
-3. [NEEDS CLARIFICATION: `agents.Agent` struct field name for the system prompt body — confirm whether it is `SystemPrompt`, `Prompt`, or `Content` before FR-2 brief field set for `agents info` can be locked in implementation.]
+3. [RESOLVED: The `agents.Agent` prompt body field is `content` in the response contract. Implementations MUST use `content` as the field name. `system_prompt` is a planned alias requiring an explicit migration step — it is NOT equivalent and MUST NOT be substituted silently. The acceptance criterion for `agents(action=info, agent=<any>, include_content=true)` returns the prompt as the `content` field.]
