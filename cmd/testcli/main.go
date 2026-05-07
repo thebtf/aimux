@@ -5,10 +5,12 @@
 //
 // Usage: testcli <cli> [flags] [prompt]
 //
-// Supported CLIs:
+// Active CLIs (AIMUX-19):
 //   codex  — Rust-style JSONL (item.completed events)
 //   gemini — Node-style JSONL (init/message/result events)
 //   claude — Bun-style NDJSON (content_block_delta events)
+//
+// Archived emulators (kept for future Layer 5 restoration):
 //   goose  — Rust-style JSONL + 100ms OTEL delay
 //   crush  — Go-style incremental stdout
 //   aider  — Python-style plain text (rich Console)
@@ -26,7 +28,7 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: testcli <cli> [flags] [prompt]")
-		fmt.Fprintln(os.Stderr, "supported CLIs: codex, gemini, claude, goose, crush, aider, qwen, gptme, cline, continue")
+		fmt.Fprintln(os.Stderr, "active CLIs: codex, gemini, claude (archived: goose, crush, aider, qwen, gptme, cline, continue)")
 		os.Exit(1)
 	}
 

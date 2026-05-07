@@ -296,8 +296,9 @@ behaviors = ["toml_prompt_loading", "guardrails_injection", "status_tag_instruct
 # ─── SUPPORTED CLIs ──────────────────────────────────────────────────────────
 
 [clis]
-supported = ["gemini", "qwen", "codex", "claude", "aider", "droid", "opencode"]
-output_parsers = { json = ["gemini", "qwen", "claude", "droid", "opencode"], jsonl = ["codex"], text = ["aider"] }
+# Active CLIs post AIMUX-19 trim (10 archived at archive/v5.8.2-pre-cli-trim/cli.d/)
+supported = ["codex", "claude", "gemini"]
+output_parsers = { json = ["claude", "gemini"], jsonl = ["codex"] }
 
 # ─── ROLES ────────────────────────────────────────────────────────────────────
 
