@@ -483,8 +483,9 @@ func TestHandleCodexReviewGate_AllowOnTimeout(t *testing.T) {
 }
 
 func TestHandleCodexReviewGate_BlockDecision(t *testing.T) {
-	// Verify parseGateDecision directly: BLOCK decision is extracted correctly.
-	decision, reason := parseGateDecision("BLOCK: critical security issue found")
+	// Verify parseGateDecision: BLOCK embedded in JSON is extracted correctly.
+	input := `{"findings":[],"summary":"critical issue","decision":"BLOCK","reason":"critical security issue found"}`
+	decision, reason := parseGateDecision(input)
 	if decision != "block" {
 		t.Errorf("decision: got %q, want block", decision)
 	}
@@ -494,7 +495,8 @@ func TestHandleCodexReviewGate_BlockDecision(t *testing.T) {
 }
 
 func TestHandleCodexReviewGate_AllowDecision(t *testing.T) {
-	decision, reason := parseGateDecision("ALLOW: no issues found")
+	input := `{"findings":[],"summary":"clean","decision":"ALLOW","reason":"no issues found"}`
+	decision, reason := parseGateDecision(input)
 	if decision != "allow" {
 		t.Errorf("decision: got %q, want allow", decision)
 	}
@@ -504,7 +506,7 @@ func TestHandleCodexReviewGate_AllowDecision(t *testing.T) {
 }
 
 func TestHandleCodexReviewGate_UnrecognisedOutput(t *testing.T) {
-	// No ALLOW/BLOCK line → fail-open
+	// No JSON object → fail-open
 	decision, reason := parseGateDecision("some random output without a decision")
 	if decision != "allow" {
 		t.Errorf("decision: got %q, want allow", decision)
@@ -515,7 +517,9 @@ func TestHandleCodexReviewGate_UnrecognisedOutput(t *testing.T) {
 }
 
 func TestHandleCodexReviewGate_CaseInsensitive(t *testing.T) {
-	decision, _ := parseGateDecision("block: lowercase block")
+	// decision field is case-insensitive via ToUpper comparison.
+	input := `{"findings":[],"summary":"issues","decision":"block","reason":"lowercase block"}`
+	decision, _ := parseGateDecision(input)
 	if decision != "block" {
 		t.Errorf("decision: got %q, want block", decision)
 	}

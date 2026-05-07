@@ -171,12 +171,30 @@ func (s *Server) registerCodexTools() {
 // Each wrapper returns a bound handler function that delegates to s.codexHandlers
 // when available, or returns an actionable error when codex is not installed.
 
+// injectProjectID returns a copy of req with project_id populated from the active
+// ProjectContext when the caller omitted it. This prevents the Codex pool from
+// receiving an empty projectID and ensures per-worktree scoping on disconnect cleanup.
+func injectProjectID(ctx context.Context, req mcp.CallToolRequest) mcp.CallToolRequest {
+	if req.GetString("project_id", "") == "" {
+		if pid := projectIDFromContext(ctx); pid != "" {
+			// GetArguments returns a fresh map[string]any snapshot; merge with project_id.
+			args := req.GetArguments()
+			if args == nil {
+				args = make(map[string]any)
+			}
+			args["project_id"] = pid
+			req.Params.Arguments = args
+		}
+	}
+	return req
+}
+
 func (s *Server) codexTaskHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		if s.codexHandlers == nil {
 			return mcp.NewToolResultError("codex is not available: binary not found on PATH"), nil
 		}
-		return s.codexHandlers.HandleCodexTask(ctx, req)
+		return s.codexHandlers.HandleCodexTask(ctx, injectProjectID(ctx, req))
 	}
 }
 
@@ -185,7 +203,7 @@ func (s *Server) codexReviewHandler() func(context.Context, mcp.CallToolRequest)
 		if s.codexHandlers == nil {
 			return mcp.NewToolResultError("codex is not available: binary not found on PATH"), nil
 		}
-		return s.codexHandlers.HandleCodexReview(ctx, req)
+		return s.codexHandlers.HandleCodexReview(ctx, injectProjectID(ctx, req))
 	}
 }
 
@@ -212,6 +230,6 @@ func (s *Server) codexReviewGateHandler() func(context.Context, mcp.CallToolRequ
 		if s.codexHandlers == nil {
 			return mcp.NewToolResultError("codex is not available: binary not found on PATH"), nil
 		}
-		return s.codexHandlers.HandleCodexReviewGate(ctx, req)
+		return s.codexHandlers.HandleCodexReviewGate(ctx, injectProjectID(ctx, req))
 	}
 }

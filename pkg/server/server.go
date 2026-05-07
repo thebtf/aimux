@@ -584,6 +584,18 @@ func (s *Server) Shutdown() {
 		s.gcCancel()
 	}
 
+	// AIMUX-18 Phase 6: tear down Codex pool before loom so child processes exit
+	// cleanly and do not linger after daemon shutdown. Must precede loom.Close so
+	// in-flight Codex tasks can be drained.
+	if s.codexPool != nil {
+		poolCtx, poolCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := s.codexPool.Shutdown(poolCtx); err != nil {
+			s.log.Warn("codex pool shutdown: %v", err)
+		}
+		poolCancel()
+		s.codexPool = nil
+	}
+
 	if s.loom != nil {
 		if failed, err := s.loom.FailActiveAll("interrupted: upstream shutdown"); err != nil {
 			s.log.Warn("loom shutdown: fail active tasks failed: %v", err)

@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -150,7 +151,10 @@ func (h *CodexHandlers) HandleCodexStatus(ctx context.Context, req mcp.CallToolR
 
 	task, err := h.loom.Get(taskID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("task %q not found", taskID)), nil
+		if errors.Is(err, loom.ErrTaskNotFound) {
+			return mcp.NewToolResultError(fmt.Sprintf("task %q not found", taskID)), nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("codex_status: get failed: %v", err)), nil
 	}
 
 	return marshalCodexResult(buildCodexStatusResult(task, includeContent, tail))
@@ -168,7 +172,10 @@ func (h *CodexHandlers) HandleCodexCancel(ctx context.Context, req mcp.CallToolR
 
 	task, err := h.loom.Get(taskID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("task %q not found", taskID)), nil
+		if errors.Is(err, loom.ErrTaskNotFound) {
+			return mcp.NewToolResultError(fmt.Sprintf("task %q not found", taskID)), nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("codex_cancel: get failed: %v", err)), nil
 	}
 	previousStatus := task.Status
 
@@ -269,21 +276,38 @@ func pollGateResult(ctx context.Context, l loomSubmitter, taskID string) (string
 	}
 }
 
-// parseGateDecision extracts ALLOW/BLOCK decision from agent output.
-// Scans for the first line prefixed with "ALLOW:" or "BLOCK:" (case-insensitive).
-// Unrecognised output → fail-open ("allow", "gate output did not contain ALLOW/BLOCK decision").
+// gateDecisionResponse is the JSON schema produced by buildReviewPrompt for gate decisions.
+type gateDecisionResponse struct {
+	Findings []any  `json:"findings"`
+	Summary  string `json:"summary"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+}
+
+// parseGateDecision extracts ALLOW/BLOCK decision from agent JSON output.
+// The agent is instructed to embed decision and reason inside the JSON object.
+// Unrecognised or invalid output → fail-open ("allow", reason with parse error).
 func parseGateDecision(content string) (string, string) {
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		upper := strings.ToUpper(trimmed)
-		if strings.HasPrefix(upper, "ALLOW:") {
-			return "allow", strings.TrimSpace(trimmed[6:])
-		}
-		if strings.HasPrefix(upper, "BLOCK:") {
-			return "block", strings.TrimSpace(trimmed[6:])
-		}
+	// Find the JSON object in the content (agent may output preamble before JSON).
+	start := strings.Index(content, "{")
+	if start < 0 {
+		return "allow", "gate output did not contain a JSON object"
 	}
-	return "allow", "gate output did not contain ALLOW/BLOCK decision"
+	jsonStr := content[start:]
+	var resp gateDecisionResponse
+	if err := json.Unmarshal([]byte(jsonStr), &resp); err != nil {
+		// Fail-open: malformed JSON should not block the gate.
+		return "allow", fmt.Sprintf("gate output parse error: %v", err)
+	}
+	upper := strings.ToUpper(strings.TrimSpace(resp.Decision))
+	switch upper {
+	case "ALLOW":
+		return "allow", resp.Reason
+	case "BLOCK":
+		return "block", resp.Reason
+	default:
+		return "allow", fmt.Sprintf("gate decision field %q not recognised (expected ALLOW or BLOCK)", resp.Decision)
+	}
 }
 
 // buildCodexStatusResult constructs the status response map from a Loom task.
@@ -302,11 +326,12 @@ func buildCodexStatusResult(task *loom.Task, includeContent bool, tail int) map[
 		result["dispatched_at"] = task.DispatchedAt.UTC().Format(time.RFC3339)
 	}
 	if task.Status.IsTerminal() {
-		contentLen := len(task.Result)
+		runes := []rune(task.Result)
+		contentLen := len(runes)
 		if tail > 0 {
-			out := task.Result
-			if len(out) > tail {
-				out = out[len(out)-tail:]
+			out := string(runes)
+			if len(runes) > tail {
+				out = string(runes[len(runes)-tail:])
 			}
 			result["content_tail"] = out
 			result["content_length"] = contentLen
@@ -324,20 +349,23 @@ func buildCodexStatusResult(task *loom.Task, includeContent bool, tail int) map[
 }
 
 // buildReviewPrompt wraps the review target in a structured instruction so the
-// agent produces JSON findings in the expected schema (FR-2, audit §A.8).
-// Uses turn/start with outputSchema — NOT review/start.
+// agent produces a single JSON object with findings and a decision field.
+// Uses turn/start with outputSchema — NOT review/start (audit §A.8).
+//
+// The decision is embedded in the JSON to avoid contradicting "raw JSON only"
+// with a separate trailing decision line (which parseGateDecision cannot parse
+// from a valid JSON-only response).
 func buildReviewPrompt(target string) string {
 	return fmt.Sprintf(`You are a code reviewer. Review the following target and produce structured findings.
 
 Target:
 %s
 
-Output a JSON object with the following shape (no markdown, raw JSON only):
-{"findings":[{"severity":"error"|"warning"|"info","file":"<path>","line":<number>|null,"body":"<description>"}],"summary":"<overall summary>"}
+Output a single JSON object with the following shape (no markdown, raw JSON only, no trailing text):
+{"findings":[{"severity":"error"|"warning"|"info","file":"<path>","line":<number>|null,"body":"<description>"}],"summary":"<overall summary>","decision":"ALLOW"|"BLOCK","reason":"<one-line reason>"}
 
-Decision line (last line, required):
-ALLOW: <one-line reason>   — if no blocking issues found
-BLOCK: <one-line reason>   — if blocking issues exist`, target)
+decision must be "ALLOW" when no blocking issues are found, or "BLOCK" when blocking issues exist.
+reason must be a single line explaining the decision.`, target)
 }
 
 // marshalCodexResult serialises m to JSON and returns an MCP text tool result.

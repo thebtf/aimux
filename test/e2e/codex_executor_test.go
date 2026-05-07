@@ -245,24 +245,29 @@ func TestE2E_Codex_Cancel_Idempotent(t *testing.T) {
 // --- helpers ---
 
 // extractJSONField extracts a top-level string field from a tool result's JSON text content.
+// Fails the test immediately on isError=true, missing content, or non-JSON payloads
+// so regressions surface as fast failures rather than timeout waits.
 func extractJSONField(t *testing.T, resp map[string]any, field string) string {
 	t.Helper()
 	result, _ := resp["result"].(map[string]any)
 	if result == nil {
-		return ""
+		t.Fatalf("tool returned no result: %v", resp)
+	}
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("tool returned error: %v", result["content"])
 	}
 	content, _ := result["content"].([]any)
 	if len(content) == 0 {
-		return ""
+		t.Fatalf("tool returned empty content: %v", result)
 	}
 	first, _ := content[0].(map[string]any)
 	text, _ := first["text"].(string)
 	if text == "" {
-		return ""
+		t.Fatalf("tool returned empty text: %v", first)
 	}
 	var data map[string]any
 	if err := json.Unmarshal([]byte(text), &data); err != nil {
-		return ""
+		t.Fatalf("tool returned non-JSON text: %q", text)
 	}
 	val, _ := data[field].(string)
 	return val
