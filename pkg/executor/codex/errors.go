@@ -16,14 +16,15 @@ import (
 // Mapping priority (first match wins):
 //  1. Already a *types.CLIError — returned as-is (no double-wrap).
 //  2. exec.ErrNotFound / os.ErrNotExist / "executable file not found" → BinaryNotFound
-//  3. context.DeadlineExceeded / "deadline exceeded" / "timeout" → Timeout
-//  4. "rate limit" / "rate_limit" / "429" / "quota" → RateLimit
-//  5. "invalid prompt" / "validation" / "param" → UserInputError  (before AuthExpiry to avoid false positives)
-//  6. "auth" + ("fail" / "expir" / "invalid") → AuthExpiry
-//  7. "401" / "unauthor" → AuthExpiry
-//  8. "patch rejected" / ("sandbox" + "block") → SandboxDenial
-//  9. "-32601" / "method not found" / "unsupported" → CapabilityMismatch
-//  10. Anything else → Unknown (terminal; safer than auto-fallback)
+//  3. context.Canceled → Canceled (deliberate cancellation; not a deadline breach)
+//  4. context.DeadlineExceeded / "deadline exceeded" / "timeout" → Timeout
+//  5. "rate limit" / "rate_limit" / "429" / "quota" → RateLimit
+//  6. "invalid prompt" / "validation" / "invalid param" / "param validation" → UserInputError
+//  7. "auth" + ("fail" / "expir" / "invalid") → AuthExpiry
+//  8. "401" / "unauthor" → AuthExpiry
+//  9. "patch rejected" / "sandbox_denied" / "sandbox denied" / ("sandbox" + "block") → SandboxDenial
+//  10. "-32601" / "method not found" / "unsupported" → CapabilityMismatch
+//  11. Anything else → Unknown (terminal; safer than auto-fallback)
 //
 // mapToCliError never returns nil when err is non-nil.
 func mapToCliError(err error) *types.CLIError {
@@ -54,6 +55,11 @@ func mapToCliError(err error) *types.CLIError {
 		return types.NewBinaryNotFound(msg, err)
 	}
 
+	// Canceled: deliberate context cancellation (distinct from deadline breach).
+	if errors.Is(err, context.Canceled) {
+		return types.NewCanceled(msg, err)
+	}
+
 	// Timeout: context deadline or explicit timeout language.
 	if errors.Is(err, context.DeadlineExceeded) ||
 		strings.Contains(lower, "deadline exceeded") ||
@@ -72,9 +78,12 @@ func mapToCliError(err error) *types.CLIError {
 	// UserInputError: invalid prompt or parameter validation failure.
 	// Checked before AuthExpiry to prevent broad "auth"+"invalid" heuristic from
 	// misclassifying messages like "author provided an invalid parameter".
+	// "param" alone is too broad (matches "parameter" in unrelated messages);
+	// use "invalid param" and "param validation" instead.
 	if strings.Contains(lower, "invalid prompt") ||
 		strings.Contains(lower, "validation") ||
-		strings.Contains(lower, "param") {
+		strings.Contains(lower, "invalid param") ||
+		strings.Contains(lower, "param validation") {
 		return types.NewUserInputError(msg, err)
 	}
 
@@ -90,8 +99,10 @@ func mapToCliError(err error) *types.CLIError {
 	}
 
 	// SandboxDenial: sandbox read-only denial or patch rejected.
+	// Also matches "sandbox_denied" / "sandbox denied" emitted by codex turn errors.
 	if strings.Contains(lower, "patch rejected") ||
-		(strings.Contains(lower, "sandbox") && strings.Contains(lower, "block")) {
+		strings.Contains(lower, "sandbox_denied") ||
+		(strings.Contains(lower, "sandbox") && (strings.Contains(lower, "denied") || strings.Contains(lower, "block"))) {
 		return types.NewSandboxDenial(msg, err)
 	}
 

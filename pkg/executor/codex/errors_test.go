@@ -113,6 +113,31 @@ func TestMapToCliError(t *testing.T) {
 			wantCode: types.CLIErrorCodeUserInputError,
 		},
 		{
+			name:     "Canceled via context.Canceled",
+			err:      context.Canceled,
+			wantCode: types.CLIErrorCodeCanceled,
+		},
+		{
+			name:     "Canceled via wrapped context.Canceled",
+			err:      fmt.Errorf("start process: %w", context.Canceled),
+			wantCode: types.CLIErrorCodeCanceled,
+		},
+		{
+			name:     "SandboxDenial via sandbox_denied",
+			err:      errors.New("codex: turn failed: permission denied (code: sandbox_denied)"),
+			wantCode: types.CLIErrorCodeSandboxDenial,
+		},
+		{
+			name:     "SandboxDenial via sandbox denied",
+			err:      errors.New("sandbox denied: write to /etc/passwd not permitted"),
+			wantCode: types.CLIErrorCodeSandboxDenial,
+		},
+		{
+			name:     "UserInputError via invalid param",
+			err:      errors.New("invalid param: max_tokens out of range"),
+			wantCode: types.CLIErrorCodeUserInputError,
+		},
+		{
 			name:     "Unknown for unrecognised error",
 			err:      errors.New("some unexpected internal crash"),
 			wantCode: types.CLIErrorCodeUnknown,
