@@ -21,11 +21,14 @@ import (
 // the initialize handshake, and asserts it succeeds without error.
 //
 // This is the regression gate for AIMUX-bug: "initialize RPC: Invalid request:
-// missing field `clientInfo`". The test is skipped when codex is not on PATH.
+// missing field `clientInfo`". Requires CODEX_E2E=1 and codex on PATH.
 func TestE2E_CodexInitialize_RealBinary(t *testing.T) {
+	if !codexE2EEnabled() {
+		t.Skip("codex binary not on PATH or CODEX_E2E!=1 — skipping real initialize integration test")
+	}
 	codexPath, err := exec.LookPath("codex")
 	if err != nil {
-		t.Skip("codex binary not on PATH — skipping real initialize integration test")
+		t.Fatalf("codexE2EEnabled() returned true but LookPath failed: %v", err)
 	}
 
 	// Use os.MkdirTemp instead of t.TempDir() to avoid a Windows-specific

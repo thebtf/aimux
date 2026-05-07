@@ -283,6 +283,8 @@ func TestAppServerProcess_Initialize_SendsClientInfo(t *testing.T) {
 
 	serverRead, clientWrite := io.Pipe()
 	clientRead, serverWrite := io.Pipe()
+	defer clientWrite.Close()
+	defer serverWrite.Close()
 
 	go func() {
 		dec := json.NewDecoder(serverRead)
@@ -336,18 +338,26 @@ func TestAppServerProcess_Initialize_SendsClientInfo(t *testing.T) {
 	mu.Unlock()
 
 	// clientInfo must be present with non-empty name and version.
-	if !strings.Contains(params, `"clientInfo"`) {
-		t.Errorf("clientInfo field absent from initialize params: %s", params)
+	var payload struct {
+		ClientInfo struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"clientInfo"`
+		Capabilities struct {
+			ExperimentalApi *bool `json:"experimentalApi"`
+		} `json:"capabilities"`
 	}
-	if !strings.Contains(params, `"name":"aimux"`) {
-		t.Errorf("clientInfo.name not set to 'aimux' in initialize params: %s", params)
+	if err := json.Unmarshal([]byte(params), &payload); err != nil {
+		t.Fatalf("parse initialize params: %v", err)
 	}
-	// Version must be a non-empty string (exact value varies by build).
-	if !strings.Contains(params, `"version":"`) {
-		t.Errorf("clientInfo.version absent or empty in initialize params: %s", params)
+	if payload.ClientInfo.Name != "aimux" {
+		t.Errorf("clientInfo.name: got %q, want %q", payload.ClientInfo.Name, "aimux")
+	}
+	if payload.ClientInfo.Version == "" {
+		t.Errorf("clientInfo.version must be non-empty, got empty string")
 	}
 	// experimentalApi must always be present in wire format (no omitempty — plugin always sends it).
-	if !strings.Contains(params, `"experimentalApi"`) {
+	if payload.Capabilities.ExperimentalApi == nil {
 		t.Errorf("experimentalApi field absent from initialize capabilities: %s", params)
 	}
 }
