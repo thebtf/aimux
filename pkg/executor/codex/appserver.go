@@ -301,9 +301,8 @@ func (p *AppServerProcess) StartTurn(ctx context.Context, params TurnStartParams
 					p.setState(AppServerStateClosed)
 					return
 				}
-				p.handleNotification(raw, completedCh, progressCh)
-				// If we emitted to completedCh, we're done.
-				if len(completedCh) > 0 {
+				if p.handleNotification(raw, completedCh, progressCh) {
+					// turn/completed was emitted — we are done.
 					p.setState(AppServerStateReady)
 					return
 				}
@@ -315,31 +314,33 @@ func (p *AppServerProcess) StartTurn(ctx context.Context, params TurnStartParams
 }
 
 // handleNotification parses a raw notification and routes it to the appropriate channel.
+// Returns true when turn/completed was emitted, signalling the fanout goroutine to exit.
 func (p *AppServerProcess) handleNotification(
 	raw json.RawMessage,
 	completedCh chan<- TurnCompletedNotification,
 	progressCh chan<- string,
-) {
+) bool {
 	var notif JSONRPCNotification
 	if err := json.Unmarshal(raw, &notif); err != nil {
-		return
+		return false
 	}
 
 	switch notif.Method {
 	case MethodTurnCompleted:
 		var tcn TurnCompletedNotification
 		if err := json.Unmarshal(notif.Params, &tcn); err != nil {
-			return
+			return false
 		}
 		select {
 		case completedCh <- tcn:
 		default:
 		}
+		return true
 
 	case MethodItemCompleted:
 		var icn ItemCompletedNotification
 		if err := json.Unmarshal(notif.Params, &icn); err != nil {
-			return
+			return false
 		}
 		if icn.Item.Type == "agentMessage" && icn.Item.Text != "" {
 			select {
@@ -349,6 +350,7 @@ func (p *AppServerProcess) handleNotification(
 			}
 		}
 	}
+	return false
 }
 
 // Interrupt sends turn/interrupt if a turn is in-flight.
