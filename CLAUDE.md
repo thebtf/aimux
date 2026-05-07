@@ -2,7 +2,7 @@
 
 ## Project
 
-Universal MCP server multiplexing 12 AI CLI tools (codex, gemini, claude, qwen, aider, goose, crush, gptme, cline, continue, droid, opencode).
+Universal MCP server. Active CLIs: codex, claude, gemini (3 active; 10 archived at AIMUX-19).
 Go rewrite of mcp-aimux (TypeScript v2). Single binary, zero external runtime dependencies.
 
 **Mode:** `local-stdio` (per `~/.claude/rules/constitution.md` deployment mode taxonomy). Multi-tenant code paths (AIMUX-12 Phases 0-8 shipped in v5.1.0) dormant by config gate — `tenants.yaml` absent → `IsMultiTenant()` (`pkg/tenant/registry.go:104-106`) returns false. Resume trigger for multi-tenant enforcement: hosted deployment with `tenants.yaml` populated (≥1 enrolled tenant — matches `IsMultiTenant()` `len(snap.byUID) > 0` predicate).
@@ -68,7 +68,7 @@ loom/                — LoomEngine v0.1.0 (vendored standalone module): central
 # pkg/agents/        — agent registry — REMOVED
 # pkg/investigate/   — investigation state machine — REMOVED (v1 port deferred)
 
-config/cli.d/        — 12 CLI profiles (yaml) — kept for Pipeline v5 / future Layer 5
+config/cli.d/        — 3 active CLI profiles (codex, claude, gemini) — kept for Pipeline v5 / future Layer 5; 10 archived at archive/v5.8.2-pre-cli-trim/cli.d/
 config/p26/          — P26 tool classification artifact (synced to reduced surface)
 config/skills.d/     — empty post-purge; v5.0.3 contents archived under archive/v5.0.3/skills.d/
 archive/v5.0.3/      — frozen v5.0.3 skills + map.yaml + README documenting restoration
@@ -126,7 +126,7 @@ Files: `pkg/server/server_handler_delegate.go` (Phase A), `pkg/server/server_ses
 (swap logic, `aimuxHandler`), `pkg/server/server.go` (`RunPhaseB`),
 `test/e2e/cold_start_attach_test.go` (NFR gate: p99 ≤ 1s, 5 concurrent shims).
 
-## CLI Profiles (12)
+## CLI Profiles (3 active)
 
 Each CLI has a profile in `config/cli.d/{name}/profile.yaml` defining:
 - `binary` — executable name
@@ -137,7 +137,9 @@ Each CLI has a profile in `config/cli.d/{name}/profile.yaml` defining:
 - `cooldown_seconds` — per-model cooldown after rate limit
 - `completion_pattern` — regex to detect completion in stdout
 
-Supported: codex, gemini, claude, aider, goose, gptme, qwen, cline, crush, droid, opencode, continue (cn)
+Active: codex, claude, gemini
+
+Archived (10): aider, cline, codex-int, continue, crush, droid, goose, gptme, opencode, qwen — see `archive/v5.8.2-pre-cli-trim/cli.d/`
 
 ## Testing
 

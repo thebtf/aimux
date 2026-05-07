@@ -75,7 +75,11 @@ func TestLoad_CLIProfiles(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	expectedCLIs := []string{"codex", "gemini", "claude", "qwen", "aider", "droid", "opencode"}
+	// Active CLIs post AIMUX-19 trim — 10 CLIs archived at archive/v5.8.2-pre-cli-trim/cli.d/
+	expectedCLIs := []string{"codex", "gemini", "claude"}
+	if len(cfg.CLIProfiles) != len(expectedCLIs) {
+		t.Errorf("expected exactly %d CLI profiles after trim, got %d", len(expectedCLIs), len(cfg.CLIProfiles))
+	}
 	for _, cli := range expectedCLIs {
 		profile, ok := cfg.CLIProfiles[cli]
 		if !ok {

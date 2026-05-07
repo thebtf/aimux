@@ -1,6 +1,6 @@
 # Contributing to aimux
 
-Go MCP server multiplexing 10+ AI CLI tools. Single binary, zero external runtime dependencies.
+Go MCP server. Active CLIs: codex, claude, gemini. Single binary, zero external runtime dependencies.
 
 ## Quick Start
 
