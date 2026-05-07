@@ -301,11 +301,12 @@ func TestHandleCodexStatus_Found(t *testing.T) {
 	// Pre-seed a running task.
 	now := time.Now()
 	l.tasks["task-42"] = &loom.Task{
-		ID:            "task-42",
-		Status:        loom.TaskStatusRunning,
-		CreatedAt:     now,
+		ID:             "task-42",
+		WorkerType:     WorkerTypeCodex,
+		Status:         loom.TaskStatusRunning,
+		CreatedAt:      now,
 		LastOutputLine: "processing...",
-		ProgressLines: 5,
+		ProgressLines:  5,
 	}
 	h := newHandlers(t, l)
 
@@ -344,10 +345,11 @@ func TestHandleCodexStatus_NotFound(t *testing.T) {
 func TestHandleCodexStatus_CompletedWithContent(t *testing.T) {
 	l := newFakeLoom()
 	l.tasks["task-done"] = &loom.Task{
-		ID:        "task-done",
-		Status:    loom.TaskStatusCompleted,
-		Result:    "all done",
-		CreatedAt: time.Now(),
+		ID:         "task-done",
+		WorkerType: WorkerTypeCodex,
+		Status:     loom.TaskStatusCompleted,
+		Result:     "all done",
+		CreatedAt:  time.Now(),
 	}
 	now := time.Now()
 	l.tasks["task-done"].CompletedAt = &now
@@ -373,10 +375,11 @@ func TestHandleCodexStatus_CompletedWithContent(t *testing.T) {
 func TestHandleCodexStatus_TailParam(t *testing.T) {
 	l := newFakeLoom()
 	l.tasks["task-tail"] = &loom.Task{
-		ID:        "task-tail",
-		Status:    loom.TaskStatusCompleted,
-		Result:    "ABCDEFGHIJ",
-		CreatedAt: time.Now(),
+		ID:         "task-tail",
+		WorkerType: WorkerTypeCodex,
+		Status:     loom.TaskStatusCompleted,
+		Result:     "ABCDEFGHIJ",
+		CreatedAt:  time.Now(),
 	}
 	h := newHandlers(t, l)
 
@@ -397,9 +400,10 @@ func TestHandleCodexStatus_TailParam(t *testing.T) {
 func TestHandleCodexCancel_ActiveTask(t *testing.T) {
 	l := newFakeLoom()
 	l.tasks["task-run"] = &loom.Task{
-		ID:        "task-run",
-		Status:    loom.TaskStatusRunning,
-		CreatedAt: time.Now(),
+		ID:         "task-run",
+		WorkerType: WorkerTypeCodex,
+		Status:     loom.TaskStatusRunning,
+		CreatedAt:  time.Now(),
 	}
 	h := newHandlers(t, l)
 
@@ -421,9 +425,10 @@ func TestHandleCodexCancel_ActiveTask(t *testing.T) {
 func TestHandleCodexCancel_AlreadyTerminal(t *testing.T) {
 	l := newFakeLoom()
 	l.tasks["task-done"] = &loom.Task{
-		ID:        "task-done",
-		Status:    loom.TaskStatusCompleted,
-		CreatedAt: time.Now(),
+		ID:         "task-done",
+		WorkerType: WorkerTypeCodex,
+		Status:     loom.TaskStatusCompleted,
+		CreatedAt:  time.Now(),
 	}
 	h := newHandlers(t, l)
 

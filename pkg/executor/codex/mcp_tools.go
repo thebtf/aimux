@@ -157,6 +157,10 @@ func (h *CodexHandlers) HandleCodexStatus(ctx context.Context, req mcp.CallToolR
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("codex_status: get failed: %v", err)), nil
 	}
+	// Guard: only expose status of Codex tasks via this tool.
+	if task.WorkerType != WorkerTypeCodex {
+		return mcp.NewToolResultError(fmt.Sprintf("task %q is not a Codex task (worker_type=%q)", taskID, task.WorkerType)), nil
+	}
 
 	return marshalCodexResult(buildCodexStatusResult(task, includeContent, tail))
 }
@@ -177,6 +181,11 @@ func (h *CodexHandlers) HandleCodexCancel(ctx context.Context, req mcp.CallToolR
 			return mcp.NewToolResultError(fmt.Sprintf("task %q not found", taskID)), nil
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("codex_cancel: get failed: %v", err)), nil
+	}
+	// Guard: only allow cancellation of Codex tasks. This prevents codex_cancel
+	// from terminating unrelated Loom tasks submitted by other workers.
+	if task.WorkerType != WorkerTypeCodex {
+		return mcp.NewToolResultError(fmt.Sprintf("task %q is not a Codex task (worker_type=%q)", taskID, task.WorkerType)), nil
 	}
 	previousStatus := task.Status
 
