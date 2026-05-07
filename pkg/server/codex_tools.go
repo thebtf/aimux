@@ -33,7 +33,12 @@ func (s *Server) registerCodexTools() {
 				"Uses a Loom-backed task (SQLite-persisted, crash-safe). "+
 				"sandbox_class defaults to \"task\" (read-only, never asks for approval). "+
 				"Use sandbox_class=\"write-task\" for changes that modify files. "+
-				"resume_task_id: resume from a prior codex_task's thread (O(1) — no scan)."),
+				"resume_task_id: resume from a prior codex_task's thread (O(1) — no scan). "+
+				"Automatic compaction: when input tokens exceed 70% of context window, aimux triggers "+
+				"thread/compact/start between turns to reduce future per-turn cost. "+
+				"If your userPromptSubmit hook is configured, it will fire during automatic compaction "+
+				"when input tokens exceed 70% of context window. "+
+				"Compaction reduces future per-turn cost; your hook will see one extra invocation per compact."),
 			mcp.WithString("prompt",
 				mcp.Required(),
 				mcp.Description("Task description passed to Codex as the first turn message."),
@@ -69,7 +74,10 @@ func (s *Server) registerCodexTools() {
 				"Returns task_id immediately; poll with codex_status. "+
 				"Uses turn/start + outputSchema (NOT review/start per audit §A.8). "+
 				"Sandbox is read-only/never (review class, ADR-006). "+
-				"Result contains JSON findings: [{severity, file, line, body}] + summary."),
+				"Result contains JSON findings: [{severity, file, line, body}] + summary. "+
+				"If your userPromptSubmit hook is configured, it will fire during automatic compaction "+
+				"when input tokens exceed 70% of context window. "+
+				"Compaction reduces future per-turn cost; your hook will see one extra invocation per compact."),
 			mcp.WithString("target",
 				mcp.Required(),
 				mcp.Description("Git ref, diff text, or file path to review."),
@@ -95,7 +103,7 @@ func (s *Server) registerCodexTools() {
 		mcp.NewTool("codex_status",
 			mcp.WithDescription("[manage — async task status] Query the status of a Codex Loom task. "+
 				"Default response is brief (~4k). "+
-				"include_content=true returns full Codex output. "+
+				"include_content=true returns full Codex output plus last_input_tokens and compaction_count metadata. "+
 				"tail=N returns the last N characters of output. "+
 				"Status values: pending, dispatched, running, completed, failed, failed_crash."),
 			mcp.WithString("task_id",

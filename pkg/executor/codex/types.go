@@ -267,6 +267,14 @@ type CodexTaskMeta struct {
 	// Used by review jobs to constrain Codex output to the expected findings/decision shape,
 	// reducing the chance of parseGateDecision receiving malformed JSON.
 	OutputSchema any `json:"output_schema,omitempty"`
+
+	// LastInputTokens is the cumulative input token count written by Worker on each turn
+	// completion. Readable via codex_status with include_content=true (FR-12).
+	LastInputTokens int64 `json:"last_input_tokens,omitempty"`
+
+	// CompactionCount tracks how many times Worker triggered compaction for this task.
+	// Readable via codex_status with include_content=true (FR-12).
+	CompactionCount int `json:"compaction_count,omitempty"`
 }
 
 // --- Thread list types (for Resumer fallback path) ---
@@ -312,7 +320,29 @@ var OptOutNotificationMethods = []string{
 
 // Notification methods we care about.
 const (
-	MethodItemCompleted = "item/completed"
-	MethodTurnCompleted = "turn/completed"
-	MethodInitialized   = "initialized"
+	MethodItemCompleted      = "item/completed"
+	MethodTurnCompleted      = "turn/completed"
+	MethodInitialized        = "initialized"
+	MethodTokenUsageUpdated  = "thread/tokenUsage/updated"
 )
+
+// ThreadCompactStartParams mirrors the thread/compact/start request.
+// VERIFIED (probe-2026-05-07 OQ-7): params={threadId} only.
+type ThreadCompactStartParams struct {
+	ThreadID string `json:"threadId"`
+}
+
+// TokenUsage holds per-thread cumulative token counts from thread/tokenUsage/updated.
+// VERIFIED (probe-2026-05-07 OQ-7): totals are cumulative and do not decrease.
+// Compaction reduces future per-turn input cost; existing history totals are unchanged.
+type TokenUsage struct {
+	InputTokens       int64 `json:"inputTokens"`
+	CachedInputTokens int64 `json:"cacheReadTokens"`
+	OutputTokens      int64 `json:"outputTokens"`
+}
+
+// TokenUsageNotification mirrors the thread/tokenUsage/updated notification params.
+type TokenUsageNotification struct {
+	ThreadID string     `json:"threadId"`
+	Usage    TokenUsage `json:"usage"`
+}

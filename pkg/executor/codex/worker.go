@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/thebtf/aimux/loom"
@@ -28,6 +29,25 @@ type taskGetter interface {
 	Get(taskID string) (*loom.Task, error)
 }
 
+// CompactionConfig controls the automatic compaction threshold and throttle (FR-11 / ADR-013).
+// Both fields are immutable after construction.
+type CompactionConfig struct {
+	// Threshold is the inputTokens count at which compaction is triggered.
+	// Default: 181_880 (70% of 258,400 gpt-5.5 context window — VERIFIED probe-2026-05-07 OQ-7).
+	Threshold int64
+	// MinTurnsBetween is the minimum number of turns between two compactions on the same thread.
+	// Default: 5. Prevents quota burn on short-context threads.
+	MinTurnsBetween int
+}
+
+// defaultCompactionConfig returns production-safe compaction defaults.
+func defaultCompactionConfig() CompactionConfig {
+	return CompactionConfig{
+		Threshold:       181_880,
+		MinTurnsBetween: 5,
+	}
+}
+
 // CodexWorker implements loom.Worker for codex tasks.
 //
 // Execution flow (per task):
@@ -35,16 +55,32 @@ type taskGetter interface {
 //  2. Resolve sandbox policy via ForClass(job_class).
 //  3. Acquire an AppServerProcess from the pool.
 //  4. Start or resume a thread (resume if resume_task_id present in metadata).
-//  5. Start a turn, stream progress via loom.AppendProgress.
-//  6. Return the aggregated agent message text as WorkerResult.Content.
+//  5. Check token usage — compact if threshold exceeded and throttle allows.
+//  6. Start a turn, stream progress via loom.AppendProgress.
+//  7. Return the aggregated agent message text as WorkerResult.Content.
 //
 // The worker is stateless — it holds no per-task state. Concurrent Execute
 // calls on different tasks are safe.
 type CodexWorker struct {
-	pool     *CodexPool
-	loom     progressSink
-	loomGet  taskGetter
-	model    string // default model; overridden by task.Model if set
+	pool        *CodexPool
+	loom        progressSink
+	loomGet     taskGetter
+	model       string // default model; overridden by task.Model if set
+	compaction  CompactionConfig
+
+	// lastCompactedAtTurn tracks per-thread turn count at last compaction.
+	// Keyed by threadId. Protected by compactMu.
+	// This field is per-worker-instance (not per-task) because the pool binds
+	// one process per projectID and the worker drives turns sequentially.
+	compactMu           sync.Mutex
+	lastCompactedAtTurn map[string]int64
+	// compactionInProgress guards against concurrent compaction on the same thread
+	// (TOCTOU race: two concurrent Execute() calls that both pass the throttle check
+	// could both launch proc.Compact — CodeRabbit MAJOR fix). Protected by compactMu.
+	compactionInProgress map[string]bool
+	// turnCount tracks total turns dispatched per thread by this worker instance.
+	// Used to enforce MinTurnsBetween throttle.
+	turnCount map[string]int64
 }
 
 // CodexWorkerConfig holds constructor parameters for CodexWorker.
@@ -54,6 +90,8 @@ type CodexWorkerConfig struct {
 	LoomGet taskGetter
 	// Model is the default codex model. If empty, codex uses its own default.
 	Model string
+	// Compaction overrides the default compaction config. Zero value uses defaults.
+	Compaction CompactionConfig
 }
 
 // NewCodexWorker constructs a CodexWorker.
@@ -67,11 +105,18 @@ func NewCodexWorker(cfg CodexWorkerConfig) (*CodexWorker, error) {
 	if cfg.LoomGet == nil {
 		return nil, fmt.Errorf("codex: NewCodexWorker: LoomGet must not be nil")
 	}
+	compact := cfg.Compaction
+	if compact.Threshold == 0 {
+		compact = defaultCompactionConfig()
+	}
 	return &CodexWorker{
-		pool:    cfg.Pool,
-		loom:    cfg.Loom,
-		loomGet: cfg.LoomGet,
-		model:   cfg.Model,
+		pool:                cfg.Pool,
+		loom:                cfg.Loom,
+		loomGet:             cfg.LoomGet,
+		model:               cfg.Model,
+		compaction:          compact,
+		lastCompactedAtTurn: make(map[string]int64),
+		turnCount:           make(map[string]int64),
 	}, nil
 }
 
@@ -127,7 +172,12 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 		return nil, mapToCliError(err)
 	}
 
-	// --- 5. Start turn, stream progress ---
+	// --- 5. Check token usage and compact if threshold exceeded (FR-11 / ADR-013) ---
+	if err := w.maybeCompact(ctx, proc, thread.ID, &updatedMeta); err != nil {
+		return nil, mapToCliError(err)
+	}
+
+	// --- 6. Start turn, stream progress ---
 	turnParams := TurnStartParams{
 		ThreadID:     thread.ID,
 		Input:        []UserInput{{Type: "text", Text: task.Prompt}},
@@ -208,8 +258,12 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 
 	content := strings.Join(lines, "\n")
 
-	// Store updated meta for resume.
+	// Store updated meta for resume. Record LastInputTokens for codex_status (FR-12).
 	updatedMeta.TurnID = turnCompleted.Turn.ID
+	if usage, ok := proc.TokenUsage(thread.ID); ok {
+		updatedMeta.LastInputTokens = usage.InputTokens
+	}
+	w.incrementTurnCount(thread.ID)
 	metaMap, _ := codeTaskMetaToMap(updatedMeta)
 
 	return &loom.WorkerResult{
@@ -322,6 +376,73 @@ func codeTaskMetaToMap(meta CodexTaskMeta) (map[string]any, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// maybeCompact checks whether compaction should be triggered for threadID and
+// calls proc.Compact if the threshold is exceeded and the throttle allows it.
+// Updates meta.CompactionCount on each compaction (FR-11 / ADR-013).
+func (w *CodexWorker) maybeCompact(ctx context.Context, proc *AppServerProcess, threadID string, meta *CodexTaskMeta) error {
+	usage, ok := proc.TokenUsage(threadID)
+	if !ok {
+		// No token data yet — no decision possible.
+		return nil
+	}
+	if usage.InputTokens <= w.compaction.Threshold {
+		return nil
+	}
+
+	// Acquire the lock to atomically check throttle, in-progress state, and set
+	// the in-progress marker before releasing. This prevents the TOCTOU race
+	// where two concurrent Execute() calls for the same threadID both pass the
+	// hasCompacted check and both launch proc.Compact (CodeRabbit MAJOR).
+	w.compactMu.Lock()
+	turns := w.turnCount[threadID]
+	lastAt, hasCompacted := w.lastCompactedAtTurn[threadID]
+
+	// Throttle only applies after the first compaction on this thread.
+	// On first compaction (hasCompacted==false), skip the throttle check.
+	if hasCompacted && turns-lastAt < int64(w.compaction.MinTurnsBetween) {
+		w.compactMu.Unlock()
+		// Throttled — too soon since the last compaction.
+		return nil
+	}
+
+	// Return early if another goroutine is already compacting this thread.
+	if w.compactionInProgress[threadID] {
+		w.compactMu.Unlock()
+		return nil
+	}
+
+	// Reserve compaction for this goroutine before releasing the lock.
+	if w.compactionInProgress == nil {
+		w.compactionInProgress = make(map[string]bool)
+	}
+	w.compactionInProgress[threadID] = true
+	w.compactMu.Unlock()
+
+	// Call proc.Compact without holding the lock (it may block for seconds).
+	err := proc.Compact(ctx, threadID)
+
+	// Always clear the in-progress marker and, on success, record the turn.
+	w.compactMu.Lock()
+	delete(w.compactionInProgress, threadID)
+	if err == nil {
+		w.lastCompactedAtTurn[threadID] = turns
+	}
+	w.compactMu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("codex worker: compact: %w", err)
+	}
+	meta.CompactionCount++
+	return nil
+}
+
+// incrementTurnCount records one completed turn for threadID.
+func (w *CodexWorker) incrementTurnCount(threadID string) {
+	w.compactMu.Lock()
+	w.turnCount[threadID]++
+	w.compactMu.Unlock()
 }
 
 // stringFromMeta extracts a string value from a map[string]any.
