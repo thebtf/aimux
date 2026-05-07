@@ -4,7 +4,7 @@ Captured 2026-05-07 from master before AIMUX-19 CLI trim.
 
 ## Why this folder exists
 
-aimux reduced its active CLI surface from 12 CLIs to 3 (codex, claude, gemini).
+aimux reduced its active CLI surface from 13 CLIs to 3 (codex, claude, gemini).
 This folder preserves the profiles of the 10 CLIs that are no longer active.
 
 ## Archived CLIs (10)
