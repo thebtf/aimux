@@ -346,6 +346,10 @@ func TestAppServerProcess_Initialize_SendsClientInfo(t *testing.T) {
 	if !strings.Contains(params, `"version":"`) {
 		t.Errorf("clientInfo.version absent or empty in initialize params: %s", params)
 	}
+	// experimentalApi must always be present in wire format (no omitempty — plugin always sends it).
+	if !strings.Contains(params, `"experimentalApi"`) {
+		t.Errorf("experimentalApi field absent from initialize capabilities: %s", params)
+	}
 }
 
 func TestAppServerProcess_Initialize_AuthFailure(t *testing.T) {

@@ -189,6 +189,7 @@ func (p *AppServerProcess) initialize(ctx context.Context) error {
 			Version: build.Version,
 		},
 		Capabilities: InitializeCapabilities{
+			ExperimentalApi:           false,
 			OptOutNotificationMethods: OptOutNotificationMethods,
 		},
 	}

@@ -99,8 +99,10 @@ const (
 )
 
 // InitializeCapabilities controls capability negotiation on connect.
+// experimentalApi is always sent (matching plugin behaviour: always false).
 // optOutNotificationMethods suppresses high-volume delta variants (ADR-011).
 type InitializeCapabilities struct {
+	ExperimentalApi           bool     `json:"experimentalApi"`
 	OptOutNotificationMethods []string `json:"optOutNotificationMethods,omitempty"`
 }
 
