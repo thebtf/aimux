@@ -1,3 +1,25 @@
+## v5.10.1 — 2026-05-08 (hotfix)
+
+### Bug Fixes
+
+- **fix(codex): codex executor no longer broken on first call** (#170). v5.10.0 shipped a critical regression — every `codex_task` / `codex_review` / `task` (with codex selection) call failed with `Invalid request: missing field clientInfo`. Root cause: Go `InitializeParams` struct lacked the `ClientInfo` field that codex 0.128.0 requires. Also added `ExperimentalApi` field to `InitializeCapabilities` for full schema completeness. Codex executor now operational.
+
+### Test Coverage
+
+- **test(codex): wire-format snapshot tests** (#171). All 65+ existing codex unit tests mocked JSONLClient — none verified Go struct JSON output against codex protocol schema. That's how the v5.10.0 regression shipped. Added 17 schema-snapshot tests that JSON-marshal each protocol param type and assert required fields per `.agent/codex-types-generated/v2/`. Catches codex schema drift at compile-test time without needing the `codex` binary.
+
+- **test(e2e): codex initialize integration test against real binary** (#170). New `TestE2E_CodexInitialize_RealBinary` (gated by `CODEX_E2E=1` env). Spawns real `codex app-server`, calls `Start()`, asserts no error. The test that would have caught the v5.10.0 regression.
+
+### Security
+
+- **chore: Go 1.25.10 + golang.org/x/net v0.53.0**. Upgraded Go toolchain from 1.25.9 → 1.25.10 and `golang.org/x/net` from v0.47.0 → v0.53.0 to resolve 4 govulncheck findings (GO-2026-4982, GO-2026-4980, GO-2026-4971 in stdlib; GO-2026-4918 in x/net). All 4 findings report 0 vulnerabilities after upgrade. No API changes — govulncheck confirmed `No vulnerabilities found`.
+
+### Note for v5.10.0 users
+
+If you upgraded to v5.10.0 and saw `codex_task` failing with `clientInfo` errors — upgrade to v5.10.1.
+
+---
+
 ## v5.10.0 — 2026-05-07
 
 ### New Features

@@ -1,6 +1,6 @@
 module github.com/thebtf/aimux
 
-go 1.25.9
+go 1.25.10
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
@@ -15,7 +15,7 @@ require (
 	github.com/thebtf/aimux/loom v0.2.0
 	github.com/thebtf/mcp-mux/muxcore v0.24.1
 	golang.org/x/sys v0.43.0
-	golang.org/x/text v0.32.0
+	golang.org/x/text v0.36.0
 	google.golang.org/genai v1.52.1
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -64,10 +64,10 @@ require (
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
-	golang.org/x/crypto v0.46.0 // indirect
-	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250811230008-5f3141c8851a // indirect
 	google.golang.org/grpc v1.66.2 // indirect
