@@ -99,13 +99,25 @@ const (
 )
 
 // InitializeCapabilities controls capability negotiation on connect.
+// experimentalApi is always sent (matching plugin behaviour: always false).
 // optOutNotificationMethods suppresses high-volume delta variants (ADR-011).
 type InitializeCapabilities struct {
+	ExperimentalApi           bool     `json:"experimentalApi"`
 	OptOutNotificationMethods []string `json:"optOutNotificationMethods,omitempty"`
 }
 
+// ClientInfo identifies the aimux client to the codex app-server.
+// Required by initialize RPC per v2/ClientInfo.ts — must not be omitted.
+type ClientInfo struct {
+	Name    string `json:"name"`
+	Title   string `json:"title,omitempty"`
+	Version string `json:"version"`
+}
+
 // InitializeParams is sent as the first request to codex app-server.
+// ClientInfo has no omitempty — codex rejects a missing or null clientInfo.
 type InitializeParams struct {
+	ClientInfo   ClientInfo             `json:"clientInfo"`
 	Capabilities InitializeCapabilities `json:"capabilities,omitempty"`
 }
 

@@ -273,6 +273,95 @@ func TestAppServerProcess_Initialize_OptOutSent(t *testing.T) {
 	}
 }
 
+// TestAppServerProcess_Initialize_SendsClientInfo verifies that the initialize
+// request includes a clientInfo object with a non-empty name and version.
+// This is the regression test for the v5.10.0 bug where clientInfo was absent,
+// causing codex 0.128.0 to reject the request with "missing field `clientInfo`".
+func TestAppServerProcess_Initialize_SendsClientInfo(t *testing.T) {
+	var mu sync.Mutex
+	var capturedParams string
+
+	serverRead, clientWrite := io.Pipe()
+	clientRead, serverWrite := io.Pipe()
+	defer clientWrite.Close()
+	defer serverWrite.Close()
+
+	go func() {
+		dec := json.NewDecoder(serverRead)
+		for {
+			var msg struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      *int64          `json:"id,omitempty"`
+				Method  string          `json:"method"`
+				Params  json.RawMessage `json:"params,omitempty"`
+			}
+			if err := dec.Decode(&msg); err != nil {
+				return
+			}
+			if msg.ID == nil {
+				continue // notification (e.g. "initialized")
+			}
+			if msg.Method == "initialize" {
+				mu.Lock()
+				capturedParams = string(msg.Params)
+				mu.Unlock()
+				reply := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"sessionId":"s1"}}`, *msg.ID)
+				fmt.Fprintln(serverWrite, reply)
+			}
+		}
+	}()
+
+	p := &AppServerProcess{
+		codexPath: "/fake/codex",
+		profile:   runtime.CLIRuntimeProfile{},
+		state:     AppServerStateInitializing,
+	}
+	client := NewJSONLClient(clientWrite, clientRead)
+	readCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go client.Start(readCtx)
+
+	p.mu.Lock()
+	p.client = client
+	p.cancelReadLoop = cancel
+	p.mu.Unlock()
+
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ctxCancel()
+
+	if err := p.initialize(ctx); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	mu.Lock()
+	params := capturedParams
+	mu.Unlock()
+
+	// clientInfo must be present with non-empty name and version.
+	var payload struct {
+		ClientInfo struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"clientInfo"`
+		Capabilities struct {
+			ExperimentalApi *bool `json:"experimentalApi"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal([]byte(params), &payload); err != nil {
+		t.Fatalf("parse initialize params: %v", err)
+	}
+	if payload.ClientInfo.Name != "aimux" {
+		t.Errorf("clientInfo.name: got %q, want %q", payload.ClientInfo.Name, "aimux")
+	}
+	if payload.ClientInfo.Version == "" {
+		t.Errorf("clientInfo.version must be non-empty, got empty string")
+	}
+	// experimentalApi must always be present in wire format (no omitempty — plugin always sends it).
+	if payload.Capabilities.ExperimentalApi == nil {
+		t.Errorf("experimentalApi field absent from initialize capabilities: %s", params)
+	}
+}
+
 func TestAppServerProcess_Initialize_AuthFailure(t *testing.T) {
 	serverRead, clientWrite := io.Pipe()
 	clientRead, serverWrite := io.Pipe()
