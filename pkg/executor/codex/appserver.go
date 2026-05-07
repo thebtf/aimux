@@ -53,24 +53,18 @@ func (s AppServerState) String() string {
 // Callers may fall back to starting a fresh thread on this sentinel.
 var ErrThreadNotFound = errors.New("codex: thread not found")
 
-// Compaction (thread/compact/start) is intentionally NOT implemented in this PR.
-// Per architecture.md OQ-7 + probe-2026-05-07: trigger at 70% of 258,400 token
-// context window (~181K input tokens). Wait for turn/completed before next user
-// turn. Throttle to avoid quota burn. Compaction fires the user's userPromptSubmit
-// hook — account for side effects.
-// Tracked: future AIMUX-18 follow-up CR.
-
 // AppServerProcess manages a single `codex app-server` subprocess.
 //
 // Invariant: only one turn is in-flight at any time. The turnMu mutex serializes
 // concurrent StartTurn calls — concurrent callers queue implicitly.
 //
 // The state machine is protected by mu. State transitions:
-//   Idle → Initializing  (Start called)
-//   Initializing → Ready  (initialize handshake completed)
-//   Ready → TurnInFlight  (StartTurn called)
-//   TurnInFlight → Ready  (turn completed)
-//   Any → Closing → Closed  (Shutdown called)
+//
+//	Idle → Initializing  (Start called)
+//	Initializing → Ready  (initialize handshake completed)
+//	Ready → TurnInFlight  (StartTurn called)
+//	TurnInFlight → Ready  (turn completed)
+//	Any → Closing → Closed  (Shutdown called)
 type AppServerProcess struct {
 	codexPath string
 	profile   runtime.CLIRuntimeProfile
@@ -87,6 +81,10 @@ type AppServerProcess struct {
 	// activeTurnID and activeThreadID track the in-flight turn for Interrupt.
 	activeThreadID string
 	activeTurnID   string
+
+	// tokenUsage holds the latest cumulative token counts per thread (FR-12 / ADR-014).
+	// Updated by thread/tokenUsage/updated notifications. Protected by mu.
+	tokenUsage map[string]TokenUsage
 }
 
 // NewAppServerProcess constructs an AppServerProcess.
@@ -356,8 +354,103 @@ func (p *AppServerProcess) handleNotification(
 				// Drop on overflow — progress is best-effort.
 			}
 		}
+
+	case MethodTokenUsageUpdated:
+		// FR-12 / ADR-014: update per-thread token usage.
+		var tun TokenUsageNotification
+		if err := json.Unmarshal(notif.Params, &tun); err != nil {
+			return false
+		}
+		if tun.ThreadID != "" {
+			p.mu.Lock()
+			if p.tokenUsage == nil {
+				p.tokenUsage = make(map[string]TokenUsage)
+			}
+			p.tokenUsage[tun.ThreadID] = tun.Usage
+			p.mu.Unlock()
+		}
 	}
 	return false
+}
+
+// TokenUsage returns the latest cumulative token usage for the given threadId.
+// Returns (TokenUsage{}, false) if no usage has been recorded yet (FR-12 / ADR-014).
+func (p *AppServerProcess) TokenUsage(threadID string) (TokenUsage, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.tokenUsage == nil {
+		return TokenUsage{}, false
+	}
+	u, ok := p.tokenUsage[threadID]
+	return u, ok
+}
+
+// Compact sends thread/compact/start and waits for the resulting turn/completed
+// notification before returning (FR-11 / ADR-013).
+//
+// Per probe-2026-05-07 OQ-7: the RPC returns {} immediately; codex then emits a
+// contextCompaction turn with no item/completed. We wait for turn/completed before
+// returning, ensuring the caller does not submit the next user turn prematurely.
+//
+// Compact holds turnMu for the duration to serialize with StartTurn.
+func (p *AppServerProcess) Compact(ctx context.Context, threadID string) error {
+	p.turnMu.Lock()
+	defer p.turnMu.Unlock()
+
+	p.mu.Lock()
+	if p.state != AppServerStateReady {
+		p.mu.Unlock()
+		return fmt.Errorf("codex AppServerProcess: Compact called in state %s", p.state)
+	}
+	p.state = AppServerStateTurnInFlight
+	p.mu.Unlock()
+
+	defer func() {
+		p.setState(AppServerStateReady)
+	}()
+
+	// Send thread/compact/start. Returns {} (empty result) on success.
+	params := ThreadCompactStartParams{ThreadID: threadID}
+	var result struct{}
+	if err := p.client.Call(ctx, "thread/compact/start", params, &result); err != nil {
+		return fmt.Errorf("codex: thread/compact/start: %w", err)
+	}
+
+	// Wait for turn/completed (the compaction turn). No item/completed is emitted
+	// for contextCompaction items — turn/completed is the only terminal signal.
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("codex: Compact: %w", ctx.Err())
+		case raw, ok := <-p.client.Notifications():
+			if !ok {
+				return fmt.Errorf("codex: Compact: notification channel closed before turn/completed")
+			}
+			var notif JSONRPCNotification
+			if err := json.Unmarshal(raw, &notif); err != nil {
+				continue
+			}
+			if notif.Method == MethodTokenUsageUpdated {
+				// Keep token usage up to date during compaction.
+				var tun TokenUsageNotification
+				if err := json.Unmarshal(notif.Params, &tun); err == nil && tun.ThreadID != "" {
+					p.mu.Lock()
+					if p.tokenUsage == nil {
+						p.tokenUsage = make(map[string]TokenUsage)
+					}
+					p.tokenUsage[tun.ThreadID] = tun.Usage
+					p.mu.Unlock()
+				}
+				continue
+			}
+			if notif.Method == MethodTurnCompleted {
+				// Compaction turn finished — ready for next user turn.
+				return nil
+			}
+			// All other notifications (hook/started, thread/status/changed, etc.) are
+			// silently consumed — ADR-015: pass through, do not suppress.
+		}
+	}
 }
 
 // Interrupt sends turn/interrupt if a turn is in-flight.
