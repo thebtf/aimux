@@ -53,6 +53,13 @@ func (s AppServerState) String() string {
 // Callers may fall back to starting a fresh thread on this sentinel.
 var ErrThreadNotFound = errors.New("codex: thread not found")
 
+// Compaction (thread/compact/start) is intentionally NOT implemented in this PR.
+// Per architecture.md OQ-7 + probe-2026-05-07: trigger at 70% of 258,400 token
+// context window (~181K input tokens). Wait for turn/completed before next user
+// turn. Throttle to avoid quota burn. Compaction fires the user's userPromptSubmit
+// hook — account for side effects.
+// Tracked: future AIMUX-18 follow-up CR.
+
 // AppServerProcess manages a single `codex app-server` subprocess.
 //
 // Invariant: only one turn is in-flight at any time. The turnMu mutex serializes
