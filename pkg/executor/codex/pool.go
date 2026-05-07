@@ -39,6 +39,12 @@ type poolEntry struct {
 	readyCh chan struct{}
 	// startErr holds the error from proc.Start(), if any. Read after readyCh is closed.
 	startErr error
+
+	// activeUsers is incremented by Acquire and decremented by Release.
+	// Remove skips process shutdown while activeUsers > 0 to preserve
+	// the Loom contract that background tasks survive session disconnects.
+	// Protected by CodexPool.mu.
+	activeUsers int
 }
 
 // CodexPool maintains one AppServerProcess per project ID.
@@ -104,6 +110,7 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 	entry, ok := p.entries[projectID]
 	if ok {
 		entry.lastUsed = time.Now()
+		entry.activeUsers++
 		proc := entry.process
 		readyCh := entry.readyCh
 		p.mu.Unlock()
@@ -113,6 +120,10 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 		select {
 		case <-readyCh:
 		case <-ctx.Done():
+			// Context cancelled while waiting — undo the activeUsers increment.
+			p.mu.Lock()
+			entry.activeUsers--
+			p.mu.Unlock()
 			return nil, ctx.Err()
 		}
 
@@ -120,6 +131,9 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 		startErr := entry.startErr
 		p.mu.Unlock()
 		if startErr != nil {
+			p.mu.Lock()
+			entry.activeUsers--
+			p.mu.Unlock()
 			return nil, fmt.Errorf("codex: CodexPool.Acquire: start process for project %q: %w", projectID, startErr)
 		}
 		return proc, nil
@@ -130,9 +144,10 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 	proc := NewAppServerProcess(p.codexPath, profile)
 	readyCh := make(chan struct{})
 	e := &poolEntry{
-		process:  proc,
-		lastUsed: time.Now(),
-		readyCh:  readyCh,
+		process:     proc,
+		lastUsed:    time.Now(),
+		readyCh:     readyCh,
+		activeUsers: 1,
 	}
 	p.entries[projectID] = e
 	p.mu.Unlock()
@@ -146,6 +161,7 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 		if cur, still := p.entries[projectID]; still && cur == e {
 			delete(p.entries, projectID)
 		}
+		e.activeUsers--
 		p.mu.Unlock()
 	}
 
@@ -161,23 +177,40 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 	return proc, nil
 }
 
-// Release updates the idle timestamp for a project's process.
-// It does not stop the process — idle eviction handles that.
+// Release decrements the active-user counter for a project's process and updates
+// the idle timestamp. Idle eviction reclaims the process once the counter reaches
+// zero and the idle timeout expires.
 // Callers MUST call Release after each Acquire to keep the idle timer accurate.
 func (p *CodexPool) Release(projectID string) {
 	p.mu.Lock()
 	if entry, ok := p.entries[projectID]; ok {
 		entry.lastUsed = time.Now()
+		if entry.activeUsers > 0 {
+			entry.activeUsers--
+		}
 	}
 	p.mu.Unlock()
 }
 
 // Remove shuts down and removes the process for a project.
 // It is a no-op if no process exists for projectID.
+//
+// If any Loom worker is currently holding an Acquire reference (activeUsers > 0),
+// Remove leaves the process in the pool so the active task can complete without
+// interruption — covering all phases from Acquire through acquireThread and StartTurn.
+// Idle eviction (idleEvictLoop) reclaims it once activeUsers drops to zero and the
+// idle timeout expires. This preserves the Loom contract that background tasks
+// survive session disconnects (AIMUX-18 FR-1).
 func (p *CodexPool) Remove(ctx context.Context, projectID string) error {
 	p.mu.Lock()
 	entry, ok := p.entries[projectID]
 	if !ok {
+		p.mu.Unlock()
+		return nil
+	}
+	// Do not evict a process that has active worker references. The worker holds
+	// Acquire from process startup through turn completion and calls Release when done.
+	if entry.activeUsers > 0 {
 		p.mu.Unlock()
 		return nil
 	}
@@ -251,7 +284,10 @@ func (p *CodexPool) evictIdle() {
 		default:
 			continue // still initializing — do not evict
 		}
-		// Skip processes that are actively processing a turn.
+		// Skip processes that are actively processing a turn or held by a worker via Acquire.
+		if entry.activeUsers > 0 {
+			continue
+		}
 		if s := entry.process.State(); s == AppServerStateTurnInFlight || s == AppServerStateInitializing {
 			continue
 		}

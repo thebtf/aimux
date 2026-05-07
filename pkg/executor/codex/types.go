@@ -262,6 +262,42 @@ type CodexTaskMeta struct {
 
 	// ResumeFallback is set to true when thread/resume failed and a fresh thread was used.
 	ResumeFallback bool `json:"resume_fallback,omitempty"`
+
+	// OutputSchema is an optional JSON Schema object passed to TurnStartParams.OutputSchema.
+	// Used by review jobs to constrain Codex output to the expected findings/decision shape,
+	// reducing the chance of parseGateDecision receiving malformed JSON.
+	OutputSchema any `json:"output_schema,omitempty"`
+}
+
+// --- Thread list types (for Resumer fallback path) ---
+
+// ThreadSummary is a minimal mirror of a thread row returned by thread/list.
+// VERIFIED (probe-2026-05-07 OQ-1): response is result.data[].
+type ThreadSummary struct {
+	ID        string `json:"id"`
+	CWD       string `json:"cwd,omitempty"`
+	Preview   string `json:"preview,omitempty"`
+	Ephemeral bool   `json:"ephemeral,omitempty"`
+	CreatedAt int64  `json:"createdAt,omitempty"`
+	UpdatedAt int64  `json:"updatedAt,omitempty"`
+}
+
+// ThreadListParams mirrors the thread/list request parameters.
+// VERIFIED (probe-2026-05-07 OQ-1): UseStateDbOnly=true cuts 19s→72ms (270x).
+// Always pass UseStateDbOnly: true. Never omit (default=false triggers full JSONL scan).
+type ThreadListParams struct {
+	SearchTerm     string   `json:"searchTerm,omitempty"`
+	SourceKinds    []string `json:"sourceKinds,omitempty"`
+	Limit          int      `json:"limit,omitempty"`
+	UseStateDbOnly bool     `json:"useStateDbOnly"` // ALWAYS true — 270x speedup
+}
+
+// ThreadListResponse mirrors the thread/list response.
+// VERIFIED (probe-2026-05-07 OQ-1): array is at result.data (NOT result.threads).
+type ThreadListResponse struct {
+	Data           []ThreadSummary `json:"data"`
+	NextCursor     string          `json:"nextCursor,omitempty"`
+	BackwardCursor string          `json:"backwardsCursor,omitempty"`
 }
 
 // Notification methods we opt out of (ADR-011).
