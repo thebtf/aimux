@@ -2,13 +2,13 @@ package codex
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor/runtime"
+	"github.com/thebtf/aimux/pkg/executor/types"
 )
 
 // PoolConfig holds configuration for CodexPool.
@@ -73,11 +73,11 @@ type CodexPool struct {
 // Returns an error if codexPath is empty or the binary is not executable.
 func NewCodexPool(codexPath string, cfg PoolConfig) (*CodexPool, error) {
 	if codexPath == "" {
-		return nil, errors.New("codex: CodexPool: codexPath must not be empty")
+		return nil, types.NewUserInputError("codex: CodexPool: codexPath must not be empty", nil)
 	}
 	// Verify the binary exists and is executable.
 	if _, err := exec.LookPath(codexPath); err != nil {
-		return nil, fmt.Errorf("codex: CodexPool: codex binary not found at %q: %w", codexPath, err)
+		return nil, types.NewBinaryNotFound(fmt.Sprintf("codex: CodexPool: codex binary not found at %q", codexPath), err)
 	}
 	if cfg.DefaultProfile == nil {
 		cfg.DefaultProfile = runtime.DefaultCodexProfile
@@ -103,7 +103,7 @@ func NewCodexPool(codexPath string, cfg PoolConfig) (*CodexPool, error) {
 // If codex is not installed, Acquire returns an actionable error.
 func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*AppServerProcess, error) {
 	if projectID == "" {
-		return nil, errors.New("codex: CodexPool.Acquire: projectID must not be empty")
+		return nil, types.NewUserInputError("codex: CodexPool.Acquire: projectID must not be empty", nil)
 	}
 
 	p.mu.Lock()
@@ -124,7 +124,7 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 			p.mu.Lock()
 			entry.activeUsers--
 			p.mu.Unlock()
-			return nil, ctx.Err()
+			return nil, types.NewTimeout("codex: CodexPool.Acquire: context cancelled while waiting for process start", ctx.Err())
 		}
 
 		p.mu.Lock()
@@ -134,7 +134,7 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 			p.mu.Lock()
 			entry.activeUsers--
 			p.mu.Unlock()
-			return nil, fmt.Errorf("codex: CodexPool.Acquire: start process for project %q: %w", projectID, startErr)
+			return nil, mapToCliError(fmt.Errorf("codex: CodexPool.Acquire: start process for project %q: %w", projectID, startErr))
 		}
 		return proc, nil
 	}
@@ -172,7 +172,7 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 	close(readyCh)
 
 	if startErr != nil {
-		return nil, fmt.Errorf("codex: CodexPool.Acquire: start process for project %q: %w", projectID, startErr)
+		return nil, mapToCliError(fmt.Errorf("codex: CodexPool.Acquire: start process for project %q: %w", projectID, startErr))
 	}
 	return proc, nil
 }
