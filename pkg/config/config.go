@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/thebtf/aimux/pkg/executor/picker"
 	"github.com/thebtf/aimux/pkg/types"
 	"gopkg.in/yaml.v3"
 )
@@ -173,12 +175,23 @@ type DriverConfig struct {
 	CapabilityProbeTimeoutSeconds int `yaml:"capability_probe_timeout_seconds,omitempty"`
 }
 
+// ExecutorConfig groups executor-layer configuration.
+// YAML key: executor
+type ExecutorConfig struct {
+	// Picker holds CLI selection configuration.
+	// YAML key: executor.picker
+	Picker picker.PickerConfig `yaml:"picker"`
+}
+
 // Config is the root configuration structure.
 type Config struct {
 	Server         ServerConfig                    `yaml:"server"`
 	Roles          map[string]types.RolePreference `yaml:"roles"`
 	CircuitBreaker CircuitBreakerConfig            `yaml:"circuit_breaker"`
 	Driver         DriverConfig                    `yaml:"driver"`
+	// Executor holds executor-layer configuration including the CLI picker.
+	// YAML key: executor (top-level); picker config at executor.picker.*
+	Executor       ExecutorConfig                  `yaml:"executor"`
 	CLIProfiles    map[string]*CLIProfile          `yaml:"-"` // loaded from cli.d/
 	ConfigDir      string                          `yaml:"-"` // directory containing config files
 }
@@ -423,6 +436,11 @@ func applyDefaults(cfg *Config) {
 	// sane window even when default.yaml is incomplete.
 	if cfg.Driver.DiscoveryCacheTTLSeconds <= 0 {
 		cfg.Driver.DiscoveryCacheTTLSeconds = 86400
+	}
+
+	// Executor picker: health cache TTL defaults to 60s when not set in YAML.
+	if cfg.Executor.Picker.HealthCacheTTL == 0 {
+		cfg.Executor.Picker.HealthCacheTTL = 60 * time.Second
 	}
 }
 
