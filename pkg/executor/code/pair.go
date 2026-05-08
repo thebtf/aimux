@@ -26,6 +26,10 @@ type LoomClient interface {
 	Get(taskID string) (*loom.Task, error)
 }
 
+type taskCanceler interface {
+	Cancel(taskID string) error
+}
+
 // PairConfig carries dispatch context for one Strong-Style pair round.
 type PairConfig struct {
 	Loom                LoomClient
@@ -173,6 +177,7 @@ func waitForTask(ctx context.Context, cfg PairConfig, taskID string) (*loom.Task
 	for {
 		select {
 		case <-waitCtx.Done():
+			cancelTaskIfSupported(cfg.Loom, taskID)
 			return nil, waitCtx.Err()
 		case <-timer.C:
 			task, err := cfg.Loom.Get(taskID)
@@ -191,6 +196,14 @@ func waitForTask(ctx context.Context, cfg PairConfig, taskID string) (*loom.Task
 			timer.Reset(pollInterval)
 		}
 	}
+}
+
+func cancelTaskIfSupported(client LoomClient, taskID string) {
+	canceler, ok := client.(taskCanceler)
+	if !ok {
+		return
+	}
+	_ = canceler.Cancel(taskID) // best-effort cleanup; preserve the wait failure as the primary error.
 }
 
 func parseNavigatorVerdict(output string, driverDiff string) (Verdict, error) {

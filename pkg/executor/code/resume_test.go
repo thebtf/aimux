@@ -7,6 +7,7 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/executor/types"
+	"github.com/thebtf/aimux/pkg/tenant"
 )
 
 func TestCodeWorkerResumeFromTaskHydratesMetadata(t *testing.T) {
@@ -105,6 +106,40 @@ func TestCodeWorkerResumeFromTaskRejectsMissingTask(t *testing.T) {
 	assertCLIErrorCode(t, err, types.CLIErrorCodeUserInputError)
 }
 
+func TestCodeWorkerResumeFromTaskUsesContextScopedLookup(t *testing.T) {
+	loomClient := &contextOnlyResumeLoom{
+		taskID: "task-1",
+		task: &loom.Task{
+			ID:         "task-1",
+			WorkerType: WorkerTypeCode,
+			ProjectID:  "project-a",
+			TenantID:   "tenant-a",
+			Metadata: map[string]any{
+				MetadataThreadID:   "thread-1",
+				MetadataWorkerType: string(WorkerTypeCode),
+			},
+		},
+	}
+	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
+	resumeCtx := contextWithResumeScope(context.Background(), "project-a", "tenant-a")
+
+	if err := worker.validateResumeProject(resumeCtx, "task-1"); err != nil {
+		t.Fatalf("validateResumeProject returned error: %v", err)
+	}
+	if _, err := worker.ResumeFromTask(resumeCtx, "task-1"); err != nil {
+		t.Fatalf("ResumeFromTask returned error: %v", err)
+	}
+	if loomClient.getCalled {
+		t.Fatal("unscoped Get was called; want context-scoped GetContext")
+	}
+	if loomClient.getContextCalls != 2 {
+		t.Fatalf("GetContext calls = %d, want 2", loomClient.getContextCalls)
+	}
+	if loomClient.getContextTenantID != "tenant-a" {
+		t.Fatalf("GetContext tenant = %q, want tenant-a", loomClient.getContextTenantID)
+	}
+}
+
 func TestCodeWorkerResumeFromTaskRejectsMissingThreadID(t *testing.T) {
 	loomClient := newMockLoom(`{"verdict":"APPLY","confidence":1}`)
 	loomClient.tasks["task-1"] = &loom.Task{
@@ -154,4 +189,34 @@ func assertCLIErrorCode(t *testing.T, err error, want types.CLIErrorCode) *types
 		t.Fatalf("CLIError code = %s, want %s", cliErr.Code, want)
 	}
 	return cliErr
+}
+
+type contextOnlyResumeLoom struct {
+	taskID             string
+	task               *loom.Task
+	getCalled          bool
+	getContextCalls    int
+	getContextTenantID string
+}
+
+func (m *contextOnlyResumeLoom) Submit(context.Context, loom.TaskRequest) (string, error) {
+	return "", errors.New("Submit should not be called")
+}
+
+func (m *contextOnlyResumeLoom) Get(string) (*loom.Task, error) {
+	m.getCalled = true
+	return nil, errors.New("unscoped Get should not be called")
+}
+
+func (m *contextOnlyResumeLoom) GetContext(ctx context.Context, taskID string) (*loom.Task, error) {
+	m.getContextCalls++
+	tc, ok := tenant.FromContext(ctx)
+	if !ok {
+		return nil, errors.New("tenant context missing")
+	}
+	m.getContextTenantID = tc.TenantID
+	if taskID != m.taskID {
+		return nil, errors.New("task not found")
+	}
+	return m.task, nil
 }

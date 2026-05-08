@@ -6,6 +6,7 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/executor/types"
+	"github.com/thebtf/aimux/pkg/tenant"
 )
 
 const (
@@ -16,6 +17,10 @@ const (
 
 type resumeProjectIDContextKey struct{}
 type resumeTenantIDContextKey struct{}
+
+type contextTaskGetter interface {
+	GetContext(ctx context.Context, taskID string) (*loom.Task, error)
+}
 
 // ResumeFromTask hydrates metadata for continuing a prior root code task.
 func (w *CodeWorker) ResumeFromTask(ctx context.Context, prevTaskID string) (map[string]any, error) {
@@ -29,7 +34,7 @@ func (w *CodeWorker) ResumeFromTask(ctx context.Context, prevTaskID string) (map
 		return nil, types.NewCapabilityMismatch("code worker Loom client is required for resume", nil)
 	}
 
-	prev, err := w.loom.Get(prevTaskID)
+	prev, err := w.getTask(ctx, prevTaskID)
 	if err != nil {
 		return nil, types.NewUserInputError(fmt.Sprintf("resume task %q not found", prevTaskID), err)
 	}
@@ -63,7 +68,13 @@ func contextWithResumeProjectID(ctx context.Context, projectID string) context.C
 }
 
 func contextWithResumeTenantID(ctx context.Context, tenantID string) context.Context {
-	return context.WithValue(ctx, resumeTenantIDContextKey{}, effectiveResumeTenantID(tenantID))
+	effectiveTenantID := effectiveResumeTenantID(tenantID)
+	ctx = context.WithValue(ctx, resumeTenantIDContextKey{}, effectiveTenantID)
+	if tc, ok := tenant.FromContext(ctx); ok {
+		tc.TenantID = effectiveTenantID
+		return tenant.WithContext(ctx, tc)
+	}
+	return tenant.WithContext(ctx, tenant.TenantContext{TenantID: effectiveTenantID})
 }
 
 func contextWithResumeScope(ctx context.Context, projectID string, tenantID string) context.Context {

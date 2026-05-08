@@ -2,6 +2,7 @@ package code
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -138,6 +139,26 @@ func TestRunRoundNavigatorRejectReturnsRetry(t *testing.T) {
 	}
 }
 
+func TestWaitForTaskCancelsChildTaskWhenWaitEnds(t *testing.T) {
+	mock := &cancelRecordingLoom{
+		task: &loom.Task{
+			ID:     "child-1",
+			Status: loom.TaskStatusRunning,
+		},
+	}
+	cfg := testPairConfig(mock)
+	cfg.TaskTimeout = 5 * time.Millisecond
+	cfg.PollInterval = time.Millisecond
+
+	_, err := waitForTask(context.Background(), cfg, "child-1")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waitForTask error = %v, want context deadline exceeded", err)
+	}
+	if len(mock.cancelled) != 1 || mock.cancelled[0] != "child-1" {
+		t.Fatalf("cancelled = %#v, want [child-1]", mock.cancelled)
+	}
+}
+
 type mockLoom struct {
 	navigatorOutput string
 	submissions     []loom.TaskRequest
@@ -178,6 +199,27 @@ func (m *mockLoom) Get(taskID string) (*loom.Task, error) {
 		return nil, fmt.Errorf("task %s not found", taskID)
 	}
 	return task, nil
+}
+
+type cancelRecordingLoom struct {
+	task      *loom.Task
+	cancelled []string
+}
+
+func (m *cancelRecordingLoom) Submit(context.Context, loom.TaskRequest) (string, error) {
+	return "", errors.New("Submit should not be called")
+}
+
+func (m *cancelRecordingLoom) Get(taskID string) (*loom.Task, error) {
+	if m.task == nil || m.task.ID != taskID {
+		return nil, fmt.Errorf("task %s not found", taskID)
+	}
+	return m.task, nil
+}
+
+func (m *cancelRecordingLoom) Cancel(taskID string) error {
+	m.cancelled = append(m.cancelled, taskID)
+	return nil
 }
 
 func testPairConfig(client LoomClient) PairConfig {

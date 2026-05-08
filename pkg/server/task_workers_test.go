@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/tenant"
 )
 
 func TestTenantAwareSubtaskLoomEnforcesTenantQuota(t *testing.T) {
@@ -49,5 +50,26 @@ func TestTenantAwareSubtaskLoomEnforcesTenantQuota(t *testing.T) {
 	}
 	if tenantBTaskID == "" {
 		t.Fatal("tenant-b task ID is empty")
+	}
+}
+
+func TestTenantAwareSubtaskLoomGetContextScopesTenant(t *testing.T) {
+	srv := testServerWithLoom(t)
+	projectID := "scoped-get-project"
+	taskID, _ := submitBlockingLoomTaskForTenant(t, srv, projectID, "tenant-a")
+	client := tenantAwareSubtaskLoom{engine: srv.loom}
+
+	tenantBCtx := tenant.WithContext(context.Background(), tenant.TenantContext{TenantID: "tenant-b"})
+	if _, err := client.GetContext(tenantBCtx, taskID); !errors.Is(err, loom.ErrTaskNotFound) {
+		t.Fatalf("tenant-b GetContext error = %v, want ErrTaskNotFound", err)
+	}
+
+	tenantACtx := tenant.WithContext(context.Background(), tenant.TenantContext{TenantID: "tenant-a"})
+	task, err := client.GetContext(tenantACtx, taskID)
+	if err != nil {
+		t.Fatalf("tenant-a GetContext returned error: %v", err)
+	}
+	if task.ID != taskID {
+		t.Fatalf("task ID = %q, want %q", task.ID, taskID)
 	}
 }

@@ -291,11 +291,18 @@ func (w *CodeWorker) validateResumeProject(ctx context.Context, resumeTaskID str
 	if w.loom == nil {
 		return types.NewCapabilityMismatch("code worker Loom client is required for resume", nil)
 	}
-	prev, err := w.loom.Get(resumeTaskID)
+	prev, err := w.getTask(ctx, resumeTaskID)
 	if err != nil {
 		return types.NewUserInputError(fmt.Sprintf("resume task %q not found", resumeTaskID), err)
 	}
 	return validateResumeProject(ctx, prev)
+}
+
+func (w *CodeWorker) getTask(ctx context.Context, taskID string) (*loom.Task, error) {
+	if getter, ok := w.loom.(contextTaskGetter); ok {
+		return getter.GetContext(ctx, taskID)
+	}
+	return w.loom.Get(taskID)
 }
 
 func (w *CodeWorker) driverCLIForTask(task *loom.Task) types.CLIName {

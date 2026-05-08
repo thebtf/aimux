@@ -12,6 +12,7 @@ import (
 	"github.com/thebtf/aimux/pkg/executor/review"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/parser"
+	"github.com/thebtf/aimux/pkg/tenant"
 )
 
 type leafOutputAdapter func(task *loom.Task, parsed string) (string, map[string]any, error)
@@ -44,6 +45,23 @@ func (l tenantAwareSubtaskLoom) Get(taskID string) (*loom.Task, error) {
 		return nil, extypes.NewCapabilityMismatch("tenant-aware subtask loom requires engine", nil)
 	}
 	return l.engine.Get(taskID)
+}
+
+func (l tenantAwareSubtaskLoom) GetContext(ctx context.Context, taskID string) (*loom.Task, error) {
+	if l.engine == nil {
+		return nil, extypes.NewCapabilityMismatch("tenant-aware subtask loom requires engine", nil)
+	}
+	if tc, ok := tenant.FromContext(ctx); ok && strings.TrimSpace(tc.TenantID) != "" {
+		return loom.NewTenantScopedEngine(l.engine, tc.TenantID, l.quota(tc.TenantID)).GetContext(ctx, taskID)
+	}
+	return l.engine.GetContext(ctx, taskID)
+}
+
+func (l tenantAwareSubtaskLoom) Cancel(taskID string) error {
+	if l.engine == nil {
+		return extypes.NewCapabilityMismatch("tenant-aware subtask loom requires engine", nil)
+	}
+	return l.engine.Cancel(taskID)
 }
 
 func (l tenantAwareSubtaskLoom) quota(tenantID string) *loom.TenantQuotaConfig {
