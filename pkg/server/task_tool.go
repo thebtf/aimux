@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -149,6 +150,9 @@ func (s *Server) taskRouterLoom(ctx context.Context) TaskRouterLoom {
 		return scoped
 	}
 	if s == nil {
+		return nil
+	}
+	if s.loom == nil {
 		return nil
 	}
 	return s.loom
@@ -414,13 +418,16 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 //  2. PromptFlagType == "stdin" → append StdinSentinel if non-empty; prompt arrives via stdin.
 //  3. Default (empty or unrecognized) → treat same as "flag".
 //
-// profile.Command.Base may contain subcommands (e.g., "run" for some CLIs); it is split
-// on spaces and prepended. The result is never nil.
+// profile.Command.Base may include the binary plus subcommands (e.g., "codex exec").
+// taskDispatch supplies the binary separately, so the leading binary token is stripped
+// and only subcommands/flags are prepended. The result is never nil.
 func buildTaskArgs(profile *config.CLIProfile, prompt string) []string {
-	var args []string
-	if profile.Command.Base != "" {
-		args = strings.Fields(profile.Command.Base)
+	args := commandBaseArgs(profile)
+	if args == nil {
+		args = []string{}
 	}
+	// Work on a copy so callers can safely reuse config-owned slices.
+	args = append([]string{}, args...)
 
 	switch profile.PromptFlagType {
 	case "stdin":
@@ -437,6 +444,33 @@ func buildTaskArgs(profile *config.CLIProfile, prompt string) []string {
 		}
 	}
 	return args
+}
+
+func commandBaseArgs(profile *config.CLIProfile) []string {
+	if profile == nil {
+		return nil
+	}
+	if profile.Command.Base != "" {
+		fields := strings.Fields(profile.Command.Base)
+		if len(fields) > 0 && profileCommandStartsWithBinary(profile, fields[0]) {
+			return fields[1:]
+		}
+		return fields
+	}
+	return nil
+}
+
+func profileCommandStartsWithBinary(profile *config.CLIProfile, token string) bool {
+	tokenBase := filepath.Base(token)
+	for _, candidate := range []string{profile.ResolvedPath, profile.Binary} {
+		if candidate == "" {
+			continue
+		}
+		if strings.EqualFold(tokenBase, filepath.Base(candidate)) {
+			return true
+		}
+	}
+	return false
 }
 
 // taskCWD returns the working directory for task dispatch.

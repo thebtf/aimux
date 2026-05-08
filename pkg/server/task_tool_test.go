@@ -14,6 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/executor/code"
 	"github.com/thebtf/aimux/pkg/executor/review"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
@@ -58,6 +59,24 @@ func TestHandleTaskMissingPromptReturnsUserInputError(t *testing.T) {
 	payload := decodeTaskToolError(t, result)
 	if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
 		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+	}
+}
+
+func TestHandleTaskNilLoomReturnsCapabilityMismatch(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{}
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":     "review HEAD",
+		"task_class": "review",
+		"target":     "HEAD",
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeCapabilityMismatch.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeCapabilityMismatch)
 	}
 }
 
@@ -268,4 +287,52 @@ func TestTaskToolErrorPayloadShape(t *testing.T) {
 	if payload.Retryable {
 		t.Fatal("retryable = true, want false")
 	}
+}
+
+func TestBuildTaskArgsDropsBinaryTokenFromCommandBase(t *testing.T) {
+	t.Parallel()
+
+	profile := &config.CLIProfile{
+		Binary:         "testcli",
+		PromptFlagType: "positional",
+		Command: config.CommandConfig{
+			Base: "testcli codex --json --full-auto",
+		},
+	}
+
+	got := buildTaskArgs(profile, "hello")
+	want := []string{"codex", "--json", "--full-auto", "hello"}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildTaskArgsKeepsSubcommandAfterRealBinary(t *testing.T) {
+	t.Parallel()
+
+	profile := &config.CLIProfile{
+		Binary:         "codex",
+		PromptFlagType: "positional",
+		Command: config.CommandConfig{
+			Base: "codex exec",
+		},
+	}
+
+	got := buildTaskArgs(profile, "hello")
+	want := []string{"exec", "hello"}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func stringSlicesEqual(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }

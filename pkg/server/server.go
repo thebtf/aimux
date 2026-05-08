@@ -395,6 +395,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	// Register LoomEngine workers for the reduced surface.
 	if s.loom != nil {
 		s.loom.RegisterWorker(loom.WorkerTypeThinker, loomworkers.NewThinkerWorker())
+		s.registerTaskWorkers()
 
 		// AIMUX-18 Phase 6: CodexWorker + CodexPool.
 		// Pool construction validates that the codex binary is on PATH. When codex
