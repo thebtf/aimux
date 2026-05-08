@@ -53,6 +53,15 @@ func (l *LoomEngine) FailActiveByProject(projectID, errMsg string) (int, error) 
 	return l.failActiveTasks(tasks, errMsg)
 }
 
+// FailActiveByProjectForTenant marks active tasks for one project and tenant as failed.
+func (l *LoomEngine) FailActiveByProjectForTenant(projectID, tenantID, errMsg string) (int, error) {
+	tasks, err := l.store.ListForTenant(projectID, tenantID, ActiveTaskStatuses()...)
+	if err != nil {
+		return 0, err
+	}
+	return l.failActiveTasks(tasks, errMsg)
+}
+
 // FailActiveAll marks all active tasks owned by this engine as failed.
 func (l *LoomEngine) FailActiveAll(errMsg string) (int, error) {
 	tasks, err := l.store.ListEngine(ActiveTaskStatuses()...)

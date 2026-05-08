@@ -9,6 +9,7 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/config"
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
@@ -148,7 +149,7 @@ func (d *fullDelegate) handleWorktreeSwitch(ctx context.Context, previousProject
 	}
 
 	if cfg.ForcedSwitch {
-		return d.forceCancelPreviousWorktree(previousProjectID, newProjectID)
+		return d.forceCancelPreviousWorktree(ctx, previousProjectID, newProjectID)
 	}
 
 	drained, err := d.waitForPreviousWorktree(ctx, previousProjectID, time.Duration(cfg.DrainTimeoutSeconds)*time.Second)
@@ -162,19 +163,37 @@ func (d *fullDelegate) handleWorktreeSwitch(ctx context.Context, previousProject
 	return nil
 }
 
-func (d *fullDelegate) forceCancelPreviousWorktree(previousProjectID, newProjectID string) error {
+func (d *fullDelegate) forceCancelPreviousWorktree(ctx context.Context, previousProjectID, newProjectID string) error {
 	if d.srv == nil || d.srv.loom == nil {
 		return nil
 	}
-	count, err := d.srv.loom.FailActiveByProject(previousProjectID, worktreeSwitchCanceledMessage)
+	tenantID := tenantIDFromContext(ctx)
+	count, err := d.failActiveByPreviousWorktree(previousProjectID, tenantID)
 	if err != nil {
 		return err
 	}
 	if d.srv.log != nil {
-		d.srv.log.Info("worktree switch forced cancel: previous_project_id=%s new_project_id=%s canceled_tasks=%d",
-			previousProjectID, newProjectID, count)
+		d.srv.log.Info("worktree switch forced cancel: previous_project_id=%s new_project_id=%s tenant_id=%s canceled_tasks=%d",
+			previousProjectID, newProjectID, tenantID, count)
 	}
 	return nil
+}
+
+func (d *fullDelegate) failActiveByPreviousWorktree(previousProjectID, tenantID string) (int, error) {
+	if tenantID != "" {
+		return d.srv.loom.FailActiveByProjectForTenant(previousProjectID, tenantID, worktreeSwitchCanceledMessage)
+	}
+	return d.srv.loom.FailActiveByProject(previousProjectID, worktreeSwitchCanceledMessage)
+}
+
+func tenantIDFromContext(ctx context.Context) string {
+	if tc, ok := tenant.FromContext(ctx); ok {
+		return tc.TenantID
+	}
+	if meta, ok := sessionMetaFromContext(ctx); ok {
+		return meta.TenantID
+	}
+	return ""
 }
 
 func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID string, timeout time.Duration) (bool, error) {

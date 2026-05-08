@@ -158,6 +158,8 @@ func (w *ReviewWorker) criteriaForTask(task *loom.Task) Criteria {
 	if task.CLI != "" {
 		criteria.CLI = types.CLIName(task.CLI)
 	}
+	criteria.Model = task.Model
+	criteria.Effort = task.Effort
 	if task.Timeout > 0 {
 		criteria.TaskTimeout = time.Duration(task.Timeout) * time.Second
 	}

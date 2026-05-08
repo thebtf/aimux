@@ -17,6 +17,15 @@ type TaskSpec struct {
 
 	// CWD is the project/worktree directory where a leaf CLI must execute.
 	CWD string
+
+	// Model optionally overrides the selected CLI profile's default model.
+	Model string
+
+	// Effort optionally sets the selected CLI's reasoning effort flag.
+	Effort string
+
+	// Sandbox carries the requested code sandbox mode to leaf CLI dispatch.
+	Sandbox string
 }
 
 // Picker selects the optimal CLI for a TaskSpec when the caller does not

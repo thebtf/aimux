@@ -379,7 +379,7 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 	spawnArgs := types.SpawnArgs{
 		CLI:               cli,
 		Command:           binaryPath,
-		Args:              buildTaskArgs(profile, spec.Prompt),
+		Args:              buildTaskArgs(profile, spec),
 		CWD:               taskDispatchCWD(spec.CWD),
 		TimeoutSeconds:    profile.TimeoutSeconds,
 		CompletionPattern: profile.CompletionPattern,
@@ -416,20 +416,33 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 // buildTaskArgs constructs the CLI argument list for a task prompt.
 //
 // Decision order:
-//  1. PromptFlagType == "flag" → append [PromptFlag, prompt] (or just [prompt] if no flag).
-//  2. PromptFlagType == "stdin" → append StdinSentinel if non-empty; prompt arrives via stdin.
-//  3. Default (empty or unrecognized) → treat same as "flag".
+//  1. command.base subcommands/flags.
+//  2. Headless/read-only/model/effort profile flags.
+//  3. PromptFlagType == "stdin" → append StdinSentinel if non-empty; prompt arrives via stdin.
+//  4. Default (flag, positional, empty, or unrecognized) → append prompt flag or positional prompt.
 //
 // profile.Command.Base may include the binary plus subcommands (e.g., "codex exec").
 // taskDispatch supplies the binary separately, so the leading binary token is stripped
 // and only subcommands/flags are prepended. The result is never nil.
-func buildTaskArgs(profile *config.CLIProfile, prompt string) []string {
+func buildTaskArgs(profile *config.CLIProfile, spec picker.TaskSpec) []string {
 	args := commandBaseArgs(profile)
 	if args == nil {
 		args = []string{}
 	}
 	// Work on a copy so callers can safely reuse config-owned slices.
 	args = append([]string{}, args...)
+	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
+		args = append(args, profile.HeadlessFlags...)
+	}
+	if spec.Sandbox == "read-only" && len(profile.ReadOnlyFlags) > 0 {
+		args = append(args, profile.ReadOnlyFlags...)
+	}
+	if model := taskModelForArgs(profile, spec); model != "" && profile.ModelFlag != "" {
+		args = append(args, profile.ModelFlag, model)
+	}
+	if spec.Effort != "" && profile.Reasoning != nil && profile.Reasoning.Flag != "" {
+		args = append(args, profile.Reasoning.Flag, reasoningFlagValue(profile.Reasoning, spec.Effort))
+	}
 
 	switch profile.PromptFlagType {
 	case "stdin":
@@ -440,12 +453,28 @@ func buildTaskArgs(profile *config.CLIProfile, prompt string) []string {
 	default:
 		// "flag" or empty: deliver prompt as a flag argument.
 		if profile.PromptFlag != "" {
-			args = append(args, profile.PromptFlag, prompt)
+			args = append(args, profile.PromptFlag, spec.Prompt)
 		} else {
-			args = append(args, prompt)
+			args = append(args, spec.Prompt)
 		}
 	}
 	return args
+}
+
+func taskModelForArgs(profile *config.CLIProfile, spec picker.TaskSpec) string {
+	if model := strings.TrimSpace(spec.Model); model != "" {
+		return model
+	}
+	return strings.TrimSpace(profile.DefaultModel)
+}
+
+func reasoningFlagValue(reasoning *config.ReasoningConfig, effort string) string {
+	effort = strings.TrimSpace(effort)
+	if reasoning.FlagValueTemplate == "" {
+		return effort
+	}
+	value := strings.ReplaceAll(reasoning.FlagValueTemplate, "{{.Level}}", effort)
+	return strings.ReplaceAll(value, "{{.ReasoningEffort}}", effort)
 }
 
 func commandBaseArgs(profile *config.CLIProfile) []string {

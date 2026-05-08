@@ -157,6 +157,9 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 			ResumeMetadata: resumeMeta,
 			DriverCLI:      w.driverCLIForTask(task),
 			NavigatorCLI:   w.navigatorCLI,
+			Model:          task.Model,
+			Effort:         task.Effort,
+			Sandbox:        sandboxForTask(task),
 		})
 		if err != nil {
 			return w.failTask(task, machine, err)
@@ -195,6 +198,9 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 }
 
 func (w *CodeWorker) applyAndGate(ctx context.Context, task *loom.Task, machine *Machine, verdict Verdict) (*loom.WorkerResult, error) {
+	if readOnlySandboxForTask(task) {
+		return w.failTask(task, machine, types.NewSandboxDenial("read-only sandbox forbids applying code diff", nil))
+	}
 	targetState := verdict.Action
 	if cliErr := machine.Advance(targetState, "navigator approved diff for "+strings.ToLower(string(targetState))); cliErr != nil {
 		return w.failTask(task, machine, cliErr)
@@ -226,6 +232,18 @@ func (w *CodeWorker) applyAndGate(ctx context.Context, task *loom.Task, machine 
 		Content:  "code task completed",
 		Metadata: cloneMetadata(task.Metadata),
 	}, nil
+}
+
+func sandboxForTask(task *loom.Task) string {
+	if task == nil {
+		return ""
+	}
+	sandbox, _ := metadataString(task.Metadata, "sandbox")
+	return strings.TrimSpace(sandbox)
+}
+
+func readOnlySandboxForTask(task *loom.Task) bool {
+	return sandboxForTask(task) == "read-only"
 }
 
 func (w *CodeWorker) failTask(task *loom.Task, machine *Machine, err error) (*loom.WorkerResult, error) {

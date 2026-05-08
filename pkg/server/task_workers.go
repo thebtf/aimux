@@ -54,6 +54,9 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		TaskClass: w.taskClass,
 		Prompt:    task.Prompt,
 		CWD:       task.CWD,
+		Model:     task.Model,
+		Effort:    task.Effort,
+		Sandbox:   sandboxFromTaskMetadata(task.Metadata),
 	})
 	if err != nil {
 		return nil, err
@@ -81,6 +84,13 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		Content:  content,
 		Metadata: metadata,
 	}, nil
+}
+
+func sandboxFromTaskMetadata(metadata map[string]any) string {
+	if sandbox, ok := metadataString(metadata, "sandbox"); ok {
+		return strings.TrimSpace(sandbox)
+	}
+	return ""
 }
 
 func (s *Server) registerTaskWorkers() {

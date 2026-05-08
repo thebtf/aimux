@@ -87,6 +87,13 @@ func TestRunRoundSubtaskMetadataAndNavigatorPrompt(t *testing.T) {
 	assertMetadata(t, driver.Metadata, "driver_cli", "codex")
 	assertMetadata(t, driver.Metadata, "navigator_cli", "claude")
 	assertMetadata(t, driver.Metadata, "worker_type", string(WorkerTypeCodeDriver))
+	assertMetadata(t, driver.Metadata, "sandbox", "read-only")
+	if driver.Model != "code-model" {
+		t.Fatalf("driver Model = %q, want code-model", driver.Model)
+	}
+	if driver.Effort != "xhigh" {
+		t.Fatalf("driver Effort = %q, want xhigh", driver.Effort)
+	}
 
 	navigator := mock.submissions[1]
 	if navigator.ParentTaskID != "parent-1" {
@@ -100,6 +107,13 @@ func TestRunRoundSubtaskMetadataAndNavigatorPrompt(t *testing.T) {
 	}
 	assertMetadata(t, navigator.Metadata, "navigator_cli", "claude")
 	assertMetadata(t, navigator.Metadata, "driver_cli", "codex")
+	assertMetadata(t, navigator.Metadata, "sandbox", "read-only")
+	if navigator.Model != "code-model" {
+		t.Fatalf("navigator Model = %q, want code-model", navigator.Model)
+	}
+	if navigator.Effort != "xhigh" {
+		t.Fatalf("navigator Effort = %q, want xhigh", navigator.Effort)
+	}
 	normalizedNavigatorPrompt := strings.ReplaceAll(navigator.Prompt, "\r\n", "\n")
 	if !strings.Contains(normalizedNavigatorPrompt, strings.TrimSpace(testDriverDiff)) {
 		t.Fatalf("navigator prompt missing driver diff: %q", navigator.Prompt)
@@ -175,6 +189,9 @@ func testPairConfig(client LoomClient) PairConfig {
 		CWD:          "/workspace",
 		DriverCLI:    "codex",
 		NavigatorCLI: "claude",
+		Model:        "code-model",
+		Effort:       "xhigh",
+		Sandbox:      "read-only",
 		TaskTimeout:  time.Second,
 		PollInterval: time.Millisecond,
 	}

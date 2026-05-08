@@ -39,6 +39,9 @@ type PairConfig struct {
 	NavigatorCLI        types.CLIName
 	DriverWorkerType    loom.WorkerType
 	NavigatorWorkerType loom.WorkerType
+	Model               string
+	Effort              string
+	Sandbox             string
 	TaskTimeout         time.Duration
 	PollInterval        time.Duration
 }
@@ -83,6 +86,8 @@ func RunRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg 
 		CWD:          cfg.CWD,
 		CLI:          cfg.DriverCLI,
 		Role:         "driver",
+		Model:        cfg.Model,
+		Effort:       cfg.Effort,
 		Metadata:     driverMetadata(cfg),
 	})
 	if err != nil {
@@ -112,6 +117,8 @@ func RunRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg 
 		CWD:          cfg.CWD,
 		CLI:          cfg.NavigatorCLI,
 		Role:         "navigator",
+		Model:        cfg.Model,
+		Effort:       cfg.Effort,
 		Metadata:     navigatorMetadata(cfg),
 	})
 	if err != nil {
@@ -279,15 +286,22 @@ func driverMetadata(cfg PairConfig) map[string]any {
 			metadata[key] = value
 		}
 	}
+	if cfg.Sandbox != "" {
+		metadata["sandbox"] = cfg.Sandbox
+	}
 	return metadata
 }
 
 func navigatorMetadata(cfg PairConfig) map[string]any {
-	return map[string]any{
+	metadata := map[string]any{
 		"worker_type":    string(navigatorWorkerType(cfg)),
 		"round_role":     "navigator",
 		"driver_cli":     cfg.DriverCLI,
 		"navigator_cli":  cfg.NavigatorCLI,
 		"parent_task_id": cfg.ParentTaskID,
 	}
+	if cfg.Sandbox != "" {
+		metadata["sandbox"] = cfg.Sandbox
+	}
+	return metadata
 }

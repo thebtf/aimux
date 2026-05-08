@@ -9,6 +9,7 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/config"
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
@@ -102,6 +103,39 @@ func TestWorktreeSwitchForcedSwitchCancelsPreviousProjectTasks(t *testing.T) {
 	}
 	if !strings.Contains(task.Error, "Canceled") || !strings.Contains(task.Error, "worktree switched mid-task") {
 		t.Fatalf("task error = %q, want canceled worktree switch message", task.Error)
+	}
+}
+
+func TestWorktreeSwitchForcedSwitchCancelsOnlyCurrentTenant(t *testing.T) {
+	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 30, ForcedSwitch: true})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1005)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+	projectA := muxcore.ProjectContext{ID: "forced-tenant-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "forced-tenant-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest: %v", err)
+	}
+	tenantATaskID, _ := submitBlockingLoomTaskForTenant(t, srv, projectA.ID, "tenant-a")
+	tenantBTaskID, _ := submitBlockingLoomTaskForTenant(t, srv, projectA.ID, "tenant-b")
+
+	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest: %v", err)
+	}
+	tenantATask := waitForWorktreeTaskTerminal(t, srv, tenantATaskID, 2*time.Second)
+	if tenantATask.Status != loom.TaskStatusFailed {
+		t.Fatalf("tenant A task status = %s, want failed", tenantATask.Status)
+	}
+	tenantBTask, err := srv.loom.Get(tenantBTaskID)
+	if err != nil {
+		t.Fatalf("loom.Get tenant B: %v", err)
+	}
+	if tenantBTask.Status != loom.TaskStatusRunning {
+		t.Fatalf("tenant B task status = %s, want still running", tenantBTask.Status)
 	}
 }
 

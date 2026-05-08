@@ -185,6 +185,37 @@ func TestCodeWorkerApplyPathEscapePreservesSandboxDenial(t *testing.T) {
 	}
 }
 
+func TestCodeWorkerReadOnlySandboxRejectsApplyBeforeWrite(t *testing.T) {
+	root := codeWorkerFixture(t)
+	gate := &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}}
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: &mockWorkerPair{verdicts: []Verdict{{
+			Action:     StateApply,
+			Confidence: 0.91,
+			Diff:       renameDiff("note.txt", "old", "new"),
+		}}},
+		gate: gate,
+	})
+	task := codeWorkerTask(root)
+	task.Metadata["sandbox"] = "read-only"
+
+	_, err := worker.Execute(context.Background(), task)
+	if err == nil {
+		t.Fatal("Execute returned nil, want SandboxDenial")
+	}
+	var cliErr *types.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != types.CLIErrorCodeSandboxDenial {
+		t.Fatalf("CLIError code = %s, want %s", cliErr.Code, types.CLIErrorCodeSandboxDenial)
+	}
+	if gate.calls != 0 {
+		t.Fatalf("gate calls = %d, want 0", gate.calls)
+	}
+	assertFile(t, root, "note.txt", "old\n")
+}
+
 type workerTestDeps struct {
 	pair    PairRoundRunner
 	gate    GateRunner

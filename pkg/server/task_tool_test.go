@@ -16,9 +16,11 @@ import (
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/executor/code"
+	"github.com/thebtf/aimux/pkg/executor/picker"
 	"github.com/thebtf/aimux/pkg/executor/review"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/server/classifier"
+	"github.com/thebtf/aimux/pkg/types"
 )
 
 func TestHandleTaskValidCallRoutesThroughRouter(t *testing.T) {
@@ -323,7 +325,7 @@ func TestBuildTaskArgsDropsBinaryTokenFromCommandBase(t *testing.T) {
 		},
 	}
 
-	got := buildTaskArgs(profile, "hello")
+	got := buildTaskArgs(profile, pickerTaskSpec("hello"))
 	want := []string{"codex", "--json", "--full-auto", "hello"}
 	if !stringSlicesEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
@@ -341,7 +343,7 @@ func TestBuildTaskArgsKeepsSubcommandAfterRealBinary(t *testing.T) {
 		},
 	}
 
-	got := buildTaskArgs(profile, "hello")
+	got := buildTaskArgs(profile, pickerTaskSpec("hello"))
 	want := []string{"exec", "hello"}
 	if !stringSlicesEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
@@ -359,11 +361,53 @@ func TestBuildTaskArgsPreservesQuotedCommandBaseFields(t *testing.T) {
 		},
 	}
 
-	got := buildTaskArgs(profile, "hello")
+	got := buildTaskArgs(profile, pickerTaskSpec("hello"))
 	want := []string{"exec", "--profile", "review mode", "--label", "pair navigator", "hello"}
 	if !stringSlicesEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
+}
+
+func TestBuildTaskArgsUsesProfileExecutionFlags(t *testing.T) {
+	t.Parallel()
+
+	profile := &config.CLIProfile{
+		Binary:         "codex",
+		PromptFlagType: "positional",
+		Command: config.CommandConfig{
+			Base: "codex exec",
+		},
+		Features:      types.CLIFeatures{Headless: true},
+		HeadlessFlags: []string{"--full-auto", "--json"},
+		ReadOnlyFlags: []string{"--sandbox", "read-only"},
+		DefaultModel:  "gpt-5.5",
+		ModelFlag:     "-m",
+		Reasoning: &config.ReasoningConfig{
+			Flag:              "-c",
+			FlagValueTemplate: "model_reasoning_effort={{.Level}}",
+		},
+	}
+
+	got := buildTaskArgs(profile, picker.TaskSpec{
+		Prompt:  "hello",
+		Effort:  "xhigh",
+		Sandbox: "read-only",
+	})
+	want := []string{
+		"exec",
+		"--full-auto", "--json",
+		"--sandbox", "read-only",
+		"-m", "gpt-5.5",
+		"-c", "model_reasoning_effort=xhigh",
+		"hello",
+	}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func pickerTaskSpec(prompt string) picker.TaskSpec {
+	return picker.TaskSpec{Prompt: prompt}
 }
 
 func TestTaskDispatchCWDUsesTaskCWDBeforeEnvFallback(t *testing.T) {

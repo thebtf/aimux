@@ -39,6 +39,12 @@ func TestPassesRunDispatchesAllPassesWithMetadata(t *testing.T) {
 		if req.ProjectID != "project-1" {
 			t.Fatalf("ProjectID = %q, want project-1", req.ProjectID)
 		}
+		if req.Model != "review-model" {
+			t.Fatalf("Model = %q, want review-model", req.Model)
+		}
+		if req.Effort != "high" {
+			t.Fatalf("Effort = %q, want high", req.Effort)
+		}
 		if req.Metadata["parent_task_id"] != "review-root" {
 			t.Fatalf("metadata parent_task_id = %#v", req.Metadata["parent_task_id"])
 		}
@@ -210,6 +216,8 @@ func testCriteria() Criteria {
 		RequestID:    "request-1",
 		CWD:          "/workspace",
 		CLI:          "codex",
+		Model:        "review-model",
+		Effort:       "high",
 		TaskTimeout:  time.Second,
 		PollInterval: time.Millisecond,
 	}

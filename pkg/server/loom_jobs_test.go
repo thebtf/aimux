@@ -111,6 +111,14 @@ func projectCtxAndID(projectID string) (context.Context, string) {
 }
 
 func submitBlockingLoomTask(t *testing.T, srv *Server, projectID, sessionID string) (string, *blockingLoomWorker) {
+	return submitBlockingLoomTaskWithTenant(t, srv, projectID, sessionID, "")
+}
+
+func submitBlockingLoomTaskForTenant(t *testing.T, srv *Server, projectID, tenantID string) (string, *blockingLoomWorker) {
+	return submitBlockingLoomTaskWithTenant(t, srv, projectID, "", tenantID)
+}
+
+func submitBlockingLoomTaskWithTenant(t *testing.T, srv *Server, projectID, sessionID, tenantID string) (string, *blockingLoomWorker) {
 	t.Helper()
 
 	worker := newBlockingLoomWorker()
@@ -118,6 +126,7 @@ func submitBlockingLoomTask(t *testing.T, srv *Server, projectID, sessionID stri
 	taskID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
 		WorkerType: loom.WorkerTypeCLI,
 		ProjectID:  projectID,
+		TenantID:   tenantID,
 		Prompt:     "block",
 		Metadata:   map[string]any{"session_id": sessionID},
 	})

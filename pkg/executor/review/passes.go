@@ -65,6 +65,8 @@ type Criteria struct {
 	TenantID     string
 	CWD          string
 	CLI          types.CLIName
+	Model        string
+	Effort       string
 	WorkerTypes  map[PassName]loom.WorkerType
 	TaskTimeout  time.Duration
 	PollInterval time.Duration
@@ -132,6 +134,8 @@ func (p *Passes) runOne(ctx context.Context, pass PassName, target string, crite
 		CWD:          criteria.CWD,
 		CLI:          defaultReviewCLI(criteria),
 		Role:         string(pass),
+		Model:        criteria.Model,
+		Effort:       criteria.Effort,
 		Metadata:     passMetadata(pass, workerType, criteria),
 	})
 	if err != nil {
