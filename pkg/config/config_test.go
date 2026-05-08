@@ -37,6 +37,12 @@ func TestLoad(t *testing.T) {
 	if cfg.Server.StreamingAutoCancelSeconds != 900 {
 		t.Errorf("expected streaming_auto_cancel_seconds=900, got %d", cfg.Server.StreamingAutoCancelSeconds)
 	}
+	if cfg.Worktree.DrainTimeoutSeconds != 30 {
+		t.Errorf("expected worktree.drain_timeout_seconds=30, got %d", cfg.Worktree.DrainTimeoutSeconds)
+	}
+	if cfg.Worktree.ForcedSwitch {
+		t.Error("expected worktree.forced_switch=false")
+	}
 
 	// Verify audit config
 	if cfg.Server.Audit.ScannerRole != "codereview" {
@@ -128,12 +134,50 @@ server:
 	if cfg.Server.StreamingAutoCancelSeconds != 900 {
 		t.Errorf("expected streaming_auto_cancel_seconds=900, got %d", cfg.Server.StreamingAutoCancelSeconds)
 	}
+	if cfg.Worktree.DrainTimeoutSeconds != 30 {
+		t.Errorf("expected worktree.drain_timeout_seconds=30, got %d", cfg.Worktree.DrainTimeoutSeconds)
+	}
+	if cfg.Worktree.ForcedSwitch {
+		t.Error("expected worktree.forced_switch=false")
+	}
 }
 
 func TestLoad_MissingConfig(t *testing.T) {
 	_, err := config.Load("/nonexistent/path")
 	if err == nil {
 		t.Fatal("expected error for missing config")
+	}
+}
+
+func TestLoad_WorktreeConfigFromYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "default.yaml")
+	cfgYAML := []byte(`
+server:
+  log_level: info
+worktree:
+  drain_timeout_seconds: 7
+  forced_switch: true
+`)
+	if err := os.WriteFile(cfgPath, cfgYAML, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cliDir := filepath.Join(tmpDir, "cli.d")
+	if err := os.Mkdir(cliDir, 0o755); err != nil {
+		t.Fatalf("create cli.d: %v", err)
+	}
+
+	cfg, err := config.Load(tmpDir)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Worktree.DrainTimeoutSeconds != 7 {
+		t.Errorf("expected worktree.drain_timeout_seconds=7, got %d", cfg.Worktree.DrainTimeoutSeconds)
+	}
+	if !cfg.Worktree.ForcedSwitch {
+		t.Error("expected worktree.forced_switch=true")
 	}
 }
 

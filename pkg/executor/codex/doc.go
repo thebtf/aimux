@@ -12,6 +12,6 @@
 // Error contract (AIMUX-18 CR-004):
 //   - Worker.Execute returns *types.CLIError on failure.
 //   - Pool.Acquire returns *types.CLIError on failure (BinaryNotFound for missing binary).
-//   - MCP tool handlers (CodexHandlers) surface errors as MCP tool-result errors,
-//     not as Go errors — they use mcp.NewToolResultError for user-visible failures.
+//   - Generic task/code/review workers surface user-visible failures through Loom
+//     task results and typed CLIError metadata.
 package codex

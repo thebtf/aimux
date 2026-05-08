@@ -63,7 +63,7 @@ If the memory protocol feels redundant: the redundancy is the safety. A memory h
   `pkg/server/budget/fields.go`; pagination helpers in `pagination.go` and
   `pagination_dual.go`. Counter interfaces on `pkg/session.Store` /
   `pkg/session.Registry` and `loom.LoomEngine` / `loom.TaskStore` enable SQL
-  COUNT without loading rows. See `.agent/specs/response-budget-policy/spec.md`.
+  COUNT without loading rows. See `docs/architecture/response-budget-policy.md`.
 
 ### File Ownership
 - `pkg/server/server.go` — 1355 LOC, main MCP handler file

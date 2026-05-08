@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/thebtf/aimux/pkg/executor/picker"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
+	"github.com/thebtf/aimux/pkg/server/classifier"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -65,30 +69,44 @@ func buildFallbackPicker(s *Server) *fallback.FallbackPicker {
 func (s *Server) registerTaskTool() {
 	s.mcp.AddTool(
 		mcp.NewTool("task",
-			mcp.WithDescription("[delegate — multi-CLI, sync] Submit a task to the best available CLI. "+
-				"Automatically selects the highest-scoring CLI via capability scoring, "+
-				"and falls back to the next-best CLI if the primary fails with a retryable error "+
-				"(rate limit, auth expiry, timeout, capability mismatch). "+
-				"task_class controls capability routing: \"code\" prefers codex/claude, \"research\" prefers gemini. "+
-				"Returns the CLI output content directly. "+
-				"Use codex_task for async Codex-specific work with Loom persistence."),
+			mcp.WithDescription("[delegate — Loom routed, sync] Submit a task through the v5.11 task meta-router. "+
+				"Provide task_class to route directly to code or review. "+
+				"Omit task_class or pass task to use the deterministic classifier. "+
+				"Review mode accepts target and gate; code mode accepts sandbox and cli driver override. "+
+				"Returns a JSON TaskResult with task_id, content, task_class, rounds, and confidence_score."),
 			mcp.WithString("prompt",
 				mcp.Required(),
-				mcp.Description("Task prompt sent to the selected CLI."),
+				mcp.Description("Task prompt routed through TaskRouter."),
 			),
 			mcp.WithString("task_class",
-				mcp.Description("Semantic task class for capability routing: code, review, research, write-task, task. Default: task."),
-				mcp.Enum("code", "review", "research", "write-task", "task"),
+				mcp.Description("Explicit task class. Omit or use task to classify from prompt."),
+				mcp.Enum("code", "review", "task"),
 				mcp.DefaultString("task"),
 			),
 			mcp.WithString("cli",
-				mcp.Description("Override: force a specific CLI by name (e.g. \"claude\", \"gemini\"). Skips picker scoring when set."),
+				mcp.Description("Driver CLI override for code tasks; does not bypass cross-family navigator selection."),
+			),
+			mcp.WithString("resume_id",
+				mcp.Description("Loom root task_id to resume."),
+			),
+			mcp.WithString("target",
+				mcp.Description("Review target, such as HEAD, a diff, or a PR ref."),
+			),
+			mcp.WithBoolean("gate",
+				mcp.Description("Review sub-mode flag. Requires review routing and target."),
+			),
+			mcp.WithString("sandbox",
+				mcp.Description("Code sandbox sub-mode."),
+				mcp.Enum("read-only", "workspace-write", "danger"),
+			),
+			mcp.WithNumber("timeout_seconds",
+				mcp.Description("Worker timeout in seconds, used by review-gate and long-running workers."),
 			),
 			mcp.WithBoolean("fallback_enabled",
-				mcp.Description("Whether to retry with alternative CLIs on eligible errors. Default: true."),
+				mcp.Description("Worker fallback policy hint. Default: true."),
 			),
 			mcp.WithNumber("max_attempts",
-				mcp.Description("Maximum number of CLIs to try (including the primary). 0 = use server default (2)."),
+				mcp.Description("Worker fallback attempt hint. 0 = worker default."),
 			),
 			mcp.WithToolAnnotation(mcp.ToolAnnotation{
 				ReadOnlyHint:    mcp.ToBoolPtr(false),
@@ -103,60 +121,211 @@ func (s *Server) registerTaskTool() {
 
 // handleTask is the MCP handler for the `task` tool.
 func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	taskReq, parseErr := parseTaskToolRequest(ctx, req)
+	if parseErr != nil {
+		return taskToolError(TaskResult{}, parseErr)
+	}
+	loomClient := s.taskRouterLoom(ctx)
+	if loomClient == nil {
+		return taskToolError(TaskResult{}, extypes.NewCapabilityMismatch("task router requires Loom", nil))
+	}
+	router, err := NewTaskRouter(TaskRouterConfig{
+		Loom:       loomClient,
+		Classifier: classifier.New(),
+	})
+	if err != nil {
+		return taskToolError(TaskResult{}, extypes.NewCapabilityMismatch(err.Error(), err))
+	}
+	result, err := router.Dispatch(ctx, taskReq)
+	if err != nil {
+		return taskToolError(result, err)
+	}
+	return marshalToolResult(result)
+}
+
+func (s *Server) taskRouterLoom(ctx context.Context) TaskRouterLoom {
+	if scoped, ok := TenantScopedLoomFromContext(ctx); ok && scoped != nil {
+		return scoped
+	}
+	if s == nil {
+		return nil
+	}
+	if s.loom == nil {
+		return nil
+	}
+	return s.loom
+}
+
+func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskRequest, error) {
 	prompt, err := req.RequireString("prompt")
 	if err != nil || strings.TrimSpace(prompt) == "" {
-		return mcp.NewToolResultError("task: prompt is required and must not be empty"), nil
+		return TaskRequest{}, extypes.NewUserInputError("task: prompt is required and must not be empty", err)
 	}
 
-	taskClass := req.GetString("task_class", "task")
-	cliOverride := req.GetString("cli", "")
+	rawTaskClass := req.GetString("task_class", "")
+	cliOverride := strings.TrimSpace(req.GetString("cli", ""))
+	resumeID := strings.TrimSpace(req.GetString("resume_id", ""))
+	target := strings.TrimSpace(req.GetString("target", ""))
+	gate := req.GetBool("gate", false)
+	sandbox := strings.TrimSpace(req.GetString("sandbox", ""))
+	mode := strings.TrimSpace(req.GetString("mode", ""))
+	timeoutSeconds := req.GetInt("timeout_seconds", 0)
 	maxAttempts := req.GetInt("max_attempts", 0)
 
-	// fallback_enabled: absent = nil (use config default), present = explicit override.
-	// Use Params.Arguments to distinguish "not set" from "set to false".
-	var fallbackEnabled *bool
+	if mode != "" {
+		return TaskRequest{}, extypes.NewUserInputError("task: mode param is not available in the Loom router", nil)
+	}
+	if timeoutSeconds < 0 {
+		return TaskRequest{}, extypes.NewUserInputError("task: timeout_seconds must be >= 0", nil)
+	}
+	if maxAttempts < 0 {
+		return TaskRequest{}, extypes.NewUserInputError("task: max_attempts must be >= 0", nil)
+	}
+	taskClass, classErr := normalizeTaskToolClass(rawTaskClass, target, gate, sandbox)
+	if classErr != nil {
+		return TaskRequest{}, classErr
+	}
+
+	metadata := map[string]any{}
+	if sandbox != "" {
+		metadata["sandbox"] = sandbox
+	}
+	if timeoutSeconds > 0 {
+		metadata["timeout_seconds"] = timeoutSeconds
+	}
+	if maxAttempts > 0 {
+		metadata["max_attempts"] = maxAttempts
+	}
 	if args, ok := req.Params.Arguments.(map[string]any); ok {
 		if _, present := args["fallback_enabled"]; present {
-			b := req.GetBool("fallback_enabled", true)
-			fallbackEnabled = &b
+			metadata["fallback_enabled"] = req.GetBool("fallback_enabled", true)
 		}
 	}
-
-	if s.fallbackPicker == nil {
-		return mcp.NewToolResultError("task: no CLIs available — FallbackPicker not initialized"), nil
+	if sessionKey, ok := worktreeSessionKeyFromContext(ctx); ok {
+		metadata[worktreeSessionMetadataKey] = sessionKey
 	}
 
-	spec := picker.TaskSpec{
-		TaskClass: taskClass,
-		Prompt:    prompt,
-	}
+	return TaskRequest{
+		Prompt:         prompt,
+		TaskClass:      taskClass,
+		ProjectID:      req.GetString("project_id", projectIDFromContext(ctx)),
+		RequestID:      req.GetString("request_id", ""),
+		CWD:            cwdFromRequestOrContext(req, ctx),
+		Env:            sessionEnvFromContext(ctx),
+		CLI:            cliOverride,
+		Model:          req.GetString("model", ""),
+		Effort:         req.GetString("effort", ""),
+		TimeoutSeconds: timeoutSeconds,
+		ResumeID:       resumeID,
+		Target:         target,
+		Gate:           gate,
+		Metadata:       metadata,
+	}, nil
+}
 
-	// When cli override is specified, dispatch directly without picker scoring.
-	if cliOverride != "" {
-		content, dispErr := s.taskDispatch(ctx, cliOverride, spec)
-		if dispErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("task: cli %q failed: %v", cliOverride, dispErr)), nil
+func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string) (string, error) {
+	taskClass := strings.ToLower(strings.TrimSpace(raw))
+	if !validTaskToolClass(taskClass) {
+		return "", extypes.NewUserInputError(fmt.Sprintf("task: unsupported task_class %q", raw), nil)
+	}
+	implied := ""
+	setImplied := func(next string, reason string) error {
+		if implied == "" || implied == next {
+			implied = next
+			return nil
 		}
-		return mcp.NewToolResultText(content), nil
+		return extypes.NewUserInputError(fmt.Sprintf("task: conflicting sub-mode params: %s implies %s but another param implies %s", reason, next, implied), nil)
 	}
-
-	opts := fallback.RunOptions{
-		FallbackEnabled: fallbackEnabled,
-		MaxAttempts:     maxAttempts,
-	}
-
-	result, runErr := s.fallbackPicker.Run(ctx, spec, opts, s.taskDispatch)
-	if runErr != nil {
-		if fallback.IsExhausted(runErr) {
-			var exErr *fallback.ErrAllFallbackExhausted
-			if errors.As(runErr, &exErr) {
-				return mcp.NewToolResultError(formatExhaustedError(exErr)), nil
+	if taskClass == "" || taskClass == taskClassTask {
+		if target != "" || gate {
+			if err := setImplied(classifier.TaskClassReview, "target/gate"); err != nil {
+				return "", err
 			}
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("task failed: %v", runErr)), nil
+		if sandbox != "" {
+			if err := validateSandbox(sandbox); err != nil {
+				return "", err
+			}
+			if err := setImplied(classifier.TaskClassCode, "sandbox"); err != nil {
+				return "", err
+			}
+		}
+		if implied != "" {
+			taskClass = implied
+		}
+	} else {
+		if sandbox != "" {
+			if err := validateSandbox(sandbox); err != nil {
+				return "", err
+			}
+		}
 	}
 
-	return mcp.NewToolResultText(result.Content), nil
+	if (target != "" || gate) && taskClass != classifier.TaskClassReview {
+		return "", extypes.NewUserInputError("task: target/gate params require task_class review", nil)
+	}
+	if sandbox != "" && taskClass != classifier.TaskClassCode {
+		return "", extypes.NewUserInputError("task: sandbox param requires task_class code", nil)
+	}
+	if taskClass == classifier.TaskClassReview && strings.TrimSpace(target) == "" {
+		return "", extypes.NewUserInputError("task: target is required for review task_class", nil)
+	}
+	return taskClass, nil
+}
+
+func validTaskToolClass(taskClass string) bool {
+	switch taskClass {
+	case "", taskClassTask, classifier.TaskClassCode, classifier.TaskClassReview:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateSandbox(sandbox string) error {
+	switch sandbox {
+	case "read-only", "workspace-write", "danger":
+		return nil
+	default:
+		return extypes.NewUserInputError(fmt.Sprintf("task: invalid sandbox %q", sandbox), nil)
+	}
+}
+
+func taskToolError(result TaskResult, err error) (*mcp.CallToolResult, error) {
+	cliErr := taskCLIError(err)
+	payload := map[string]any{
+		"code":      cliErr.Code.String(),
+		"message":   cliErr.Message,
+		"retryable": cliErr.Retryable,
+	}
+	if cliErr.CauseStr != "" {
+		payload["cause"] = cliErr.CauseStr
+	}
+	if result.TaskID != "" {
+		payload["task_id"] = result.TaskID
+	}
+	if result.TaskClass != "" {
+		payload["task_class"] = result.TaskClass
+	}
+	if len(result.Candidates) > 0 {
+		payload["candidates"] = result.Candidates
+	}
+	b, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("internal error: response serialization failed: %v", marshalErr)), nil
+	}
+	return mcp.NewToolResultError(string(b)), nil
+}
+
+func taskCLIError(err error) *extypes.CLIError {
+	if err == nil {
+		return extypes.NewUnknown("task failed", nil)
+	}
+	var cliErr *extypes.CLIError
+	if errors.As(err, &cliErr) {
+		return cliErr
+	}
+	return extypes.NewUnknown(err.Error(), err)
 }
 
 // taskDispatch dispatches a single CLI call using the pipe executor.
@@ -180,14 +349,7 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 		return "", extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q has no binary path", cli), nil)
 	}
 
-	spawnArgs := types.SpawnArgs{
-		CLI:               cli,
-		Command:           binaryPath,
-		Args:              buildTaskArgs(profile, spec.Prompt),
-		CWD:               taskCWD(),
-		TimeoutSeconds:    profile.TimeoutSeconds,
-		CompletionPattern: profile.CompletionPattern,
-	}
+	spawnArgs := taskDispatchSpawnArgs(cli, binaryPath, profile, spec)
 	// For stdin-mode CLIs, deliver the prompt via stdin.
 	if profile.PromptFlagType == "stdin" {
 		spawnArgs.Stdin = spec.Prompt
@@ -217,19 +379,52 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 	return result.Content, nil
 }
 
+func taskDispatchSpawnArgs(cli string, binaryPath string, profile *config.CLIProfile, spec picker.TaskSpec) types.SpawnArgs {
+	return types.SpawnArgs{
+		CLI:               cli,
+		Command:           binaryPath,
+		Args:              buildTaskArgs(profile, spec),
+		CWD:               taskDispatchCWD(spec.CWD),
+		Env:               cloneEnv(spec.Env),
+		TimeoutSeconds:    profile.TimeoutSeconds,
+		CompletionPattern: profile.CompletionPattern,
+	}
+}
+
 // buildTaskArgs constructs the CLI argument list for a task prompt.
 //
 // Decision order:
-//  1. PromptFlagType == "flag" → append [PromptFlag, prompt] (or just [prompt] if no flag).
-//  2. PromptFlagType == "stdin" → append StdinSentinel if non-empty; prompt arrives via stdin.
-//  3. Default (empty or unrecognized) → treat same as "flag".
+//  1. command.base subcommands/flags.
+//  2. command.args_template when present, with missing headless/read-only profile flags preserved.
+//  3. Otherwise, headless/read-only/model/effort profile flags.
+//  4. PromptFlagType == "stdin" → append StdinSentinel if non-empty; prompt arrives via stdin.
+//  5. Default (flag, positional, empty, or unrecognized) → append prompt flag or positional prompt.
 //
-// profile.Command.Base may contain subcommands (e.g., "run" for some CLIs); it is split
-// on spaces and prepended. The result is never nil.
-func buildTaskArgs(profile *config.CLIProfile, prompt string) []string {
-	var args []string
-	if profile.Command.Base != "" {
-		args = strings.Fields(profile.Command.Base)
+// profile.Command.Base may include the binary plus subcommands (e.g., "codex exec").
+// taskDispatch supplies the binary separately, so the leading binary token is stripped
+// and only subcommands/flags are prepended. The result is never nil.
+func buildTaskArgs(profile *config.CLIProfile, spec picker.TaskSpec) []string {
+	args := commandBaseArgs(profile)
+	if args == nil {
+		args = []string{}
+	}
+	// Work on a copy so callers can safely reuse config-owned slices.
+	args = append([]string{}, args...)
+	if templateArgs, ok := commandArgsTemplateArgs(profile, spec); ok {
+		args = appendMissingProfileExecutionFlags(args, profile, spec, templateArgs)
+		return append(args, templateArgs...)
+	}
+	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
+		args = append(args, profile.HeadlessFlags...)
+	}
+	if spec.Sandbox == "read-only" && len(profile.ReadOnlyFlags) > 0 {
+		args = append(args, profile.ReadOnlyFlags...)
+	}
+	if model := taskModelForArgs(profile, spec); model != "" && profile.ModelFlag != "" {
+		args = append(args, profile.ModelFlag, model)
+	}
+	if spec.Effort != "" && profile.Reasoning != nil && profile.Reasoning.Flag != "" {
+		args = append(args, profile.Reasoning.Flag, reasoningFlagValue(profile.Reasoning, spec.Effort))
 	}
 
 	switch profile.PromptFlagType {
@@ -241,18 +436,193 @@ func buildTaskArgs(profile *config.CLIProfile, prompt string) []string {
 	default:
 		// "flag" or empty: deliver prompt as a flag argument.
 		if profile.PromptFlag != "" {
-			args = append(args, profile.PromptFlag, prompt)
+			args = append(args, profile.PromptFlag, spec.Prompt)
 		} else {
-			args = append(args, prompt)
+			args = append(args, spec.Prompt)
 		}
 	}
 	return args
+}
+
+type taskArgsTemplateData struct {
+	Prompt          string
+	Model           string
+	ReasoningEffort string
+	SessionID       string
+	Headless        bool
+	ReadOnly        bool
+	SessionResume   bool
+	JSON            bool
+}
+
+func commandArgsTemplateArgs(profile *config.CLIProfile, spec picker.TaskSpec) ([]string, bool) {
+	if profile == nil || strings.TrimSpace(profile.Command.ArgsTemplate) == "" {
+		return nil, false
+	}
+	tmpl, err := template.New("task_args").Option("missingkey=error").Parse(profile.Command.ArgsTemplate)
+	if err != nil {
+		return nil, false
+	}
+	data := taskArgsTemplateData{
+		Prompt:          commandTemplateArgValue(spec.Prompt),
+		Model:           commandTemplateArgValue(taskModelForArgs(profile, spec)),
+		ReasoningEffort: commandTemplateArgValue(strings.TrimSpace(spec.Effort)),
+		SessionID:       commandTemplateArgValue(strings.TrimSpace(spec.SessionID)),
+		Headless:        profile.Features.Headless,
+		ReadOnly:        spec.Sandbox == "read-only",
+		SessionResume:   spec.SessionResume || strings.TrimSpace(spec.SessionID) != "",
+		JSON:            profile.Features.JSON || strings.EqualFold(profile.OutputFormat, "json"),
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, false
+	}
+	fields, err := splitCommandLine(buf.String())
+	if err != nil {
+		return nil, false
+	}
+	return fields, true
+}
+
+func commandTemplateArgValue(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value)
+}
+
+func appendMissingProfileExecutionFlags(args []string, profile *config.CLIProfile, spec picker.TaskSpec, templateArgs []string) []string {
+	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
+		args = appendMissingArgs(args, templateArgs, profile.HeadlessFlags)
+	}
+	if spec.Sandbox == "read-only" && len(profile.ReadOnlyFlags) > 0 {
+		args = appendMissingArgs(args, templateArgs, profile.ReadOnlyFlags)
+	}
+	return args
+}
+
+func appendMissingArgs(args []string, existing []string, candidates []string) []string {
+	for _, candidate := range candidates {
+		if containsString(existing, candidate) || containsString(args, candidate) {
+			continue
+		}
+		args = append(args, candidate)
+	}
+	return args
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func taskModelForArgs(profile *config.CLIProfile, spec picker.TaskSpec) string {
+	if model := strings.TrimSpace(spec.Model); model != "" {
+		return model
+	}
+	return strings.TrimSpace(profile.DefaultModel)
+}
+
+func reasoningFlagValue(reasoning *config.ReasoningConfig, effort string) string {
+	effort = strings.TrimSpace(effort)
+	if reasoning.FlagValueTemplate == "" {
+		return effort
+	}
+	value := strings.ReplaceAll(reasoning.FlagValueTemplate, "{{.Level}}", effort)
+	return strings.ReplaceAll(value, "{{.ReasoningEffort}}", effort)
+}
+
+func commandBaseArgs(profile *config.CLIProfile) []string {
+	if profile == nil {
+		return nil
+	}
+	if profile.Command.Base != "" {
+		fields, err := splitCommandLine(profile.Command.Base)
+		if err != nil || len(fields) == 0 {
+			return nil
+		}
+		if len(fields) > 0 && profileCommandStartsWithBinary(profile, fields[0]) {
+			return fields[1:]
+		}
+		return fields
+	}
+	return nil
+}
+
+func profileCommandStartsWithBinary(profile *config.CLIProfile, token string) bool {
+	tokenBase := filepath.Base(token)
+	for _, candidate := range []string{profile.ResolvedPath, profile.Binary} {
+		if candidate == "" {
+			continue
+		}
+		if strings.EqualFold(tokenBase, filepath.Base(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitCommandLine(command string) ([]string, error) {
+	var (
+		fields  []string
+		current strings.Builder
+		quote   rune
+	)
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		fields = append(fields, current.String())
+		current.Reset()
+	}
+	runes := []rune(command)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r == '\\' && quote == '"' {
+			if i+1 < len(runes) && (runes[i+1] == '"' || runes[i+1] == '\\') {
+				i++
+				current.WriteRune(runes[i])
+				continue
+			}
+			current.WriteRune(r)
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+		case ' ', '\t', '\n', '\r':
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	flush()
+	return fields, nil
 }
 
 // taskCWD returns the working directory for task dispatch.
 // Reads AIMUX_CWD env var; empty string lets the pipe executor inherit the process CWD.
 func taskCWD() string {
 	return os.Getenv("AIMUX_CWD")
+}
+
+func taskDispatchCWD(specCWD string) string {
+	if cwd := strings.TrimSpace(specCWD); cwd != "" {
+		return cwd
+	}
+	return taskCWD()
 }
 
 // mapExecError converts a generic executor error to a typed *extypes.CLIError so the

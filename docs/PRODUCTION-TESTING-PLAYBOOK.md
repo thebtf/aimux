@@ -1,7 +1,7 @@
 # aimux Production Testing Playbook
 
-**Last updated:** 2026-05-06
-**Tested surface:** current post-purge master surface: 4 server tools,
+**Last updated:** 2026-05-08
+**Tested surface:** v5.11.0 entry-point surface: 4 server tools, `task`,
 `think(action=start|step|finalize)`, and 22 cognitive move tools.
 **Mode:** customer (no internal code knowledge — operator perspective)
 
@@ -290,6 +290,80 @@ daemon lifetime.
   `PARTIAL`/credential-blocked for the environment, not as a handler crash.
 - If GEMINI_API_KEY is set: response contains the topic phrase or a synthesized
   paragraph.
+
+### Scenario B6: AIMUX-21 task entry — customer-mode walk-through
+
+This scenario verifies the v5.11.0 replacement path for the removed
+`codex_*` MCP tools. The operator should use an MCP client and the released
+binary; source files stay closed. The subtree observation step uses the
+v5.11.0 maintainer debug helper because the first-class
+`include_subtasks=true` MCP API is scheduled for v5.13.0.
+
+**Setup:**
+1. Create a throwaway project directory outside the aimux source tree:
+   ```bash
+   mkdir -p /tmp/aimux21-playbook
+   printf '# AIMUX-21 playbook\n' > /tmp/aimux21-playbook/README.md
+   ```
+2. Connect an MCP client to the running v5.11.0 daemon.
+3. Call:
+   ```
+   tool: tools/list
+   args: {}
+   ```
+
+**Steps:**
+1. Confirm `task` is present in the tool list and `codex_task`,
+   `codex_review`, `codex_status`, `codex_cancel`, and
+   `codex_review_gate` are absent.
+2. Call:
+   ```
+   tool: task
+   args: {"task_class":"code","prompt":"add a one-line comment to README.md saying \"smoke test for AIMUX-21\"","cwd":"/tmp/aimux21-playbook","project_id":"playbook-aimux21","request_id":"playbook-code-smoke","max_attempts":1}
+   ```
+   Capture `task_id` from the response.
+3. Inspect the `TaskResult` fields returned by the call.
+4. Confirm the target file changed:
+   ```bash
+   cat /tmp/aimux21-playbook/README.md
+   ```
+5. Observe the Loom sub-task tree for the captured `task_id` through the
+   v5.11.0 debug helper. Expected debug text includes root `worker=code`
+   plus `worker=code_driver` and `worker=code_navigator` children.
+6. Exercise the review gate replacement path:
+   ```
+   tool: task
+   args: {"task_class":"review","target":"HEAD","gate":true,"timeout_seconds":300,"project_id":"playbook-aimux21","request_id":"playbook-review-gate"}
+   ```
+
+**Expected:**
+- `tools/list` exposes `task` and does not expose any removed `codex_*` tool.
+- The code task returns `status: "completed"` with `task_class: "code"` and
+  `worker_type: "code"`.
+- `TaskResult` metadata includes `driver_cli`, `navigator_cli`, `rounds >= 1`,
+  `confidence_score` in `[0..1]`, and `gate_result`.
+- `README.md` contains the requested `smoke test for AIMUX-21` comment.
+- Debug subtree text shows the code root and driver/navigator sub-tasks.
+- The review gate call returns a structured ALLOW/BLOCK decision shape rather
+  than a raw CLI transcript.
+
+**Pass criteria:**
+- Step 1 confirms the migration surface: `task` present, five `codex_*` tools
+  absent.
+- Step 2 returns a `task_id` and no MCP tool error.
+- Step 3 has all required fields and numeric ranges.
+- Step 4 shows the requested file mutation.
+- Step 5 shows `worker=code`, `worker=code_driver`, and
+  `worker=code_navigator` for the captured task.
+- Step 6 returns `decision`, `reason`, `findings`, and `passes_completed`.
+
+**Verdict classification:**
+- **PRODUCT_WORKS** — all pass criteria are met.
+- **PARTIALLY_WORKS** — code/review entry works, but debug subtree visibility
+  requires maintainer assistance or metadata is missing a non-critical field.
+- **BROKEN** — `task` is missing, any removed `codex_*` tool is still listed,
+  code task fails, file mutation is absent, or review `gate=true` cannot return
+  a decision.
 
 ## Phase C — Multi-tenant tenant isolation
 

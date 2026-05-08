@@ -1,3 +1,37 @@
+## v5.11.0 — 2026-05-08 (BREAKING)
+
+### Breaking Changes
+
+- **AIMUX-21 — Entry Point Convergence**. The CLI-specific `codex_*` MCP tools are removed in v5.11.0. The public MCP surface now routes code and review work through the methodology-bearing `task` entry point, while Codex remains available as a backend worker. This release note is the public migration contract; the internal AIMUX-21 specbook records the detailed frozen-surface rationale, FR/NFR traceability, phase plan, and ADR-013.
+
+### Worktree-Native Isolation
+
+- **0-day git worktree support for AIMUX-21 task routing**. CR-002 makes worktree isolation explicit before the breaking release ships: task routing, resume validation, sub-task inheritance, worktree switch handling, and apply/gate path binding all use the active ProjectContext/worktree as the safety boundary.
+- **W1 — Cross-worktree resume rejection:** `task(task_class="code", resume_id=...)` rejects a task created in another worktree with `CLIErrResumeWorkerMismatch` and reason `cross-worktree resume rejected`.
+- **W2 — Sub-task ProjectID inheritance:** Loom sub-tasks inherit the parent ProjectID; explicit child mismatch fails with `CLIErrCapabilityMismatch` (`subtask ProjectID must match parent ProjectID`).
+- **W3 — Worktree switch detection:** SessionHandler detects same-client ProjectContext switches, drains previous worktree tasks by default, and `worktree.forced_switch=true` cancels old active tasks with `CLIErrCanceled` / `worktree switched mid-task`.
+- **W4 — Apply/gate worktree binding:** code apply and gate execution bind to `realpath(ProjectContext.Cwd)`; escaped absolute/traversal/symlink targets fail atomically with `CLIErrSandboxDenial` / `path escapes worktree root`.
+
+### Migration Table
+
+| Removed invocation | Replacement invocation | Parameter mapping |
+|--------------------|------------------------|-------------------|
+| `codex_task(prompt)` | `task(task_class="code", prompt=...)` | `prompt` is unchanged; `task_class="code"` selects the Strong-Style code worker. |
+| `codex_task(prompt, sandbox_class="write-task")` | `task(task_class="code", prompt=..., sandbox="workspace-write")` | `sandbox_class="write-task"` maps to the generic workspace-write sandbox name. |
+| `codex_task(resume_task_id=X)` | `task(task_class="code", resume_id=X, prompt=...)` | `resume_task_id` is renamed to `resume_id`; callers still provide the continuation prompt. |
+| `codex_review(target)` | `task(task_class="review", target=...)` | `target` is unchanged; `task_class="review"` selects the review worker. |
+| `codex_review_gate(target, timeout_seconds=N)` | `task(task_class="review", target=..., gate=true, timeout_seconds=N)` | `gate=true` requests the blocking ALLOW/BLOCK review-gate mode; `timeout_seconds` is unchanged. |
+| `codex_status(task_id)` | `sessions(action="info", session_id=task_id, include_content=true)` | `task_id` maps to `session_id`; `include_content=true` returns full task content when needed. |
+| `codex_cancel(task_id)` | `sessions(action="cancel", job_id=task_id)` | `task_id` maps to `job_id` on the existing session cancellation surface. |
+
+### Verification
+
+- `test/e2e/codex_tools_removed_test.go` asserts all five removed `codex_*` tools are absent from `tools/list` and the replacement `task` tool is present.
+- `test/e2e/aimux21_smoke_test.go` runs the gated AIMUX-21 independent smoke (`AIMUX21_E2E=1`): build v5.11.0, call `task(task_class="code")`, verify `TaskResult` metadata, mutate `README.md`, verify subtree visibility through the internal debug helper, and re-check removed tool absence.
+- `test/e2e/aimux21_worktree_test.go` runs the gated two-worktree isolation smoke (`AIMUX21_E2E=1`): create two git worktrees, run a code task in A, verify all Loom children inherit project_id_A, reject resume from B, and reject an escaped write from B.
+
+---
+
 ## v5.10.1 — 2026-05-08 (hotfix)
 
 ### Bug Fixes
@@ -6,7 +40,7 @@
 
 ### Test Coverage
 
-- **test(codex): wire-format snapshot tests** (#171). All 65+ existing codex unit tests mocked JSONLClient — none verified Go struct JSON output against codex protocol schema. That's how the v5.10.0 regression shipped. Added 17 schema-snapshot tests that JSON-marshal each protocol param type and assert required fields per `.agent/codex-types-generated/v2/`. Catches codex schema drift at compile-test time without needing the `codex` binary.
+- **test(codex): wire-format snapshot tests** (#171). All 65+ existing codex unit tests mocked JSONLClient — none verified Go struct JSON output against codex protocol schema. That's how the v5.10.0 regression shipped. Added 17 schema-snapshot tests that JSON-marshal each protocol param type and assert required fields from generated Codex protocol fixtures. Catches codex schema drift at compile-test time without needing the `codex` binary.
 
 - **test(e2e): codex initialize integration test against real binary** (#170). New `TestE2E_CodexInitialize_RealBinary` (gated by `CODEX_E2E=1` env). Spawns real `codex app-server`, calls `Start()`, asserts no error. The test that would have caught the v5.10.0 regression.
 
@@ -72,8 +106,8 @@ If you upgraded to v5.10.0 and saw `codex_task` failing with `clientInfo` errors
 
 ### Documentation
 
-- Codex plugin audit: `.agent/reports/2026-05-07-codex-plugin-cc-audit.md` (1614 LOC) — engineering reference for Codex app-server protocol with verbatim TS types from `codex app-server generate-ts`.
-- CLI Runtime Profile research: `.agent/reports/2026-05-07-cli-runtime-profile-research.md` (902 LOC) — per-CLI startup-state inventory, override matrix, design proposal.
+- Codex plugin audit: internal engineering reference for Codex app-server protocol with verbatim TS types from `codex app-server generate-ts`.
+- CLI Runtime Profile research: internal per-CLI startup-state inventory, override matrix, and design proposal.
 
 ### Quality
 

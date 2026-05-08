@@ -23,7 +23,13 @@ func TestFailureClassifier_AllCodes(t *testing.T) {
 		{types.CLIErrorCodeSandboxDenial, Terminal, "SandboxDenial"},
 		{types.CLIErrorCodeBinaryNotFound, Terminal, "BinaryNotFound"},
 		{types.CLIErrorCodeCanceled, Terminal, "Canceled"},
+		{types.CLIErrorCodeResumeWorkerMismatch, Terminal, "ResumeWorkerMismatch"},
+		{types.CLIErrorCodeClassificationAmbiguous, Terminal, "ClassificationAmbiguous"},
 		{types.CLIErrorCodeUnknown, Terminal, "Unknown"},
+	}
+
+	if len(cases) != 11 {
+		t.Fatalf("classifier coverage = %d, want 11", len(cases))
 	}
 
 	for _, tc := range cases {

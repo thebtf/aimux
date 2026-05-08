@@ -1,6 +1,7 @@
 package fallback
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/executor/picker"
@@ -13,7 +14,7 @@ func TestPassThroughTranslator_Identity(t *testing.T) {
 		Prompt:    "implement a binary search tree",
 	}
 	got := tr.Adapt(spec, "codex", "claude")
-	if got != spec {
+	if !reflect.DeepEqual(got, spec) {
 		t.Errorf("Adapt() modified spec: got %+v, want %+v", got, spec)
 	}
 }
@@ -29,7 +30,7 @@ func TestPassThroughTranslator_AllDirections(t *testing.T) {
 	}
 	for _, pair := range pairs {
 		got := tr.Adapt(spec, pair[0], pair[1])
-		if got != spec {
+		if !reflect.DeepEqual(got, spec) {
 			t.Errorf("Adapt(%s→%s) mutated spec", pair[0], pair[1])
 		}
 	}
@@ -39,7 +40,7 @@ func TestPassThroughTranslator_EmptySpec(t *testing.T) {
 	tr := NewPassThroughTranslator()
 	empty := picker.TaskSpec{}
 	got := tr.Adapt(empty, "from", "to")
-	if got != empty {
+	if !reflect.DeepEqual(got, empty) {
 		t.Errorf("Adapt(empty) returned non-empty: %+v", got)
 	}
 }

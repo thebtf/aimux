@@ -14,6 +14,27 @@ type TaskSpec struct {
 	// Prompt is the raw task prompt. The picker does not modify or inspect it —
 	// it is passed through unchanged to the selected CLI worker (ADR-005).
 	Prompt string
+
+	// CWD is the project/worktree directory where a leaf CLI must execute.
+	CWD string
+
+	// Env carries project/session environment variables to leaf CLI dispatch.
+	Env map[string]string
+
+	// Model optionally overrides the selected CLI profile's default model.
+	Model string
+
+	// Effort optionally sets the selected CLI's reasoning effort flag.
+	Effort string
+
+	// Sandbox carries the requested code sandbox mode to leaf CLI dispatch.
+	Sandbox string
+
+	// SessionID carries the CLI-native session/thread id when resuming a task.
+	SessionID string
+
+	// SessionResume requests resume-mode command rendering for the CLI.
+	SessionResume bool
 }
 
 // Picker selects the optimal CLI for a TaskSpec when the caller does not

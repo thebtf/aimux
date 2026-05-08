@@ -136,6 +136,12 @@ type ThinkConfig struct {
 	DefaultDialogMaxTurns  int `yaml:"default_dialog_max_turns"`
 }
 
+// WorktreeConfig controls same-client switches between muxcore worktree IDs.
+type WorktreeConfig struct {
+	DrainTimeoutSeconds int  `yaml:"drain_timeout_seconds"`
+	ForcedSwitch        bool `yaml:"forced_switch"`
+}
+
 // TransportConfig holds transport selection settings.
 type TransportConfig struct {
 	Type     string `yaml:"type"`     // "stdio" (default), "sse", "http"
@@ -189,36 +195,37 @@ type Config struct {
 	Roles          map[string]types.RolePreference `yaml:"roles"`
 	CircuitBreaker CircuitBreakerConfig            `yaml:"circuit_breaker"`
 	Driver         DriverConfig                    `yaml:"driver"`
+	Worktree       WorktreeConfig                  `yaml:"worktree"`
 	// Executor holds executor-layer configuration including the CLI picker.
 	// YAML key: executor (top-level); picker config at executor.picker.*
-	Executor       ExecutorConfig                  `yaml:"executor"`
-	CLIProfiles    map[string]*CLIProfile          `yaml:"-"` // loaded from cli.d/
-	ConfigDir      string                          `yaml:"-"` // directory containing config files
+	Executor    ExecutorConfig         `yaml:"executor"`
+	CLIProfiles map[string]*CLIProfile `yaml:"-"` // loaded from cli.d/
+	ConfigDir   string                 `yaml:"-"` // directory containing config files
 }
 
 // CLIProfile represents a single CLI plugin configuration.
 type CLIProfile struct {
-	Name              string            `yaml:"name"`
-	Binary            string            `yaml:"binary"`
-	DisplayName       string            `yaml:"display_name"`
-	Features          types.CLIFeatures `yaml:"features"`
-	OutputFormat      string            `yaml:"output_format"`
-	Command           CommandConfig     `yaml:"command"`
-	PromptFlag        string            `yaml:"prompt_flag"`
-	PromptFlagType    string            `yaml:"prompt_flag_type"`
-	DefaultModel      string            `yaml:"default_model"`
-	ModelFlag         string            `yaml:"model_flag"`
-	Reasoning         *ReasoningConfig  `yaml:"reasoning,omitempty"`
-	TimeoutSeconds    int               `yaml:"timeout_seconds"`
-	StdinThreshold    int               `yaml:"stdin_threshold"`
+	Name           string            `yaml:"name"`
+	Binary         string            `yaml:"binary"`
+	DisplayName    string            `yaml:"display_name"`
+	Features       types.CLIFeatures `yaml:"features"`
+	OutputFormat   string            `yaml:"output_format"`
+	Command        CommandConfig     `yaml:"command"`
+	PromptFlag     string            `yaml:"prompt_flag"`
+	PromptFlagType string            `yaml:"prompt_flag_type"`
+	DefaultModel   string            `yaml:"default_model"`
+	ModelFlag      string            `yaml:"model_flag"`
+	Reasoning      *ReasoningConfig  `yaml:"reasoning,omitempty"`
+	TimeoutSeconds int               `yaml:"timeout_seconds"`
+	StdinThreshold int               `yaml:"stdin_threshold"`
 	// StdinSentinel is an optional argument appended to args when the prompt is
 	// delivered via stdin. Codex CLI requires "-" to signal stdin reading.
 	// Leave empty for CLIs that read stdin implicitly (Gemini, Aider, etc.).
-	StdinSentinel     string            `yaml:"stdin_sentinel,omitempty"`
-	CompletionPattern string            `yaml:"completion_pattern,omitempty"`
-	ReadOnlyFlags     []string          `yaml:"read_only_flags"`
-	HeadlessFlags     []string          `yaml:"headless_flags,omitempty"`
-	SearchPaths       []string          `yaml:"search_paths,omitempty"`
+	StdinSentinel     string   `yaml:"stdin_sentinel,omitempty"`
+	CompletionPattern string   `yaml:"completion_pattern,omitempty"`
+	ReadOnlyFlags     []string `yaml:"read_only_flags"`
+	HeadlessFlags     []string `yaml:"headless_flags,omitempty"`
+	SearchPaths       []string `yaml:"search_paths,omitempty"`
 
 	// Capabilities lists what task types this CLI supports (e.g., coding, review, analysis).
 	// Used by the fallback router to find a capable substitute when the primary CLI fails.
@@ -418,6 +425,10 @@ func applyDefaults(cfg *Config) {
 	}
 	if s.LogForwardTimeoutMs == 0 {
 		s.LogForwardTimeoutMs = 100
+	}
+
+	if cfg.Worktree.DrainTimeoutSeconds <= 0 {
+		cfg.Worktree.DrainTimeoutSeconds = 30
 	}
 
 	cb := &cfg.CircuitBreaker

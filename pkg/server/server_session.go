@@ -29,6 +29,30 @@ type projectContextKey struct{}
 // callToolRequestKey stores the active CallToolRequest for direct-stdio child upstreams.
 type callToolRequestKey struct{}
 
+func jsonRPCRequestID(request []byte) mcp.RequestId {
+	var envelope struct {
+		ID mcp.RequestId `json:"id"`
+	}
+	if err := json.Unmarshal(request, &envelope); err != nil {
+		return mcp.NewRequestId(0)
+	}
+	return envelope.ID
+}
+
+func muxSessionIDFromRequest(request []byte) string {
+	var envelope struct {
+		Params struct {
+			Meta struct {
+				MuxSessionID string `json:"muxSessionId"`
+			} `json:"_meta"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(request, &envelope); err != nil {
+		return ""
+	}
+	return envelope.Params.Meta.MuxSessionID
+}
+
 // tenantScopedLoomKey is the context key for TenantScopedLoomEngine injected at dispatch
 // (AIMUX-12 Phase 5, T033). Tool handlers retrieve it via TenantScopedLoomFromContext.
 type tenantScopedLoomKey struct{}
@@ -94,8 +118,9 @@ func cwdFromRequestOrContext(request mcp.CallToolRequest, ctx context.Context) s
 type projectState struct {
 	id       string
 	session  *mcpserver.InProcessSession
-	refcount atomic.Int32 // number of CC sessions sharing this project
+	refcount atomic.Int32  // number of CC sessions sharing this project
 	ready    chan struct{} // closed after session registered; HandleRequest waits on this
+	draining atomic.Bool
 }
 
 // fullDelegate is the Phase B live handler. It owns per-project MCP sessions,
@@ -105,6 +130,7 @@ type projectState struct {
 type fullDelegate struct {
 	srv      *Server
 	projects sync.Map // map[string]*projectState keyed by ProjectContext.ID
+	sessions sync.Map // map[string]*worktreeSessionTracker keyed by muxcore SessionMeta
 
 	mu       sync.Mutex
 	notifier muxcore.Notifier
@@ -131,15 +157,18 @@ func (d *fullDelegate) broadcastToolsListChanged() {
 // HandleRequest processes one MCP JSON-RPC request with project context.
 // Called concurrently from multiple goroutines by the muxcore engine owner.
 func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.ProjectContext, request []byte) ([]byte, error) {
-	// Get or wait for project state.
-	val, ok := d.projects.Load(project.ID)
-	if !ok {
+	requestID := jsonRPCRequestID(request)
+	ctx = contextWithMuxSessionID(ctx, muxSessionIDFromRequest(request))
+	state, err := d.projectStateForRequest(ctx, project)
+	if err != nil {
+		if !errors.Is(err, errProjectNotConnected) {
+			return nil, err
+		}
 		// Project not yet connected — should not happen in normal flow,
 		// but handle gracefully by returning a JSON-RPC error.
-		errResp := mcp.NewJSONRPCError(mcp.NewRequestId(0), mcp.INTERNAL_ERROR, "project not connected: "+project.ID, nil)
+		errResp := mcp.NewJSONRPCError(requestID, mcp.INTERNAL_ERROR, "project not connected: "+project.ID, nil)
 		return json.Marshal(errResp)
 	}
-	state := val.(*projectState)
 
 	// Wait for session registration to complete (OnProjectConnect may still be running).
 	select {
@@ -165,7 +194,7 @@ func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.Projec
 		if tcErr != nil {
 			if errors.Is(tcErr, ErrTenantUnenrolled) {
 				d.srv.dispatchMW.EmitUnenrolledBlocked(0, project.ID, "")
-				errResp := mcp.NewJSONRPCError(mcp.NewRequestId(0), -32000,
+				errResp := mcp.NewJSONRPCError(requestID, -32000,
 					"tenant unenrolled: connecting UID is not registered in the multi-tenant registry",
 					nil)
 				return json.Marshal(errResp)
@@ -176,7 +205,7 @@ func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.Projec
 			// tenant context (privilege escalation risk per PRC v3 N1).
 			d.srv.log.Warn("dispatch: ResolveContext returned unexpected error: %v", tcErr)
 			d.srv.dispatchMW.EmitUnenrolledBlocked(0, project.ID, "")
-			errResp := mcp.NewJSONRPCError(mcp.NewRequestId(0), -32000,
+			errResp := mcp.NewJSONRPCError(requestID, -32000,
 				"tenant resolution failed: unexpected error class",
 				nil)
 			return json.Marshal(errResp)
@@ -288,6 +317,7 @@ func (d *fullDelegate) disconnectProject(projectID string) bool {
 	// Last session disconnected — clean up.
 	d.srv.mcp.UnregisterSession(context.Background(), state.session.SessionID())
 	d.projects.Delete(projectID)
+	d.forgetProjectSessions(projectID)
 
 	// AIMUX-18 Phase 6: release codex process for this project on last disconnect.
 	if d.srv.codexPool != nil {
@@ -389,6 +419,8 @@ func (h *aimuxHandler) HandleRequestWithSessionMeta(
 	meta muxcore.SessionMeta,
 	req []byte,
 ) ([]byte, error) {
+	ctx = contextWithSessionMeta(ctx, meta)
+
 	// Phase 8 hot path: TenantID was resolved at session-accept time by AuthorizeSession.
 	// Construct TenantContext directly from meta — no registry lookup needed.
 	if meta.TenantID != "" && h.srv.dispatchMW != nil {

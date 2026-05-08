@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 
+	"github.com/thebtf/aimux/loom/clierror"
 	"github.com/thebtf/aimux/loom/deps"
 )
 
@@ -37,12 +38,59 @@ var ErrLoomQuotaExceeded = errors.New("loom: quota exceeded: too many in-flight 
 // '__legacy__' in migrateV4Columns (ADR-011).
 const LegacyTenantID = "__legacy__"
 
+const (
+	DefaultMaxSubtaskDepth   = 8
+	DefaultMaxSubtaskBreadth = 16
+)
+
+// Config contains LoomEngine runtime limits.
+type Config struct {
+	MaxSubtaskDepth   int
+	MaxSubtaskBreadth int
+}
+
+// DefaultConfig returns LoomEngine's production defaults.
+func DefaultConfig() Config {
+	return Config{
+		MaxSubtaskDepth:   DefaultMaxSubtaskDepth,
+		MaxSubtaskBreadth: DefaultMaxSubtaskBreadth,
+	}
+}
+
 // Option configures LoomEngine.
 type Option func(*LoomEngine)
+
+// WithConfig applies LoomEngine runtime limits.
+func WithConfig(cfg Config) Option {
+	return func(l *LoomEngine) { l.config = normalizeConfig(cfg) }
+}
+
+// WithMaxSubtaskDepth sets the accepted maximum sub-task tree depth.
+func WithMaxSubtaskDepth(n int) Option {
+	return func(l *LoomEngine) {
+		cfg := l.config
+		cfg.MaxSubtaskDepth = n
+		l.config = normalizeConfig(cfg)
+	}
+}
+
+// WithMaxSubtaskBreadth sets the accepted active sub-task budget per root task.
+func WithMaxSubtaskBreadth(n int) Option {
+	return func(l *LoomEngine) {
+		cfg := l.config
+		cfg.MaxSubtaskBreadth = n
+		l.config = normalizeConfig(cfg)
+	}
+}
 
 // WithMaxRetries sets the maximum retry count (default 2).
 func WithMaxRetries(n int) Option {
 	return func(l *LoomEngine) { l.maxRetries = n }
+}
+
+type subtaskContext struct {
+	projectID  string
+	rootTaskID string
 }
 
 // LoomEngine is the central task mediator.
@@ -55,6 +103,7 @@ type LoomEngine struct {
 	workers    map[WorkerType]Worker
 	cancels    map[string]context.CancelFunc
 	mu         sync.RWMutex
+	config     Config
 	maxRetries int
 	logger     deps.Logger
 	clock      deps.Clock
@@ -71,6 +120,10 @@ type LoomEngine struct {
 	// check, all insert → cap exceeded by goroutine count. The lock serializes
 	// quota-check + insert per tenant. Different tenants remain parallel.
 	tenantSubmitLocks sync.Map // tenantID string → *sync.Mutex
+	// AIMUX-21 T022: serializes sub-task breadth check + insert. The critical
+	// section is short and avoids an unbounded per-root lock registry in the
+	// long-running daemon.
+	subtaskSubmitMu sync.Mutex
 	// T030 instruments — initialised in New() after options are applied.
 	taskSubmittedCounter otelmetric.Int64Counter
 	taskCompletedCounter otelmetric.Int64Counter
@@ -92,6 +145,7 @@ func New(store *TaskStore, opts ...Option) *LoomEngine {
 		gate:       NewQualityGate(),
 		workers:    make(map[WorkerType]Worker),
 		cancels:    make(map[string]context.CancelFunc),
+		config:     DefaultConfig(),
 		maxRetries: 2,
 		logger:     deps.NoopLogger(),
 		clock:      deps.SystemClock(),
@@ -187,29 +241,42 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		reqID = req.RequestID
 	}
 
-	taskID := l.idGen.NewID()
-	now := l.clock.Now().UTC()
 	tenantID := req.TenantID
 	if tenantID == "" {
 		tenantID = LegacyTenantID
 	}
+	subtaskCtx, err := l.resolveSubtaskContext(req, tenantID)
+	if err != nil {
+		return "", err
+	}
+	if subtaskCtx.rootTaskID != "" {
+		l.subtaskSubmitMu.Lock()
+		defer l.subtaskSubmitMu.Unlock()
+		if err := l.validateSubtaskBreadth(subtaskCtx.rootTaskID); err != nil {
+			return "", err
+		}
+	}
+
+	taskID := l.idGen.NewID()
+	now := l.clock.Now().UTC()
 	task := &Task{
-		ID:         taskID,
-		Status:     TaskStatusPending,
-		WorkerType: req.WorkerType,
-		ProjectID:  req.ProjectID,
-		RequestID:  reqID,
-		TenantID:   tenantID,
-		Prompt:     req.Prompt,
-		CWD:        req.CWD,
-		Env:        req.Env,
-		CLI:        req.CLI,
-		Role:       req.Role,
-		Model:      req.Model,
-		Effort:     req.Effort,
-		Timeout:    req.Timeout,
-		Metadata:   req.Metadata,
-		CreatedAt:  now,
+		ID:           taskID,
+		Status:       TaskStatusPending,
+		WorkerType:   req.WorkerType,
+		ProjectID:    subtaskCtx.projectID,
+		RequestID:    reqID,
+		ParentTaskID: req.ParentTaskID,
+		TenantID:     tenantID,
+		Prompt:       req.Prompt,
+		CWD:          req.CWD,
+		Env:          req.Env,
+		CLI:          req.CLI,
+		Role:         req.Role,
+		Model:        req.Model,
+		Effort:       req.Effort,
+		Timeout:      req.Timeout,
+		Metadata:     req.Metadata,
+		CreatedAt:    now,
 	}
 
 	if err := l.store.Create(task); err != nil {
@@ -270,6 +337,98 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	return task.ID, nil
 }
 
+func (l *LoomEngine) resolveSubtaskContext(req TaskRequest, tenantID string) (subtaskContext, error) {
+	if req.ParentTaskID == "" {
+		return subtaskContext{projectID: req.ProjectID}, nil
+	}
+
+	parent, err := l.store.GetForTenantInEngine(req.ParentTaskID, tenantID)
+	if err != nil {
+		return subtaskContext{}, fmt.Errorf("loom: get parent task %s: %w", req.ParentTaskID, err)
+	}
+	rootTaskID, err := l.validateSubtaskDepth(parent, tenantID)
+	if err != nil {
+		return subtaskContext{}, err
+	}
+	if parent.ProjectID == "" {
+		return subtaskContext{projectID: req.ProjectID, rootTaskID: rootTaskID}, nil
+	}
+	if req.ProjectID != "" && req.ProjectID != parent.ProjectID {
+		return subtaskContext{}, clierror.NewCapabilityMismatch("subtask ProjectID must match parent ProjectID", nil)
+	}
+	return subtaskContext{projectID: parent.ProjectID, rootTaskID: rootTaskID}, nil
+}
+
+func (l *LoomEngine) validateSubtaskDepth(parent *Task, tenantID string) (string, error) {
+	maxDepth := normalizeConfig(l.config).MaxSubtaskDepth
+	depth := 0
+	current := parent
+	for {
+		if depth >= maxDepth {
+			return "", clierror.NewCapabilityMismatch(fmt.Sprintf("subtask depth exceeded; max=%d", maxDepth), nil)
+		}
+		if current.ParentTaskID == "" {
+			return current.ID, nil
+		}
+		next, err := l.store.GetForTenantInEngine(current.ParentTaskID, tenantID)
+		if err != nil {
+			return "", fmt.Errorf("loom: get parent ancestor task %s: %w", current.ParentTaskID, err)
+		}
+		current = next
+		depth++
+	}
+}
+
+func (l *LoomEngine) validateSubtaskBreadth(rootTaskID string) error {
+	maxBreadth := normalizeConfig(l.config).MaxSubtaskBreadth
+	inflight, err := l.countInflightSubtasks(rootTaskID)
+	if err != nil {
+		return err
+	}
+	if inflight >= maxBreadth {
+		return clierror.NewCapabilityMismatch("root subtask budget exhausted", nil)
+	}
+	return nil
+}
+
+func (l *LoomEngine) countInflightSubtasks(rootTaskID string) (int, error) {
+	visited := map[string]struct{}{rootTaskID: struct{}{}}
+	return l.countInflightSubtasksFrom(rootTaskID, visited)
+}
+
+func (l *LoomEngine) countInflightSubtasksFrom(parentTaskID string, visited map[string]struct{}) (int, error) {
+	children, err := l.store.ListChildren(parentTaskID)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, child := range children {
+		if _, ok := visited[child.ID]; ok {
+			return 0, fmt.Errorf("loom: subtask cycle at %s", child.ID)
+		}
+		visited[child.ID] = struct{}{}
+		if child.Status.IsActive() {
+			total++
+		}
+		childTotal, err := l.countInflightSubtasksFrom(child.ID, visited)
+		if err != nil {
+			return 0, err
+		}
+		total += childTotal
+	}
+	return total, nil
+}
+
+func normalizeConfig(cfg Config) Config {
+	if cfg.MaxSubtaskDepth <= 0 {
+		cfg.MaxSubtaskDepth = DefaultMaxSubtaskDepth
+	}
+	if cfg.MaxSubtaskBreadth <= 0 {
+		cfg.MaxSubtaskBreadth = DefaultMaxSubtaskBreadth
+	}
+	return cfg
+}
+
 // Close signals engine shutdown and waits for all in-flight dispatch goroutines
 // to complete (or ctx to expire). Callers MUST invoke Close before closing the
 // underlying *sql.DB to prevent write-after-close races. Close is idempotent:
@@ -306,7 +465,12 @@ func (l *LoomEngine) Close(ctx context.Context) error {
 
 // Get returns current task state.
 func (l *LoomEngine) Get(taskID string) (*Task, error) {
-	return l.store.Get(taskID)
+	return l.GetContext(context.Background(), taskID)
+}
+
+// GetContext returns current task state with caller-controlled cancellation.
+func (l *LoomEngine) GetContext(ctx context.Context, taskID string) (*Task, error) {
+	return l.store.GetContext(ctx, taskID)
 }
 
 // List returns tasks for a project, optionally filtered by status.
@@ -674,6 +838,9 @@ func (l *LoomEngine) dispatch(task *Task) {
 		l.failTask(task, TaskStatusRunning, execErr.Error())
 		return
 	}
+	if !l.persistWorkerMetadata(taskCtx, task, latest, result) {
+		return
+	}
 
 	// Quality gate: validate result before accepting.
 	// Retry loop: continues until gate accepts, retries exhausted, or non-retryable rejection.
@@ -863,5 +1030,51 @@ func (l *LoomEngine) dispatch(task *Task) {
 			l.failTask(task, TaskStatusRunning, execErr.Error())
 			return
 		}
+		if !l.persistWorkerMetadata(taskCtx, task, latest, result) {
+			return
+		}
 	}
+}
+
+func (l *LoomEngine) persistWorkerMetadata(ctx context.Context, task *Task, latest *Task, result *WorkerResult) bool {
+	if latest == nil {
+		return true
+	}
+	if len(latest.Metadata) == 0 && (result == nil || len(result.Metadata) == 0) {
+		return true
+	}
+	metadata := mergeTaskMetadata(latest.Metadata, nil)
+	if result != nil {
+		metadata = mergeTaskMetadata(metadata, result.Metadata)
+	}
+	if err := l.store.SetMetadata(latest.ID, metadata); err != nil {
+		l.logger.ErrorContext(ctx, "dispatch: store.SetMetadata failed",
+			"module", "loom",
+			"task_id", latest.ID,
+			"project_id", latest.ProjectID,
+			"worker_type", string(latest.WorkerType),
+			"task_status", string(TaskStatusRunning),
+			"request_id", latest.RequestID,
+			"error_code", "store_set_metadata",
+			"error", err,
+		)
+		l.failTask(task, TaskStatusRunning, fmt.Sprintf("dispatch: persist metadata failed: %v", err))
+		return false
+	}
+	latest.Metadata = metadata
+	return true
+}
+
+func mergeTaskMetadata(base map[string]any, overlay map[string]any) map[string]any {
+	if len(base) == 0 && len(overlay) == 0 {
+		return map[string]any{}
+	}
+	merged := make(map[string]any, len(base)+len(overlay))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range overlay {
+		merged[key] = value
+	}
+	return merged
 }

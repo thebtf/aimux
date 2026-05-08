@@ -40,7 +40,7 @@ func TestE2E_ThinkHarnessInventory(t *testing.T) {
 		}
 	}
 
-	const expectedTotal = 33 // 4 server tools + 1 caller-centered think harness + 22 cognitive move tools + 5 codex_* tools (AIMUX-18) + 1 task tool (AIMUX-4).
+	const expectedTotal = 28 // 4 server tools + 1 task tool + 1 caller-centered think harness + 22 cognitive move tools.
 	if len(tools) != expectedTotal {
 		t.Fatalf("tool count = %d, want %d for CR-002 surface", len(tools), expectedTotal)
 	}

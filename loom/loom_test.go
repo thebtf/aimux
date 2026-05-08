@@ -75,6 +75,37 @@ func (w *testWorker) Execute(_ context.Context, _ *Task) (*WorkerResult, error) 
 
 func (w *testWorker) Type() WorkerType { return w.wtype }
 
+type testWorkerWithMetadata struct {
+	wtype    WorkerType
+	result   string
+	metadata map[string]any
+}
+
+func (w *testWorkerWithMetadata) Execute(_ context.Context, _ *Task) (*WorkerResult, error) {
+	return &WorkerResult{Content: w.result, Metadata: w.metadata}, nil
+}
+
+func (w *testWorkerWithMetadata) Type() WorkerType { return w.wtype }
+
+func waitForTaskStatus(t testing.TB, store *TaskStore, taskID string, want TaskStatus) *Task {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var task *Task
+	for time.Now().Before(deadline) {
+		var err error
+		task, err = store.Get(taskID)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", taskID, err)
+		}
+		if task.Status == want {
+			return task
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("task %s did not reach %s, latest=%#v", taskID, want, task)
+	return nil
+}
+
 // ---- state machine tests ----
 
 func TestTaskTransitions_Valid(t *testing.T) {
@@ -445,6 +476,78 @@ func TestLoomEngine_Submit(t *testing.T) {
 	}
 	if worker.called.Load() != 1 {
 		t.Errorf("worker Execute called %d times, want 1", worker.called.Load())
+	}
+}
+
+func TestLoomEngine_Submit_PersistsWorkerResultMetadata(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	worker := &testWorkerWithMetadata{
+		wtype:  WorkerTypeCLI,
+		result: "hello",
+		metadata: map[string]any{
+			"driver_cli":  "codex",
+			"gate_result": "passed",
+		},
+	}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	taskID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-metadata",
+		Prompt:     "do something",
+		Metadata: map[string]any{
+			"existing": "kept",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	task := waitForTaskStatus(t, store, taskID, TaskStatusCompleted)
+	if task.Metadata["existing"] != "kept" {
+		t.Fatalf("existing metadata = %#v, want kept", task.Metadata["existing"])
+	}
+	if task.Metadata["driver_cli"] != "codex" {
+		t.Fatalf("driver_cli metadata = %#v, want codex", task.Metadata["driver_cli"])
+	}
+	if task.Metadata["gate_result"] != "passed" {
+		t.Fatalf("gate_result metadata = %#v, want passed", task.Metadata["gate_result"])
+	}
+}
+
+func TestLoomEngine_Submit_ParentTaskIDRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	worker := &testWorker{wtype: WorkerTypeCLI, result: "child"}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	rootID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-parent",
+		Prompt:     "root",
+	})
+	if err != nil {
+		t.Fatalf("Submit root: %v", err)
+	}
+	childID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType:   WorkerTypeCLI,
+		ProjectID:    "proj-parent",
+		ParentTaskID: rootID,
+		Prompt:       "child",
+	})
+	if err != nil {
+		t.Fatalf("Submit child: %v", err)
+	}
+
+	child, err := engine.Get(childID)
+	if err != nil {
+		t.Fatalf("Get child: %v", err)
+	}
+	if child.ParentTaskID != rootID {
+		t.Fatalf("ParentTaskID = %q, want %q", child.ParentTaskID, rootID)
 	}
 }
 

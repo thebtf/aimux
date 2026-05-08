@@ -2,7 +2,10 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/thebtf/aimux/pkg/executor/types"
 )
 
 // Resumer provides thread resume operations for the CodexWorker.
@@ -14,12 +17,67 @@ import (
 // thread/list timed out at 15s without useStateDbOnly; with the flag: ~50-70ms
 // (VERIFIED: probe-2026-05-07 OQ-1 — 270x speedup with useStateDbOnly=true).
 type Resumer struct {
-	pool *CodexPool
+	pool  *CodexPool
+	tasks taskGetter
 }
 
 // NewResumer constructs a Resumer backed by the given pool.
 func NewResumer(pool *CodexPool) *Resumer {
 	return &Resumer{pool: pool}
+}
+
+// NewResumerWithTasks constructs a Resumer that can hydrate Loom resume metadata.
+func NewResumerWithTasks(pool *CodexPool, tasks taskGetter) *Resumer {
+	return &Resumer{pool: pool, tasks: tasks}
+}
+
+// ResumeFromTask hydrates Codex resume metadata from a previous Codex task.
+func (r *Resumer) ResumeFromTask(ctx context.Context, prevTaskID string) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, resumeContextError("codex resume canceled", err)
+	}
+	if prevTaskID == "" {
+		return nil, types.NewUserInputError("resume_id is required", nil)
+	}
+	if r.tasks == nil {
+		return nil, types.NewCapabilityMismatch("codex Resumer requires Loom task lookup for ResumeFromTask", nil)
+	}
+
+	prev, err := r.tasks.Get(prevTaskID)
+	if err != nil {
+		return nil, types.NewUserInputError(fmt.Sprintf("resume task %q not found", prevTaskID), err)
+	}
+	if prev.WorkerType != WorkerTypeCodex {
+		return nil, types.NewResumeWorkerMismatch(
+			fmt.Sprintf("resume_id worker mismatch: expected %s, got %s", WorkerTypeCodex, prev.WorkerType),
+			nil,
+		)
+	}
+
+	meta, err := parseCodexTaskMetaFromMap(prev.Metadata)
+	if err != nil {
+		return nil, types.NewCapabilityMismatch("codex resume task metadata is invalid", err)
+	}
+	if meta.ThreadID == "" {
+		return nil, types.NewCapabilityMismatch("codex resume task is missing thread_id", nil)
+	}
+	if meta.RootThreadID == "" {
+		meta.RootThreadID = meta.ThreadID
+	}
+	out, err := codeTaskMetaToMap(meta)
+	if err != nil {
+		return nil, types.NewUnknown("codex resume metadata marshal failed", err)
+	}
+	out["resume_task_id"] = prevTaskID
+	out["worker_type"] = string(WorkerTypeCodex)
+	return out, nil
+}
+
+func resumeContextError(message string, err error) *types.CLIError {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return types.NewTimeout(message, err)
+	}
+	return types.NewCanceled(message, err)
 }
 
 // FindBySearchTerm scans thread/list with useStateDbOnly=true for threads whose

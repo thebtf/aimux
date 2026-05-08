@@ -1,0 +1,14 @@
+Run the structural review pass for this target.
+
+Target:
+{{.Target}}
+
+Evaluate naming, organisation, cohesion, abstraction boundaries, package shape, exported API clarity, and maintainability.
+
+Criteria:
+{{- range .Criteria}}
+- {{.Name}}: {{.Description}}
+{{- end}}
+
+Return raw JSON only:
+{"findings":[{"severity":"error|warning|info","file":"path","line":null,"body":"description"}],"summary":"one-line structural summary"}

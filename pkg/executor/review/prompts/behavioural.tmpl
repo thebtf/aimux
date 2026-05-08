@@ -1,0 +1,14 @@
+Run the behavioural review pass for this target.
+
+Target:
+{{.Target}}
+
+Evaluate observable behaviour, happy path coverage, edge cases, error paths, side effects, data flow, and regressions.
+
+Criteria:
+{{- range .Criteria}}
+- {{.Name}}: {{.Description}}
+{{- end}}
+
+Return raw JSON only:
+{"findings":[{"severity":"error|warning|info","file":"path","line":null,"body":"description"}],"summary":"one-line behavioural summary"}

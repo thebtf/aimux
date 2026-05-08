@@ -193,8 +193,8 @@ func TestMapToCliError_PassThroughWrapped(t *testing.T) {
 		t.Errorf("Message = %q, want %q (outer wrap context must be preserved)", result.Message, wrapped.Error())
 	}
 	var inner *types.CLIError
-	if !errors.As(result.Wrapped, &inner) {
-		t.Errorf("Wrapped should chain back to original *CLIError via errors.As")
+	if !errors.As(result.Cause, &inner) {
+		t.Errorf("Cause should chain back to original *CLIError via errors.As")
 	}
 }
 

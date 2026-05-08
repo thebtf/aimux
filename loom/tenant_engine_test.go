@@ -117,6 +117,128 @@ func TestGet_CrossTenantReturns404(t *testing.T) {
 	}
 }
 
+func TestGet_CrossEngineTenantScopedReturns404(t *testing.T) {
+	db := newTestDB(t)
+	prod, err := NewEngine(db, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, err := NewEngine(db, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker := &testWorker{wtype: WorkerTypeThinker, result: "ok"}
+	prod.RegisterWorker(WorkerTypeThinker, worker)
+	dev.RegisterWorker(WorkerTypeThinker, worker)
+
+	prodTenant := NewTenantScopedEngine(prod, "tenant-A", nil)
+	devTenant := NewTenantScopedEngine(dev, "tenant-A", nil)
+
+	taskID, err := prodTenant.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeThinker,
+		ProjectID:  "proj-A",
+		Prompt:     "prod tenant task",
+	})
+	if err != nil {
+		t.Fatalf("prodTenant.Submit: %v", err)
+	}
+	waitForTerminal(t, prod, taskID, 3*time.Second)
+
+	if _, err := devTenant.Get(taskID); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("devTenant.Get(prod task) error = %v, want ErrTaskNotFound", err)
+	}
+
+	raw, err := dev.Get(taskID)
+	if err != nil {
+		t.Fatalf("raw dev.Get(prod task): %v", err)
+	}
+	if raw.EngineName != "prod" {
+		t.Fatalf("raw cross-engine EngineName = %q, want prod", raw.EngineName)
+	}
+}
+
+func TestSubmit_CrossTenantParentTaskIDReturns404(t *testing.T) {
+	db := newTestDB(t)
+	engine, err := NewEngine(db, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker := &testWorker{wtype: WorkerTypeThinker, result: "ok"}
+	engine.RegisterWorker(WorkerTypeThinker, worker)
+
+	tenantA := NewTenantScopedEngine(engine, "tenant-A", nil)
+	tenantB := NewTenantScopedEngine(engine, "tenant-B", nil)
+
+	rootID, err := tenantA.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeThinker,
+		ProjectID:  "proj-A",
+		Prompt:     "tenant-A parent",
+	})
+	if err != nil {
+		t.Fatalf("tenantA.Submit: %v", err)
+	}
+
+	childID, err := tenantB.Submit(context.Background(), TaskRequest{
+		WorkerType:   WorkerTypeThinker,
+		ParentTaskID: rootID,
+		Prompt:       "tenant-B child attempt",
+	})
+	if err == nil {
+		t.Fatal("tenantB.Submit with tenant-A parent: expected error, got nil")
+	}
+	if childID != "" {
+		t.Fatalf("childID = %q, want empty on cross-tenant parent rejection", childID)
+	}
+	if !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("tenantB.Submit with tenant-A parent: got %v; want ErrTaskNotFound", err)
+	}
+}
+
+func TestSubmit_CrossEngineParentTaskIDReturns404(t *testing.T) {
+	db := newTestDB(t)
+	prod, err := NewEngine(db, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, err := NewEngine(db, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker := &testWorker{wtype: WorkerTypeThinker, result: "ok"}
+	prod.RegisterWorker(WorkerTypeThinker, worker)
+	dev.RegisterWorker(WorkerTypeThinker, worker)
+
+	prodTenant := NewTenantScopedEngine(prod, "tenant-A", nil)
+	devTenant := NewTenantScopedEngine(dev, "tenant-A", nil)
+
+	rootID, err := prodTenant.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeThinker,
+		ProjectID:  "prod-project",
+		Prompt:     "prod parent",
+	})
+	if err != nil {
+		t.Fatalf("prodTenant.Submit: %v", err)
+	}
+
+	childID, err := devTenant.Submit(context.Background(), TaskRequest{
+		WorkerType:   WorkerTypeThinker,
+		ParentTaskID: rootID,
+		Prompt:       "dev child attempt",
+	})
+	if err == nil {
+		t.Fatal("devTenant.Submit with prod parent: expected error, got nil")
+	}
+	if childID != "" {
+		t.Fatalf("childID = %q, want empty on cross-engine parent rejection", childID)
+	}
+	if !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("devTenant.Submit with prod parent: got %v; want ErrTaskNotFound", err)
+	}
+}
+
 // ---- T021: TestList_FiltersToTenant ----
 
 // TestList_FiltersToTenant verifies that List only returns tasks scoped to the
@@ -433,7 +555,6 @@ func TestLoomSubmit_QuotaAuditEvent(t *testing.T) {
 		}
 	}
 }
-
 
 // ---- W2: TestLoomSubmit_BurstConcurrentSubmits_RespectsQuota ----
 

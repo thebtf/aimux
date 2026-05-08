@@ -96,6 +96,14 @@ server:
     auto_consensus_threshold: 60
     default_dialog_max_turns: 4
 
+worktree:
+  # SessionHandler waits this long for active tasks in the previous worktree
+  # after the same client switches to a new worktree.
+  drain_timeout_seconds: 30
+  # When true, worktree switches cancel active tasks in the previous worktree
+  # instead of draining them.
+  forced_switch: false
+
 # Role → CLI preferences (overridden by AIMUX_ROLE_* env)
 # Reasoning effort tiers: low (trivial) → medium (standard) → high (analytical) → xhigh (deep)
 roles:

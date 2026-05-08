@@ -1,0 +1,14 @@
+Run the adversarial review pass for this target.
+
+Target:
+{{.Target}}
+
+Evaluate security, race conditions, hostile inputs, path traversal, injection, secret exposure, tenant isolation, and abuse cases.
+
+Criteria:
+{{- range .Criteria}}
+- {{.Name}}: {{.Description}}
+{{- end}}
+
+Return raw JSON only:
+{"findings":[{"severity":"error|warning|info","file":"path","line":null,"body":"description"}],"summary":"one-line adversarial summary"}
