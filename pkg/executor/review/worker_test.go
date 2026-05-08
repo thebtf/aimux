@@ -35,6 +35,9 @@ func TestReviewWorkerExecuteRecordsAggregateMetadata(t *testing.T) {
 	if runner.calls != 1 {
 		t.Fatalf("pass runner calls = %d, want 1", runner.calls)
 	}
+	if runner.criteria[0].Env["SESSION_KEY"] != "session-value" {
+		t.Fatalf("criteria Env[SESSION_KEY] = %q, want session-value", runner.criteria[0].Env["SESSION_KEY"])
+	}
 	if result == nil {
 		t.Fatal("Execute returned nil result")
 	}
@@ -170,12 +173,14 @@ func TestReviewWorkerSubtaskTreeShape(t *testing.T) {
 }
 
 type recordingPassRunner struct {
-	results []PassResult
-	calls   int
+	results  []PassResult
+	calls    int
+	criteria []Criteria
 }
 
 func (r *recordingPassRunner) Run(_ context.Context, target string, criteria Criteria) ([]PassResult, error) {
 	r.calls++
+	r.criteria = append(r.criteria, criteria)
 	if target == "" {
 		return nil, fmt.Errorf("target is empty")
 	}
@@ -205,6 +210,7 @@ func reviewWorkerTask(metadata map[string]any) *loom.Task {
 		RequestID:  "request-1",
 		Prompt:     "review HEAD",
 		CWD:        "/workspace",
+		Env:        map[string]string{"SESSION_KEY": "session-value"},
 		Metadata:   metadata,
 	}
 }

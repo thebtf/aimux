@@ -156,6 +156,7 @@ func (w *ReviewWorker) criteriaForTask(task *loom.Task) Criteria {
 	criteria.RequestID = task.RequestID
 	criteria.TenantID = task.TenantID
 	criteria.CWD = task.CWD
+	criteria.Env = cloneEnv(task.Env)
 	if task.CLI != "" {
 		criteria.CLI = types.CLIName(task.CLI)
 	}

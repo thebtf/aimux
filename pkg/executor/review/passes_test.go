@@ -45,8 +45,14 @@ func TestPassesRunDispatchesAllPassesWithMetadata(t *testing.T) {
 		if req.Effort != "high" {
 			t.Fatalf("Effort = %q, want high", req.Effort)
 		}
+		if req.Env["SESSION_KEY"] != "session-value" {
+			t.Fatalf("Env[SESSION_KEY] = %q, want session-value", req.Env["SESSION_KEY"])
+		}
 		if req.Metadata["parent_task_id"] != "review-root" {
 			t.Fatalf("metadata parent_task_id = %#v", req.Metadata["parent_task_id"])
+		}
+		if req.Metadata["sandbox"] != "read-only" {
+			t.Fatalf("metadata sandbox = %#v, want read-only", req.Metadata["sandbox"])
 		}
 		if !strings.Contains(req.Prompt, "HEAD~1..HEAD") {
 			t.Fatalf("prompt missing target: %q", req.Prompt)
@@ -296,6 +302,7 @@ func testCriteria() Criteria {
 		ProjectID:    "project-1",
 		RequestID:    "request-1",
 		CWD:          "/workspace",
+		Env:          map[string]string{"SESSION_KEY": "session-value"},
 		CLI:          "codex",
 		Model:        "review-model",
 		Effort:       "high",

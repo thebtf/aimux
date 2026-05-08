@@ -64,6 +64,7 @@ type Criteria struct {
 	RequestID    string
 	TenantID     string
 	CWD          string
+	Env          map[string]string
 	CLI          types.CLIName
 	Model        string
 	Effort       string
@@ -140,6 +141,7 @@ func (p *Passes) runOne(ctx context.Context, pass PassName, target string, crite
 		TenantID:     criteria.TenantID,
 		Prompt:       buildPassPrompt(pass, target),
 		CWD:          criteria.CWD,
+		Env:          cloneEnv(criteria.Env),
 		CLI:          defaultReviewCLI(criteria),
 		Role:         string(pass),
 		Model:        criteria.Model,
@@ -288,7 +290,19 @@ func passMetadata(pass PassName, workerType loom.WorkerType, criteria Criteria) 
 		"worker_type":    string(workerType),
 		"review_pass":    string(pass),
 		"parent_task_id": criteria.ParentTaskID,
+		"sandbox":        "read-only",
 	}
+}
+
+func cloneEnv(env map[string]string) map[string]string {
+	if env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for key, value := range env {
+		out[key] = value
+	}
+	return out
 }
 
 func buildPassPrompt(pass PassName, target string) string {

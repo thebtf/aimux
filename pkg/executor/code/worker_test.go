@@ -161,6 +161,29 @@ func TestCodeWorkerPassesTaskTimeoutToPairSubtasks(t *testing.T) {
 	}
 }
 
+func TestCodeWorkerPassesTaskEnvToPairSubtasks(t *testing.T) {
+	root := codeWorkerFixture(t)
+	pair := &mockWorkerPair{verdicts: []Verdict{{
+		Action:     StateApply,
+		Confidence: 0.91,
+		Diff:       renameDiff("note.txt", "old", "new"),
+	}}}
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: pair,
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+	})
+	task := codeWorkerTask(root)
+	task.Env = map[string]string{"SESSION_KEY": "session-value"}
+
+	_, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if pair.configs[0].Env["SESSION_KEY"] != "session-value" {
+		t.Fatalf("pair Env[SESSION_KEY] = %q, want session-value", pair.configs[0].Env["SESSION_KEY"])
+	}
+}
+
 func TestCodeWorkerUsesPairSelectorForDefaultCLIs(t *testing.T) {
 	root := codeWorkerFixture(t)
 	pair := &mockWorkerPair{verdicts: []Verdict{{

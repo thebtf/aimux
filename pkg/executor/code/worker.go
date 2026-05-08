@@ -169,6 +169,7 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 			RequestID:      task.RequestID,
 			TenantID:       task.TenantID,
 			CWD:            task.CWD,
+			Env:            cloneEnv(task.Env),
 			ResumeMetadata: resumeMeta,
 			DriverCLI:      driverCLI,
 			NavigatorCLI:   navigatorCLI,

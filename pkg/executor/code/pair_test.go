@@ -95,6 +95,9 @@ func TestRunRoundSubtaskMetadataAndNavigatorPrompt(t *testing.T) {
 	if driver.Effort != "xhigh" {
 		t.Fatalf("driver Effort = %q, want xhigh", driver.Effort)
 	}
+	if driver.Env["SESSION_KEY"] != "session-value" {
+		t.Fatalf("driver Env[SESSION_KEY] = %q, want session-value", driver.Env["SESSION_KEY"])
+	}
 
 	navigator := mock.submissions[1]
 	if navigator.ParentTaskID != "parent-1" {
@@ -114,6 +117,9 @@ func TestRunRoundSubtaskMetadataAndNavigatorPrompt(t *testing.T) {
 	}
 	if navigator.Effort != "xhigh" {
 		t.Fatalf("navigator Effort = %q, want xhigh", navigator.Effort)
+	}
+	if navigator.Env["SESSION_KEY"] != "session-value" {
+		t.Fatalf("navigator Env[SESSION_KEY] = %q, want session-value", navigator.Env["SESSION_KEY"])
 	}
 	normalizedNavigatorPrompt := strings.ReplaceAll(navigator.Prompt, "\r\n", "\n")
 	if !strings.Contains(normalizedNavigatorPrompt, strings.TrimSpace(testDriverDiff)) {
@@ -247,6 +253,7 @@ func testPairConfig(client LoomClient) PairConfig {
 		ProjectID:    "project-1",
 		RequestID:    "request-1",
 		CWD:          "/workspace",
+		Env:          map[string]string{"SESSION_KEY": "session-value"},
 		DriverCLI:    "codex",
 		NavigatorCLI: "claude",
 		Model:        "code-model",

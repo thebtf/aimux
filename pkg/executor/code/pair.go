@@ -38,6 +38,7 @@ type PairConfig struct {
 	RequestID           string
 	TenantID            string
 	CWD                 string
+	Env                 map[string]string
 	ResumeMetadata      map[string]any
 	DriverCLI           types.CLIName
 	NavigatorCLI        types.CLIName
@@ -89,6 +90,7 @@ func RunRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg 
 		TenantID:     cfg.TenantID,
 		Prompt:       driverPrompt,
 		CWD:          cfg.CWD,
+		Env:          cloneEnv(cfg.Env),
 		CLI:          cfg.DriverCLI,
 		Role:         "driver",
 		Model:        cfg.Model,
@@ -120,6 +122,7 @@ func RunRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg 
 		TenantID:     cfg.TenantID,
 		Prompt:       navPrompt,
 		CWD:          cfg.CWD,
+		Env:          cloneEnv(cfg.Env),
 		CLI:          cfg.NavigatorCLI,
 		Role:         "navigator",
 		Model:        cfg.Model,
@@ -332,4 +335,15 @@ func navigatorMetadata(cfg PairConfig) map[string]any {
 		metadata["sandbox"] = cfg.Sandbox
 	}
 	return metadata
+}
+
+func cloneEnv(env map[string]string) map[string]string {
+	if env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for key, value := range env {
+		out[key] = value
+	}
+	return out
 }
