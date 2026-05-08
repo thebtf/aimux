@@ -170,12 +170,41 @@ func (r *TaskRouter) resolveTaskClass(prompt string, taskClass string) (string, 
 		if err != nil {
 			return "", confidence, candidates, err
 		}
-		if len(candidates) == 0 {
-			return "", 0, nil, extypes.NewClassificationAmbiguous("classification ambiguous: no candidates", nil)
+		routable := r.routableCandidates(candidates)
+		if len(routable) == 0 {
+			return "", 0, candidates, extypes.NewClassificationAmbiguous("classification ambiguous: no routable candidates", nil)
 		}
-		return candidates[0].TaskClass, confidence, candidates, nil
+		if routable[0].Score < classifier.DefaultThreshold {
+			return "", routable[0].Score, routable, extypes.NewClassificationAmbiguous(routableAmbiguousMessage(routable), nil)
+		}
+		return routable[0].TaskClass, routable[0].Score, routable, nil
 	}
 	return normalized, 1, nil, nil
+}
+
+func (r *TaskRouter) routableCandidates(candidates []classifier.Candidate) []classifier.Candidate {
+	routable := make([]classifier.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if workerType, ok := r.routes[candidate.TaskClass]; ok && workerType != "" {
+			routable = append(routable, candidate)
+		}
+	}
+	return routable
+}
+
+func routableAmbiguousMessage(candidates []classifier.Candidate) string {
+	parts := make([]string, 0, len(candidates))
+	for _, candidate := range topTaskCandidates(candidates, 3) {
+		parts = append(parts, fmt.Sprintf("%s=%.2f", candidate.TaskClass, candidate.Score))
+	}
+	return "classification ambiguous among routable classes; pass explicit task_class; top candidates: " + strings.Join(parts, ", ")
+}
+
+func topTaskCandidates(candidates []classifier.Candidate, n int) []classifier.Candidate {
+	if n > len(candidates) {
+		n = len(candidates)
+	}
+	return candidates[:n]
 }
 
 func canonicalLoomRequest(req TaskRequest, prompt string, taskClass string, workerType loom.WorkerType, confidence float64, candidates []classifier.Candidate) loom.TaskRequest {

@@ -87,6 +87,36 @@ func TestCodeWorkerRetryLoopIncrementsRounds(t *testing.T) {
 	assertTransitionLogContains(t, task.Metadata, StateRetry, StateDriver)
 }
 
+func TestCodeWorkerHonorsDriverCLIOverride(t *testing.T) {
+	root := codeWorkerFixture(t)
+	pair := &mockWorkerPair{verdicts: []Verdict{{
+		Action:     StateApply,
+		Confidence: 0.91,
+		Diff:       renameDiff("note.txt", "old", "new"),
+	}}}
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: pair,
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+	})
+	task := codeWorkerTask(root)
+	task.CLI = "gemini"
+
+	_, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if len(pair.configs) != 1 {
+		t.Fatalf("pair configs = %d, want 1", len(pair.configs))
+	}
+	if pair.configs[0].DriverCLI != "gemini" {
+		t.Fatalf("DriverCLI = %q, want gemini", pair.configs[0].DriverCLI)
+	}
+	if pair.configs[0].NavigatorCLI != "claude" {
+		t.Fatalf("NavigatorCLI = %q, want claude", pair.configs[0].NavigatorCLI)
+	}
+	assertTaskMetadata(t, task.Metadata, "driver_cli", "gemini")
+}
+
 func TestCodeWorkerEscalateReturnsTypedCLIError(t *testing.T) {
 	root := codeWorkerFixture(t)
 	worker := newTestCodeWorker(t, workerTestDeps{
@@ -255,13 +285,15 @@ func assertTransitionLogContains(t *testing.T, metadata map[string]any, from Sta
 type mockWorkerPair struct {
 	verdicts []Verdict
 	calls    int
+	configs  []PairConfig
 }
 
-func (m *mockWorkerPair) RunRound(_ context.Context, prompt string, _ SuccessCriteria, _ PairConfig) (Verdict, error) {
+func (m *mockWorkerPair) RunRound(_ context.Context, prompt string, _ SuccessCriteria, cfg PairConfig) (Verdict, error) {
 	if m.calls >= len(m.verdicts) {
 		return Verdict{}, errors.New("unexpected pair call")
 	}
 	verdict := m.verdicts[m.calls]
+	m.configs = append(m.configs, cfg)
 	m.calls++
 	if verdict.Action == StateRetry && !strings.Contains(prompt, "Navigator feedback") && m.calls > 1 {
 		return Verdict{}, errors.New("retry prompt missing feedback")

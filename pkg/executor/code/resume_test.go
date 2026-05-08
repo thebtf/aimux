@@ -15,6 +15,7 @@ func TestCodeWorkerResumeFromTaskHydratesMetadata(t *testing.T) {
 		ID:         "task-1",
 		WorkerType: WorkerTypeCode,
 		ProjectID:  "project-a",
+		TenantID:   loom.LegacyTenantID,
 		Metadata: map[string]any{
 			MetadataThreadID:   "thread-1",
 			MetadataWorkerType: string(WorkerTypeCode),
@@ -22,7 +23,7 @@ func TestCodeWorkerResumeFromTaskHydratesMetadata(t *testing.T) {
 	}
 	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
 
-	meta, err := worker.ResumeFromTask(contextWithResumeProjectID(context.Background(), "project-a"), "task-1")
+	meta, err := worker.ResumeFromTask(contextWithResumeScope(context.Background(), "project-a", loom.LegacyTenantID), "task-1")
 	if err != nil {
 		t.Fatalf("ResumeFromTask returned error: %v", err)
 	}
@@ -43,11 +44,12 @@ func TestCodeWorkerResumeFromTaskRejectsCrossWorker(t *testing.T) {
 		ID:         "review-task",
 		WorkerType: loom.WorkerType("review"),
 		ProjectID:  "project-a",
+		TenantID:   loom.LegacyTenantID,
 		Metadata:   map[string]any{MetadataThreadID: "thread-1"},
 	}
 	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
 
-	_, err := worker.ResumeFromTask(contextWithResumeProjectID(context.Background(), "project-a"), "review-task")
+	_, err := worker.ResumeFromTask(contextWithResumeScope(context.Background(), "project-a", loom.LegacyTenantID), "review-task")
 	assertCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
 }
 
@@ -57,6 +59,7 @@ func TestCodeWorkerResumeFromTaskRejectsCrossWorktree(t *testing.T) {
 		ID:         "task-1",
 		WorkerType: WorkerTypeCode,
 		ProjectID:  "worktree-a",
+		TenantID:   loom.LegacyTenantID,
 		Metadata: map[string]any{
 			MetadataThreadID:   "thread-1",
 			MetadataWorkerType: string(WorkerTypeCode),
@@ -64,13 +67,34 @@ func TestCodeWorkerResumeFromTaskRejectsCrossWorktree(t *testing.T) {
 	}
 	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
 
-	_, err := worker.ResumeFromTask(contextWithResumeProjectID(context.Background(), "worktree-b"), "task-1")
+	_, err := worker.ResumeFromTask(contextWithResumeScope(context.Background(), "worktree-b", loom.LegacyTenantID), "task-1")
 	cliErr := assertCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
 	if cliErr.Retryable {
 		t.Fatalf("Retryable = true, want false")
 	}
 	if cliErr.Message != "cross-worktree resume rejected: resume_id belongs to a different worktree" {
 		t.Fatalf("message = %q, want cross-worktree rejection", cliErr.Message)
+	}
+}
+
+func TestCodeWorkerResumeFromTaskRejectsCrossTenant(t *testing.T) {
+	loomClient := newMockLoom(`{"verdict":"APPLY","confidence":1}`)
+	loomClient.tasks["task-1"] = &loom.Task{
+		ID:         "task-1",
+		WorkerType: WorkerTypeCode,
+		ProjectID:  "project-a",
+		TenantID:   "tenant-a",
+		Metadata: map[string]any{
+			MetadataThreadID:   "thread-1",
+			MetadataWorkerType: string(WorkerTypeCode),
+		},
+	}
+	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
+
+	_, err := worker.ResumeFromTask(contextWithResumeScope(context.Background(), "project-a", "tenant-b"), "task-1")
+	cliErr := assertCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
+	if cliErr.Message != "cross-tenant resume rejected: resume_id belongs to a different tenant" {
+		t.Fatalf("message = %q, want cross-tenant rejection", cliErr.Message)
 	}
 }
 
@@ -87,11 +111,12 @@ func TestCodeWorkerResumeFromTaskRejectsMissingThreadID(t *testing.T) {
 		ID:         "task-1",
 		WorkerType: WorkerTypeCode,
 		ProjectID:  "project-a",
+		TenantID:   loom.LegacyTenantID,
 		Metadata:   map[string]any{MetadataWorkerType: string(WorkerTypeCode)},
 	}
 	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
 
-	_, err := worker.ResumeFromTask(contextWithResumeProjectID(context.Background(), "project-a"), "task-1")
+	_, err := worker.ResumeFromTask(contextWithResumeScope(context.Background(), "project-a", loom.LegacyTenantID), "task-1")
 	assertCLIErrorCode(t, err, types.CLIErrorCodeCapabilityMismatch)
 }
 
@@ -101,6 +126,7 @@ func TestCodeWorkerResumeFromTaskRejectsMissingCurrentProject(t *testing.T) {
 		ID:         "task-1",
 		WorkerType: WorkerTypeCode,
 		ProjectID:  "project-a",
+		TenantID:   loom.LegacyTenantID,
 		Metadata: map[string]any{
 			MetadataThreadID:   "thread-1",
 			MetadataWorkerType: string(WorkerTypeCode),

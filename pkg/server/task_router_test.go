@@ -98,6 +98,38 @@ func TestTaskRouterDispatchClassifierResolved(t *testing.T) {
 	}
 }
 
+func TestTaskRouterClassifierRejectsUnroutableAutomaticClass(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeTaskRouterLoom()
+	router := mustTaskRouter(t, fake, 500*time.Millisecond)
+
+	result, err := router.Dispatch(context.Background(), TaskRequest{
+		Prompt: "Research official documentation for the newest behavior.",
+	})
+	if err == nil {
+		t.Fatal("Dispatch() error = nil, want ClassificationAmbiguous")
+	}
+	var cliErr *extypes.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != extypes.CLIErrorCodeClassificationAmbiguous {
+		t.Fatalf("code = %s, want %s", cliErr.Code, extypes.CLIErrorCodeClassificationAmbiguous)
+	}
+	if len(result.Candidates) == 0 {
+		t.Fatal("candidates empty, want routable candidates")
+	}
+	for _, candidate := range result.Candidates {
+		if candidate.TaskClass != classifier.TaskClassCode && candidate.TaskClass != classifier.TaskClassReview {
+			t.Fatalf("candidate task_class = %s, want only routable classes", candidate.TaskClass)
+		}
+	}
+	if got := fake.submissionCount(); got != 0 {
+		t.Fatalf("submission count = %d, want 0", got)
+	}
+}
+
 func TestTaskRouterDispatchAmbiguousPromptReturnsError(t *testing.T) {
 	t.Parallel()
 

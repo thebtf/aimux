@@ -155,7 +155,7 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 			TenantID:       task.TenantID,
 			CWD:            task.CWD,
 			ResumeMetadata: resumeMeta,
-			DriverCLI:      w.driverCLI,
+			DriverCLI:      w.driverCLIForTask(task),
 			NavigatorCLI:   w.navigatorCLI,
 		})
 		if err != nil {
@@ -242,7 +242,7 @@ func (w *CodeWorker) hydrateResumeMetadata(ctx context.Context, task *loom.Task)
 	if resumeTaskID == "" {
 		return nil, nil
 	}
-	resumeCtx := contextWithResumeProjectID(ctx, task.ProjectID)
+	resumeCtx := contextWithResumeScope(ctx, task.ProjectID, task.TenantID)
 	if err := w.validateResumeProject(resumeCtx, resumeTaskID); err != nil {
 		return nil, err
 	}
@@ -280,6 +280,18 @@ func (w *CodeWorker) validateResumeProject(ctx context.Context, resumeTaskID str
 	return validateResumeProject(ctx, prev)
 }
 
+func (w *CodeWorker) driverCLIForTask(task *loom.Task) types.CLIName {
+	if task != nil {
+		if cli := strings.TrimSpace(task.CLI); cli != "" {
+			return types.CLIName(cli)
+		}
+		if cli, ok := metadataString(task.Metadata, "driver_cli_override"); ok && strings.TrimSpace(cli) != "" {
+			return types.CLIName(strings.TrimSpace(cli))
+		}
+	}
+	return w.driverCLI
+}
+
 func resumeTaskIDFromMetadata(metadata map[string]any) string {
 	for _, key := range []string{"resume_id", MetadataResumeTaskID} {
 		if value, ok := metadataString(metadata, key); ok && strings.TrimSpace(value) != "" {
@@ -305,7 +317,7 @@ func (w *CodeWorker) recordTaskMetadata(task *loom.Task, machine *Machine, crite
 		task.Metadata = map[string]any{}
 	}
 	task.Metadata[MetadataWorkerType] = string(WorkerTypeCode)
-	task.Metadata["driver_cli"] = w.driverCLI
+	task.Metadata["driver_cli"] = w.driverCLIForTask(task)
 	task.Metadata["navigator_cli"] = w.navigatorCLI
 	rounds := machine.Rounds()
 	if verdict.Action != "" {

@@ -90,6 +90,7 @@ func TestCodeWorkerIntegrationResumeContinuation(t *testing.T) {
 		ID:         "prior-code-task",
 		WorkerType: WorkerTypeCode,
 		ProjectID:  "project-integration",
+		TenantID:   loom.LegacyTenantID,
 		Metadata: map[string]any{
 			MetadataThreadID:   "thread-prior",
 			MetadataWorkerType: string(WorkerTypeCode),
@@ -97,7 +98,7 @@ func TestCodeWorkerIntegrationResumeContinuation(t *testing.T) {
 	}
 	worker := newIntegrationCodeWorker(t, client, 3)
 
-	meta, err := worker.ResumeFromTask(contextWithResumeProjectID(context.Background(), "project-integration"), "prior-code-task")
+	meta, err := worker.ResumeFromTask(contextWithResumeScope(context.Background(), "project-integration", loom.LegacyTenantID), "prior-code-task")
 	if err != nil {
 		t.Fatalf("ResumeFromTask returned error: %v", err)
 	}

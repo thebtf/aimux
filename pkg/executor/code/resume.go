@@ -15,6 +15,7 @@ const (
 )
 
 type resumeProjectIDContextKey struct{}
+type resumeTenantIDContextKey struct{}
 
 // ResumeFromTask hydrates metadata for continuing a prior root code task.
 func (w *CodeWorker) ResumeFromTask(ctx context.Context, prevTaskID string) (map[string]any, error) {
@@ -61,6 +62,15 @@ func contextWithResumeProjectID(ctx context.Context, projectID string) context.C
 	return context.WithValue(ctx, resumeProjectIDContextKey{}, projectID)
 }
 
+func contextWithResumeTenantID(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, resumeTenantIDContextKey{}, effectiveResumeTenantID(tenantID))
+}
+
+func contextWithResumeScope(ctx context.Context, projectID string, tenantID string) context.Context {
+	ctx = contextWithResumeProjectID(ctx, projectID)
+	return contextWithResumeTenantID(ctx, tenantID)
+}
+
 func validateResumeProject(ctx context.Context, prev *loom.Task) error {
 	if prev == nil {
 		return types.NewUserInputError("resume task is nil", nil)
@@ -70,9 +80,27 @@ func validateResumeProject(ctx context.Context, prev *loom.Task) error {
 		return types.NewResumeWorkerMismatch("cross-worktree resume rejected: current worktree project id is unavailable", nil)
 	}
 	if prev.ProjectID == currentProjectID {
-		return nil
+		return validateResumeTenant(ctx, prev)
 	}
 	return types.NewResumeWorkerMismatch("cross-worktree resume rejected: resume_id belongs to a different worktree", nil)
+}
+
+func validateResumeTenant(ctx context.Context, prev *loom.Task) error {
+	currentTenantID, _ := ctx.Value(resumeTenantIDContextKey{}).(string)
+	if currentTenantID == "" {
+		return types.NewResumeWorkerMismatch("cross-tenant resume rejected: current tenant id is unavailable", nil)
+	}
+	if effectiveResumeTenantID(prev.TenantID) == currentTenantID {
+		return nil
+	}
+	return types.NewResumeWorkerMismatch("cross-tenant resume rejected: resume_id belongs to a different tenant", nil)
+}
+
+func effectiveResumeTenantID(tenantID string) string {
+	if tenantID == "" {
+		return loom.LegacyTenantID
+	}
+	return tenantID
 }
 
 func resumeWorkerMismatch(actual loom.WorkerType) *types.CLIError {
