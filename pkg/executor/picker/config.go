@@ -32,6 +32,11 @@ type PickerConfig struct {
 	// YAML key: scores
 	Scores map[string]map[string]int `yaml:"scores"`
 
+	// PairNavigator maps a driver CLI to its preferred navigator CLI for
+	// cross-family pair execution.
+	// YAML key: pair_navigator
+	PairNavigator map[string]string `yaml:"pair_navigator"`
+
 	// HealthCacheTTL controls how long a health check result is cached.
 	// Zero value is replaced with 60s by DefaultPickerConfig.
 	// YAML key: health_cache_ttl (parsed as Go duration string)
