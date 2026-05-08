@@ -127,6 +127,9 @@ func DefaultTaskRoutes() map[string]loom.WorkerType {
 
 // Dispatch resolves task_class, submits a Loom task, and waits for terminal status.
 func (r *TaskRouter) Dispatch(ctx context.Context, req TaskRequest) (TaskResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return TaskResult{}, cliErrorFromContext("task router dispatch canceled", err)
 	}

@@ -63,6 +63,24 @@ func TestTaskRouterDispatchExplicitTaskClass(t *testing.T) {
 	}
 }
 
+func TestTaskRouterDispatchNilContextUsesBackground(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeTaskRouterLoom()
+	router := mustTaskRouter(t, fake, 500*time.Millisecond)
+
+	if _, err := router.Dispatch(nil, TaskRequest{
+		Prompt:    "Implement pkg/server/task_router.go nil context handling.",
+		TaskClass: classifier.TaskClassCode,
+		ProjectID: "project-1",
+	}); err != nil {
+		t.Fatalf("Dispatch(nil) error = %v", err)
+	}
+	if got := fake.submissionCount(); got != 1 {
+		t.Fatalf("submission count = %d, want 1", got)
+	}
+}
+
 func TestTaskRouterDispatchClassifierResolved(t *testing.T) {
 	t.Parallel()
 

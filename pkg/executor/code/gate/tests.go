@@ -76,11 +76,9 @@ func hasPythonTests(root string) (bool, error) {
 		if path != root && entry.IsDir() && shouldSkipTestWalkDir(name) {
 			return filepath.SkipDir
 		}
-		if entry.IsDir() && name == "tests" {
-			found = true
-			return filepath.SkipAll
-		}
-		if !entry.IsDir() && ((strings.HasPrefix(name, "test_") && strings.HasSuffix(name, ".py")) || strings.HasSuffix(name, "_test.py")) {
+		if !entry.IsDir() && (name == "conftest.py" ||
+			(strings.HasPrefix(name, "test_") && strings.HasSuffix(name, ".py")) ||
+			strings.HasSuffix(name, "_test.py")) {
 			found = true
 			return filepath.SkipAll
 		}

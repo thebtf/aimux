@@ -102,7 +102,7 @@ func TestGateRunGateFailOpenOnPipelineError(t *testing.T) {
 
 func TestGateRunGateFailOpenOnTimeout(t *testing.T) {
 	runner := &fakePassRunner{wait: true}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
 	decision, err := NewGate(runner, Criteria{}).RunGate(ctx, "HEAD", 300)

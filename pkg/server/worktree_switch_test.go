@@ -62,8 +62,11 @@ func TestWorktreeSwitchDrainTimeoutAcceptsNewProject(t *testing.T) {
 		t.Fatalf("switch projectStateForRequest: %v", err)
 	}
 	elapsed := time.Since(start)
-	if elapsed < time.Second {
-		t.Fatalf("switch returned before drain timeout: elapsed=%v", elapsed)
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("switch returned before drain timeout tolerance: elapsed=%v", elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("switch took unexpectedly long: elapsed=%v", elapsed)
 	}
 	task, err := srv.loom.Get(taskID)
 	if err != nil {

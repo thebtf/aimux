@@ -342,7 +342,7 @@ func (l *LoomEngine) resolveSubtaskContext(req TaskRequest, tenantID string) (su
 		return subtaskContext{projectID: req.ProjectID}, nil
 	}
 
-	parent, err := l.store.GetForTenant(req.ParentTaskID, tenantID)
+	parent, err := l.store.GetForTenantInEngine(req.ParentTaskID, tenantID)
 	if err != nil {
 		return subtaskContext{}, fmt.Errorf("loom: get parent task %s: %w", req.ParentTaskID, err)
 	}
@@ -370,7 +370,7 @@ func (l *LoomEngine) validateSubtaskDepth(parent *Task, tenantID string) (string
 		if current.ParentTaskID == "" {
 			return current.ID, nil
 		}
-		next, err := l.store.GetForTenant(current.ParentTaskID, tenantID)
+		next, err := l.store.GetForTenantInEngine(current.ParentTaskID, tenantID)
 		if err != nil {
 			return "", fmt.Errorf("loom: get parent ancestor task %s: %w", current.ParentTaskID, err)
 		}

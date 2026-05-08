@@ -496,6 +496,33 @@ func (s *TaskStore) GetForTenantContext(ctx context.Context, id, tenantID string
 	return task, nil
 }
 
+// GetForTenantInEngine retrieves a task by ID only if it belongs to the given
+// tenantID and this store's engine. Use this for execution paths that must not
+// inherit task context across daemon/worktree boundaries.
+func (s *TaskStore) GetForTenantInEngine(id, tenantID string) (*Task, error) {
+	return s.GetForTenantInEngineContext(context.Background(), id, tenantID)
+}
+
+// GetForTenantInEngineContext retrieves an engine- and tenant-scoped task with
+// caller-controlled cancellation.
+func (s *TaskStore) GetForTenantInEngineContext(ctx context.Context, id, tenantID string) (*Task, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+taskSelectColumns+`
+		FROM tasks WHERE id = ? AND tenant_id = ? AND engine_name = ?`, id, tenantID, s.engineName)
+
+	task, err := scanTask(row)
+	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrTaskNotFound
+		}
+		return nil, err
+	}
+	return task, nil
+}
+
 // List returns tasks for a project, optionally filtered by status values.
 // Scoped by engine_name only — use ListForTenant for tenant-scoped access.
 func (s *TaskStore) List(projectID string, statuses ...TaskStatus) ([]*Task, error) {

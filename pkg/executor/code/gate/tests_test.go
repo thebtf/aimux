@@ -58,6 +58,32 @@ func TestHasTestsPythonRequiresPythonTestFile(t *testing.T) {
 	}
 }
 
+func TestHasTestsPythonIgnoresEmptyTestsDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "tests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := HasTests(root, ProjectTypePython)
+	if err != nil {
+		t.Fatalf("HasTests python with empty tests dir: %v", err)
+	}
+	if got {
+		t.Fatal("HasTests python with empty tests dir = true, want false")
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "tests", "conftest.py"), []byte("import pytest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = HasTests(root, ProjectTypePython)
+	if err != nil {
+		t.Fatalf("HasTests python with conftest: %v", err)
+	}
+	if !got {
+		t.Fatal("HasTests python with conftest.py = false, want true")
+	}
+}
+
 func TestDetectProjectTypeEmptyCWDIsUnknown(t *testing.T) {
 	got, err := DetectProjectType("")
 	if err != nil {
