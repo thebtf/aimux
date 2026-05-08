@@ -100,7 +100,8 @@ func TestRunRoundSubtaskMetadataAndNavigatorPrompt(t *testing.T) {
 	}
 	assertMetadata(t, navigator.Metadata, "navigator_cli", "claude")
 	assertMetadata(t, navigator.Metadata, "driver_cli", "codex")
-	if !strings.Contains(navigator.Prompt, testDriverDiff) {
+	normalizedNavigatorPrompt := strings.ReplaceAll(navigator.Prompt, "\r\n", "\n")
+	if !strings.Contains(normalizedNavigatorPrompt, strings.TrimSpace(testDriverDiff)) {
 		t.Fatalf("navigator prompt missing driver diff: %q", navigator.Prompt)
 	}
 	if !strings.Contains(navigator.Prompt, "BuildClean") {
