@@ -116,6 +116,28 @@ func TestTaskRouterDispatchClassifierResolved(t *testing.T) {
 	}
 }
 
+func TestTaskRouterDriverCLIOverrideStaysMetadataOnly(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeTaskRouterLoom()
+	router := mustTaskRouter(t, fake, 500*time.Millisecond)
+
+	_, err := router.Dispatch(context.Background(), TaskRequest{
+		Prompt:    "Implement pkg/server/task_router.go CLI override handling.",
+		TaskClass: classifier.TaskClassCode,
+		CLI:       "gemini",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+
+	req := fake.onlySubmission(t)
+	if req.CLI != "" {
+		t.Fatalf("TaskRequest.CLI = %q, want empty", req.CLI)
+	}
+	assertMetadataString(t, req.Metadata, "driver_cli_override", "gemini")
+}
+
 func TestTaskRouterClassifierRejectsUnroutableAutomaticClass(t *testing.T) {
 	t.Parallel()
 
@@ -261,13 +283,16 @@ func TestTaskRouterDispatchTimeoutCancelsBlockingGet(t *testing.T) {
 	}
 }
 
-func TestTaskRouterWaitTimeoutHonorsLongRequestTimeout(t *testing.T) {
+func TestTaskRouterWaitTimeoutHonorsRequestTimeout(t *testing.T) {
 	t.Parallel()
 
-	router := mustTaskRouter(t, newFakeTaskRouterLoom(), 20*time.Millisecond)
+	router := mustTaskRouter(t, newFakeTaskRouterLoom(), 5*time.Second)
 
 	if got, want := router.waitTimeoutForRequest(1), time.Second+time.Millisecond; got != want {
 		t.Fatalf("wait timeout = %v, want %v", got, want)
+	}
+	if got, want := router.waitTimeoutForRequest(0), 5*time.Second; got != want {
+		t.Fatalf("default wait timeout = %v, want %v", got, want)
 	}
 }
 

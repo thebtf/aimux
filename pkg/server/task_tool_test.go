@@ -102,6 +102,26 @@ func TestHandleTaskReviewRequiresTarget(t *testing.T) {
 	}
 }
 
+func TestHandleTaskModeParamUnavailable(t *testing.T) {
+	t.Parallel()
+
+	srv, codeWorker, _ := newTaskToolServer(t)
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt": "rewrite this prompt",
+		"mode":   "universal",
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+	}
+	if got := codeWorker.taskCount(); got != 0 {
+		t.Fatalf("code task count = %d, want 0", got)
+	}
+}
+
 func TestHandleTaskReviewGateMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -141,8 +161,8 @@ func TestHandleTaskCLIOverrideDoesNotBypassRouter(t *testing.T) {
 	}
 
 	task := codeWorker.onlyTask(t)
-	if task.CLI != "codex" {
-		t.Fatalf("task CLI = %q, want codex", task.CLI)
+	if task.CLI != "" {
+		t.Fatalf("task CLI = %q, want empty root task CLI", task.CLI)
 	}
 	assertMetadataString(t, task.Metadata, "driver_cli_override", "codex")
 	if task.WorkerType != code.WorkerTypeCode {

@@ -97,10 +97,6 @@ func (s *Server) registerTaskTool() {
 				mcp.Description("Code sandbox sub-mode."),
 				mcp.Enum("read-only", "workspace-write", "danger"),
 			),
-			mcp.WithString("mode",
-				mcp.Description("Prompt sub-mode."),
-				mcp.Enum("universal", "delegate", "review", "diagnose"),
-			),
 			mcp.WithNumber("timeout_seconds",
 				mcp.Description("Worker timeout in seconds, used by review-gate and long-running workers."),
 			),
@@ -174,13 +170,16 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 	timeoutSeconds := req.GetInt("timeout_seconds", 0)
 	maxAttempts := req.GetInt("max_attempts", 0)
 
+	if mode != "" {
+		return TaskRequest{}, extypes.NewUserInputError("task: mode param is not available in the Loom router", nil)
+	}
 	if timeoutSeconds < 0 {
 		return TaskRequest{}, extypes.NewUserInputError("task: timeout_seconds must be >= 0", nil)
 	}
 	if maxAttempts < 0 {
 		return TaskRequest{}, extypes.NewUserInputError("task: max_attempts must be >= 0", nil)
 	}
-	taskClass, classErr := normalizeTaskToolClass(rawTaskClass, target, gate, sandbox, mode)
+	taskClass, classErr := normalizeTaskToolClass(rawTaskClass, target, gate, sandbox)
 	if classErr != nil {
 		return TaskRequest{}, classErr
 	}
@@ -188,9 +187,6 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 	metadata := map[string]any{}
 	if sandbox != "" {
 		metadata["sandbox"] = sandbox
-	}
-	if mode != "" {
-		metadata["mode"] = mode
 	}
 	if timeoutSeconds > 0 {
 		metadata["timeout_seconds"] = timeoutSeconds
@@ -222,7 +218,7 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 	}, nil
 }
 
-func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string, mode string) (string, error) {
+func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string) (string, error) {
 	taskClass := strings.ToLower(strings.TrimSpace(raw))
 	if !validTaskToolClass(taskClass) {
 		return "", extypes.NewUserInputError(fmt.Sprintf("task: unsupported task_class %q", raw), nil)
@@ -249,25 +245,12 @@ func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string
 				return "", err
 			}
 		}
-		if mode != "" {
-			if err := validatePromptMode(mode); err != nil {
-				return "", err
-			}
-			if err := setImplied(classifier.TaskClassPrompt, "mode"); err != nil {
-				return "", err
-			}
-		}
 		if implied != "" {
 			taskClass = implied
 		}
 	} else {
 		if sandbox != "" {
 			if err := validateSandbox(sandbox); err != nil {
-				return "", err
-			}
-		}
-		if mode != "" {
-			if err := validatePromptMode(mode); err != nil {
 				return "", err
 			}
 		}
@@ -278,12 +261,6 @@ func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string
 	}
 	if sandbox != "" && taskClass != classifier.TaskClassCode {
 		return "", extypes.NewUserInputError("task: sandbox param requires task_class code", nil)
-	}
-	if mode != "" && taskClass != classifier.TaskClassPrompt {
-		return "", extypes.NewUserInputError("task: mode param requires task_class prompt", nil)
-	}
-	if taskClass == classifier.TaskClassPrompt {
-		return "", extypes.NewUserInputError("task: prompt task_class is not available in the Loom router", nil)
 	}
 	if taskClass == classifier.TaskClassReview && strings.TrimSpace(target) == "" {
 		return "", extypes.NewUserInputError("task: target is required for review task_class", nil)
@@ -306,15 +283,6 @@ func validateSandbox(sandbox string) error {
 		return nil
 	default:
 		return extypes.NewUserInputError(fmt.Sprintf("task: invalid sandbox %q", sandbox), nil)
-	}
-}
-
-func validatePromptMode(mode string) error {
-	switch mode {
-	case "universal", "delegate", "review", "diagnose":
-		return nil
-	default:
-		return extypes.NewUserInputError(fmt.Sprintf("task: invalid mode %q", mode), nil)
 	}
 }
 

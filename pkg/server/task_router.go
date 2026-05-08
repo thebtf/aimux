@@ -241,7 +241,6 @@ func canonicalLoomRequest(req TaskRequest, prompt string, taskClass string, work
 		Prompt:       prompt,
 		CWD:          req.CWD,
 		Env:          cloneEnv(req.Env),
-		CLI:          req.CLI,
 		Role:         req.Role,
 		Model:        req.Model,
 		Effort:       req.Effort,
@@ -296,15 +295,10 @@ func (r *TaskRouter) wait(ctx context.Context, taskID string, taskClass string, 
 }
 
 func (r *TaskRouter) waitTimeoutForRequest(timeoutSeconds int) time.Duration {
-	timeout := r.waitTimeout
 	if timeoutSeconds <= 0 {
-		return timeout
+		return r.waitTimeout
 	}
-	requestTimeout := time.Duration(timeoutSeconds) * time.Second
-	if requestTimeout > timeout {
-		timeout = requestTimeout + r.pollInterval
-	}
-	return timeout
+	return time.Duration(timeoutSeconds)*time.Second + r.pollInterval
 }
 
 func contextError(ctx context.Context, err error) error {
