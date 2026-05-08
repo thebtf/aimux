@@ -1,20 +1,14 @@
 // Package types defines shared CLI error contracts for executor workers.
 //
-// Every CLI worker (codex, claude, gemini, ...) MUST emit *CLIError on failure.
-// AIMUX-4 FailureClassifier switches over CLIErrorCode to decide fallback eligibility.
-// String matching on CLI stderr is FORBIDDEN — use this typed contract instead.
-//
-// Contract for future CLI workers (FR-16): all public error-returning functions MUST
-// wrap internal errors via a mapToCliError function (or equivalent) and return
-// *CLIError. Callers extract the typed code with errors.As(err, &cliErr).
+// Every CLI worker (codex, claude, gemini, ...) must emit *CLIError on failure.
+// AIMUX-4 FailureClassifier switches over CLIErrorCode to decide fallback
+// eligibility. String matching on CLI stderr is forbidden at shared boundaries.
 package types
 
 import "fmt"
 
 // CLIErrorCode classifies the root cause of a CLI worker failure.
-// AIMUX-4 FailureClassifier switches over this enum to decide fallback eligibility.
-// CLIErrorCodeUnknown is intentionally iota (value 0) so that an uninitialized
-// CLIError defaults to Unknown, which is treated as terminal — a safe default.
+// CLIErrorCodeUnknown is intentionally zero so uninitialized values fail closed.
 type CLIErrorCode int
 
 const (
@@ -26,21 +20,23 @@ const (
 	CLIErrorCodeAuthExpiry
 	// CLIErrorCodeTimeout indicates context.DeadlineExceeded or turn deadline.
 	CLIErrorCodeTimeout
-	// CLIErrorCodeCapabilityMismatch indicates JSON-RPC -32601 or unsupported method.
+	// CLIErrorCodeCapabilityMismatch indicates an unsupported capability.
 	CLIErrorCodeCapabilityMismatch
-	// CLIErrorCodeUserInputError indicates invalid prompt or param validation failure.
+	// CLIErrorCodeUserInputError indicates invalid prompt or parameter validation failure.
 	CLIErrorCodeUserInputError
-	// CLIErrorCodeSandboxDenial indicates a sandbox read-only denial or patch rejected.
+	// CLIErrorCodeSandboxDenial indicates a sandbox read/write denial.
 	CLIErrorCodeSandboxDenial
-	// CLIErrorCodeBinaryNotFound indicates exec.LookPath failure (binary not installed).
+	// CLIErrorCodeBinaryNotFound indicates a missing CLI binary.
 	CLIErrorCodeBinaryNotFound
-	// CLIErrorCodeCanceled indicates the operation was canceled by the caller or system.
-	// Distinct from CLIErrorCodeTimeout: cancellation is deliberate, not a deadline breach.
-	// AIMUX-4 FailureClassifier treats Canceled as terminal — no retry or fallback.
+	// CLIErrorCodeCanceled indicates deliberate caller or system cancellation.
 	CLIErrorCodeCanceled
+	// CLIErrorCodeResumeWorkerMismatch indicates resume_id cannot be used by this worker or worktree.
+	CLIErrorCodeResumeWorkerMismatch
+	// CLIErrorCodeClassificationAmbiguous indicates task_class classifier confidence was too low.
+	CLIErrorCodeClassificationAmbiguous
 )
 
-// String returns a human-readable label for logging.
+// String returns a human-readable label for logging and JSON-adjacent diagnostics.
 func (c CLIErrorCode) String() string {
 	switch c {
 	case CLIErrorCodeUnknown:
@@ -61,78 +57,131 @@ func (c CLIErrorCode) String() string {
 		return "BinaryNotFound"
 	case CLIErrorCodeCanceled:
 		return "Canceled"
+	case CLIErrorCodeResumeWorkerMismatch:
+		return "ResumeWorkerMismatch"
+	case CLIErrorCodeClassificationAmbiguous:
+		return "ClassificationAmbiguous"
 	default:
 		return fmt.Sprintf("CLIErrorCode(%d)", int(c))
 	}
 }
 
-// CLIError is the typed error emitted by all CLI workers on failure.
-// Use errors.As(err, &cliErr) to extract the typed code from a returned error.
+// CLIError is the typed error emitted by CLI workers on failure.
+// Cause is not JSON-serializable; CauseStr is the stable wire/debug form.
 type CLIError struct {
-	// Code classifies the failure for AIMUX-4 FailureClassifier routing.
-	Code CLIErrorCode
-	// Message is the human-readable error description.
-	Message string
-	// Wrapped is the original error, preserved for debugging and errors.Is chains.
-	Wrapped error
+	Code      CLIErrorCode `json:"code"`
+	Message   string       `json:"message"`
+	Cause     error        `json:"-"`
+	CauseStr  string       `json:"cause,omitempty"`
+	CLI       string       `json:"cli,omitempty"`
+	Retryable bool         `json:"retryable"`
 }
 
-// Error implements the error interface. Format: "cli error <Code>: <Message>".
+// Error implements the error interface.
 func (e *CLIError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
 	return fmt.Sprintf("cli error %s: %s", e.Code, e.Message)
 }
 
-// Unwrap returns the wrapped error, enabling errors.Is and errors.As chains
-// to traverse through the CLIError to the underlying cause.
+// Unwrap returns the original cause, enabling errors.Is/errors.As chains.
 func (e *CLIError) Unwrap() error {
-	return e.Wrapped
+	if e == nil {
+		return nil
+	}
+	return e.Cause
 }
 
-// --- Constructors ---
+// WithCLI returns a copy annotated with the CLI backend that produced the error.
+func (e *CLIError) WithCLI(cli string) *CLIError {
+	if e == nil {
+		return nil
+	}
+	cp := *e
+	cp.CLI = cli
+	return &cp
+}
+
+// RetryableByCode returns the default fallback/retry hint for a code.
+func RetryableByCode(code CLIErrorCode) bool {
+	switch code {
+	case CLIErrorCodeRateLimit, CLIErrorCodeAuthExpiry, CLIErrorCodeTimeout, CLIErrorCodeCapabilityMismatch:
+		return true
+	default:
+		return false
+	}
+}
+
+// NewCLIError creates a CLIError with defaults derived from its code.
+func NewCLIError(code CLIErrorCode, msg string, cause error) *CLIError {
+	return &CLIError{
+		Code:      code,
+		Message:   msg,
+		Cause:     cause,
+		CauseStr:  causeString(cause),
+		Retryable: RetryableByCode(code),
+	}
+}
+
+func causeString(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	return cause.Error()
+}
 
 // NewRateLimit creates a CLIError with CLIErrorCodeRateLimit.
-func NewRateLimit(msg string, wrapped error) *CLIError {
-	return &CLIError{Code: CLIErrorCodeRateLimit, Message: msg, Wrapped: wrapped}
+func NewRateLimit(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeRateLimit, msg, cause)
 }
 
 // NewAuthExpiry creates a CLIError with CLIErrorCodeAuthExpiry.
-func NewAuthExpiry(msg string, wrapped error) *CLIError {
-	return &CLIError{Code: CLIErrorCodeAuthExpiry, Message: msg, Wrapped: wrapped}
+func NewAuthExpiry(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeAuthExpiry, msg, cause)
 }
 
 // NewTimeout creates a CLIError with CLIErrorCodeTimeout.
-func NewTimeout(msg string, wrapped error) *CLIError {
-	return &CLIError{Code: CLIErrorCodeTimeout, Message: msg, Wrapped: wrapped}
+func NewTimeout(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeTimeout, msg, cause)
 }
 
 // NewCapabilityMismatch creates a CLIError with CLIErrorCodeCapabilityMismatch.
-func NewCapabilityMismatch(msg string, wrapped error) *CLIError {
-	return &CLIError{Code: CLIErrorCodeCapabilityMismatch, Message: msg, Wrapped: wrapped}
+func NewCapabilityMismatch(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeCapabilityMismatch, msg, cause)
 }
 
 // NewUserInputError creates a CLIError with CLIErrorCodeUserInputError.
-func NewUserInputError(msg string, wrapped error) *CLIError {
-	return &CLIError{Code: CLIErrorCodeUserInputError, Message: msg, Wrapped: wrapped}
+func NewUserInputError(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeUserInputError, msg, cause)
 }
 
 // NewSandboxDenial creates a CLIError with CLIErrorCodeSandboxDenial.
-func NewSandboxDenial(msg string, wrapped error) *CLIError {
-	return &CLIError{Code: CLIErrorCodeSandboxDenial, Message: msg, Wrapped: wrapped}
+func NewSandboxDenial(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeSandboxDenial, msg, cause)
 }
 
 // NewBinaryNotFound creates a CLIError with CLIErrorCodeBinaryNotFound.
-func NewBinaryNotFound(msg string, wrapped error) *CLIError {
-	return &CLIError{Code: CLIErrorCodeBinaryNotFound, Message: msg, Wrapped: wrapped}
+func NewBinaryNotFound(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeBinaryNotFound, msg, cause)
 }
 
 // NewCanceled creates a CLIError with CLIErrorCodeCanceled.
-// Use when the caller or system deliberately canceled the operation.
-func NewCanceled(msg string, wrapped error) *CLIError {
-	return &CLIError{Code: CLIErrorCodeCanceled, Message: msg, Wrapped: wrapped}
+func NewCanceled(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeCanceled, msg, cause)
+}
+
+// NewResumeWorkerMismatch creates a CLIError with CLIErrorCodeResumeWorkerMismatch.
+func NewResumeWorkerMismatch(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeResumeWorkerMismatch, msg, cause)
+}
+
+// NewClassificationAmbiguous creates a CLIError with CLIErrorCodeClassificationAmbiguous.
+func NewClassificationAmbiguous(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeClassificationAmbiguous, msg, cause)
 }
 
 // NewUnknown creates a CLIError with CLIErrorCodeUnknown.
-// Use for errors that do not match any known classification; treated as terminal.
-func NewUnknown(msg string, wrapped error) *CLIError {
-	return &CLIError{Code: CLIErrorCodeUnknown, Message: msg, Wrapped: wrapped}
+func NewUnknown(msg string, cause error) *CLIError {
+	return NewCLIError(CLIErrorCodeUnknown, msg, cause)
 }

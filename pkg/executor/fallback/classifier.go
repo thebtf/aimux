@@ -22,7 +22,8 @@ const (
 // Classification is based exclusively on the typed CLIErrorCode enum — no string matching.
 //
 // Eligible codes: RateLimit, AuthExpiry, Timeout, CapabilityMismatch.
-// Terminal codes: UserInputError, SandboxDenial, BinaryNotFound, Canceled, Unknown.
+// Terminal codes: UserInputError, SandboxDenial, BinaryNotFound, Canceled,
+// ResumeWorkerMismatch, ClassificationAmbiguous, Unknown.
 // Unknown code → Terminal (safer default per architecture.md §6).
 type FailureClassifier struct{}
 
@@ -72,6 +73,12 @@ func classifyCode(code types.CLIErrorCode) Eligibility {
 		return Terminal
 	case types.CLIErrorCodeCanceled:
 		// Deliberate cancellation — no retry or fallback (spec FR-2 note).
+		return Terminal
+	case types.CLIErrorCodeResumeWorkerMismatch:
+		// Resume continuation is bound to the original worker/project context.
+		return Terminal
+	case types.CLIErrorCodeClassificationAmbiguous:
+		// Caller must pick an explicit task_class; another CLI cannot resolve it.
 		return Terminal
 	case types.CLIErrorCodeUnknown:
 		// Unknown error code — terminal is the safer default (architecture.md §6).

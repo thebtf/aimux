@@ -40,8 +40,15 @@ func mapToCliError(err error) *types.CLIError {
 		if err == existing {
 			return existing
 		}
-		// err wraps existing: preserve the outer message, keep the inner code.
-		return &types.CLIError{Code: existing.Code, Message: err.Error(), Wrapped: err}
+		// err wraps existing: preserve the outer message, keep the inner code and retry hint.
+		return &types.CLIError{
+			Code:      existing.Code,
+			Message:   err.Error(),
+			Cause:     err,
+			CauseStr:  err.Error(),
+			CLI:       existing.CLI,
+			Retryable: existing.Retryable,
+		}
 	}
 
 	msg := err.Error()
