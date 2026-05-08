@@ -24,6 +24,35 @@ type profileTaskWorker struct {
 	adapt      leafOutputAdapter
 }
 
+type tenantAwareSubtaskLoom struct {
+	engine   *loom.LoomEngine
+	quotaFor func(tenantID string) *loom.TenantQuotaConfig
+}
+
+func (l tenantAwareSubtaskLoom) Submit(ctx context.Context, req loom.TaskRequest) (string, error) {
+	if l.engine == nil {
+		return "", extypes.NewCapabilityMismatch("tenant-aware subtask loom requires engine", nil)
+	}
+	if req.TenantID != "" {
+		return loom.NewTenantScopedEngine(l.engine, req.TenantID, l.quota(req.TenantID)).Submit(ctx, req)
+	}
+	return l.engine.Submit(ctx, req)
+}
+
+func (l tenantAwareSubtaskLoom) Get(taskID string) (*loom.Task, error) {
+	if l.engine == nil {
+		return nil, extypes.NewCapabilityMismatch("tenant-aware subtask loom requires engine", nil)
+	}
+	return l.engine.Get(taskID)
+}
+
+func (l tenantAwareSubtaskLoom) quota(tenantID string) *loom.TenantQuotaConfig {
+	if l.quotaFor == nil {
+		return nil
+	}
+	return l.quotaFor(tenantID)
+}
+
 func (w profileTaskWorker) Type() loom.WorkerType {
 	return w.workerType
 }
@@ -97,9 +126,10 @@ func (s *Server) registerTaskWorkers() {
 	if s == nil || s.loom == nil {
 		return
 	}
+	subtaskLoom := tenantAwareSubtaskLoom{engine: s.loom}
 
 	codeWorker, codeErr := code.NewCodeWorker(code.CodeWorkerConfig{
-		Loom: s.loom,
+		Loom: subtaskLoom,
 	})
 	if codeErr != nil {
 		s.log.Warn("task workers: code worker init failed: %v", codeErr)
@@ -121,7 +151,7 @@ func (s *Server) registerTaskWorkers() {
 	}
 
 	reviewWorker, reviewErr := review.NewReviewWorker(review.ReviewWorkerConfig{
-		Loom:                  s.loom,
+		Loom:                  subtaskLoom,
 		DefaultTimeoutSeconds: serverDefaultTimeoutSeconds(s),
 	})
 	if reviewErr != nil {
