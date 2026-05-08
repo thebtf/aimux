@@ -14,6 +14,8 @@ const (
 	MetadataResumeTaskID = "resume_task_id"
 )
 
+type resumeProjectIDContextKey struct{}
+
 // ResumeFromTask hydrates metadata for continuing a prior root code task.
 func (w *CodeWorker) ResumeFromTask(ctx context.Context, prevTaskID string) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
@@ -29,6 +31,9 @@ func (w *CodeWorker) ResumeFromTask(ctx context.Context, prevTaskID string) (map
 	prev, err := w.loom.Get(prevTaskID)
 	if err != nil {
 		return nil, types.NewUserInputError(fmt.Sprintf("resume task %q not found", prevTaskID), err)
+	}
+	if err := validateResumeProject(ctx, prev); err != nil {
+		return nil, err
 	}
 	if prev.WorkerType != WorkerTypeCode {
 		return nil, resumeWorkerMismatch(prev.WorkerType)
@@ -47,6 +52,27 @@ func (w *CodeWorker) ResumeFromTask(ctx context.Context, prevTaskID string) (map
 		MetadataWorkerType:   string(WorkerTypeCode),
 		MetadataResumeTaskID: prevTaskID,
 	}, nil
+}
+
+func contextWithResumeProjectID(ctx context.Context, projectID string) context.Context {
+	if projectID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, resumeProjectIDContextKey{}, projectID)
+}
+
+func validateResumeProject(ctx context.Context, prev *loom.Task) error {
+	if prev == nil {
+		return types.NewUserInputError("resume task is nil", nil)
+	}
+	currentProjectID, _ := ctx.Value(resumeProjectIDContextKey{}).(string)
+	if currentProjectID == "" {
+		return nil
+	}
+	if prev.ProjectID == currentProjectID {
+		return nil
+	}
+	return types.NewResumeWorkerMismatch("cross-worktree resume rejected: resume_id belongs to a different worktree", nil)
 }
 
 func resumeWorkerMismatch(actual loom.WorkerType) *types.CLIError {

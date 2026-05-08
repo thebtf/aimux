@@ -14,6 +14,7 @@ func TestCodeWorkerResumeFromTaskHydratesMetadata(t *testing.T) {
 	loomClient.tasks["task-1"] = &loom.Task{
 		ID:         "task-1",
 		WorkerType: WorkerTypeCode,
+		ProjectID:  "project-a",
 		Metadata: map[string]any{
 			MetadataThreadID:   "thread-1",
 			MetadataWorkerType: string(WorkerTypeCode),
@@ -21,7 +22,7 @@ func TestCodeWorkerResumeFromTaskHydratesMetadata(t *testing.T) {
 	}
 	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
 
-	meta, err := worker.ResumeFromTask(context.Background(), "task-1")
+	meta, err := worker.ResumeFromTask(contextWithResumeProjectID(context.Background(), "project-a"), "task-1")
 	if err != nil {
 		t.Fatalf("ResumeFromTask returned error: %v", err)
 	}
@@ -49,6 +50,29 @@ func TestCodeWorkerResumeFromTaskRejectsCrossWorker(t *testing.T) {
 	assertCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
 }
 
+func TestCodeWorkerResumeFromTaskRejectsCrossWorktree(t *testing.T) {
+	loomClient := newMockLoom(`{"verdict":"APPLY","confidence":1}`)
+	loomClient.tasks["task-1"] = &loom.Task{
+		ID:         "task-1",
+		WorkerType: WorkerTypeCode,
+		ProjectID:  "worktree-a",
+		Metadata: map[string]any{
+			MetadataThreadID:   "thread-1",
+			MetadataWorkerType: string(WorkerTypeCode),
+		},
+	}
+	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
+
+	_, err := worker.ResumeFromTask(contextWithResumeProjectID(context.Background(), "worktree-b"), "task-1")
+	cliErr := assertCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
+	if cliErr.Retryable {
+		t.Fatalf("Retryable = true, want false")
+	}
+	if cliErr.Message != "cross-worktree resume rejected: resume_id belongs to a different worktree" {
+		t.Fatalf("message = %q, want cross-worktree rejection", cliErr.Message)
+	}
+}
+
 func TestCodeWorkerResumeFromTaskRejectsMissingTask(t *testing.T) {
 	worker := newTestCodeWorker(t, workerTestDeps{loom: newMockLoom(`{"verdict":"APPLY","confidence":1}`)})
 
@@ -69,7 +93,7 @@ func TestCodeWorkerResumeFromTaskRejectsMissingThreadID(t *testing.T) {
 	assertCLIErrorCode(t, err, types.CLIErrorCodeCapabilityMismatch)
 }
 
-func assertCLIErrorCode(t *testing.T, err error, want types.CLIErrorCode) {
+func assertCLIErrorCode(t *testing.T, err error, want types.CLIErrorCode) *types.CLIError {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("error = nil, want %s", want)
@@ -81,4 +105,5 @@ func assertCLIErrorCode(t *testing.T, err error, want types.CLIErrorCode) {
 	if cliErr.Code != want {
 		t.Fatalf("CLIError code = %s, want %s", cliErr.Code, want)
 	}
+	return cliErr
 }

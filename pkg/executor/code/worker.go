@@ -238,15 +238,19 @@ func (w *CodeWorker) hydrateResumeMetadata(ctx context.Context, task *loom.Task)
 	if resumeTaskID == "" {
 		return nil, nil
 	}
+	resumeCtx := contextWithResumeProjectID(ctx, task.ProjectID)
+	if err := w.validateResumeProject(resumeCtx, resumeTaskID); err != nil {
+		return nil, err
+	}
 
 	var (
 		meta map[string]any
 		err  error
 	)
 	if w.driverResumer != nil {
-		meta, err = w.driverResumer.ResumeFromTask(ctx, resumeTaskID)
+		meta, err = w.driverResumer.ResumeFromTask(resumeCtx, resumeTaskID)
 	} else {
-		meta, err = w.ResumeFromTask(ctx, resumeTaskID)
+		meta, err = w.ResumeFromTask(resumeCtx, resumeTaskID)
 	}
 	if err != nil {
 		return nil, err
@@ -259,6 +263,17 @@ func (w *CodeWorker) hydrateResumeMetadata(ctx context.Context, task *loom.Task)
 	}
 	task.Metadata["resume_id"] = resumeTaskID
 	return meta, nil
+}
+
+func (w *CodeWorker) validateResumeProject(ctx context.Context, resumeTaskID string) error {
+	if w.loom == nil {
+		return types.NewCapabilityMismatch("code worker Loom client is required for resume", nil)
+	}
+	prev, err := w.loom.Get(resumeTaskID)
+	if err != nil {
+		return types.NewUserInputError(fmt.Sprintf("resume task %q not found", resumeTaskID), err)
+	}
+	return validateResumeProject(ctx, prev)
 }
 
 func resumeTaskIDFromMetadata(metadata map[string]any) string {
