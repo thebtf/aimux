@@ -1,3 +1,28 @@
+## v5.11.0 — 2026-05-08 (BREAKING)
+
+### Breaking Changes
+
+- **AIMUX-21 — Entry Point Convergence**. The CLI-specific `codex_*` MCP tools are removed in v5.11.0. The public MCP surface now routes code and review work through the methodology-bearing `task` entry point, while Codex remains available as a backend worker. This follows Constitution Principle 3 / Frozen Surface policy (`.agent/specs/constitution.md:45-55`, `.agent/specs/constitution.md:224-231`), spec FR-11 and NFR-5 (`.agent/specs/AIMUX-21-entry-point-convergence/spec.md:418-427`, `:468-472`), plan Phase 1.7 (`.agent/specs/AIMUX-21-entry-point-convergence/plan.md:669-673`), and architecture ADR-013 (`.agent/specs/AIMUX-21-entry-point-convergence/architecture.md:516-529`).
+
+### Migration Table
+
+| Removed invocation | Replacement invocation | Parameter mapping |
+|--------------------|------------------------|-------------------|
+| `codex_task(prompt)` | `task(task_class="code", prompt=...)` | `prompt` is unchanged; `task_class="code"` selects the Strong-Style code worker. |
+| `codex_task(prompt, sandbox_class="write-task")` | `task(task_class="code", prompt=..., sandbox="workspace-write")` | `sandbox_class="write-task"` maps to the generic workspace-write sandbox name. |
+| `codex_task(resume_task_id=X)` | `task(task_class="code", resume_id=X, prompt=...)` | `resume_task_id` is renamed to `resume_id`; callers still provide the continuation prompt. |
+| `codex_review(target)` | `task(task_class="review", target=...)` | `target` is unchanged; `task_class="review"` selects the review worker. |
+| `codex_review_gate(target, timeout_seconds=N)` | `task(task_class="review", target=..., gate=true, timeout_seconds=N)` | `gate=true` requests the blocking ALLOW/BLOCK review-gate mode; `timeout_seconds` is unchanged. |
+| `codex_status(task_id)` | `sessions(action="info", session_id=task_id, include_content=true)` | `task_id` maps to `session_id`; `include_content=true` returns full task content when needed. |
+| `codex_cancel(task_id)` | `sessions(action="cancel", job_id=task_id)` | `task_id` maps to `job_id` on the existing session cancellation surface. |
+
+### Verification
+
+- `test/e2e/codex_tools_removed_test.go` asserts all five removed `codex_*` tools are absent from `tools/list` and the replacement `task` tool is present.
+- `test/e2e/aimux21_smoke_test.go` runs the gated AIMUX-21 independent smoke (`AIMUX21_E2E=1`): build v5.11.0, call `task(task_class="code")`, verify `TaskResult` metadata, mutate `README.md`, verify subtree visibility through the internal debug helper, and re-check removed tool absence.
+
+---
+
 ## v5.10.1 — 2026-05-08 (hotfix)
 
 ### Bug Fixes
