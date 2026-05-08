@@ -162,12 +162,40 @@ func TestPassesRunInvalidJSONFails(t *testing.T) {
 	}
 }
 
+func TestPassesRunCancelsTimedOutPassTask(t *testing.T) {
+	client := newMockLoom(map[loom.WorkerType]string{
+		WorkerTypeReviewStructural: passJSON("structural ok", nil),
+	})
+	client.statuses[WorkerTypeReviewStructural] = loom.TaskStatusRunning
+	passes, err := NewPasses(client)
+	if err != nil {
+		t.Fatalf("NewPasses returned error: %v", err)
+	}
+
+	_, err = passes.Run(context.Background(), "HEAD", Criteria{
+		ParentTaskID: "review-root",
+		ProjectID:    "project-1",
+		TaskTimeout:  20 * time.Millisecond,
+		PollInterval: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("Run returned nil error, want timeout")
+	}
+	if len(client.canceled) != 1 {
+		t.Fatalf("canceled tasks = %#v, want one timed-out pass task", client.canceled)
+	}
+	if client.canceled[0] != "review-task-1" {
+		t.Fatalf("canceled task = %q, want review-task-1", client.canceled[0])
+	}
+}
+
 type mockLoom struct {
 	outputs     map[loom.WorkerType]string
 	statuses    map[loom.WorkerType]loom.TaskStatus
 	errors      map[loom.WorkerType]string
 	submissions []loom.TaskRequest
 	tasks       map[string]*loom.Task
+	canceled    []string
 }
 
 func newMockLoom(outputs map[loom.WorkerType]string) *mockLoom {
@@ -207,6 +235,11 @@ func (m *mockLoom) Get(taskID string) (*loom.Task, error) {
 		return nil, fmt.Errorf("task %s not found", taskID)
 	}
 	return task, nil
+}
+
+func (m *mockLoom) Cancel(taskID string) error {
+	m.canceled = append(m.canceled, taskID)
+	return nil
 }
 
 func testCriteria() Criteria {

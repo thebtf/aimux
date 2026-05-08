@@ -78,6 +78,10 @@ type LoomClient interface {
 	Get(taskID string) (*loom.Task, error)
 }
 
+type taskCanceler interface {
+	Cancel(taskID string) error
+}
+
 // Passes runs the fixed structural -> behavioural -> adversarial review pipeline.
 type Passes struct {
 	loom LoomClient
@@ -171,6 +175,7 @@ func waitForTask(ctx context.Context, client LoomClient, taskID string, criteria
 	for {
 		select {
 		case <-waitCtx.Done():
+			cancelTaskIfSupported(client, taskID)
 			return nil, waitCtx.Err()
 		case <-timer.C:
 			task, err := client.Get(taskID)
@@ -192,6 +197,14 @@ func waitForTask(ctx context.Context, client LoomClient, taskID string, criteria
 			timer.Reset(pollInterval)
 		}
 	}
+}
+
+func cancelTaskIfSupported(client LoomClient, taskID string) {
+	canceler, ok := client.(taskCanceler)
+	if !ok {
+		return
+	}
+	_ = canceler.Cancel(taskID) // best-effort cleanup; preserve the wait failure as the primary error.
 }
 
 func parsePassResult(pass PassName, workerType loom.WorkerType, taskID string, output string, latency time.Duration) (PassResult, error) {

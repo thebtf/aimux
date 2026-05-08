@@ -26,7 +26,7 @@ func TestWorktreeSwitchDrainSuccessWaitsForPreviousProjectTasks(t *testing.T) {
 	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
 		t.Fatalf("initial projectStateForRequest: %v", err)
 	}
-	taskID, worker := submitBlockingLoomTask(t, srv, projectA.ID, "")
+	taskID, worker := submitBlockingLoomTask(t, srv, projectA.ID, worktreeSwitchSessionKey(1001))
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
@@ -56,7 +56,7 @@ func TestWorktreeSwitchDrainTimeoutAcceptsNewProject(t *testing.T) {
 	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
 		t.Fatalf("initial projectStateForRequest: %v", err)
 	}
-	taskID, _ := submitBlockingLoomTask(t, srv, projectA.ID, "")
+	taskID, _ := submitBlockingLoomTask(t, srv, projectA.ID, worktreeSwitchSessionKey(1002))
 
 	start := time.Now()
 	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
@@ -110,6 +110,45 @@ func TestWorktreeSwitchDrainIgnoresOtherTenantTasks(t *testing.T) {
 	}
 	if tenantBTask.Status != loom.TaskStatusRunning {
 		t.Fatalf("tenant B task status = %s, want still running", tenantBTask.Status)
+	}
+}
+
+func TestWorktreeSwitchDrainIgnoresOtherSessionTasks(t *testing.T) {
+	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 1})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctxA := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1009)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+	ctxB := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1010)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+	projectA := muxcore.ProjectContext{ID: "drain-session-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "drain-session-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctxA, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest session A: %v", err)
+	}
+	if _, err := delegate.projectStateForRequest(ctxB, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest session B: %v", err)
+	}
+	sessionBTaskID, _ := submitBlockingLoomTaskWithTenant(t, srv, projectA.ID, worktreeSwitchSessionKey(1010), "tenant-a")
+
+	start := time.Now()
+	if _, err := delegate.projectStateForRequest(ctxA, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest session A: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("switch waited on other session task: elapsed=%v", elapsed)
+	}
+	sessionBTask, err := srv.loom.Get(sessionBTaskID)
+	if err != nil {
+		t.Fatalf("loom.Get session B: %v", err)
+	}
+	if sessionBTask.Status != loom.TaskStatusRunning {
+		t.Fatalf("session B task status = %s, want still running", sessionBTask.Status)
 	}
 }
 

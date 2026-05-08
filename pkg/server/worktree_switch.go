@@ -246,13 +246,15 @@ func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID st
 		timeout = 30 * time.Second
 	}
 
+	tenantID := tenantIDFromContext(ctx)
+	sessionKey, _ := worktreeSessionKeyFromContext(ctx)
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		drained, err := d.previousWorktreeDrained(projectID, tenantIDFromContext(ctx))
+		drained, err := d.previousWorktreeDrained(projectID, tenantID, sessionKey)
 		if err != nil {
 			return false, err
 		}
@@ -270,19 +272,31 @@ func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID st
 	}
 }
 
-func (d *fullDelegate) previousWorktreeDrained(projectID, tenantID string) (bool, error) {
+func (d *fullDelegate) previousWorktreeDrained(projectID, tenantID, sessionKey string) (bool, error) {
 	if tenantID != "" {
 		tasks, err := loom.NewTenantScopedEngine(d.srv.loom, tenantID, nil).List(projectID, loom.ActiveTaskStatuses()...)
 		if err != nil {
 			return false, err
 		}
-		return len(tasks) == 0, nil
+		return worktreeTasksDrainedForSession(tasks, sessionKey), nil
 	}
 	tasks, err := d.srv.loom.List(projectID, loom.ActiveTaskStatuses()...)
 	if err != nil {
 		return false, err
 	}
-	return len(tasks) == 0, nil
+	return worktreeTasksDrainedForSession(tasks, sessionKey), nil
+}
+
+func worktreeTasksDrainedForSession(tasks []*loom.Task, sessionKey string) bool {
+	if sessionKey == "" {
+		return len(tasks) == 0
+	}
+	for _, task := range tasks {
+		if worktreeSessionKeyFromTask(task) == sessionKey {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *fullDelegate) worktreeConfig() config.WorktreeConfig {

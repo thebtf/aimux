@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -393,9 +395,10 @@ func taskDispatchSpawnArgs(cli string, binaryPath string, profile *config.CLIPro
 //
 // Decision order:
 //  1. command.base subcommands/flags.
-//  2. Headless/read-only/model/effort profile flags.
-//  3. PromptFlagType == "stdin" → append StdinSentinel if non-empty; prompt arrives via stdin.
-//  4. Default (flag, positional, empty, or unrecognized) → append prompt flag or positional prompt.
+//  2. command.args_template when present, with missing headless/read-only profile flags preserved.
+//  3. Otherwise, headless/read-only/model/effort profile flags.
+//  4. PromptFlagType == "stdin" → append StdinSentinel if non-empty; prompt arrives via stdin.
+//  5. Default (flag, positional, empty, or unrecognized) → append prompt flag or positional prompt.
 //
 // profile.Command.Base may include the binary plus subcommands (e.g., "codex exec").
 // taskDispatch supplies the binary separately, so the leading binary token is stripped
@@ -407,6 +410,10 @@ func buildTaskArgs(profile *config.CLIProfile, spec picker.TaskSpec) []string {
 	}
 	// Work on a copy so callers can safely reuse config-owned slices.
 	args = append([]string{}, args...)
+	if templateArgs, ok := commandArgsTemplateArgs(profile, spec); ok {
+		args = appendMissingProfileExecutionFlags(args, profile, spec, templateArgs)
+		return append(args, templateArgs...)
+	}
 	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
 		args = append(args, profile.HeadlessFlags...)
 	}
@@ -435,6 +442,77 @@ func buildTaskArgs(profile *config.CLIProfile, spec picker.TaskSpec) []string {
 		}
 	}
 	return args
+}
+
+type taskArgsTemplateData struct {
+	Prompt          string
+	Model           string
+	ReasoningEffort string
+	SessionID       string
+	Headless        bool
+	ReadOnly        bool
+	SessionResume   bool
+	JSON            bool
+}
+
+func commandArgsTemplateArgs(profile *config.CLIProfile, spec picker.TaskSpec) ([]string, bool) {
+	if profile == nil || strings.TrimSpace(profile.Command.ArgsTemplate) == "" {
+		return nil, false
+	}
+	tmpl, err := template.New("task_args").Option("missingkey=error").Parse(profile.Command.ArgsTemplate)
+	if err != nil {
+		return nil, false
+	}
+	data := taskArgsTemplateData{
+		Prompt:          commandTemplateArgValue(spec.Prompt),
+		Model:           commandTemplateArgValue(taskModelForArgs(profile, spec)),
+		ReasoningEffort: commandTemplateArgValue(strings.TrimSpace(spec.Effort)),
+		Headless:        profile.Features.Headless,
+		ReadOnly:        spec.Sandbox == "read-only",
+		JSON:            profile.Features.JSON || strings.EqualFold(profile.OutputFormat, "json"),
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, false
+	}
+	fields, err := splitCommandLine(buf.String())
+	if err != nil {
+		return nil, false
+	}
+	return fields, true
+}
+
+func commandTemplateArgValue(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value)
+}
+
+func appendMissingProfileExecutionFlags(args []string, profile *config.CLIProfile, spec picker.TaskSpec, templateArgs []string) []string {
+	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
+		args = appendMissingArgs(args, templateArgs, profile.HeadlessFlags)
+	}
+	if spec.Sandbox == "read-only" && len(profile.ReadOnlyFlags) > 0 {
+		args = appendMissingArgs(args, templateArgs, profile.ReadOnlyFlags)
+	}
+	return args
+}
+
+func appendMissingArgs(args []string, existing []string, candidates []string) []string {
+	for _, candidate := range candidates {
+		if containsString(existing, candidate) || containsString(args, candidate) {
+			continue
+		}
+		args = append(args, candidate)
+	}
+	return args
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func taskModelForArgs(profile *config.CLIProfile, spec picker.TaskSpec) string {

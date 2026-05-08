@@ -408,6 +408,31 @@ func TestBuildTaskArgsPreservesQuotedCommandBaseFields(t *testing.T) {
 	}
 }
 
+func TestBuildTaskArgsUsesCommandArgsTemplate(t *testing.T) {
+	t.Parallel()
+
+	prompt := `say "hello" from C:\Tools`
+	profile := &config.CLIProfile{
+		Binary:         "gemini",
+		PromptFlag:     "-p",
+		PromptFlagType: "short",
+		Command: config.CommandConfig{
+			Base:         "gemini",
+			ArgsTemplate: `{{if .Model}}--model {{.Model}}{{end}} --output-format json -p "{{.Prompt}}"`,
+		},
+		Features:      types.CLIFeatures{Headless: true, JSON: true},
+		HeadlessFlags: []string{"-y"},
+		DefaultModel:  "gemini-2.5-pro",
+		ModelFlag:     "--model",
+	}
+
+	got := buildTaskArgs(profile, pickerTaskSpec(prompt))
+	want := []string{"-y", "--model", "gemini-2.5-pro", "--output-format", "json", "-p", prompt}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
 func TestSplitCommandLinePreservesWindowsBackslashesInQuotes(t *testing.T) {
 	got, err := splitCommandLine(`codex exec "C:\Program Files\cli.exe" --flag`)
 	if err != nil {
