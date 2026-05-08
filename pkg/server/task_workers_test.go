@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/loom"
 )
@@ -23,7 +24,9 @@ func TestTenantAwareSubtaskLoomEnforcesTenantQuota(t *testing.T) {
 		},
 	}
 
-	_, err := client.Submit(context.Background(), loom.TaskRequest{
+	ctxA, cancelA := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelA()
+	_, err := client.Submit(ctxA, loom.TaskRequest{
 		WorkerType: loom.WorkerTypeCLI,
 		ProjectID:  projectID,
 		TenantID:   "tenant-a",
@@ -33,7 +36,9 @@ func TestTenantAwareSubtaskLoomEnforcesTenantQuota(t *testing.T) {
 		t.Fatalf("tenant-a Submit error = %v, want ErrLoomQuotaExceeded", err)
 	}
 
-	tenantBTaskID, err := client.Submit(context.Background(), loom.TaskRequest{
+	ctxB, cancelB := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelB()
+	tenantBTaskID, err := client.Submit(ctxB, loom.TaskRequest{
 		WorkerType: loom.WorkerTypeCLI,
 		ProjectID:  projectID,
 		TenantID:   "tenant-b",
