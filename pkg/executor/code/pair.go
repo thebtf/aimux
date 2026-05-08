@@ -34,6 +34,7 @@ type PairConfig struct {
 	RequestID           string
 	TenantID            string
 	CWD                 string
+	ResumeMetadata      map[string]any
 	DriverCLI           types.CLIName
 	NavigatorCLI        types.CLIName
 	DriverWorkerType    loom.WorkerType
@@ -266,13 +267,19 @@ func navigatorWorkerType(cfg PairConfig) loom.WorkerType {
 }
 
 func driverMetadata(cfg PairConfig) map[string]any {
-	return map[string]any{
+	metadata := map[string]any{
 		"worker_type":    string(driverWorkerType(cfg)),
 		"round_role":     "driver",
 		"driver_cli":     cfg.DriverCLI,
 		"navigator_cli":  cfg.NavigatorCLI,
 		"parent_task_id": cfg.ParentTaskID,
 	}
+	for _, key := range []string{MetadataThreadID, MetadataResumeTaskID, "resume_id"} {
+		if value, ok := cfg.ResumeMetadata[key]; ok {
+			metadata[key] = value
+		}
+	}
+	return metadata
 }
 
 func navigatorMetadata(cfg PairConfig) map[string]any {

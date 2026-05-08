@@ -25,6 +25,7 @@ type ReviewWorkerConfig struct {
 
 // ReviewWorker executes multi-pass review tasks.
 type ReviewWorker struct {
+	loom                  LoomClient
 	runner                PassRunner
 	criteria              Criteria
 	defaultTimeoutSeconds int
@@ -49,6 +50,7 @@ func NewReviewWorker(cfg ReviewWorkerConfig) (*ReviewWorker, error) {
 		timeout = DefaultGateTimeoutSeconds
 	}
 	return &ReviewWorker{
+		loom:                  cfg.Loom,
 		runner:                runner,
 		criteria:              cfg.Criteria,
 		defaultTimeoutSeconds: timeout,
@@ -73,6 +75,9 @@ func (w *ReviewWorker) Run(ctx context.Context, task *loom.Task) (*loom.WorkerRe
 	if w == nil || w.runner == nil {
 		return nil, types.NewCapabilityMismatch("review worker pass runner is required", nil)
 	}
+	if err := w.validateResume(ctx, task); err != nil {
+		return nil, err
+	}
 
 	target := reviewTarget(task)
 	if target == "" {
@@ -83,6 +88,18 @@ func (w *ReviewWorker) Run(ctx context.Context, task *loom.Task) (*loom.WorkerRe
 		return w.runGate(ctx, task, target, criteria)
 	}
 	return w.runAggregate(ctx, task, target, criteria)
+}
+
+func (w *ReviewWorker) validateResume(ctx context.Context, task *loom.Task) error {
+	resumeTaskID := reviewResumeTaskID(task.Metadata)
+	if resumeTaskID == "" {
+		return nil
+	}
+	if w.loom == nil {
+		return types.NewCapabilityMismatch("review worker Loom client is required for resume validation", nil)
+	}
+	_, err := types.HydrateResumeMetadata(ctx, w.loom, resumeTaskID, WorkerTypeReview)
+	return err
 }
 
 func (w *ReviewWorker) runGate(ctx context.Context, task *loom.Task, target string, criteria Criteria) (*loom.WorkerResult, error) {
@@ -206,6 +223,15 @@ func metadataString(metadata map[string]any, key string) (string, bool) {
 		return "", false
 	}
 	return fmt.Sprint(value), true
+}
+
+func reviewResumeTaskID(metadata map[string]any) string {
+	for _, key := range []string{"resume_id", types.MetadataResumeTaskID} {
+		if value, ok := metadataString(metadata, key); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func metadataBool(metadata map[string]any, key string) (bool, bool) {

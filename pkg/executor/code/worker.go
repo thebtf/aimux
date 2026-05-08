@@ -130,6 +130,10 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 	if task == nil {
 		return nil, types.NewUserInputError("code worker task is nil", nil)
 	}
+	resumeMeta, err := w.hydrateResumeMetadata(ctx, task)
+	if err != nil {
+		return nil, err
+	}
 	criteria := DefaultSuccessCriteria(task.Metadata != nil && task.Metadata["spec_active"] == true)
 	machine, cliErr := NewMachine(Config{MaxRounds: w.maxRounds, Metadata: task.Metadata})
 	if cliErr != nil {
@@ -144,14 +148,15 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 
 	for {
 		verdict, err := w.pairRunner.RunRound(ctx, prompt, criteria, PairConfig{
-			Loom:         w.loom,
-			ParentTaskID: task.ID,
-			ProjectID:    task.ProjectID,
-			RequestID:    task.RequestID,
-			TenantID:     task.TenantID,
-			CWD:          task.CWD,
-			DriverCLI:    w.driverCLI,
-			NavigatorCLI: w.navigatorCLI,
+			Loom:           w.loom,
+			ParentTaskID:   task.ID,
+			ProjectID:      task.ProjectID,
+			RequestID:      task.RequestID,
+			TenantID:       task.TenantID,
+			CWD:            task.CWD,
+			ResumeMetadata: resumeMeta,
+			DriverCLI:      w.driverCLI,
+			NavigatorCLI:   w.navigatorCLI,
 		})
 		if err != nil {
 			return w.failTask(task, machine, err)
@@ -226,6 +231,43 @@ func (w *CodeWorker) failTask(task *loom.Task, machine *Machine, err error) (*lo
 		w.recordTaskMetadata(task, machine, DefaultSuccessCriteria(task.Metadata != nil && task.Metadata["spec_active"] == true), Verdict{}, "")
 	}
 	return nil, cliErr
+}
+
+func (w *CodeWorker) hydrateResumeMetadata(ctx context.Context, task *loom.Task) (map[string]any, error) {
+	resumeTaskID := resumeTaskIDFromMetadata(task.Metadata)
+	if resumeTaskID == "" {
+		return nil, nil
+	}
+
+	var (
+		meta map[string]any
+		err  error
+	)
+	if w.driverResumer != nil {
+		meta, err = w.driverResumer.ResumeFromTask(ctx, resumeTaskID)
+	} else {
+		meta, err = w.ResumeFromTask(ctx, resumeTaskID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if task.Metadata == nil {
+		task.Metadata = map[string]any{}
+	}
+	for key, value := range meta {
+		task.Metadata[key] = value
+	}
+	task.Metadata["resume_id"] = resumeTaskID
+	return meta, nil
+}
+
+func resumeTaskIDFromMetadata(metadata map[string]any) string {
+	for _, key := range []string{"resume_id", MetadataResumeTaskID} {
+		if value, ok := metadataString(metadata, key); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func ensureCLIError(err error) *types.CLIError {
