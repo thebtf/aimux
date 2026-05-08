@@ -2,13 +2,17 @@ package e2e
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/thebtf/aimux/loom"
 	reviewworker "github.com/thebtf/aimux/pkg/executor/review"
+	_ "modernc.org/sqlite"
 )
 
 func TestE2E_ReviewEntry_DecisionShape(t *testing.T) {
@@ -16,7 +20,7 @@ func TestE2E_ReviewEntry_DecisionShape(t *testing.T) {
 		t.Skip("AIMUX21_E2E=1 not set - skipping review entry e2e")
 	}
 
-	engine := newCodeEntryLoom(t)
+	engine := newReviewEntryLoom(t)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -49,7 +53,7 @@ func TestE2E_ReviewEntry_DecisionShape(t *testing.T) {
 		ProjectID:  "aimux21-review-e2e",
 		RequestID:  "aimux21-review-entry",
 		Prompt:     "review HEAD",
-		CWD:        projectRoot(),
+		CWD:        reviewEntryProjectRoot(t),
 		Metadata: map[string]any{
 			"task_class": "review",
 			"target":     "HEAD",
@@ -60,7 +64,7 @@ func TestE2E_ReviewEntry_DecisionShape(t *testing.T) {
 		t.Fatalf("submit review task: %v", err)
 	}
 
-	task := waitForE2ETask(t, ctx, engine, taskID)
+	task := waitForReviewEntryTask(t, ctx, engine, taskID)
 	if task.Status != loom.TaskStatusCompleted {
 		t.Fatalf("review task status = %s error=%q result=%q", task.Status, task.Error, task.Result)
 	}
@@ -103,4 +107,59 @@ func e2eReviewPassJSON(t *testing.T, summary string, findings []reviewworker.Fin
 		t.Fatalf("marshal review pass JSON: %v", err)
 	}
 	return string(data)
+}
+
+func newReviewEntryLoom(t *testing.T) *loom.LoomEngine {
+	t.Helper()
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:review_entry_%d?cache=shared&mode=memory", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("open loom sqlite: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+
+	engine, err := loom.NewEngine(db, "aimux21-review-entry-e2e")
+	if err != nil {
+		t.Fatalf("loom.NewEngine: %v", err)
+	}
+	return engine
+}
+
+func reviewEntryProjectRoot(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(cwd, "go.mod")); err == nil {
+			return cwd
+		}
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			t.Fatalf("could not find go.mod above %s", cwd)
+		}
+		cwd = parent
+	}
+}
+
+func waitForReviewEntryTask(t *testing.T, ctx context.Context, engine *loom.LoomEngine, taskID string) *loom.Task {
+	t.Helper()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			task, _ := engine.Get(taskID)
+			t.Fatalf("wait for review task %s: %v latest=%#v", taskID, ctx.Err(), task)
+		case <-ticker.C:
+			task, err := engine.Get(taskID)
+			if err != nil {
+				t.Fatalf("get review task %s: %v", taskID, err)
+			}
+			if task.Status.IsTerminal() {
+				return task
+			}
+		}
+	}
 }
