@@ -78,6 +78,10 @@ type LoomClient interface {
 	Get(taskID string) (*loom.Task, error)
 }
 
+type contextTaskGetter interface {
+	GetContext(ctx context.Context, taskID string) (*loom.Task, error)
+}
+
 type taskCanceler interface {
 	Cancel(taskID string) error
 }
@@ -178,7 +182,7 @@ func waitForTask(ctx context.Context, client LoomClient, taskID string, criteria
 			cancelTaskIfSupported(client, taskID)
 			return nil, waitCtx.Err()
 		case <-timer.C:
-			task, err := client.Get(taskID)
+			task, err := getTask(ctx, client, taskID)
 			if err != nil {
 				return nil, err
 			}
@@ -197,6 +201,13 @@ func waitForTask(ctx context.Context, client LoomClient, taskID string, criteria
 			timer.Reset(pollInterval)
 		}
 	}
+}
+
+func getTask(ctx context.Context, client LoomClient, taskID string) (*loom.Task, error) {
+	if getter, ok := client.(contextTaskGetter); ok {
+		return getter.GetContext(ctx, taskID)
+	}
+	return client.Get(taskID)
 }
 
 func cancelTaskIfSupported(client LoomClient, taskID string) {

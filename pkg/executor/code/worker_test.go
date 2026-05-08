@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/loom"
 	applygate "github.com/thebtf/aimux/pkg/executor/code/gate"
@@ -137,6 +138,29 @@ func TestCodeWorkerHonorsDriverCLIOverride(t *testing.T) {
 	assertTaskMetadata(t, task.Metadata, "driver_cli", "gemini")
 }
 
+func TestCodeWorkerPassesTaskTimeoutToPairSubtasks(t *testing.T) {
+	root := codeWorkerFixture(t)
+	pair := &mockWorkerPair{verdicts: []Verdict{{
+		Action:     StateApply,
+		Confidence: 0.91,
+		Diff:       renameDiff("note.txt", "old", "new"),
+	}}}
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: pair,
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+	})
+	task := codeWorkerTask(root)
+	task.Timeout = 900
+
+	_, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if pair.configs[0].TaskTimeout != 900*time.Second {
+		t.Fatalf("pair TaskTimeout = %v, want 900s", pair.configs[0].TaskTimeout)
+	}
+}
+
 func TestCodeWorkerUsesPairSelectorForDefaultCLIs(t *testing.T) {
 	root := codeWorkerFixture(t)
 	pair := &mockWorkerPair{verdicts: []Verdict{{
@@ -163,6 +187,50 @@ func TestCodeWorkerUsesPairSelectorForDefaultCLIs(t *testing.T) {
 	}
 	if selector.calls != 1 {
 		t.Fatalf("selector calls = %d, want 1", selector.calls)
+	}
+	if pair.configs[0].DriverCLI != "codex" {
+		t.Fatalf("DriverCLI = %q, want codex", pair.configs[0].DriverCLI)
+	}
+	if pair.configs[0].NavigatorCLI != "gemini" {
+		t.Fatalf("NavigatorCLI = %q, want gemini", pair.configs[0].NavigatorCLI)
+	}
+	assertTaskMetadata(t, task.Metadata, "navigator_cli", "gemini")
+}
+
+func TestCodeWorkerUsesPairSelectorNavigatorForDriverOverride(t *testing.T) {
+	root := codeWorkerFixture(t)
+	pair := &mockWorkerPair{verdicts: []Verdict{{
+		Action:     StateApply,
+		Confidence: 0.91,
+		Diff:       renameDiff("note.txt", "old", "new"),
+	}}}
+	selector := &mockPairSelector{driver: "codex", navigator: "gemini"}
+	worker, err := NewCodeWorker(CodeWorkerConfig{
+		Loom:         newMockLoom(`{\"verdict\":\"APPLY\",\"confidence\":1}`),
+		PairRunner:   pair,
+		GateRunner:   &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+		PairSelector: selector,
+		DriverCLI:    "codex",
+		MaxRounds:    3,
+	})
+	if err != nil {
+		t.Fatalf("NewCodeWorker returned error: %v", err)
+	}
+	task := codeWorkerTask(root)
+	task.CLI = "codex"
+
+	_, err = worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if selector.driverOverrideCalls != 1 {
+		t.Fatalf("PickPairForDriver calls = %d, want 1", selector.driverOverrideCalls)
+	}
+	if selector.calls != 0 {
+		t.Fatalf("PickPair calls = %d, want 0 for driver override", selector.calls)
+	}
+	if selector.driverOverride != "codex" {
+		t.Fatalf("driver override = %q, want codex", selector.driverOverride)
 	}
 	if pair.configs[0].DriverCLI != "codex" {
 		t.Fatalf("DriverCLI = %q, want codex", pair.configs[0].DriverCLI)
@@ -429,9 +497,11 @@ func (m *mockWorkerGate) Run(_ context.Context, _ applygate.Project) applygate.R
 }
 
 type mockPairSelector struct {
-	driver    types.CLIName
-	navigator types.CLIName
-	calls     int
+	driver              types.CLIName
+	navigator           types.CLIName
+	calls               int
+	driverOverride      types.CLIName
+	driverOverrideCalls int
 }
 
 func (m *mockPairSelector) PickPair(_ context.Context, taskClass string) (types.CLIName, types.CLIName, error) {
@@ -440,6 +510,15 @@ func (m *mockPairSelector) PickPair(_ context.Context, taskClass string) (types.
 		return "", "", errors.New("unexpected task class")
 	}
 	return m.driver, m.navigator, nil
+}
+
+func (m *mockPairSelector) PickPairForDriver(_ context.Context, taskClass string, driver types.CLIName) (types.CLIName, types.CLIName, error) {
+	m.driverOverrideCalls++
+	m.driverOverride = driver
+	if taskClass != "code" {
+		return "", "", errors.New("unexpected task class")
+	}
+	return driver, m.navigator, nil
 }
 
 type mockResumeDelegate struct {

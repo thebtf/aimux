@@ -144,6 +144,31 @@ func TestHydrateResumeMetadataRejectsCrossTenantScope(t *testing.T) {
 	}
 }
 
+func TestHydrateResumeMetadataClassifiesLookupErrors(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode types.CLIErrorCode
+	}{
+		{name: "not found", err: loom.ErrTaskNotFound, wantCode: types.CLIErrorCodeUserInputError},
+		{name: "canceled", err: context.Canceled, wantCode: types.CLIErrorCodeCanceled},
+		{name: "deadline", err: context.DeadlineExceeded, wantCode: types.CLIErrorCodeCanceled},
+		{name: "backend failure", err: errors.New("database unavailable"), wantCode: types.CLIErrorCodeCapabilityMismatch},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := types.HydrateResumeMetadata(
+				context.Background(),
+				errorResumeTasks{err: tc.err},
+				"task-1",
+				loom.WorkerType("review"),
+				types.MetadataThreadID,
+			)
+			assertResumeCLIErrorCode(t, err, tc.wantCode)
+		})
+	}
+}
+
 func TestResumableWorkerInterface(t *testing.T) {
 	var _ types.ResumableWorker = fakeResumableWorker{}
 }
@@ -184,6 +209,14 @@ func (f *contextOnlyResumeTasks) GetContext(ctx context.Context, taskID string) 
 		return nil, loom.ErrTaskNotFound
 	}
 	return f.task, nil
+}
+
+type errorResumeTasks struct {
+	err error
+}
+
+func (f errorResumeTasks) Get(string) (*loom.Task, error) {
+	return nil, f.err
 }
 
 type fakeResumableWorker struct{}

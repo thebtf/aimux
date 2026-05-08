@@ -155,13 +155,16 @@ func TestReviewWorkerSubtaskTreeShape(t *testing.T) {
 		t.Fatalf("root SubtaskIDs = %#v, want 3 children", nodes[0].SubtaskIDs)
 	}
 	wantTypes := []loom.WorkerType{WorkerTypeReviewStructural, WorkerTypeReviewBehavioural, WorkerTypeReviewAdversarial}
-	for i, wantType := range wantTypes {
-		child := nodes[i+1]
+	childTypeCounts := map[loom.WorkerType]int{}
+	for i, child := range nodes[1:] {
 		if child.ParentTaskID != rootID {
 			t.Fatalf("child %d parent = %q, want %q", i, child.ParentTaskID, rootID)
 		}
-		if child.WorkerType != wantType {
-			t.Fatalf("child %d worker_type = %s, want %s", i, child.WorkerType, wantType)
+		childTypeCounts[child.WorkerType]++
+	}
+	for _, wantType := range wantTypes {
+		if childTypeCounts[wantType] != 1 {
+			t.Fatalf("child worker_type %s count = %d, want 1; nodes=%#v", wantType, childTypeCounts[wantType], nodes)
 		}
 	}
 }

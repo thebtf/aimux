@@ -2,6 +2,7 @@ package types
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -66,7 +67,10 @@ func HydrateResumeMetadata(ctx context.Context, tasks ResumeTaskGetter, prevTask
 
 	prev, err := getResumeTask(ctx, tasks, prevTaskID)
 	if err != nil {
-		return nil, NewUserInputError(fmt.Sprintf("resume task %q not found", prevTaskID), err)
+		return nil, resumeTaskLookupError(prevTaskID, err)
+	}
+	if prev == nil {
+		return nil, NewUnknown(fmt.Sprintf("resume task %q lookup returned nil task", prevTaskID), nil)
 	}
 	if err := validateResumeScope(ctx, prev); err != nil {
 		return nil, err
@@ -97,6 +101,17 @@ func getResumeTask(ctx context.Context, tasks ResumeTaskGetter, taskID string) (
 		return getter.GetContext(ctx, taskID)
 	}
 	return tasks.Get(taskID)
+}
+
+func resumeTaskLookupError(prevTaskID string, err error) error {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return NewCanceled(fmt.Sprintf("resume task %q lookup canceled", prevTaskID), err)
+	case errors.Is(err, loom.ErrTaskNotFound):
+		return NewUserInputError(fmt.Sprintf("resume task %q not found", prevTaskID), err)
+	default:
+		return NewCapabilityMismatch(fmt.Sprintf("resume task %q lookup failed", prevTaskID), err)
+	}
 }
 
 func validateResumeScope(ctx context.Context, prev *loom.Task) error {

@@ -184,18 +184,10 @@ func (d *fullDelegate) forceCancelPreviousWorktree(ctx context.Context, previous
 }
 
 func (d *fullDelegate) failActiveByPreviousWorktree(previousProjectID, tenantID, sessionKey string) (int, error) {
-	if sessionKey == "" {
+	if sessionKey == "" || tenantID == "" {
 		return 0, nil
 	}
-	var (
-		tasks []*loom.Task
-		err   error
-	)
-	if tenantID != "" {
-		tasks, err = loom.NewTenantScopedEngine(d.srv.loom, tenantID, nil).List(previousProjectID, loom.ActiveTaskStatuses()...)
-	} else {
-		tasks, err = d.srv.loom.List(previousProjectID, loom.ActiveTaskStatuses()...)
-	}
+	tasks, err := loom.NewTenantScopedEngine(d.srv.loom, tenantID, nil).List(previousProjectID, loom.ActiveTaskStatuses()...)
 	if err != nil {
 		return 0, err
 	}
@@ -263,8 +255,6 @@ func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID st
 		}
 
 		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
 		case <-timer.C:
 			return false, nil
 		case <-ticker.C:
@@ -273,14 +263,10 @@ func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID st
 }
 
 func (d *fullDelegate) previousWorktreeDrained(projectID, tenantID, sessionKey string) (bool, error) {
-	if tenantID != "" {
-		tasks, err := loom.NewTenantScopedEngine(d.srv.loom, tenantID, nil).List(projectID, loom.ActiveTaskStatuses()...)
-		if err != nil {
-			return false, err
-		}
-		return worktreeTasksDrainedForSession(tasks, sessionKey), nil
+	if tenantID == "" {
+		return true, nil
 	}
-	tasks, err := d.srv.loom.List(projectID, loom.ActiveTaskStatuses()...)
+	tasks, err := loom.NewTenantScopedEngine(d.srv.loom, tenantID, nil).List(projectID, loom.ActiveTaskStatuses()...)
 	if err != nil {
 		return false, err
 	}

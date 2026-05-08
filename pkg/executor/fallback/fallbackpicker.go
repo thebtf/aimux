@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/thebtf/aimux/pkg/executor/picker"
 	"github.com/thebtf/aimux/pkg/executor/types"
@@ -84,6 +85,15 @@ func (fp *FallbackPicker) PickPair(ctx context.Context, taskClass string) (types
 	return fp.p.PickPair(ctx, taskClass)
 }
 
+// PickPairForDriver exposes healthy cross-family navigator selection while
+// preserving a caller-selected driver CLI.
+func (fp *FallbackPicker) PickPairForDriver(ctx context.Context, taskClass string, driver types.CLIName) (types.CLIName, types.CLIName, error) {
+	if fp == nil || fp.p == nil {
+		return "", "", types.NewCapabilityMismatch("fallback picker requires an initialized picker", nil)
+	}
+	return fp.p.PickPairForDriver(ctx, taskClass, driver)
+}
+
 // RunPrimary dispatches a caller-selected primary CLI, then uses the fallback
 // chain for eligible failures. Use this when a higher-level role already picked
 // the primary CLI but still wants fallback behavior on transient failures.
@@ -94,8 +104,15 @@ func (fp *FallbackPicker) RunPrimary(
 	opts RunOptions,
 	dispatch DispatchFn,
 ) (Result, error) {
+	primaryCLI = strings.TrimSpace(primaryCLI)
 	if primaryCLI == "" {
 		return fp.Run(ctx, spec, opts, dispatch)
+	}
+	if !fp.hasCandidate(primaryCLI) {
+		return Result{}, types.NewCapabilityMismatch(
+			fmt.Sprintf("fallback picker primary_cli %q is not a configured candidate", primaryCLI),
+			nil,
+		)
 	}
 
 	// Step 2: Dispatch primary CLI.
@@ -114,6 +131,18 @@ func (fp *FallbackPicker) RunPrimary(
 	}
 
 	return fp.retryAfterPrimaryFailure(ctx, primaryCLI, spec, opts, dispatchErr, dispatch)
+}
+
+func (fp *FallbackPicker) hasCandidate(cli string) bool {
+	if fp == nil || fp.fb == nil {
+		return false
+	}
+	for _, candidate := range fp.fb.candidates {
+		if candidate == cli {
+			return true
+		}
+	}
+	return false
 }
 
 func (fp *FallbackPicker) retryAfterPrimaryFailure(

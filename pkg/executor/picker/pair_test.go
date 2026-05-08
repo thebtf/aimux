@@ -103,6 +103,18 @@ func TestPickPair_UnhealthyOverrideFallsBack(t *testing.T) {
 	}
 }
 
+func TestPickPairForDriverPreservesDriverAndFindsHealthyNavigator(t *testing.T) {
+	p := makePairPicker(DefaultPickerConfig(), map[string]bool{"codex": true, "gemini": true}, activeCLIs)
+
+	driver, navigator, err := p.PickPairForDriver(context.Background(), "code", "codex")
+	if err != nil {
+		t.Fatalf("PickPairForDriver: %v", err)
+	}
+	if driver != "codex" || navigator != "gemini" {
+		t.Fatalf("PickPairForDriver = (%s,%s), want (codex,gemini)", driver, navigator)
+	}
+}
+
 func TestPickPair_RejectsUnknownDriverFamily(t *testing.T) {
 	cfg := DefaultPickerConfig()
 	cfg.DefaultCLI = "local"

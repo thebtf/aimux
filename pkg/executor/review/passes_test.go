@@ -175,7 +175,7 @@ func TestPassesRunCancelsTimedOutPassTask(t *testing.T) {
 	_, err = passes.Run(context.Background(), "HEAD", Criteria{
 		ParentTaskID: "review-root",
 		ProjectID:    "project-1",
-		TaskTimeout:  20 * time.Millisecond,
+		TaskTimeout:  200 * time.Millisecond,
 		PollInterval: time.Millisecond,
 	})
 	if err == nil {
@@ -189,13 +189,48 @@ func TestPassesRunCancelsTimedOutPassTask(t *testing.T) {
 	}
 }
 
+type reviewPassContextKey struct{}
+
+func TestWaitForTaskUsesContextScopedLookup(t *testing.T) {
+	client := newMockLoom(nil)
+	client.tasks["review-task-1"] = &loom.Task{
+		ID:     "review-task-1",
+		Status: loom.TaskStatusCompleted,
+		Result: passJSON("structural ok", nil),
+	}
+	ctx := context.WithValue(context.Background(), reviewPassContextKey{}, "tenant-scope")
+
+	task, err := waitForTask(ctx, client, "review-task-1", Criteria{
+		TaskTimeout:  time.Second,
+		PollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("waitForTask returned error: %v", err)
+	}
+	if task.ID != "review-task-1" {
+		t.Fatalf("task ID = %q, want review-task-1", task.ID)
+	}
+	if client.getCalls != 0 {
+		t.Fatalf("Get calls = %d, want 0 when GetContext is supported", client.getCalls)
+	}
+	if client.getContextCalls != 1 {
+		t.Fatalf("GetContext calls = %d, want 1", client.getContextCalls)
+	}
+	if client.getContextScope != "tenant-scope" {
+		t.Fatalf("GetContext scope = %q, want tenant-scope", client.getContextScope)
+	}
+}
+
 type mockLoom struct {
-	outputs     map[loom.WorkerType]string
-	statuses    map[loom.WorkerType]loom.TaskStatus
-	errors      map[loom.WorkerType]string
-	submissions []loom.TaskRequest
-	tasks       map[string]*loom.Task
-	canceled    []string
+	outputs         map[loom.WorkerType]string
+	statuses        map[loom.WorkerType]loom.TaskStatus
+	errors          map[loom.WorkerType]string
+	submissions     []loom.TaskRequest
+	tasks           map[string]*loom.Task
+	canceled        []string
+	getCalls        int
+	getContextCalls int
+	getContextScope string
 }
 
 func newMockLoom(outputs map[loom.WorkerType]string) *mockLoom {
@@ -230,6 +265,19 @@ func (m *mockLoom) Submit(_ context.Context, req loom.TaskRequest) (string, erro
 }
 
 func (m *mockLoom) Get(taskID string) (*loom.Task, error) {
+	m.getCalls++
+	task, ok := m.tasks[taskID]
+	if !ok {
+		return nil, fmt.Errorf("task %s not found", taskID)
+	}
+	return task, nil
+}
+
+func (m *mockLoom) GetContext(ctx context.Context, taskID string) (*loom.Task, error) {
+	m.getContextCalls++
+	if value, _ := ctx.Value(reviewPassContextKey{}).(string); value != "" {
+		m.getContextScope = value
+	}
 	task, ok := m.tasks[taskID]
 	if !ok {
 		return nil, fmt.Errorf("task %s not found", taskID)

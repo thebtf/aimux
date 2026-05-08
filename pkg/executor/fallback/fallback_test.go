@@ -232,6 +232,30 @@ func TestFallbackPicker_RunPrimaryHonorsMaxAttemptsOverride(t *testing.T) {
 	}
 }
 
+func TestFallbackPicker_RunPrimaryRejectsUnknownPrimary(t *testing.T) {
+	fp := buildFallbackPickerForTest([]string{"codex", "claude", "gemini"}, nil)
+	dispatchCalled := false
+	dispatch := func(context.Context, string, picker.TaskSpec) (string, error) {
+		dispatchCalled = true
+		return "", nil
+	}
+
+	_, err := fp.RunPrimary(context.Background(), "unknown-cli", testSpec(), RunOptions{}, dispatch)
+	if err == nil {
+		t.Fatal("RunPrimary returned nil, want unknown primary error")
+	}
+	var cliErr *types.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != types.CLIErrorCodeCapabilityMismatch {
+		t.Fatalf("CLIError code = %s, want %s", cliErr.Code, types.CLIErrorCodeCapabilityMismatch)
+	}
+	if dispatchCalled {
+		t.Fatal("dispatch was called for an unknown primary CLI")
+	}
+}
+
 // --- candidates list ---
 
 func TestFallback_NilCandidatesNotPanics(t *testing.T) {

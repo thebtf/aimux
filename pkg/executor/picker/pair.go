@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/thebtf/aimux/pkg/executor/types"
 )
@@ -29,6 +30,49 @@ func (p *Picker) PickPair(ctx context.Context, taskClass string) (driver, naviga
 	}
 	if healthyFamilyCount(healthy) < 2 {
 		return "", "", types.NewCapabilityMismatch("cross-family pairing required, only one family available", nil)
+	}
+
+	if override := p.pairNavigatorOverride(driver); override != "" {
+		nav := types.CLIName(override)
+		if !knownDifferentFamily(driver, nav) {
+			return "", "", types.NewCapabilityMismatch(
+				fmt.Sprintf("cross-family pairing required, override %s->%s is same-family or unknown-family", driver, nav),
+				nil,
+			)
+		}
+		if p.isHealthyActiveNavigator(nav, driver) {
+			return driver, nav, nil
+		}
+	}
+
+	if nav := defaultPairNavigator[driver]; p.isHealthyActiveNavigator(nav, driver) {
+		return driver, nav, nil
+	}
+
+	for _, candidate := range healthy {
+		nav := types.CLIName(candidate)
+		if nav != driver && knownDifferentFamily(driver, nav) {
+			return driver, nav, nil
+		}
+	}
+
+	return "", "", types.NewCapabilityMismatch("cross-family pairing required, only one family available", nil)
+}
+
+// PickPairForDriver selects a healthy cross-family navigator while preserving
+// a caller-selected driver CLI.
+func (p *Picker) PickPairForDriver(ctx context.Context, taskClass string, driver types.CLIName) (types.CLIName, types.CLIName, error) {
+	driver = types.CLIName(strings.TrimSpace(string(driver)))
+	if driver == "" {
+		return p.PickPair(ctx, taskClass)
+	}
+	if _, ok := FamilyOf(driver); !ok {
+		return "", "", types.NewCapabilityMismatch(fmt.Sprintf("cross-family pairing requires known CLI family for driver %q", driver), nil)
+	}
+
+	healthy, reasons := p.filterHealthy()
+	if len(healthy) == 0 {
+		return "", "", types.NewCapabilityMismatch("no healthy CLI available", &ErrNoHealthyCLI{Reasons: reasons})
 	}
 
 	if override := p.pairNavigatorOverride(driver); override != "" {

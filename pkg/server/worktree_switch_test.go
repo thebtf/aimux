@@ -18,7 +18,10 @@ const worktreeSwitchInitializeRequest = `{"jsonrpc":"2.0","id":1,"method":"initi
 func TestWorktreeSwitchDrainSuccessWaitsForPreviousProjectTasks(t *testing.T) {
 	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 2})
 	delegate := newWorktreeSwitchTestDelegate(srv)
-	ctx := contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1001))
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1001)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
 	projectA := muxcore.ProjectContext{ID: "worktree-a", Cwd: t.TempDir()}
 	projectB := muxcore.ProjectContext{ID: "worktree-b", Cwd: t.TempDir()}
 	delegate.OnProjectConnect(projectA)
@@ -26,7 +29,7 @@ func TestWorktreeSwitchDrainSuccessWaitsForPreviousProjectTasks(t *testing.T) {
 	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
 		t.Fatalf("initial projectStateForRequest: %v", err)
 	}
-	taskID, worker := submitBlockingLoomTask(t, srv, projectA.ID, worktreeSwitchSessionKey(1001))
+	taskID, worker := submitBlockingLoomTaskWithTenant(t, srv, projectA.ID, worktreeSwitchSessionKey(1001), "tenant-a")
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
@@ -48,7 +51,10 @@ func TestWorktreeSwitchDrainSuccessWaitsForPreviousProjectTasks(t *testing.T) {
 func TestWorktreeSwitchDrainTimeoutAcceptsNewProject(t *testing.T) {
 	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 1})
 	delegate := newWorktreeSwitchTestDelegate(srv)
-	ctx := contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1002))
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1002)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
 	projectA := muxcore.ProjectContext{ID: "timeout-a", Cwd: t.TempDir()}
 	projectB := muxcore.ProjectContext{ID: "timeout-b", Cwd: t.TempDir()}
 	delegate.OnProjectConnect(projectA)
@@ -56,7 +62,7 @@ func TestWorktreeSwitchDrainTimeoutAcceptsNewProject(t *testing.T) {
 	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
 		t.Fatalf("initial projectStateForRequest: %v", err)
 	}
-	taskID, _ := submitBlockingLoomTask(t, srv, projectA.ID, worktreeSwitchSessionKey(1002))
+	taskID, _ := submitBlockingLoomTaskWithTenant(t, srv, projectA.ID, worktreeSwitchSessionKey(1002), "tenant-a")
 
 	start := time.Now()
 	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
@@ -78,6 +84,35 @@ func TestWorktreeSwitchDrainTimeoutAcceptsNewProject(t *testing.T) {
 	}
 	if last := delegate.lastProjectForSession(worktreeSwitchSessionKey(1002)); last != projectB.ID {
 		t.Fatalf("last project = %q, want %q", last, projectB.ID)
+	}
+}
+
+func TestWorktreeSwitchDrainMissingTenantFailsClosed(t *testing.T) {
+	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 1})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctx := contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1011))
+	projectA := muxcore.ProjectContext{ID: "drain-missing-tenant-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "drain-missing-tenant-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest: %v", err)
+	}
+	taskID, _ := submitBlockingLoomTask(t, srv, projectA.ID, worktreeSwitchSessionKey(1011))
+
+	start := time.Now()
+	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("switch waited without tenant scope: elapsed=%v", elapsed)
+	}
+	task, err := srv.loom.Get(taskID)
+	if err != nil {
+		t.Fatalf("loom.Get: %v", err)
+	}
+	if task.Status != loom.TaskStatusRunning {
+		t.Fatalf("task status = %s, want still running when tenant scope is unavailable", task.Status)
 	}
 }
 
@@ -155,7 +190,10 @@ func TestWorktreeSwitchDrainIgnoresOtherSessionTasks(t *testing.T) {
 func TestWorktreeSwitchForcedSwitchCancelsPreviousProjectTasks(t *testing.T) {
 	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 30, ForcedSwitch: true})
 	delegate := newWorktreeSwitchTestDelegate(srv)
-	ctx := contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1003))
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1003)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
 	projectA := muxcore.ProjectContext{ID: "forced-a", Cwd: t.TempDir()}
 	projectB := muxcore.ProjectContext{ID: "forced-b", Cwd: t.TempDir()}
 	delegate.OnProjectConnect(projectA)
@@ -164,7 +202,7 @@ func TestWorktreeSwitchForcedSwitchCancelsPreviousProjectTasks(t *testing.T) {
 		t.Fatalf("initial projectStateForRequest: %v", err)
 	}
 	sessionKey := worktreeSwitchSessionKey(1003)
-	taskID, _ := submitBlockingLoomTask(t, srv, projectA.ID, sessionKey)
+	taskID, _ := submitBlockingLoomTaskWithTenant(t, srv, projectA.ID, sessionKey, "tenant-a")
 
 	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
 		t.Fatalf("switch projectStateForRequest: %v", err)
@@ -175,6 +213,32 @@ func TestWorktreeSwitchForcedSwitchCancelsPreviousProjectTasks(t *testing.T) {
 	}
 	if !strings.Contains(task.Error, "Canceled") || !strings.Contains(task.Error, "worktree switched mid-task") {
 		t.Fatalf("task error = %q, want canceled worktree switch message", task.Error)
+	}
+}
+
+func TestWorktreeSwitchForcedSwitchMissingTenantFailsClosed(t *testing.T) {
+	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 30, ForcedSwitch: true})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctx := contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1012))
+	projectA := muxcore.ProjectContext{ID: "forced-missing-tenant-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "forced-missing-tenant-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest: %v", err)
+	}
+	sessionKey := worktreeSwitchSessionKey(1012)
+	taskID, _ := submitBlockingLoomTask(t, srv, projectA.ID, sessionKey)
+
+	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest: %v", err)
+	}
+	task, err := srv.loom.Get(taskID)
+	if err != nil {
+		t.Fatalf("loom.Get: %v", err)
+	}
+	if task.Status != loom.TaskStatusRunning {
+		t.Fatalf("task status = %s, want still running when tenant scope is unavailable", task.Status)
 	}
 }
 
@@ -251,6 +315,40 @@ func TestWorktreeSwitchForcedSwitchCancelsOnlyCurrentSession(t *testing.T) {
 	}
 	if sessionBTask.Status != loom.TaskStatusRunning {
 		t.Fatalf("session B task status = %s, want still running", sessionBTask.Status)
+	}
+}
+
+func TestWorktreeSwitchDrainIgnoresClientCancellation(t *testing.T) {
+	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 2})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1013)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+	projectA := muxcore.ProjectContext{ID: "drain-cancel-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "drain-cancel-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest: %v", err)
+	}
+	taskID, worker := submitBlockingLoomTaskWithTenant(t, srv, projectA.ID, worktreeSwitchSessionKey(1013), "tenant-a")
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(worker.release)
+	}()
+
+	if _, err := delegate.projectStateForRequest(canceledCtx, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest with canceled client context: %v", err)
+	}
+	task := waitForWorktreeTaskTerminal(t, srv, taskID, 2*time.Second)
+	if task.Status != loom.TaskStatusCompleted {
+		t.Fatalf("task status = %s, want completed", task.Status)
+	}
+	if last := delegate.lastProjectForSession(worktreeSwitchSessionKey(1013)); last != projectB.ID {
+		t.Fatalf("last project = %q, want %q", last, projectB.ID)
 	}
 }
 

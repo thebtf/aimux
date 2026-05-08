@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/thebtf/aimux/loom"
 	applygate "github.com/thebtf/aimux/pkg/executor/code/gate"
@@ -50,6 +51,10 @@ type ResumeDelegate interface {
 // PairSelector chooses healthy cross-family CLIs for Strong-Style code work.
 type PairSelector interface {
 	PickPair(ctx context.Context, taskClass string) (driver, navigator types.CLIName, err error)
+}
+
+type driverPairSelector interface {
+	PickPairForDriver(ctx context.Context, taskClass string, driver types.CLIName) (types.CLIName, types.CLIName, error)
 }
 
 // CodeWorkerConfig holds CodeWorker dependencies and defaults.
@@ -170,6 +175,7 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 			Model:          task.Model,
 			Effort:         task.Effort,
 			Sandbox:        sandboxForTask(task),
+			TaskTimeout:    pairTaskTimeout(task),
 		})
 		if err != nil {
 			return w.failTask(task, machine, err)
@@ -334,16 +340,23 @@ func (w *CodeWorker) driverCLIForTask(task *loom.Task) types.CLIName {
 }
 
 func (w *CodeWorker) pairCLIsForTask(ctx context.Context, task *loom.Task) (types.CLIName, types.CLIName, error) {
+	driverCLI := w.driverCLIForTask(task)
 	if taskHasDriverOverride(task) {
-		return w.driverCLIForTask(task), w.defaultNavigatorCLI(), nil
+		if w.navigatorCLI != "" {
+			return driverCLI, w.navigatorCLI, nil
+		}
+		if selector, ok := w.pairSelector.(driverPairSelector); ok {
+			return selector.PickPairForDriver(ctx, "code", driverCLI)
+		}
+		return driverCLI, w.defaultNavigatorCLI(), nil
 	}
 	if w.navigatorCLI != "" {
-		return w.driverCLIForTask(task), w.navigatorCLI, nil
+		return driverCLI, w.navigatorCLI, nil
 	}
 	if w.pairSelector != nil {
 		return w.pairSelector.PickPair(ctx, "code")
 	}
-	return w.driverCLIForTask(task), w.defaultNavigatorCLI(), nil
+	return driverCLI, w.defaultNavigatorCLI(), nil
 }
 
 func (w *CodeWorker) defaultNavigatorCLI() types.CLIName {
@@ -364,6 +377,13 @@ func taskHasDriverOverride(task *loom.Task) bool {
 		return true
 	}
 	return false
+}
+
+func pairTaskTimeout(task *loom.Task) time.Duration {
+	if task == nil || task.Timeout <= 0 {
+		return 0
+	}
+	return time.Duration(task.Timeout) * time.Second
 }
 
 func recordSelectedPair(task *loom.Task, driverCLI, navigatorCLI types.CLIName) {
