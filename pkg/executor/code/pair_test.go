@@ -139,6 +139,19 @@ func TestRunRoundNavigatorRejectReturnsRetry(t *testing.T) {
 	}
 }
 
+func TestRunRoundPersistsDriverThreadID(t *testing.T) {
+	mock := newMockLoom(`{"verdict":"APPLY","confidence":0.91,"evidence":"ok"}`)
+	mock.driverThreadID = "driver-thread-1"
+
+	verdict, err := RunRound(context.Background(), "make the change", DefaultSuccessCriteria(false), testPairConfig(mock))
+	if err != nil {
+		t.Fatalf("RunRound returned error: %v", err)
+	}
+	if verdict.ThreadID != "driver-thread-1" {
+		t.Fatalf("ThreadID = %q, want driver-thread-1", verdict.ThreadID)
+	}
+}
+
 func TestWaitForTaskCancelsChildTaskWhenWaitEnds(t *testing.T) {
 	mock := &cancelRecordingLoom{
 		task: &loom.Task{
@@ -161,6 +174,7 @@ func TestWaitForTaskCancelsChildTaskWhenWaitEnds(t *testing.T) {
 
 type mockLoom struct {
 	navigatorOutput string
+	driverThreadID  string
 	submissions     []loom.TaskRequest
 	tasks           map[string]*loom.Task
 }
@@ -189,6 +203,10 @@ func (m *mockLoom) Submit(_ context.Context, req loom.TaskRequest) (string, erro
 		CLI:          req.CLI,
 		Metadata:     req.Metadata,
 		Result:       result,
+	}
+	if req.WorkerType == WorkerTypeCodeDriver && m.driverThreadID != "" {
+		m.tasks[id].Metadata = cloneMetadata(req.Metadata)
+		m.tasks[id].Metadata["cli_session_id"] = m.driverThreadID
 	}
 	return id, nil
 }

@@ -59,6 +59,7 @@ type Verdict struct {
 	Evidence        string
 	DriverTaskID    string
 	NavigatorTaskID string
+	ThreadID        string
 }
 
 type navigatorVerdict struct {
@@ -140,6 +141,7 @@ func RunRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg 
 	}
 	verdict.DriverTaskID = driverTaskID
 	verdict.NavigatorTaskID = navigatorTaskID
+	verdict.ThreadID = taskThreadID(driverTask)
 	return verdict, nil
 }
 
@@ -235,6 +237,19 @@ func parseNavigatorVerdict(output string, driverDiff string) (Verdict, error) {
 	default:
 		return Verdict{}, types.NewUserInputError(fmt.Sprintf("unsupported navigator verdict %q", actionText), nil)
 	}
+}
+
+func taskThreadID(task *loom.Task) string {
+	if task == nil {
+		return ""
+	}
+	if threadID, ok := metadataString(task.Metadata, MetadataThreadID); ok && strings.TrimSpace(threadID) != "" {
+		return strings.TrimSpace(threadID)
+	}
+	if sessionID, ok := metadataString(task.Metadata, "cli_session_id"); ok {
+		return strings.TrimSpace(sessionID)
+	}
+	return ""
 }
 
 func renderDriverPrompt(prompt string, criteria SuccessCriteria, cfg PairConfig) (string, error) {

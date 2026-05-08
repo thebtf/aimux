@@ -353,6 +353,9 @@ func (w *CodeWorker) recordTaskMetadata(task *loom.Task, machine *Machine, crite
 		task.Metadata["confidence_score"] = verdict.Confidence
 		task.Metadata["verdict"] = string(verdict.Action)
 	}
+	if strings.TrimSpace(verdict.ThreadID) != "" {
+		task.Metadata[MetadataThreadID] = strings.TrimSpace(verdict.ThreadID)
+	}
 	if gateResult != "" {
 		task.Metadata["gate_result"] = gateResult
 	}

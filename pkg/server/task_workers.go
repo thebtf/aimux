@@ -101,6 +101,7 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		TaskClass: w.taskClass,
 		Prompt:    task.Prompt,
 		CWD:       task.CWD,
+		Env:       cloneEnv(task.Env),
 		Model:     task.Model,
 		Effort:    task.Effort,
 		Sandbox:   sandboxFromTaskMetadata(task.Metadata),

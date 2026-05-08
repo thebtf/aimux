@@ -18,6 +18,9 @@ type TaskSpec struct {
 	// CWD is the project/worktree directory where a leaf CLI must execute.
 	CWD string
 
+	// Env carries project/session environment variables to leaf CLI dispatch.
+	Env map[string]string
+
 	// Model optionally overrides the selected CLI profile's default model.
 	Model string
 

@@ -421,6 +421,29 @@ func TestTaskDispatchCWDUsesTaskCWDBeforeEnvFallback(t *testing.T) {
 	}
 }
 
+func TestTaskDispatchSpawnArgsCarriesTaskEnv(t *testing.T) {
+	profile := &config.CLIProfile{
+		TimeoutSeconds:    7,
+		CompletionPattern: "done",
+		Command:           config.CommandConfig{Base: "codex exec"},
+		PromptFlagType:    "positional",
+	}
+	env := map[string]string{"OPENAI_API_KEY": "session-key"}
+	args := taskDispatchSpawnArgs("codex", "codex.exe", profile, picker.TaskSpec{
+		Prompt: "hello",
+		CWD:    "project-cwd",
+		Env:    env,
+	})
+
+	if args.Env["OPENAI_API_KEY"] != "session-key" {
+		t.Fatalf("Env = %#v, want session key", args.Env)
+	}
+	env["OPENAI_API_KEY"] = "mutated"
+	if args.Env["OPENAI_API_KEY"] != "session-key" {
+		t.Fatalf("Env was not cloned: %#v", args.Env)
+	}
+}
+
 func stringSlicesEqual(left []string, right []string) bool {
 	if len(left) != len(right) {
 		return false

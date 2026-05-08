@@ -43,6 +43,26 @@ func TestCodeWorkerApplyPathRecordsMetadataAndTransitions(t *testing.T) {
 	assertTransitionLogContains(t, task.Metadata, StateGate, StateDone)
 }
 
+func TestCodeWorkerRecordsDriverThreadIDForResume(t *testing.T) {
+	root := codeWorkerFixture(t)
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: &mockWorkerPair{verdicts: []Verdict{{
+			Action:     StateApply,
+			Confidence: 0.91,
+			Diff:       renameDiff("note.txt", "old", "new"),
+			ThreadID:   "thread-from-driver",
+		}}},
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+	})
+	task := codeWorkerTask(root)
+
+	_, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	assertTaskMetadata(t, task.Metadata, MetadataThreadID, "thread-from-driver")
+}
+
 func TestCodeWorkerFailTaskHandlesNilError(t *testing.T) {
 	worker := newTestCodeWorker(t, workerTestDeps{})
 	task := &loom.Task{Metadata: map[string]any{}}

@@ -376,14 +376,7 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 		return "", extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q has no binary path", cli), nil)
 	}
 
-	spawnArgs := types.SpawnArgs{
-		CLI:               cli,
-		Command:           binaryPath,
-		Args:              buildTaskArgs(profile, spec),
-		CWD:               taskDispatchCWD(spec.CWD),
-		TimeoutSeconds:    profile.TimeoutSeconds,
-		CompletionPattern: profile.CompletionPattern,
-	}
+	spawnArgs := taskDispatchSpawnArgs(cli, binaryPath, profile, spec)
 	// For stdin-mode CLIs, deliver the prompt via stdin.
 	if profile.PromptFlagType == "stdin" {
 		spawnArgs.Stdin = spec.Prompt
@@ -411,6 +404,18 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 	}
 
 	return result.Content, nil
+}
+
+func taskDispatchSpawnArgs(cli string, binaryPath string, profile *config.CLIProfile, spec picker.TaskSpec) types.SpawnArgs {
+	return types.SpawnArgs{
+		CLI:               cli,
+		Command:           binaryPath,
+		Args:              buildTaskArgs(profile, spec),
+		CWD:               taskDispatchCWD(spec.CWD),
+		Env:               cloneEnv(spec.Env),
+		TimeoutSeconds:    profile.TimeoutSeconds,
+		CompletionPattern: profile.CompletionPattern,
+	}
 }
 
 // buildTaskArgs constructs the CLI argument list for a task prompt.
