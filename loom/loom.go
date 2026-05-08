@@ -38,8 +38,34 @@ var ErrLoomQuotaExceeded = errors.New("loom: quota exceeded: too many in-flight 
 // '__legacy__' in migrateV4Columns (ADR-011).
 const LegacyTenantID = "__legacy__"
 
+const DefaultMaxSubtaskDepth = 8
+
+// Config contains LoomEngine runtime limits.
+type Config struct {
+	MaxSubtaskDepth int
+}
+
+// DefaultConfig returns LoomEngine's production defaults.
+func DefaultConfig() Config {
+	return Config{MaxSubtaskDepth: DefaultMaxSubtaskDepth}
+}
+
 // Option configures LoomEngine.
 type Option func(*LoomEngine)
+
+// WithConfig applies LoomEngine runtime limits.
+func WithConfig(cfg Config) Option {
+	return func(l *LoomEngine) { l.config = normalizeConfig(cfg) }
+}
+
+// WithMaxSubtaskDepth sets the accepted maximum sub-task tree depth.
+func WithMaxSubtaskDepth(n int) Option {
+	return func(l *LoomEngine) {
+		cfg := l.config
+		cfg.MaxSubtaskDepth = n
+		l.config = normalizeConfig(cfg)
+	}
+}
 
 // WithMaxRetries sets the maximum retry count (default 2).
 func WithMaxRetries(n int) Option {
@@ -56,6 +82,7 @@ type LoomEngine struct {
 	workers    map[WorkerType]Worker
 	cancels    map[string]context.CancelFunc
 	mu         sync.RWMutex
+	config     Config
 	maxRetries int
 	logger     deps.Logger
 	clock      deps.Clock
@@ -93,6 +120,7 @@ func New(store *TaskStore, opts ...Option) *LoomEngine {
 		gate:       NewQualityGate(),
 		workers:    make(map[WorkerType]Worker),
 		cancels:    make(map[string]context.CancelFunc),
+		config:     DefaultConfig(),
 		maxRetries: 2,
 		logger:     deps.NoopLogger(),
 		clock:      deps.SystemClock(),
@@ -286,6 +314,9 @@ func (l *LoomEngine) resolveSubtaskProjectID(req TaskRequest, tenantID string) (
 	if err != nil {
 		return "", fmt.Errorf("loom: get parent task %s: %w", req.ParentTaskID, err)
 	}
+	if err := l.validateSubtaskDepth(parent, tenantID); err != nil {
+		return "", err
+	}
 	if parent.ProjectID == "" {
 		return req.ProjectID, nil
 	}
@@ -293,6 +324,33 @@ func (l *LoomEngine) resolveSubtaskProjectID(req TaskRequest, tenantID string) (
 		return "", clierror.NewCapabilityMismatch("subtask ProjectID must match parent ProjectID", nil)
 	}
 	return parent.ProjectID, nil
+}
+
+func (l *LoomEngine) validateSubtaskDepth(parent *Task, tenantID string) error {
+	maxDepth := normalizeConfig(l.config).MaxSubtaskDepth
+	depth := 0
+	current := parent
+	for {
+		if depth >= maxDepth {
+			return clierror.NewCapabilityMismatch(fmt.Sprintf("subtask depth exceeded; max=%d", maxDepth), nil)
+		}
+		if current.ParentTaskID == "" {
+			return nil
+		}
+		next, err := l.store.GetForTenant(current.ParentTaskID, tenantID)
+		if err != nil {
+			return fmt.Errorf("loom: get parent ancestor task %s: %w", current.ParentTaskID, err)
+		}
+		current = next
+		depth++
+	}
+}
+
+func normalizeConfig(cfg Config) Config {
+	if cfg.MaxSubtaskDepth <= 0 {
+		cfg.MaxSubtaskDepth = DefaultMaxSubtaskDepth
+	}
+	return cfg
 }
 
 // Close signals engine shutdown and waits for all in-flight dispatch goroutines
