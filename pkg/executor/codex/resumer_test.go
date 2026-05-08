@@ -3,8 +3,12 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/executor/types"
 )
 
 // TestResumer_FindBySearchTerm exercises the Resumer.FindBySearchTerm method
@@ -134,6 +138,55 @@ func TestResumer_Resume(t *testing.T) {
 	})
 }
 
+func TestResumer_ResumeFromTask(t *testing.T) {
+	meta := CodexTaskMeta{ThreadID: "thread-1", RootThreadID: "thread-root", JobClass: JobClassTask}
+	metaMap, err := codeTaskMetaToMap(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := &resumerTaskGetter{tasks: map[string]*loom.Task{
+		"task-1": {
+			ID:         "task-1",
+			WorkerType: WorkerTypeCodex,
+			Metadata:   metaMap,
+		},
+		"review-task": {
+			ID:         "review-task",
+			WorkerType: loom.WorkerType("review"),
+			Metadata:   metaMap,
+		},
+		"no-thread": {
+			ID:         "no-thread",
+			WorkerType: WorkerTypeCodex,
+			Metadata:   map[string]any{"job_class": JobClassTask},
+		},
+	}}
+	resumer := NewResumerWithTasks(nil, tasks)
+
+	got, err := resumer.ResumeFromTask(context.Background(), "task-1")
+	if err != nil {
+		t.Fatalf("ResumeFromTask returned error: %v", err)
+	}
+	if got["thread_id"] != "thread-1" {
+		t.Fatalf("thread_id = %v, want thread-1", got["thread_id"])
+	}
+	if got["resume_task_id"] != "task-1" {
+		t.Fatalf("resume_task_id = %v, want task-1", got["resume_task_id"])
+	}
+	if got["worker_type"] != string(WorkerTypeCodex) {
+		t.Fatalf("worker_type = %v, want %s", got["worker_type"], WorkerTypeCodex)
+	}
+
+	_, err = resumer.ResumeFromTask(context.Background(), "review-task")
+	assertCodexCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
+
+	_, err = resumer.ResumeFromTask(context.Background(), "missing")
+	assertCodexCLIErrorCode(t, err, types.CLIErrorCodeUserInputError)
+
+	_, err = resumer.ResumeFromTask(context.Background(), "no-thread")
+	assertCodexCLIErrorCode(t, err, types.CLIErrorCodeCapabilityMismatch)
+}
+
 // TestThreadListParams_UseStateDbOnly verifies that UseStateDbOnly is always
 // serialized as true (Fix 2 from post-impl-fixes.md).
 func TestThreadListParams_UseStateDbOnly(t *testing.T) {
@@ -183,5 +236,31 @@ func TestThreadListResponse_EmptyData(t *testing.T) {
 	}
 	if len(resp.Data) != 0 {
 		t.Errorf("expected empty Data, got %d items", len(resp.Data))
+	}
+}
+
+type resumerTaskGetter struct {
+	tasks map[string]*loom.Task
+}
+
+func (g *resumerTaskGetter) Get(taskID string) (*loom.Task, error) {
+	task, ok := g.tasks[taskID]
+	if !ok {
+		return nil, types.NewUserInputError("missing task", nil)
+	}
+	return task, nil
+}
+
+func assertCodexCLIErrorCode(t *testing.T, err error, want types.CLIErrorCode) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("error = nil, want %s", want)
+	}
+	var cliErr *types.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != want {
+		t.Fatalf("CLIError code = %s, want %s", cliErr.Code, want)
 	}
 }

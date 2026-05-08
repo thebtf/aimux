@@ -42,7 +42,7 @@ func (f GateRunnerFunc) Run(ctx context.Context, project applygate.Project) appl
 // ApplyFunc writes an approved diff to disk.
 type ApplyFunc func(ctx context.Context, diff string, project Project) (filesModified int, hunksApplied int, err error)
 
-// ResumeDelegate is the planned ResumableWorker-compatible delegate shape.
+// ResumeDelegate is the planned driver-CLI resume adapter shape.
 type ResumeDelegate interface {
 	ResumeFromTask(ctx context.Context, prevTaskID string) (map[string]any, error)
 }
@@ -189,14 +189,6 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 	}
 }
 
-// ResumeFromTask delegates resume metadata hydration to the selected driver CLI.
-func (w *CodeWorker) ResumeFromTask(ctx context.Context, prevTaskID string) (map[string]any, error) {
-	if w.driverResumer == nil {
-		return nil, types.NewResumeWorkerMismatch("code worker driver does not support resume", nil)
-	}
-	return w.driverResumer.ResumeFromTask(ctx, prevTaskID)
-}
-
 func (w *CodeWorker) applyAndGate(ctx context.Context, task *loom.Task, machine *Machine, verdict Verdict) (*loom.WorkerResult, error) {
 	targetState := verdict.Action
 	if cliErr := machine.Advance(targetState, "navigator approved diff for "+strings.ToLower(string(targetState))); cliErr != nil {
@@ -251,6 +243,7 @@ func (w *CodeWorker) recordTaskMetadata(task *loom.Task, machine *Machine, crite
 	if task.Metadata == nil {
 		task.Metadata = map[string]any{}
 	}
+	task.Metadata[MetadataWorkerType] = string(WorkerTypeCode)
 	task.Metadata["driver_cli"] = w.driverCLI
 	task.Metadata["navigator_cli"] = w.navigatorCLI
 	task.Metadata["rounds"] = machine.Rounds()

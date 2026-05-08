@@ -96,26 +96,11 @@ func TestCodeWorkerEscalateReturnsTypedCLIError(t *testing.T) {
 	assertTransitionLogContains(t, task.Metadata, StateNavigator, StateEscalate)
 }
 
-func TestCodeWorkerResumeFromTaskDelegates(t *testing.T) {
-	resumer := &mockResumeDelegate{meta: map[string]any{"thread_id": "thread-1"}}
-	worker := newTestCodeWorker(t, workerTestDeps{resumer: resumer})
-
-	meta, err := worker.ResumeFromTask(context.Background(), "task-1")
-	if err != nil {
-		t.Fatalf("ResumeFromTask returned error: %v", err)
-	}
-	if resumer.prevTaskID != "task-1" {
-		t.Fatalf("prevTaskID = %q, want task-1", resumer.prevTaskID)
-	}
-	if meta["thread_id"] != "thread-1" {
-		t.Fatalf("resume meta = %#v, want thread_id", meta)
-	}
-}
-
 type workerTestDeps struct {
 	pair    PairRoundRunner
 	gate    GateRunner
 	resumer ResumeDelegate
+	loom    LoomClient
 }
 
 func newTestCodeWorker(t *testing.T, deps workerTestDeps) *CodeWorker {
@@ -126,8 +111,12 @@ func newTestCodeWorker(t *testing.T, deps workerTestDeps) *CodeWorker {
 	if deps.gate == nil {
 		deps.gate = &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}}
 	}
+	loomClient := deps.loom
+	if loomClient == nil {
+		loomClient = newMockLoom(`{"verdict":"APPLY","confidence":1}`)
+	}
 	worker, err := NewCodeWorker(CodeWorkerConfig{
-		Loom:          newMockLoom(`{"verdict":"APPLY","confidence":1}`),
+		Loom:          loomClient,
 		PairRunner:    deps.pair,
 		GateRunner:    deps.gate,
 		DriverResumer: deps.resumer,
