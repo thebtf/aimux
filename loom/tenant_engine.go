@@ -125,7 +125,12 @@ func (t *TenantScopedLoomEngine) Submit(ctx context.Context, req TaskRequest) (s
 // Returns ErrTaskNotFound when the task does not exist OR is owned by a different
 // tenant (CHK079: 404, not 403 — no existence disclosure).
 func (t *TenantScopedLoomEngine) Get(taskID string) (*Task, error) {
-	return t.engine.store.GetForTenant(taskID, t.tenantID)
+	return t.GetContext(context.Background(), taskID)
+}
+
+// GetContext retrieves a tenant-scoped task with caller-controlled cancellation.
+func (t *TenantScopedLoomEngine) GetContext(ctx context.Context, taskID string) (*Task, error) {
+	return t.engine.store.GetForTenantContext(ctx, taskID, t.tenantID)
 }
 
 // List returns tasks for a project scoped to this tenant, optionally filtered by status.

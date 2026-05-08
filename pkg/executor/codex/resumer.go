@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/thebtf/aimux/pkg/executor/types"
@@ -33,7 +34,7 @@ func NewResumerWithTasks(pool *CodexPool, tasks taskGetter) *Resumer {
 // ResumeFromTask hydrates Codex resume metadata from a previous Codex task.
 func (r *Resumer) ResumeFromTask(ctx context.Context, prevTaskID string) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, types.NewCanceled("codex resume canceled", err)
+		return nil, resumeContextError("codex resume canceled", err)
 	}
 	if prevTaskID == "" {
 		return nil, types.NewUserInputError("resume_id is required", nil)
@@ -70,6 +71,13 @@ func (r *Resumer) ResumeFromTask(ctx context.Context, prevTaskID string) (map[st
 	out["resume_task_id"] = prevTaskID
 	out["worker_type"] = string(WorkerTypeCodex)
 	return out, nil
+}
+
+func resumeContextError(message string, err error) *types.CLIError {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return types.NewTimeout(message, err)
+	}
+	return types.NewCanceled(message, err)
 }
 
 // FindBySearchTerm scans thread/list with useStateDbOnly=true for threads whose

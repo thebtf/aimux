@@ -68,7 +68,7 @@ func TestReviewIntegrationFailOpenTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReviewWorker returned error: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	task := reviewWorkerTask(map[string]any{"target": "HEAD", "gate": true})
 
@@ -136,12 +136,17 @@ func assertReviewIntegrationTree(t *testing.T, engine *loom.LoomEngine, taskID s
 	if len(nodes) != 4 {
 		t.Fatalf("tree node count = %d, want root + 3 pass children", len(nodes))
 	}
-	for i, workerType := range []loom.WorkerType{WorkerTypeReviewStructural, WorkerTypeReviewBehavioural, WorkerTypeReviewAdversarial} {
-		if nodes[i+1].ParentTaskID != taskID {
-			t.Fatalf("child %d parent = %q, want %q", i, nodes[i+1].ParentTaskID, taskID)
+	children := make(map[loom.WorkerType]loom.TaskNode, len(nodes)-1)
+	for _, node := range nodes[1:] {
+		children[node.WorkerType] = node
+	}
+	for _, workerType := range []loom.WorkerType{WorkerTypeReviewStructural, WorkerTypeReviewBehavioural, WorkerTypeReviewAdversarial} {
+		node, ok := children[workerType]
+		if !ok {
+			t.Fatalf("tree missing child worker_type %s; nodes=%#v", workerType, nodes)
 		}
-		if nodes[i+1].WorkerType != workerType {
-			t.Fatalf("child %d worker_type = %s, want %s", i, nodes[i+1].WorkerType, workerType)
+		if node.ParentTaskID != taskID {
+			t.Fatalf("child %s parent = %q, want %q", workerType, node.ParentTaskID, taskID)
 		}
 	}
 }

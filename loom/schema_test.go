@@ -52,6 +52,9 @@ func loomIndexExists(t *testing.T, db *sql.DB, index string) bool {
 			return true
 		}
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate index info: %v", err)
+	}
 	return false
 }
 

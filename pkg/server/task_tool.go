@@ -68,7 +68,7 @@ func (s *Server) registerTaskTool() {
 	s.mcp.AddTool(
 		mcp.NewTool("task",
 			mcp.WithDescription("[delegate — Loom routed, sync] Submit a task through the v5.11 task meta-router. "+
-				"Provide task_class to route directly to code, review, research, spec, prompt, or think. "+
+				"Provide task_class to route directly to code, review, or think. "+
 				"Omit task_class or pass task to use the deterministic classifier. "+
 				"Review mode accepts target and gate; code mode accepts sandbox and cli driver override. "+
 				"Returns a JSON TaskResult with task_id, content, task_class, rounds, and confidence_score."),
@@ -78,7 +78,7 @@ func (s *Server) registerTaskTool() {
 			),
 			mcp.WithString("task_class",
 				mcp.Description("Explicit task class. Omit or use task to classify from prompt."),
-				mcp.Enum("code", "review", "research", "spec", "prompt", "think", "task"),
+				mcp.Enum("code", "review", "think", "task"),
 				mcp.DefaultString("task"),
 			),
 			mcp.WithString("cli",
@@ -282,6 +282,9 @@ func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string
 	if mode != "" && taskClass != classifier.TaskClassPrompt {
 		return "", extypes.NewUserInputError("task: mode param requires task_class prompt", nil)
 	}
+	if taskClass == classifier.TaskClassPrompt {
+		return "", extypes.NewUserInputError("task: prompt task_class is not available in the Loom router", nil)
+	}
 	if taskClass == classifier.TaskClassReview && strings.TrimSpace(target) == "" {
 		return "", extypes.NewUserInputError("task: target is required for review task_class", nil)
 	}
@@ -290,8 +293,7 @@ func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string
 
 func validTaskToolClass(taskClass string) bool {
 	switch taskClass {
-	case "", taskClassTask, classifier.TaskClassCode, classifier.TaskClassReview,
-		classifier.TaskClassResearch, classifier.TaskClassSpec, classifier.TaskClassPrompt, taskClassThink:
+	case "", taskClassTask, classifier.TaskClassCode, classifier.TaskClassReview, taskClassThink:
 		return true
 	default:
 		return false
@@ -378,7 +380,7 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 		CLI:               cli,
 		Command:           binaryPath,
 		Args:              buildTaskArgs(profile, spec.Prompt),
-		CWD:               taskCWD(),
+		CWD:               taskDispatchCWD(spec.CWD),
 		TimeoutSeconds:    profile.TimeoutSeconds,
 		CompletionPattern: profile.CompletionPattern,
 	}
@@ -451,7 +453,10 @@ func commandBaseArgs(profile *config.CLIProfile) []string {
 		return nil
 	}
 	if profile.Command.Base != "" {
-		fields := strings.Fields(profile.Command.Base)
+		fields, err := splitCommandLine(profile.Command.Base)
+		if err != nil || len(fields) == 0 {
+			return nil
+		}
 		if len(fields) > 0 && profileCommandStartsWithBinary(profile, fields[0]) {
 			return fields[1:]
 		}
@@ -473,10 +478,68 @@ func profileCommandStartsWithBinary(profile *config.CLIProfile, token string) bo
 	return false
 }
 
+func splitCommandLine(command string) ([]string, error) {
+	var (
+		fields  []string
+		current strings.Builder
+		quote   rune
+		escaped bool
+	)
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		fields = append(fields, current.String())
+		current.Reset()
+	}
+	for _, r := range command {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && quote == '"' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+		case ' ', '\t', '\n', '\r':
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if escaped {
+		current.WriteRune('\\')
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	flush()
+	return fields, nil
+}
+
 // taskCWD returns the working directory for task dispatch.
 // Reads AIMUX_CWD env var; empty string lets the pipe executor inherit the process CWD.
 func taskCWD() string {
 	return os.Getenv("AIMUX_CWD")
+}
+
+func taskDispatchCWD(specCWD string) string {
+	if cwd := strings.TrimSpace(specCWD); cwd != "" {
+		return cwd
+	}
+	return taskCWD()
 }
 
 // mapExecError converts a generic executor error to a typed *extypes.CLIError so the

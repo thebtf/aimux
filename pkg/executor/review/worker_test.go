@@ -206,8 +206,8 @@ func waitReviewTaskStatus(t *testing.T, engine *loom.LoomEngine, taskID string, 
 		if err == nil && task.Status == want {
 			return task
 		}
-		if err == nil && task.Status == loom.TaskStatusFailed {
-			t.Fatalf("task %s failed: %s", taskID, task.Error)
+		if err == nil && task.Status.IsTerminal() {
+			t.Fatalf("task %s reached terminal status %s, want %s; error=%s", taskID, task.Status, want, task.Error)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

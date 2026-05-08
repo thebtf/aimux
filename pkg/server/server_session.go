@@ -29,6 +29,30 @@ type projectContextKey struct{}
 // callToolRequestKey stores the active CallToolRequest for direct-stdio child upstreams.
 type callToolRequestKey struct{}
 
+func jsonRPCRequestID(request []byte) mcp.RequestId {
+	var envelope struct {
+		ID mcp.RequestId `json:"id"`
+	}
+	if err := json.Unmarshal(request, &envelope); err != nil {
+		return mcp.NewRequestId(0)
+	}
+	return envelope.ID
+}
+
+func muxSessionIDFromRequest(request []byte) string {
+	var envelope struct {
+		Params struct {
+			Meta struct {
+				MuxSessionID string `json:"muxSessionId"`
+			} `json:"_meta"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(request, &envelope); err != nil {
+		return ""
+	}
+	return envelope.Params.Meta.MuxSessionID
+}
+
 // tenantScopedLoomKey is the context key for TenantScopedLoomEngine injected at dispatch
 // (AIMUX-12 Phase 5, T033). Tool handlers retrieve it via TenantScopedLoomFromContext.
 type tenantScopedLoomKey struct{}
@@ -133,6 +157,8 @@ func (d *fullDelegate) broadcastToolsListChanged() {
 // HandleRequest processes one MCP JSON-RPC request with project context.
 // Called concurrently from multiple goroutines by the muxcore engine owner.
 func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.ProjectContext, request []byte) ([]byte, error) {
+	requestID := jsonRPCRequestID(request)
+	ctx = contextWithMuxSessionID(ctx, muxSessionIDFromRequest(request))
 	state, err := d.projectStateForRequest(ctx, project)
 	if err != nil {
 		if !errors.Is(err, errProjectNotConnected) {
@@ -140,7 +166,7 @@ func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.Projec
 		}
 		// Project not yet connected — should not happen in normal flow,
 		// but handle gracefully by returning a JSON-RPC error.
-		errResp := mcp.NewJSONRPCError(mcp.NewRequestId(0), mcp.INTERNAL_ERROR, "project not connected: "+project.ID, nil)
+		errResp := mcp.NewJSONRPCError(requestID, mcp.INTERNAL_ERROR, "project not connected: "+project.ID, nil)
 		return json.Marshal(errResp)
 	}
 
@@ -168,7 +194,7 @@ func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.Projec
 		if tcErr != nil {
 			if errors.Is(tcErr, ErrTenantUnenrolled) {
 				d.srv.dispatchMW.EmitUnenrolledBlocked(0, project.ID, "")
-				errResp := mcp.NewJSONRPCError(mcp.NewRequestId(0), -32000,
+				errResp := mcp.NewJSONRPCError(requestID, -32000,
 					"tenant unenrolled: connecting UID is not registered in the multi-tenant registry",
 					nil)
 				return json.Marshal(errResp)
@@ -179,7 +205,7 @@ func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.Projec
 			// tenant context (privilege escalation risk per PRC v3 N1).
 			d.srv.log.Warn("dispatch: ResolveContext returned unexpected error: %v", tcErr)
 			d.srv.dispatchMW.EmitUnenrolledBlocked(0, project.ID, "")
-			errResp := mcp.NewJSONRPCError(mcp.NewRequestId(0), -32000,
+			errResp := mcp.NewJSONRPCError(requestID, -32000,
 				"tenant resolution failed: unexpected error class",
 				nil)
 			return json.Marshal(errResp)

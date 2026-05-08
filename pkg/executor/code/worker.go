@@ -291,7 +291,7 @@ func resumeTaskIDFromMetadata(metadata map[string]any) string {
 
 func ensureCLIError(err error) *types.CLIError {
 	if err == nil {
-		return nil
+		return types.NewUnknown("code worker failed without error detail", nil)
 	}
 	var cliErr *types.CLIError
 	if errors.As(err, &cliErr) {

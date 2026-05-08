@@ -53,6 +53,7 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 	raw, err := w.server.taskDispatch(ctx, cli, picker.TaskSpec{
 		TaskClass: w.taskClass,
 		Prompt:    task.Prompt,
+		CWD:       task.CWD,
 	})
 	if err != nil {
 		return nil, err

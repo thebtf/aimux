@@ -58,10 +58,9 @@ func TestE2E_AIMUX21WorktreeNativeIsolation(t *testing.T) {
 	}
 	engine.RegisterWorker(codeworker.WorkerTypeCode, codeEntry)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-
-	taskAID, err := engine.Submit(ctx, loom.TaskRequest{
+	ctxA, cancelA := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancelA()
+	taskAID, err := engine.Submit(ctxA, loom.TaskRequest{
 		WorkerType: codeworker.WorkerTypeCode,
 		ProjectID:  projectIDA,
 		RequestID:  "aimux21-worktree-a",
@@ -75,7 +74,7 @@ func TestE2E_AIMUX21WorktreeNativeIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit worktree A task: %v", err)
 	}
-	taskA := aimux21WaitWorktreeTask(t, ctx, engine, taskAID)
+	taskA := aimux21WaitWorktreeTask(t, ctxA, engine, taskAID)
 	if taskA.Status != loom.TaskStatusCompleted {
 		t.Fatalf("task A status = %s error=%q result=%q", taskA.Status, taskA.Error, taskA.Result)
 	}
@@ -85,7 +84,9 @@ func TestE2E_AIMUX21WorktreeNativeIsolation(t *testing.T) {
 	aimux21AssertReadmeMarker(t, filepath.Join(worktreeA, "README.md"))
 	aimux21AssertSubtreeProjectID(t, engine, taskAID, projectIDA)
 
-	resumeTaskID, err := engine.Submit(ctx, loom.TaskRequest{
+	ctxResume, cancelResume := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancelResume()
+	resumeTaskID, err := engine.Submit(ctxResume, loom.TaskRequest{
 		WorkerType: codeworker.WorkerTypeCode,
 		ProjectID:  projectIDB,
 		RequestID:  "aimux21-worktree-b-resume",
@@ -98,7 +99,7 @@ func TestE2E_AIMUX21WorktreeNativeIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit worktree B resume task: %v", err)
 	}
-	resumeTask := aimux21WaitWorktreeTask(t, ctx, engine, resumeTaskID)
+	resumeTask := aimux21WaitWorktreeTask(t, ctxResume, engine, resumeTaskID)
 	if resumeTask.Status != loom.TaskStatusFailed {
 		t.Fatalf("resume task status = %s, want failed; error=%q", resumeTask.Status, resumeTask.Error)
 	}
@@ -106,7 +107,9 @@ func TestE2E_AIMUX21WorktreeNativeIsolation(t *testing.T) {
 		t.Fatalf("resume task error = %q, want cross-worktree ResumeWorkerMismatch", resumeTask.Error)
 	}
 
-	escapeTaskID, err := engine.Submit(ctx, loom.TaskRequest{
+	ctxEscape, cancelEscape := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancelEscape()
+	escapeTaskID, err := engine.Submit(ctxEscape, loom.TaskRequest{
 		WorkerType: codeworker.WorkerTypeCode,
 		ProjectID:  projectIDB,
 		RequestID:  "aimux21-worktree-b-escape",
@@ -120,7 +123,7 @@ func TestE2E_AIMUX21WorktreeNativeIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit worktree B escape task: %v", err)
 	}
-	escapeTask := aimux21WaitWorktreeTask(t, ctx, engine, escapeTaskID)
+	escapeTask := aimux21WaitWorktreeTask(t, ctxEscape, engine, escapeTaskID)
 	if escapeTask.Status != loom.TaskStatusFailed {
 		t.Fatalf("escape task status = %s, want failed; error=%q", escapeTask.Status, escapeTask.Error)
 	}

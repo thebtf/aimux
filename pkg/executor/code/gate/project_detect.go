@@ -3,6 +3,7 @@ package gate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ProjectType is the detected build ecosystem.
@@ -18,6 +19,9 @@ const (
 
 // DetectProjectType detects project type by marker files in deterministic order.
 func DetectProjectType(cwd string) (ProjectType, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return ProjectTypeUnknown, nil
+	}
 	markers := []struct {
 		file        string
 		projectType ProjectType

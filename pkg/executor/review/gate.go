@@ -72,6 +72,9 @@ func (g *Gate) RunGate(ctx context.Context, target string, timeoutSec int) (Deci
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(gateCtx.Err(), context.DeadlineExceeded) {
 			return failOpenDecision("timeout"), nil
 		}
+		if errors.Is(err, context.Canceled) || errors.Is(gateCtx.Err(), context.Canceled) {
+			return Decision{}, context.Canceled
+		}
 		return failOpenDecision(err.Error()), nil
 	}
 

@@ -36,13 +36,17 @@ func Classify(prompt string) ([]Candidate, float64, error) {
 
 // Classify scores prompt and returns ranked candidates plus the top score as confidence.
 func (c *Classifier) Classify(prompt string) ([]Candidate, float64, error) {
+	threshold := DefaultThreshold
+	if c != nil {
+		threshold = c.threshold
+	}
 	candidates := score(prompt)
 	if len(candidates) == 0 {
 		return nil, 0, types.NewClassificationAmbiguous("classification ambiguous: no candidates", nil)
 	}
 
 	confidence := candidates[0].Score
-	if confidence < c.threshold {
+	if confidence < threshold {
 		top := topCandidates(candidates, 3)
 		return top, confidence, types.NewClassificationAmbiguous(ambiguousMessage(top), nil)
 	}

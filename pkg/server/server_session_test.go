@@ -19,6 +19,39 @@ import (
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
+func TestJSONRPCRequestIDPreservesIncomingID(t *testing.T) {
+	got := jsonRPCRequestID([]byte(`{"jsonrpc":"2.0","id":"req-42","method":"tools/list"}`))
+	if got.Value() != "req-42" {
+		t.Fatalf("request id = %#v, want req-42", got.Value())
+	}
+
+	got = jsonRPCRequestID([]byte(`{"jsonrpc":"2.0","id":17,"method":"tools/list"}`))
+	if got.Value() != int64(17) {
+		t.Fatalf("request id = %#v, want int64(17)", got.Value())
+	}
+}
+
+func TestHandleRequestProjectNotConnectedPreservesRequestID(t *testing.T) {
+	delegate := &fullDelegate{}
+	resp, err := delegate.HandleRequest(
+		context.Background(),
+		muxcore.ProjectContext{ID: "missing-project"},
+		[]byte(`{"jsonrpc":"2.0","id":"req-99","method":"tools/list"}`),
+	)
+	if err != nil {
+		t.Fatalf("HandleRequest returned Go error: %v", err)
+	}
+	var payload struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(resp, &payload); err != nil {
+		t.Fatalf("decode response: %v raw=%s", err, resp)
+	}
+	if payload.ID != "req-99" {
+		t.Fatalf("response id = %q, want req-99; raw=%s", payload.ID, resp)
+	}
+}
+
 // --- T038: TestServerSession_RefreshWarmup ---
 
 // buildRefreshWarmupServer constructs a minimal Server with two CLIs:

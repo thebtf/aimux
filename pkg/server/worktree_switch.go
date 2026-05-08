@@ -17,6 +17,7 @@ const worktreeSwitchCanceledMessage = "Canceled: worktree switched mid-task"
 var errProjectNotConnected = errors.New("project not connected")
 
 type sessionMetaContextKey struct{}
+type muxSessionIDContextKey struct{}
 
 type worktreeSessionTracker struct {
 	mu        sync.Mutex
@@ -25,6 +26,13 @@ type worktreeSessionTracker struct {
 
 func contextWithSessionMeta(ctx context.Context, meta muxcore.SessionMeta) context.Context {
 	return context.WithValue(ctx, sessionMetaContextKey{}, meta)
+}
+
+func contextWithMuxSessionID(ctx context.Context, sessionID string) context.Context {
+	if sessionID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, muxSessionIDContextKey{}, sessionID)
 }
 
 func sessionMetaFromContext(ctx context.Context) (muxcore.SessionMeta, bool) {
@@ -101,6 +109,9 @@ func (d *fullDelegate) forgetProjectSessions(projectID string) {
 }
 
 func worktreeSessionKeyFromContext(ctx context.Context) (string, bool) {
+	if sessionID, _ := ctx.Value(muxSessionIDContextKey{}).(string); sessionID != "" {
+		return "mux:" + sessionID, true
+	}
 	meta, ok := sessionMetaFromContext(ctx)
 	if !ok {
 		return "", false

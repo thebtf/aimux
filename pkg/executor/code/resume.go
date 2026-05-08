@@ -67,7 +67,7 @@ func validateResumeProject(ctx context.Context, prev *loom.Task) error {
 	}
 	currentProjectID, _ := ctx.Value(resumeProjectIDContextKey{}).(string)
 	if currentProjectID == "" {
-		return nil
+		return types.NewResumeWorkerMismatch("cross-worktree resume rejected: current worktree project id is unavailable", nil)
 	}
 	if prev.ProjectID == currentProjectID {
 		return nil

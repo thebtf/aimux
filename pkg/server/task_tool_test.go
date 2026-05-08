@@ -148,6 +148,29 @@ func TestHandleTaskCLIOverrideDoesNotBypassRouter(t *testing.T) {
 	}
 }
 
+func TestHandleTaskRejectsUnregisteredClassBeforeSubmit(t *testing.T) {
+	t.Parallel()
+
+	srv, codeWorker, reviewWorker := newTaskToolServer(t)
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":     "research official docs",
+		"task_class": "research",
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+	}
+	if got := codeWorker.taskCount(); got != 0 {
+		t.Fatalf("code task count = %d, want 0", got)
+	}
+	if got := reviewWorker.taskCount(); got != 0 {
+		t.Fatalf("review task count = %d, want 0", got)
+	}
+}
+
 func newTaskToolServer(t *testing.T) (*Server, *recordingTaskWorker, *recordingTaskWorker) {
 	t.Helper()
 	engine := newTaskToolEngine(t)
@@ -322,6 +345,35 @@ func TestBuildTaskArgsKeepsSubcommandAfterRealBinary(t *testing.T) {
 	want := []string{"exec", "hello"}
 	if !stringSlicesEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildTaskArgsPreservesQuotedCommandBaseFields(t *testing.T) {
+	t.Parallel()
+
+	profile := &config.CLIProfile{
+		Binary:         "codex",
+		PromptFlagType: "positional",
+		Command: config.CommandConfig{
+			Base: `codex exec --profile "review mode" --label 'pair navigator'`,
+		},
+	}
+
+	got := buildTaskArgs(profile, "hello")
+	want := []string{"exec", "--profile", "review mode", "--label", "pair navigator", "hello"}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestTaskDispatchCWDUsesTaskCWDBeforeEnvFallback(t *testing.T) {
+	t.Setenv("AIMUX_CWD", "env-cwd")
+
+	if got := taskDispatchCWD(" task-cwd "); got != "task-cwd" {
+		t.Fatalf("taskDispatchCWD(task) = %q, want task-cwd", got)
+	}
+	if got := taskDispatchCWD(""); got != "env-cwd" {
+		t.Fatalf("taskDispatchCWD(empty) = %q, want env-cwd", got)
 	}
 }
 

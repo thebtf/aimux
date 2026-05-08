@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,13 @@ func HasTests(cwd string, projectType ProjectType) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return strings.Contains(string(content), `"test"`), nil
+		var pkg struct {
+			Scripts map[string]string `json:"scripts"`
+		}
+		if err := json.Unmarshal(content, &pkg); err != nil {
+			return false, err
+		}
+		return strings.TrimSpace(pkg.Scripts["test"]) != "", nil
 	case ProjectTypePython:
 		return hasPythonTests(cwd)
 	case ProjectTypeRust:
@@ -73,7 +80,7 @@ func hasPythonTests(root string) (bool, error) {
 			found = true
 			return filepath.SkipAll
 		}
-		if !entry.IsDir() && (strings.HasPrefix(name, "test_") || strings.HasSuffix(name, "_test.py")) {
+		if !entry.IsDir() && ((strings.HasPrefix(name, "test_") && strings.HasSuffix(name, ".py")) || strings.HasSuffix(name, "_test.py")) {
 			found = true
 			return filepath.SkipAll
 		}

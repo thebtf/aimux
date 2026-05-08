@@ -2,11 +2,11 @@
 
 ### Breaking Changes
 
-- **AIMUX-21 — Entry Point Convergence**. The CLI-specific `codex_*` MCP tools are removed in v5.11.0. The public MCP surface now routes code and review work through the methodology-bearing `task` entry point, while Codex remains available as a backend worker. This follows Constitution Principle 3 / Frozen Surface policy (`.agent/specs/constitution.md:45-55`, `.agent/specs/constitution.md:224-231`), spec FR-11 and NFR-5 (`.agent/specs/AIMUX-21-entry-point-convergence/spec.md:418-427`, `:468-472`), plan Phase 1.7 (`.agent/specs/AIMUX-21-entry-point-convergence/plan.md:669-673`), and architecture ADR-013 (`.agent/specs/AIMUX-21-entry-point-convergence/architecture.md:516-529`).
+- **AIMUX-21 — Entry Point Convergence**. The CLI-specific `codex_*` MCP tools are removed in v5.11.0. The public MCP surface now routes code and review work through the methodology-bearing `task` entry point, while Codex remains available as a backend worker. This release note is the public migration contract; the internal AIMUX-21 specbook records the detailed frozen-surface rationale, FR/NFR traceability, phase plan, and ADR-013.
 
 ### Worktree-Native Isolation
 
-- **0-day git worktree support for AIMUX-21 task routing**. CR-002 makes worktree isolation explicit before the breaking release ships, based on NFR-9 / NFR-10 and FR-3 / FR-9 amendments (`.agent/specs/AIMUX-21-entry-point-convergence/changes/CR-002-worktree-native-isolation/change.md:37-41`; `.agent/specs/AIMUX-21-entry-point-convergence/spec.md:236`, `:397-402`, `:505-544`).
+- **0-day git worktree support for AIMUX-21 task routing**. CR-002 makes worktree isolation explicit before the breaking release ships: task routing, resume validation, sub-task inheritance, worktree switch handling, and apply/gate path binding all use the active ProjectContext/worktree as the safety boundary.
 - **W1 — Cross-worktree resume rejection:** `task(task_class="code", resume_id=...)` rejects a task created in another worktree with `CLIErrResumeWorkerMismatch` and reason `cross-worktree resume rejected`.
 - **W2 — Sub-task ProjectID inheritance:** Loom sub-tasks inherit the parent ProjectID; explicit child mismatch fails with `CLIErrCapabilityMismatch` (`subtask ProjectID must match parent ProjectID`).
 - **W3 — Worktree switch detection:** SessionHandler detects same-client ProjectContext switches, drains previous worktree tasks by default, and `worktree.forced_switch=true` cancels old active tasks with `CLIErrCanceled` / `worktree switched mid-task`.
@@ -40,7 +40,7 @@
 
 ### Test Coverage
 
-- **test(codex): wire-format snapshot tests** (#171). All 65+ existing codex unit tests mocked JSONLClient — none verified Go struct JSON output against codex protocol schema. That's how the v5.10.0 regression shipped. Added 17 schema-snapshot tests that JSON-marshal each protocol param type and assert required fields per `.agent/codex-types-generated/v2/`. Catches codex schema drift at compile-test time without needing the `codex` binary.
+- **test(codex): wire-format snapshot tests** (#171). All 65+ existing codex unit tests mocked JSONLClient — none verified Go struct JSON output against codex protocol schema. That's how the v5.10.0 regression shipped. Added 17 schema-snapshot tests that JSON-marshal each protocol param type and assert required fields from generated Codex protocol fixtures. Catches codex schema drift at compile-test time without needing the `codex` binary.
 
 - **test(e2e): codex initialize integration test against real binary** (#170). New `TestE2E_CodexInitialize_RealBinary` (gated by `CODEX_E2E=1` env). Spawns real `codex app-server`, calls `Start()`, asserts no error. The test that would have caught the v5.10.0 regression.
 
@@ -106,8 +106,8 @@ If you upgraded to v5.10.0 and saw `codex_task` failing with `clientInfo` errors
 
 ### Documentation
 
-- Codex plugin audit: `.agent/reports/2026-05-07-codex-plugin-cc-audit.md` (1614 LOC) — engineering reference for Codex app-server protocol with verbatim TS types from `codex app-server generate-ts`.
-- CLI Runtime Profile research: `.agent/reports/2026-05-07-cli-runtime-profile-research.md` (902 LOC) — per-CLI startup-state inventory, override matrix, design proposal.
+- Codex plugin audit: internal engineering reference for Codex app-server protocol with verbatim TS types from `codex app-server generate-ts`.
+- CLI Runtime Profile research: internal per-CLI startup-state inventory, override matrix, and design proposal.
 
 ### Quality
 

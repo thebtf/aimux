@@ -1,6 +1,7 @@
 package loom
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -452,7 +453,15 @@ const taskSelectColumns = `id, status, worker_type, project_id, request_id, pare
 
 // Get retrieves a task by ID (cross-tenant — use GetForTenant for scoped access).
 func (s *TaskStore) Get(id string) (*Task, error) {
-	row := s.db.QueryRow(`
+	return s.GetContext(context.Background(), id)
+}
+
+// GetContext retrieves a task by ID with caller-controlled cancellation.
+func (s *TaskStore) GetContext(ctx context.Context, id string) (*Task, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	row := s.db.QueryRowContext(ctx, `
 		SELECT `+taskSelectColumns+`
 		FROM tasks WHERE id = ?`, id)
 
@@ -463,7 +472,15 @@ func (s *TaskStore) Get(id string) (*Task, error) {
 // Returns ErrTaskNotFound when the task does not exist OR belongs to a different tenant
 // (defence-in-depth: NEVER reveal task existence to a foreign tenant via 403).
 func (s *TaskStore) GetForTenant(id, tenantID string) (*Task, error) {
-	row := s.db.QueryRow(`
+	return s.GetForTenantContext(context.Background(), id, tenantID)
+}
+
+// GetForTenantContext retrieves a tenant-scoped task with caller-controlled cancellation.
+func (s *TaskStore) GetForTenantContext(ctx context.Context, id, tenantID string) (*Task, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	row := s.db.QueryRowContext(ctx, `
 		SELECT `+taskSelectColumns+`
 		FROM tasks WHERE id = ? AND tenant_id = ?`, id, tenantID)
 

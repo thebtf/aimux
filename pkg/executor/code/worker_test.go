@@ -43,6 +43,26 @@ func TestCodeWorkerApplyPathRecordsMetadataAndTransitions(t *testing.T) {
 	assertTransitionLogContains(t, task.Metadata, StateGate, StateDone)
 }
 
+func TestCodeWorkerFailTaskHandlesNilError(t *testing.T) {
+	worker := newTestCodeWorker(t, workerTestDeps{})
+	task := &loom.Task{Metadata: map[string]any{}}
+
+	_, err := worker.failTask(task, nil, nil)
+	if err == nil {
+		t.Fatal("failTask nil error returned nil, want CLIError")
+	}
+	var cliErr *types.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != types.CLIErrorCodeUnknown {
+		t.Fatalf("code = %s, want %s", cliErr.Code, types.CLIErrorCodeUnknown)
+	}
+	if task.Error == "" {
+		t.Fatal("task.Error is empty, want recorded failure")
+	}
+}
+
 func TestCodeWorkerRetryLoopIncrementsRounds(t *testing.T) {
 	root := codeWorkerFixture(t)
 	pair := &mockWorkerPair{verdicts: []Verdict{

@@ -98,6 +98,25 @@ func TestClassifyAmbiguousPromptReturnsTopThreeAndCLIError(t *testing.T) {
 	assertSorted(t, candidates)
 }
 
+func TestClassifierNilReceiverUsesDefaultThreshold(t *testing.T) {
+	t.Parallel()
+
+	var c *Classifier
+	candidates, confidence, err := c.Classify("Implement a bug fix in pkg/server/task_router.go.")
+	if err != nil {
+		t.Fatalf("Classify() error = %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("candidates empty, want at least one")
+	}
+	if candidates[0].TaskClass != TaskClassCode {
+		t.Fatalf("top task_class = %s, want %s", candidates[0].TaskClass, TaskClassCode)
+	}
+	if confidence < DefaultThreshold {
+		t.Fatalf("confidence = %.3f, want >= %.3f", confidence, DefaultThreshold)
+	}
+}
+
 func TestClassifyStructuralCuesAffectScores(t *testing.T) {
 	t.Parallel()
 

@@ -42,11 +42,12 @@ func TestCodeWorkerResumeFromTaskRejectsCrossWorker(t *testing.T) {
 	loomClient.tasks["review-task"] = &loom.Task{
 		ID:         "review-task",
 		WorkerType: loom.WorkerType("review"),
+		ProjectID:  "project-a",
 		Metadata:   map[string]any{MetadataThreadID: "thread-1"},
 	}
 	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
 
-	_, err := worker.ResumeFromTask(context.Background(), "review-task")
+	_, err := worker.ResumeFromTask(contextWithResumeProjectID(context.Background(), "project-a"), "review-task")
 	assertCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
 }
 
@@ -85,12 +86,33 @@ func TestCodeWorkerResumeFromTaskRejectsMissingThreadID(t *testing.T) {
 	loomClient.tasks["task-1"] = &loom.Task{
 		ID:         "task-1",
 		WorkerType: WorkerTypeCode,
+		ProjectID:  "project-a",
 		Metadata:   map[string]any{MetadataWorkerType: string(WorkerTypeCode)},
 	}
 	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
 
-	_, err := worker.ResumeFromTask(context.Background(), "task-1")
+	_, err := worker.ResumeFromTask(contextWithResumeProjectID(context.Background(), "project-a"), "task-1")
 	assertCLIErrorCode(t, err, types.CLIErrorCodeCapabilityMismatch)
+}
+
+func TestCodeWorkerResumeFromTaskRejectsMissingCurrentProject(t *testing.T) {
+	loomClient := newMockLoom(`{"verdict":"APPLY","confidence":1}`)
+	loomClient.tasks["task-1"] = &loom.Task{
+		ID:         "task-1",
+		WorkerType: WorkerTypeCode,
+		ProjectID:  "project-a",
+		Metadata: map[string]any{
+			MetadataThreadID:   "thread-1",
+			MetadataWorkerType: string(WorkerTypeCode),
+		},
+	}
+	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
+
+	_, err := worker.ResumeFromTask(context.Background(), "task-1")
+	cliErr := assertCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
+	if cliErr.Message != "cross-worktree resume rejected: current worktree project id is unavailable" {
+		t.Fatalf("message = %q, want missing current project rejection", cliErr.Message)
+	}
 }
 
 func assertCLIErrorCode(t *testing.T, err error, want types.CLIErrorCode) *types.CLIError {

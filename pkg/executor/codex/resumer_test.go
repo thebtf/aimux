@@ -187,6 +187,20 @@ func TestResumer_ResumeFromTask(t *testing.T) {
 	assertCodexCLIErrorCode(t, err, types.CLIErrorCodeCapabilityMismatch)
 }
 
+func TestResumer_ResumeFromTaskContextErrors(t *testing.T) {
+	resumer := NewResumerWithTasks(nil, &resumerTaskGetter{tasks: map[string]*loom.Task{}})
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := resumer.ResumeFromTask(canceled, "task-1")
+	assertCodexCLIErrorCode(t, err, types.CLIErrorCodeCanceled)
+
+	deadline, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	_, err = resumer.ResumeFromTask(deadline, "task-1")
+	assertCodexCLIErrorCode(t, err, types.CLIErrorCodeTimeout)
+}
+
 // TestThreadListParams_UseStateDbOnly verifies that UseStateDbOnly is always
 // serialized as true (Fix 2 from post-impl-fixes.md).
 func TestThreadListParams_UseStateDbOnly(t *testing.T) {
@@ -246,7 +260,7 @@ type resumerTaskGetter struct {
 func (g *resumerTaskGetter) Get(taskID string) (*loom.Task, error) {
 	task, ok := g.tasks[taskID]
 	if !ok {
-		return nil, types.NewUserInputError("missing task", nil)
+		return nil, loom.ErrTaskNotFound
 	}
 	return task, nil
 }

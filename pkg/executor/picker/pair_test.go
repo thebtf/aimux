@@ -103,6 +103,24 @@ func TestPickPair_UnhealthyOverrideFallsBack(t *testing.T) {
 	}
 }
 
+func TestPickPair_RejectsUnknownDriverFamily(t *testing.T) {
+	cfg := DefaultPickerConfig()
+	cfg.DefaultCLI = "local"
+	p := makePairPicker(cfg, map[string]bool{"local": true, "codex": true, "claude": true}, []string{"local", "codex", "claude"})
+
+	_, _, err := p.PickPair(context.Background(), "code")
+	assertCLIError(t, err, types.CLIErrorCodeCapabilityMismatch, "known CLI family")
+}
+
+func TestPickPair_RejectsUnknownNavigatorOverride(t *testing.T) {
+	cfg := DefaultPickerConfig()
+	cfg.PairNavigator = map[string]string{"codex": "local"}
+	p := makePairPicker(cfg, map[string]bool{"codex": true, "local": true, "claude": true}, []string{"codex", "local", "claude"})
+
+	_, _, err := p.PickPair(context.Background(), "code")
+	assertCLIError(t, err, types.CLIErrorCodeCapabilityMismatch, "same-family or unknown-family")
+}
+
 func makePairPicker(cfg PickerConfig, healthy map[string]bool, active []string) *Picker {
 	cfg.HealthCacheTTL = time.Hour
 	cs := NewCapabilityScore(&cfg)

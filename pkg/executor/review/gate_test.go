@@ -117,6 +117,20 @@ func TestGateRunGateFailOpenOnTimeout(t *testing.T) {
 	}
 }
 
+func TestGateRunGateReturnsErrorOnCancellation(t *testing.T) {
+	runner := &fakePassRunner{wait: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	decision, err := NewGate(runner, Criteria{}).RunGate(ctx, "HEAD", 300)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunGate error = %v, want context.Canceled", err)
+	}
+	if decision.Decision != "" {
+		t.Fatalf("decision = %#v, want zero decision on cancellation", decision)
+	}
+}
+
 func TestParseGateDecisionPreservesBlockFixture(t *testing.T) {
 	input := `{"findings":[],"summary":"critical issue","decision":"BLOCK","reason":"critical security issue found"}`
 	decision, reason := ParseGateDecision(input)
@@ -125,6 +139,17 @@ func TestParseGateDecisionPreservesBlockFixture(t *testing.T) {
 	}
 	if reason != "critical security issue found" {
 		t.Fatalf("reason = %q, want critical security issue found", reason)
+	}
+}
+
+func TestParseGateDecisionPreservesBlockWithTrailingText(t *testing.T) {
+	input := `preamble {"findings":[],"summary":"critical issue","decision":"BLOCK","reason":"must fix"} trailing note`
+	decision, reason := ParseGateDecision(input)
+	if decision != "block" {
+		t.Fatalf("decision = %q, want block", decision)
+	}
+	if reason != "must fix" {
+		t.Fatalf("reason = %q, want must fix", reason)
 	}
 }
 

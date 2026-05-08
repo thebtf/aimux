@@ -27,12 +27,16 @@ func TestE2E_CodexToolsRemovedFromToolList(t *testing.T) {
 	}
 
 	toolNames := make(map[string]bool, len(tools))
-	for _, raw := range tools {
-		tool, _ := raw.(map[string]any)
-		name, _ := tool["name"].(string)
-		if name != "" {
-			toolNames[name] = true
+	for i, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("tools[%d] = %T, want object", i, raw)
 		}
+		name, ok := tool["name"].(string)
+		if !ok || name == "" {
+			t.Fatalf("tools[%d].name = %#v, want non-empty string", i, tool["name"])
+		}
+		toolNames[name] = true
 	}
 
 	for _, removed := range []string{

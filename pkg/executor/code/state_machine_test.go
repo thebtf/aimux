@@ -129,6 +129,16 @@ func TestValidateTransitionRejectsIllegalMoves(t *testing.T) {
 	}
 }
 
+func TestValidateTransitionRejectsRoundsBeyondMax(t *testing.T) {
+	err := ValidateTransition(StateDriver, StateNavigator, 2, 1)
+	if err == nil {
+		t.Fatal("ValidateTransition rounds > maxRounds returned nil, want error")
+	}
+	if err.Code != types.CLIErrorCodeUserInputError {
+		t.Fatalf("error code = %s, want %s", err.Code, types.CLIErrorCodeUserInputError)
+	}
+}
+
 func TestRecordTransitionDoesNotMutateCallerMetadata(t *testing.T) {
 	original := map[string]any{
 		"existing": MetadataTransitionsKey,

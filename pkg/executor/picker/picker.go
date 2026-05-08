@@ -14,6 +14,9 @@ type TaskSpec struct {
 	// Prompt is the raw task prompt. The picker does not modify or inspect it —
 	// it is passed through unchanged to the selected CLI worker (ADR-005).
 	Prompt string
+
+	// CWD is the project/worktree directory where a leaf CLI must execute.
+	CWD string
 }
 
 // Picker selects the optimal CLI for a TaskSpec when the caller does not

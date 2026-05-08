@@ -131,7 +131,10 @@ func TestTaskRouterDispatchCallerCancellationCancelsTask(t *testing.T) {
 	router := mustTaskRouter(t, fake, time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	fake.onGet = cancel
+	fake.onGet = func(context.Context) error {
+		cancel()
+		return nil
+	}
 
 	_, err := router.Dispatch(ctx, TaskRequest{
 		Prompt:    "Implement pkg/server/task_router.go cancellation handling.",
@@ -178,6 +181,61 @@ func TestTaskRouterDispatchTimeoutCancelsTask(t *testing.T) {
 	}
 }
 
+func TestTaskRouterDispatchTimeoutCancelsBlockingGet(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeTaskRouterLoom()
+	fake.completeOnSubmit = false
+	fake.onGet = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	router := mustTaskRouter(t, fake, 2*time.Millisecond)
+
+	_, err := router.Dispatch(context.Background(), TaskRequest{
+		Prompt:    "Implement pkg/server/task_router.go blocking lookup cancellation.",
+		TaskClass: classifier.TaskClassCode,
+	})
+	if err == nil {
+		t.Fatal("Dispatch() error = nil, want timeout")
+	}
+	var cliErr *extypes.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != extypes.CLIErrorCodeTimeout {
+		t.Fatalf("code = %s, want %s", cliErr.Code, extypes.CLIErrorCodeTimeout)
+	}
+	if fake.cancelCount() != 1 {
+		t.Fatalf("cancel count = %d, want 1", fake.cancelCount())
+	}
+}
+
+func TestTaskRouterRejectsUnregisteredClassBeforeSubmit(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeTaskRouterLoom()
+	router := mustTaskRouter(t, fake, 500*time.Millisecond)
+
+	_, err := router.Dispatch(context.Background(), TaskRequest{
+		Prompt:    "Research official docs for the newest behavior.",
+		TaskClass: classifier.TaskClassResearch,
+	})
+	if err == nil {
+		t.Fatal("Dispatch() error = nil, want unsupported task_class")
+	}
+	var cliErr *extypes.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != extypes.CLIErrorCodeUserInputError {
+		t.Fatalf("code = %s, want %s", cliErr.Code, extypes.CLIErrorCodeUserInputError)
+	}
+	if got := fake.submissionCount(); got != 0 {
+		t.Fatalf("submission count = %d, want 0", got)
+	}
+}
+
 func mustTaskRouter(t *testing.T, l *fakeTaskRouterLoom, timeout time.Duration) *TaskRouter {
 	t.Helper()
 	router, err := NewTaskRouter(TaskRouterConfig{
@@ -198,7 +256,7 @@ type fakeTaskRouterLoom struct {
 	submissions      []loom.TaskRequest
 	tasks            map[string]*loom.Task
 	cancels          []string
-	onGet            func()
+	onGet            func(context.Context) error
 }
 
 func newFakeTaskRouterLoom() *fakeTaskRouterLoom {
@@ -234,9 +292,11 @@ func (f *fakeTaskRouterLoom) Submit(_ context.Context, req loom.TaskRequest) (st
 	return taskID, nil
 }
 
-func (f *fakeTaskRouterLoom) Get(taskID string) (*loom.Task, error) {
+func (f *fakeTaskRouterLoom) GetContext(ctx context.Context, taskID string) (*loom.Task, error) {
 	if f.onGet != nil {
-		f.onGet()
+		if err := f.onGet(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	f.mu.Lock()

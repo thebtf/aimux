@@ -23,9 +23,8 @@ func ParseGateDecision(content string) (string, string) {
 	if start < 0 {
 		return "allow", "gate output did not contain a JSON object"
 	}
-	jsonStr := content[start:]
 	var resp gateDecisionResponse
-	if err := json.Unmarshal([]byte(jsonStr), &resp); err != nil {
+	if err := json.NewDecoder(strings.NewReader(content[start:])).Decode(&resp); err != nil {
 		// Fail-open: malformed JSON should not block the gate.
 		return "allow", fmt.Sprintf("gate output parse error: %v", err)
 	}

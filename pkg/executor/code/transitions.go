@@ -30,6 +30,9 @@ func ValidateTransition(from, to State, rounds, maxRounds int) *types.CLIError {
 	if maxRounds < 0 {
 		return types.NewUserInputError("code FSM max rounds must be non-negative", nil)
 	}
+	if rounds > maxRounds {
+		return types.NewUserInputError("code FSM rounds cannot exceed max rounds", nil)
+	}
 	if IsTerminalState(from) {
 		return types.NewUserInputError(fmt.Sprintf("terminal code FSM state %s cannot transition", from), nil)
 	}

@@ -465,7 +465,12 @@ func (l *LoomEngine) Close(ctx context.Context) error {
 
 // Get returns current task state.
 func (l *LoomEngine) Get(taskID string) (*Task, error) {
-	return l.store.Get(taskID)
+	return l.GetContext(context.Background(), taskID)
+}
+
+// GetContext returns current task state with caller-controlled cancellation.
+func (l *LoomEngine) GetContext(ctx context.Context, taskID string) (*Task, error) {
+	return l.store.GetContext(ctx, taskID)
 }
 
 // List returns tasks for a project, optionally filtered by status.

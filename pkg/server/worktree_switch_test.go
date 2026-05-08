@@ -153,6 +153,26 @@ func TestHandleRequestWithSessionMetaTracksWorktree(t *testing.T) {
 	}
 }
 
+func TestWorktreeSessionKeyPrefersMuxSessionID(t *testing.T) {
+	ctx := contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(2001))
+	ctx = contextWithMuxSessionID(ctx, "sess_abc12345")
+
+	key, ok := worktreeSessionKeyFromContext(ctx)
+	if !ok {
+		t.Fatal("worktreeSessionKeyFromContext ok = false, want true")
+	}
+	if key != "mux:sess_abc12345" {
+		t.Fatalf("key = %q, want mux session id key", key)
+	}
+}
+
+func TestMuxSessionIDFromRequest(t *testing.T) {
+	got := muxSessionIDFromRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"muxSessionId":"sess_abc12345"}}}`))
+	if got != "sess_abc12345" {
+		t.Fatalf("mux session id = %q, want sess_abc12345", got)
+	}
+}
+
 func testServerWithWorktreeSwitch(t *testing.T, cfg config.WorktreeConfig) *Server {
 	t.Helper()
 	srv := testServerWithLoom(t)

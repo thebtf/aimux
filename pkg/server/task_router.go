@@ -24,7 +24,7 @@ const (
 // TaskRouterLoom is the Loom surface used by TaskRouter.
 type TaskRouterLoom interface {
 	Submit(ctx context.Context, req loom.TaskRequest) (string, error)
-	Get(taskID string) (*loom.Task, error)
+	GetContext(ctx context.Context, taskID string) (*loom.Task, error)
 	Cancel(taskID string) error
 }
 
@@ -119,12 +119,9 @@ func NewTaskRouter(cfg TaskRouterConfig) (*TaskRouter, error) {
 // DefaultTaskRoutes maps task_class values to Loom worker types.
 func DefaultTaskRoutes() map[string]loom.WorkerType {
 	return map[string]loom.WorkerType{
-		classifier.TaskClassCode:     code.WorkerTypeCode,
-		classifier.TaskClassReview:   review.WorkerTypeReview,
-		classifier.TaskClassResearch: loom.WorkerType(classifier.TaskClassResearch),
-		classifier.TaskClassSpec:     loom.WorkerType(classifier.TaskClassSpec),
-		classifier.TaskClassPrompt:   loom.WorkerType(classifier.TaskClassPrompt),
-		taskClassThink:               loom.WorkerTypeThinker,
+		classifier.TaskClassCode:   code.WorkerTypeCode,
+		classifier.TaskClassReview: review.WorkerTypeReview,
+		taskClassThink:             loom.WorkerTypeThinker,
 	}
 }
 
@@ -227,12 +224,23 @@ func (r *TaskRouter) wait(ctx context.Context, taskID string, taskClass string, 
 	waitCtx, cancel := context.WithTimeout(ctx, r.waitTimeout)
 	defer cancel()
 
+	var lastTask *loom.Task
 	for {
-		task, err := r.loom.Get(taskID)
+		task, err := r.loom.GetContext(waitCtx, taskID)
 		if err != nil {
-			return TaskResult{TaskID: taskID, TaskClass: taskClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)},
-				ensureCLIError(fmt.Errorf("task router: get task %q: %w", taskID, err))
+			if waitCtx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				_ = r.loom.Cancel(taskID)
+				result := buildTaskResult(lastTask, taskClass, confidence, candidates)
+				result.TaskID = taskID
+				result.WorkerType = workerType
+				return result, cliErrorFromContext("task router wait ended", contextError(waitCtx, err))
+			}
+			result := buildTaskResult(lastTask, taskClass, confidence, candidates)
+			result.TaskID = taskID
+			result.WorkerType = workerType
+			return result, ensureCLIError(fmt.Errorf("task router: get task %q: %w", taskID, err))
 		}
+		lastTask = task
 		if task.Status.IsTerminal() {
 			result := buildTaskResult(task, taskClass, confidence, candidates)
 			if task.Status == loom.TaskStatusFailed || task.Status == loom.TaskStatusFailedCrash {
@@ -255,6 +263,16 @@ func (r *TaskRouter) wait(ctx context.Context, taskID string, taskClass string, 
 		case <-timer.C:
 		}
 	}
+}
+
+func contextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return context.Canceled
 }
 
 func buildTaskResult(task *loom.Task, taskClass string, confidence float64, candidates []classifier.Candidate) TaskResult {
