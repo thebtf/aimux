@@ -103,11 +103,10 @@ func (d *fullDelegate) forgetProjectSessions(projectID string) {
 	d.sessions.Range(func(key, value any) bool {
 		tracker := value.(*worktreeSessionTracker)
 		tracker.mu.Lock()
-		deleteTracker := tracker.projectID == projectID
-		tracker.mu.Unlock()
-		if deleteTracker {
+		if tracker.projectID == projectID {
 			d.sessions.Delete(key)
 		}
+		tracker.mu.Unlock()
 		return true
 	})
 }

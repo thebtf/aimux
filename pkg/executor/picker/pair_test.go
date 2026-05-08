@@ -115,6 +115,31 @@ func TestPickPairForDriverPreservesDriverAndFindsHealthyNavigator(t *testing.T) 
 	}
 }
 
+func TestPickPairForDriverRejectsUnavailableDriver(t *testing.T) {
+	t.Run("inactive", func(t *testing.T) {
+		p := makePairPicker(DefaultPickerConfig(), map[string]bool{"codex": true, "claude": true}, []string{"claude", "gemini"})
+
+		_, _, err := p.PickPairForDriver(context.Background(), "code", "codex")
+		assertCLIError(t, err, types.CLIErrorCodeCapabilityMismatch, "not active, enabled, and healthy")
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		cfg := DefaultPickerConfig()
+		cfg.DisabledCLIs = []string{"codex"}
+		p := makePairPicker(cfg, map[string]bool{"codex": true, "claude": true}, activeCLIs)
+
+		_, _, err := p.PickPairForDriver(context.Background(), "code", "codex")
+		assertCLIError(t, err, types.CLIErrorCodeCapabilityMismatch, "not active, enabled, and healthy")
+	})
+
+	t.Run("unhealthy", func(t *testing.T) {
+		p := makePairPicker(DefaultPickerConfig(), map[string]bool{"claude": true, "gemini": true}, activeCLIs)
+
+		_, _, err := p.PickPairForDriver(context.Background(), "code", "codex")
+		assertCLIError(t, err, types.CLIErrorCodeCapabilityMismatch, "not active, enabled, and healthy")
+	})
+}
+
 func TestPickPair_RejectsUnknownDriverFamily(t *testing.T) {
 	cfg := DefaultPickerConfig()
 	cfg.DefaultCLI = "local"

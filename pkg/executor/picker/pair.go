@@ -74,6 +74,12 @@ func (p *Picker) PickPairForDriver(ctx context.Context, taskClass string, driver
 	if len(healthy) == 0 {
 		return "", "", types.NewCapabilityMismatch("no healthy CLI available", &ErrNoHealthyCLI{Reasons: reasons})
 	}
+	if !contains(healthy, string(driver)) {
+		return "", "", types.NewCapabilityMismatch(
+			fmt.Sprintf("selected driver %q is not active, enabled, and healthy", driver),
+			&ErrNoHealthyCLI{Reasons: reasons},
+		)
+	}
 
 	if override := p.pairNavigatorOverride(driver); override != "" {
 		nav := types.CLIName(override)

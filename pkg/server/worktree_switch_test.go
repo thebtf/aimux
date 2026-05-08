@@ -352,6 +352,24 @@ func TestWorktreeSwitchDrainIgnoresClientCancellation(t *testing.T) {
 	}
 }
 
+func TestForgetProjectSessionsRemovesOnlyMatchingProject(t *testing.T) {
+	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 1})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	sessionA := worktreeSwitchSessionKey(2010)
+	sessionB := worktreeSwitchSessionKey(2011)
+	delegate.trackerForSession(sessionA).projectID = "project-a"
+	delegate.trackerForSession(sessionB).projectID = "project-b"
+
+	delegate.forgetProjectSessions("project-a")
+
+	if last := delegate.lastProjectForSession(sessionA); last != "" {
+		t.Fatalf("session A project = %q, want forgotten", last)
+	}
+	if last := delegate.lastProjectForSession(sessionB); last != "project-b" {
+		t.Fatalf("session B project = %q, want project-b", last)
+	}
+}
+
 func TestWorktreeSwitchSameProjectBypassesDrain(t *testing.T) {
 	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 1})
 	delegate := newWorktreeSwitchTestDelegate(srv)
