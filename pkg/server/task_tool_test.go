@@ -170,6 +170,26 @@ func TestHandleTaskCLIOverrideDoesNotBypassRouter(t *testing.T) {
 	}
 }
 
+func TestHandleTaskRecordsWorktreeSessionKey(t *testing.T) {
+	t.Parallel()
+
+	srv, codeWorker, _ := newTaskToolServer(t)
+	ctx := contextWithMuxSessionID(context.Background(), "mux-session-a")
+	result, err := srv.handleTask(ctx, makeRequest("task", map[string]any{
+		"prompt":     "Implement session-scoped worktree cancellation.",
+		"task_class": "code",
+	}))
+	if err != nil {
+		t.Fatalf("handleTask returned Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	task := codeWorker.onlyTask(t)
+	assertMetadataString(t, task.Metadata, worktreeSessionMetadataKey, "mux:mux-session-a")
+}
+
 func TestHandleTaskRejectsUnregisteredClassBeforeSubmit(t *testing.T) {
 	t.Parallel()
 
@@ -385,6 +405,28 @@ func TestBuildTaskArgsPreservesQuotedCommandBaseFields(t *testing.T) {
 	want := []string{"exec", "--profile", "review mode", "--label", "pair navigator", "hello"}
 	if !stringSlicesEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestSplitCommandLinePreservesWindowsBackslashesInQuotes(t *testing.T) {
+	got, err := splitCommandLine(`codex exec "C:\Program Files\cli.exe" --flag`)
+	if err != nil {
+		t.Fatalf("splitCommandLine returned error: %v", err)
+	}
+	want := []string{"codex", "exec", `C:\Program Files\cli.exe`, "--flag"}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("fields = %#v, want %#v", got, want)
+	}
+}
+
+func TestSplitCommandLineEscapesQuoteAndBackslashInDoubleQuotes(t *testing.T) {
+	got, err := splitCommandLine(`cmd "say \"hi\" from C:\\Tools"`)
+	if err != nil {
+		t.Fatalf("splitCommandLine returned error: %v", err)
+	}
+	want := []string{"cmd", `say "hi" from C:\Tools`}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("fields = %#v, want %#v", got, want)
 	}
 }
 

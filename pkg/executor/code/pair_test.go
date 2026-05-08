@@ -160,7 +160,7 @@ func TestWaitForTaskCancelsChildTaskWhenWaitEnds(t *testing.T) {
 		},
 	}
 	cfg := testPairConfig(mock)
-	cfg.TaskTimeout = 5 * time.Millisecond
+	cfg.TaskTimeout = 100 * time.Millisecond
 	cfg.PollInterval = time.Millisecond
 
 	_, err := waitForTask(context.Background(), cfg, "child-1")

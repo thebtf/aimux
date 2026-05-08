@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/tenant"
 )
 
 const (
@@ -13,6 +14,14 @@ const (
 	MetadataWorkerType   = "worker_type"
 	MetadataResumeTaskID = "resume_task_id"
 )
+
+type resumeScopeContextKey struct{}
+
+// ResumeScope constrains resume lookup to the current worktree project and tenant.
+type ResumeScope struct {
+	ProjectID string
+	TenantID  string
+}
 
 // ResumableWorker resumes a new root task from prior root-task metadata.
 type ResumableWorker interface {
@@ -22,6 +31,22 @@ type ResumableWorker interface {
 // ResumeTaskGetter is the task lookup surface required for resume hydration.
 type ResumeTaskGetter interface {
 	Get(taskID string) (*loom.Task, error)
+}
+
+// ResumeContextTaskGetter optionally scopes resume lookup to the caller context.
+type ResumeContextTaskGetter interface {
+	GetContext(ctx context.Context, taskID string) (*loom.Task, error)
+}
+
+// ContextWithResumeScope records the current worktree and tenant for resume validation.
+func ContextWithResumeScope(ctx context.Context, projectID string, tenantID string) context.Context {
+	scope := ResumeScope{ProjectID: strings.TrimSpace(projectID), TenantID: effectiveResumeTenantID(tenantID)}
+	ctx = context.WithValue(ctx, resumeScopeContextKey{}, scope)
+	if tc, ok := tenant.FromContext(ctx); ok {
+		tc.TenantID = scope.TenantID
+		return tenant.WithContext(ctx, tc)
+	}
+	return tenant.WithContext(ctx, tenant.TenantContext{TenantID: scope.TenantID})
 }
 
 // HydrateResumeMetadata validates a prior root task and returns resume metadata.
@@ -39,9 +64,12 @@ func HydrateResumeMetadata(ctx context.Context, tasks ResumeTaskGetter, prevTask
 		return nil, NewCapabilityMismatch("expected worker type is required", nil)
 	}
 
-	prev, err := tasks.Get(prevTaskID)
+	prev, err := getResumeTask(ctx, tasks, prevTaskID)
 	if err != nil {
 		return nil, NewUserInputError(fmt.Sprintf("resume task %q not found", prevTaskID), err)
+	}
+	if err := validateResumeScope(ctx, prev); err != nil {
+		return nil, err
 	}
 	if prev.ParentTaskID != "" {
 		return nil, NewResumeWorkerMismatch("cannot resume sub-task; resume root", nil)
@@ -62,6 +90,40 @@ func HydrateResumeMetadata(ctx context.Context, tasks ResumeTaskGetter, prevTask
 	meta[MetadataWorkerType] = string(expectedWorkerType)
 	meta[MetadataResumeTaskID] = prevTaskID
 	return meta, nil
+}
+
+func getResumeTask(ctx context.Context, tasks ResumeTaskGetter, taskID string) (*loom.Task, error) {
+	if getter, ok := tasks.(ResumeContextTaskGetter); ok {
+		return getter.GetContext(ctx, taskID)
+	}
+	return tasks.Get(taskID)
+}
+
+func validateResumeScope(ctx context.Context, prev *loom.Task) error {
+	scope, ok := ctx.Value(resumeScopeContextKey{}).(ResumeScope)
+	if !ok {
+		return nil
+	}
+	if scope.ProjectID == "" {
+		return NewResumeWorkerMismatch("cross-worktree resume rejected: current worktree project id is unavailable", nil)
+	}
+	if prev.ProjectID != scope.ProjectID {
+		return NewResumeWorkerMismatch("cross-worktree resume rejected: resume_id belongs to a different worktree", nil)
+	}
+	if scope.TenantID == "" {
+		return NewResumeWorkerMismatch("cross-tenant resume rejected: current tenant id is unavailable", nil)
+	}
+	if effectiveResumeTenantID(prev.TenantID) != scope.TenantID {
+		return NewResumeWorkerMismatch("cross-tenant resume rejected: resume_id belongs to a different tenant", nil)
+	}
+	return nil
+}
+
+func effectiveResumeTenantID(tenantID string) string {
+	if strings.TrimSpace(tenantID) == "" {
+		return loom.LegacyTenantID
+	}
+	return strings.TrimSpace(tenantID)
 }
 
 func resumeWorkerMismatch(expected loom.WorkerType, actual loom.WorkerType) *CLIError {

@@ -18,10 +18,10 @@ import (
 //
 // FallbackPicker is goroutine-safe after construction.
 type FallbackPicker struct {
-	p        *picker.Picker
-	fb       *Fallback
-	store    ScoreStore
-	cfg      *FallbackConfig
+	p     *picker.Picker
+	fb    *Fallback
+	store ScoreStore
+	cfg   *FallbackConfig
 }
 
 // NewFallbackPicker constructs a FallbackPicker.
@@ -71,6 +71,23 @@ func (fp *FallbackPicker) Run(
 		return Result{}, fmt.Errorf("fallback picker: no CLI available: %w", err)
 	}
 
+	return fp.RunPrimary(ctx, primaryCLI, spec, opts, dispatch)
+}
+
+// RunPrimary dispatches a caller-selected primary CLI, then uses the fallback
+// chain for eligible failures. Use this when a higher-level role already picked
+// the primary CLI but still wants fallback behavior on transient failures.
+func (fp *FallbackPicker) RunPrimary(
+	ctx context.Context,
+	primaryCLI string,
+	spec picker.TaskSpec,
+	opts RunOptions,
+	dispatch DispatchFn,
+) (Result, error) {
+	if primaryCLI == "" {
+		return fp.Run(ctx, spec, opts, dispatch)
+	}
+
 	// Step 2: Dispatch primary CLI.
 	start := nowMS()
 	content, dispatchErr := dispatch(ctx, primaryCLI, spec)
@@ -86,6 +103,17 @@ func (fp *FallbackPicker) Run(
 		}, nil
 	}
 
+	return fp.retryAfterPrimaryFailure(ctx, primaryCLI, spec, opts, dispatchErr, dispatch)
+}
+
+func (fp *FallbackPicker) retryAfterPrimaryFailure(
+	ctx context.Context,
+	primaryCLI string,
+	spec picker.TaskSpec,
+	opts RunOptions,
+	dispatchErr error,
+	dispatch DispatchFn,
+) (Result, error) {
 	// Step 3: Primary failed — record the failure and check eligibility.
 	errCode := errorCode(dispatchErr)
 	fp.store.RecordFailure(primaryCLI, errCode)
@@ -129,12 +157,10 @@ func (fp *FallbackPicker) Run(
 	}
 
 	// Step 4: Invoke Fallback.Retry.
-	// Note: per-call MaxAttempts override is passed via FailureCtx.MaxAttemptsOverride
-	// in a future extension; for now, effectiveMax is already computed above and
-	// Retry uses fp.cfg.maxAttempts() internally. The cap is enforced there.
 	fctx := FailureCtx{
-		PriorAttempts: []FailedAttempt{primaryAttempt},
-		LastError:     dispatchErr,
+		PriorAttempts:       []FailedAttempt{primaryAttempt},
+		LastError:           dispatchErr,
+		MaxAttemptsOverride: effectiveMax,
 	}
 
 	result, retryErr := fp.fb.Retry(ctx, spec, fctx, func(ctx context.Context, cli string, s picker.TaskSpec) (string, error) {

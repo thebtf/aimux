@@ -8,6 +8,7 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/executor/types"
+	"github.com/thebtf/aimux/pkg/tenant"
 )
 
 func TestHydrateResumeMetadataSameWorker(t *testing.T) {
@@ -71,6 +72,78 @@ func TestHydrateResumeMetadataRejectsSubTask(t *testing.T) {
 	}
 }
 
+func TestHydrateResumeMetadataUsesContextScopedLookup(t *testing.T) {
+	tasks := &contextOnlyResumeTasks{
+		taskID: "task-1",
+		task: &loom.Task{
+			ID:         "task-1",
+			WorkerType: loom.WorkerType("review"),
+			ProjectID:  "project-a",
+			TenantID:   "tenant-a",
+			Metadata: map[string]any{
+				types.MetadataThreadID:   "thread-1",
+				types.MetadataWorkerType: "review",
+			},
+		},
+	}
+	ctx := tenant.WithContext(context.Background(), tenant.TenantContext{TenantID: "tenant-a"})
+
+	meta, err := types.HydrateResumeMetadata(ctx, tasks, "task-1", loom.WorkerType("review"), types.MetadataThreadID)
+	if err != nil {
+		t.Fatalf("HydrateResumeMetadata returned error: %v", err)
+	}
+	if meta[types.MetadataThreadID] != "thread-1" {
+		t.Fatalf("thread_id = %#v, want thread-1", meta[types.MetadataThreadID])
+	}
+	if tasks.getCalled {
+		t.Fatal("unscoped Get was called; want context-scoped GetContext")
+	}
+	if tasks.getContextCalls != 1 {
+		t.Fatalf("GetContext calls = %d, want 1", tasks.getContextCalls)
+	}
+	if tasks.getContextTenantID != "tenant-a" {
+		t.Fatalf("GetContext tenant = %q, want tenant-a", tasks.getContextTenantID)
+	}
+}
+
+func TestHydrateResumeMetadataRejectsCrossWorktreeScope(t *testing.T) {
+	tasks := fakeResumeTasks{tasks: map[string]*loom.Task{
+		"task-1": {
+			ID:         "task-1",
+			WorkerType: loom.WorkerType("review"),
+			ProjectID:  "project-b",
+			TenantID:   "tenant-a",
+			Metadata:   map[string]any{types.MetadataThreadID: "thread-1"},
+		},
+	}}
+	ctx := types.ContextWithResumeScope(context.Background(), "project-a", "tenant-a")
+
+	_, err := types.HydrateResumeMetadata(ctx, tasks, "task-1", loom.WorkerType("review"), types.MetadataThreadID)
+	assertResumeCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
+	if !strings.Contains(err.Error(), "different worktree") {
+		t.Fatalf("error = %v, want cross-worktree rejection", err)
+	}
+}
+
+func TestHydrateResumeMetadataRejectsCrossTenantScope(t *testing.T) {
+	tasks := fakeResumeTasks{tasks: map[string]*loom.Task{
+		"task-1": {
+			ID:         "task-1",
+			WorkerType: loom.WorkerType("review"),
+			ProjectID:  "project-a",
+			TenantID:   "tenant-b",
+			Metadata:   map[string]any{types.MetadataThreadID: "thread-1"},
+		},
+	}}
+	ctx := types.ContextWithResumeScope(context.Background(), "project-a", "tenant-a")
+
+	_, err := types.HydrateResumeMetadata(ctx, tasks, "task-1", loom.WorkerType("review"), types.MetadataThreadID)
+	assertResumeCLIErrorCode(t, err, types.CLIErrorCodeResumeWorkerMismatch)
+	if !strings.Contains(err.Error(), "different tenant") {
+		t.Fatalf("error = %v, want cross-tenant rejection", err)
+	}
+}
+
 func TestResumableWorkerInterface(t *testing.T) {
 	var _ types.ResumableWorker = fakeResumableWorker{}
 }
@@ -85,6 +158,32 @@ func (f fakeResumeTasks) Get(taskID string) (*loom.Task, error) {
 		return nil, loom.ErrTaskNotFound
 	}
 	return task, nil
+}
+
+type contextOnlyResumeTasks struct {
+	taskID             string
+	task               *loom.Task
+	getCalled          bool
+	getContextCalls    int
+	getContextTenantID string
+}
+
+func (f *contextOnlyResumeTasks) Get(string) (*loom.Task, error) {
+	f.getCalled = true
+	return nil, errors.New("unscoped Get should not be called")
+}
+
+func (f *contextOnlyResumeTasks) GetContext(ctx context.Context, taskID string) (*loom.Task, error) {
+	f.getContextCalls++
+	tc, ok := tenant.FromContext(ctx)
+	if !ok {
+		return nil, errors.New("tenant context missing")
+	}
+	f.getContextTenantID = tc.TenantID
+	if taskID != f.taskID {
+		return nil, loom.ErrTaskNotFound
+	}
+	return f.task, nil
 }
 
 type fakeResumableWorker struct{}

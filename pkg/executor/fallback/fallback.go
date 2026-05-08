@@ -39,6 +39,8 @@ type FailureCtx struct {
 	PriorAttempts []FailedAttempt
 	// LastError is the most recent CLIError that triggered this fallback call.
 	LastError error
+	// MaxAttemptsOverride caps fallback re-attempts for this call. Zero uses config.
+	MaxAttemptsOverride int
 }
 
 // Fallback is the runtime re-rank engine (spec FR-1, architecture.md §3).
@@ -118,6 +120,9 @@ func (f *Fallback) Retry(ctx context.Context, spec picker.TaskSpec, fctx Failure
 	}
 
 	maxAttempts := f.cfg.maxAttempts()
+	if fctx.MaxAttemptsOverride > 0 {
+		maxAttempts = fctx.MaxAttemptsOverride
+	}
 	// Hard cap: do not exceed len(candidates) - 1 even if config says more.
 	cap := len(f.candidates) - 1
 	if maxAttempts > cap {

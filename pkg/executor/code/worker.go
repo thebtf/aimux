@@ -201,6 +201,12 @@ func (w *CodeWorker) applyAndGate(ctx context.Context, task *loom.Task, machine 
 	if readOnlySandboxForTask(task) {
 		return w.failTask(task, machine, types.NewSandboxDenial("read-only sandbox forbids applying code diff", nil))
 	}
+	if verdict.Confidence < w.confidenceThreshold {
+		return w.failTask(task, machine, types.NewCapabilityMismatch(
+			fmt.Sprintf("navigator confidence %.2f below threshold %.2f", verdict.Confidence, w.confidenceThreshold),
+			nil,
+		))
+	}
 	targetState := verdict.Action
 	if cliErr := machine.Advance(targetState, "navigator approved diff for "+strings.ToLower(string(targetState))); cliErr != nil {
 		return w.failTask(task, machine, cliErr)

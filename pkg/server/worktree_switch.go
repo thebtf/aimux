@@ -13,7 +13,10 @@ import (
 	"github.com/thebtf/mcp-mux/muxcore"
 )
 
-const worktreeSwitchCanceledMessage = "Canceled: worktree switched mid-task"
+const (
+	worktreeSwitchCanceledMessage = "Canceled: worktree switched mid-task"
+	worktreeSessionMetadataKey    = "worktree_session_key"
+)
 
 var errProjectNotConnected = errors.New("project not connected")
 
@@ -168,22 +171,61 @@ func (d *fullDelegate) forceCancelPreviousWorktree(ctx context.Context, previous
 		return nil
 	}
 	tenantID := tenantIDFromContext(ctx)
-	count, err := d.failActiveByPreviousWorktree(previousProjectID, tenantID)
+	sessionKey, _ := worktreeSessionKeyFromContext(ctx)
+	count, err := d.failActiveByPreviousWorktree(previousProjectID, tenantID, sessionKey)
 	if err != nil {
 		return err
 	}
 	if d.srv.log != nil {
-		d.srv.log.Info("worktree switch forced cancel: previous_project_id=%s new_project_id=%s tenant_id=%s canceled_tasks=%d",
-			previousProjectID, newProjectID, tenantID, count)
+		d.srv.log.Info("worktree switch forced cancel: previous_project_id=%s new_project_id=%s tenant_id=%s session_key=%s canceled_tasks=%d",
+			previousProjectID, newProjectID, tenantID, sessionKey, count)
 	}
 	return nil
 }
 
-func (d *fullDelegate) failActiveByPreviousWorktree(previousProjectID, tenantID string) (int, error) {
-	if tenantID != "" {
-		return d.srv.loom.FailActiveByProjectForTenant(previousProjectID, tenantID, worktreeSwitchCanceledMessage)
+func (d *fullDelegate) failActiveByPreviousWorktree(previousProjectID, tenantID, sessionKey string) (int, error) {
+	if sessionKey == "" {
+		return 0, nil
 	}
-	return d.srv.loom.FailActiveByProject(previousProjectID, worktreeSwitchCanceledMessage)
+	var (
+		tasks []*loom.Task
+		err   error
+	)
+	if tenantID != "" {
+		tasks, err = loom.NewTenantScopedEngine(d.srv.loom, tenantID, nil).List(previousProjectID, loom.ActiveTaskStatuses()...)
+	} else {
+		tasks, err = d.srv.loom.List(previousProjectID, loom.ActiveTaskStatuses()...)
+	}
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, task := range tasks {
+		if worktreeSessionKeyFromTask(task) != sessionKey {
+			continue
+		}
+		ok, err := d.srv.loom.FailActive(task.ID, worktreeSwitchCanceledMessage)
+		if err != nil {
+			return count, err
+		}
+		if ok {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func worktreeSessionKeyFromTask(task *loom.Task) string {
+	if task == nil || task.Metadata == nil {
+		return ""
+	}
+	if value, ok := task.Metadata[worktreeSessionMetadataKey].(string); ok {
+		return value
+	}
+	if value, ok := task.Metadata["session_id"].(string); ok {
+		return value
+	}
+	return ""
 }
 
 func tenantIDFromContext(ctx context.Context) string {

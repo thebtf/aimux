@@ -199,6 +199,9 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 			metadata["fallback_enabled"] = req.GetBool("fallback_enabled", true)
 		}
 	}
+	if sessionKey, ok := worktreeSessionKeyFromContext(ctx); ok {
+		metadata[worktreeSessionMetadataKey] = sessionKey
+	}
 
 	return TaskRequest{
 		Prompt:         prompt,
@@ -485,7 +488,6 @@ func splitCommandLine(command string) ([]string, error) {
 		fields  []string
 		current strings.Builder
 		quote   rune
-		escaped bool
 	)
 	flush := func() {
 		if current.Len() == 0 {
@@ -494,14 +496,16 @@ func splitCommandLine(command string) ([]string, error) {
 		fields = append(fields, current.String())
 		current.Reset()
 	}
-	for _, r := range command {
-		if escaped {
-			current.WriteRune(r)
-			escaped = false
-			continue
-		}
+	runes := []rune(command)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
 		if r == '\\' && quote == '"' {
-			escaped = true
+			if i+1 < len(runes) && (runes[i+1] == '"' || runes[i+1] == '\\') {
+				i++
+				current.WriteRune(runes[i])
+				continue
+			}
+			current.WriteRune(r)
 			continue
 		}
 		if quote != 0 {
@@ -520,9 +524,6 @@ func splitCommandLine(command string) ([]string, error) {
 		default:
 			current.WriteRune(r)
 		}
-	}
-	if escaped {
-		current.WriteRune('\\')
 	}
 	if quote != 0 {
 		return nil, fmt.Errorf("unterminated quote")

@@ -86,6 +86,35 @@ func TestReviewWorkerExecuteGateModeRecordsDecision(t *testing.T) {
 	assertMetadataPasses(t, task.Metadata["passes_completed"], []string{"structural", "behavioural", "adversarial"})
 }
 
+func TestReviewWorkerRejectsCrossWorktreeResume(t *testing.T) {
+	engine := newReviewWorkerEngine(t)
+	priorID, err := engine.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: WorkerTypeReview,
+		ProjectID:  "project-b",
+		TenantID:   "tenant-a",
+		Prompt:     "review HEAD",
+		Metadata: map[string]any{
+			"target":      "HEAD",
+			"worker_type": string(WorkerTypeReview),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Submit prior review task: %v", err)
+	}
+	worker, err := NewReviewWorker(ReviewWorkerConfig{Loom: engine, PassRunner: &recordingPassRunner{}})
+	if err != nil {
+		t.Fatalf("NewReviewWorker returned error: %v", err)
+	}
+	task := reviewWorkerTask(map[string]any{"target": "HEAD", "resume_id": priorID})
+	task.ProjectID = "project-a"
+	task.TenantID = "tenant-a"
+
+	_, err = worker.Execute(context.Background(), task)
+	if err == nil || !strings.Contains(err.Error(), "different worktree") {
+		t.Fatalf("Execute error = %v, want cross-worktree resume rejection", err)
+	}
+}
+
 func TestReviewWorkerSubtaskTreeShape(t *testing.T) {
 	engine := newReviewWorkerEngine(t)
 	worker, err := NewReviewWorker(ReviewWorkerConfig{Loom: engine})

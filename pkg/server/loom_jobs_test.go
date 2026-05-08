@@ -123,12 +123,16 @@ func submitBlockingLoomTaskWithTenant(t *testing.T, srv *Server, projectID, sess
 
 	worker := newBlockingLoomWorker()
 	srv.loom.RegisterWorker(loom.WorkerTypeCLI, worker)
+	metadata := map[string]any{"session_id": sessionID}
+	if sessionID != "" {
+		metadata[worktreeSessionMetadataKey] = sessionID
+	}
 	taskID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
 		WorkerType: loom.WorkerTypeCLI,
 		ProjectID:  projectID,
 		TenantID:   tenantID,
 		Prompt:     "block",
-		Metadata:   map[string]any{"session_id": sessionID},
+		Metadata:   metadata,
 	})
 	if err != nil {
 		t.Fatalf("loom.Submit: %v", err)

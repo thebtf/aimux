@@ -8,6 +8,7 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/executor/code"
+	"github.com/thebtf/aimux/pkg/executor/fallback"
 	"github.com/thebtf/aimux/pkg/executor/picker"
 	"github.com/thebtf/aimux/pkg/executor/review"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
@@ -97,7 +98,7 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		return nil, extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable: %v", cli, err), err)
 	}
 
-	raw, err := w.server.taskDispatch(ctx, cli, picker.TaskSpec{
+	spec := picker.TaskSpec{
 		TaskClass: w.taskClass,
 		Prompt:    task.Prompt,
 		CWD:       task.CWD,
@@ -105,11 +106,22 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		Model:     task.Model,
 		Effort:    task.Effort,
 		Sandbox:   sandboxFromTaskMetadata(task.Metadata),
-	})
+	}
+	raw, selectedCLI, failedAttempts, err := w.dispatch(ctx, cli, task.Metadata, spec)
 	if err != nil {
 		return nil, err
 	}
-	parsed, sessionID := parser.ParseContent(raw, profile.OutputFormat)
+	selectedProfile := profile
+	if selectedCLI != cli {
+		selectedProfile, err = w.server.registry.Get(selectedCLI)
+		if err != nil || selectedProfile == nil {
+			if err == nil {
+				err = fmt.Errorf("profile is nil")
+			}
+			return nil, extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable after fallback: %v", selectedCLI, err), err)
+		}
+	}
+	parsed, sessionID := parser.ParseContent(raw, selectedProfile.OutputFormat)
 	content := parsed
 	metadata := map[string]any{}
 	if w.adapt != nil {
@@ -123,8 +135,11 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 	}
 
 	metadata["worker_type"] = string(w.workerType)
-	metadata["cli"] = cli
-	metadata["output_format"] = profile.OutputFormat
+	metadata["cli"] = selectedCLI
+	metadata["output_format"] = selectedProfile.OutputFormat
+	if len(failedAttempts) > 0 {
+		metadata["failed_attempts"] = failedAttempts
+	}
 	if sessionID != "" {
 		metadata["cli_session_id"] = sessionID
 	}
@@ -132,6 +147,29 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		Content:  content,
 		Metadata: metadata,
 	}, nil
+}
+
+func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, metadata map[string]any, spec picker.TaskSpec) (string, string, []fallback.FailedAttempt, error) {
+	if w.server != nil && w.server.fallbackPicker != nil {
+		result, err := w.server.fallbackPicker.RunPrimary(ctx, primaryCLI, spec, fallbackOptionsFromTaskMetadata(metadata), w.server.taskDispatch)
+		if err != nil {
+			return "", primaryCLI, nil, err
+		}
+		return result.Content, result.SelectedCLI, result.FailedAttempts, nil
+	}
+	raw, err := w.server.taskDispatch(ctx, primaryCLI, spec)
+	return raw, primaryCLI, nil, err
+}
+
+func fallbackOptionsFromTaskMetadata(metadata map[string]any) fallback.RunOptions {
+	var opts fallback.RunOptions
+	if enabled, ok := metadata["fallback_enabled"].(bool); ok {
+		opts.FallbackEnabled = &enabled
+	}
+	if maxAttempts, ok := metadataInt(metadata, "max_attempts"); ok {
+		opts.MaxAttempts = maxAttempts
+	}
+	return opts
 }
 
 func sandboxFromTaskMetadata(metadata map[string]any) string {

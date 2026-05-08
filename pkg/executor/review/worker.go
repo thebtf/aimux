@@ -98,7 +98,8 @@ func (w *ReviewWorker) validateResume(ctx context.Context, task *loom.Task) erro
 	if w.loom == nil {
 		return types.NewCapabilityMismatch("review worker Loom client is required for resume validation", nil)
 	}
-	_, err := types.HydrateResumeMetadata(ctx, w.loom, resumeTaskID, WorkerTypeReview)
+	resumeCtx := types.ContextWithResumeScope(ctx, task.ProjectID, task.TenantID)
+	_, err := types.HydrateResumeMetadata(resumeCtx, w.loom, resumeTaskID, WorkerTypeReview)
 	return err
 }
 

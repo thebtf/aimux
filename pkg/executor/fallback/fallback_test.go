@@ -192,6 +192,46 @@ func TestFallback_CanceledContext(t *testing.T) {
 	}
 }
 
+func TestFallbackPicker_RunPrimaryStartsWithCallerCLI(t *testing.T) {
+	fp := buildFallbackPickerForTest([]string{"codex", "claude", "gemini"}, nil)
+	var calls []string
+	dispatch := func(_ context.Context, cli string, _ picker.TaskSpec) (string, error) {
+		calls = append(calls, cli)
+		if cli == "claude" {
+			return "output from claude", nil
+		}
+		return "", rateLimitErr(cli + " rate limited")
+	}
+
+	result, err := fp.RunPrimary(context.Background(), "codex", testSpec(), RunOptions{}, dispatch)
+	if err != nil {
+		t.Fatalf("RunPrimary returned error: %v", err)
+	}
+	if result.SelectedCLI != "claude" {
+		t.Fatalf("SelectedCLI = %q, want claude", result.SelectedCLI)
+	}
+	if strings.Join(calls, ",") != "codex,claude" {
+		t.Fatalf("dispatch calls = %#v, want codex then claude", calls)
+	}
+}
+
+func TestFallbackPicker_RunPrimaryHonorsMaxAttemptsOverride(t *testing.T) {
+	fp := buildFallbackPickerForTest([]string{"codex", "claude", "gemini"}, nil)
+	var calls []string
+	dispatch := func(_ context.Context, cli string, _ picker.TaskSpec) (string, error) {
+		calls = append(calls, cli)
+		return "", rateLimitErr(cli + " rate limited")
+	}
+
+	_, err := fp.RunPrimary(context.Background(), "codex", testSpec(), RunOptions{MaxAttempts: 1}, dispatch)
+	if err == nil {
+		t.Fatal("RunPrimary returned nil, want exhaustion")
+	}
+	if strings.Join(calls, ",") != "codex,claude" {
+		t.Fatalf("dispatch calls = %#v, want primary plus one fallback", calls)
+	}
+}
+
 // --- candidates list ---
 
 func TestFallback_NilCandidatesNotPanics(t *testing.T) {
@@ -240,4 +280,20 @@ func TestIsExhausted_WrongType(t *testing.T) {
 	if IsExhausted(errors.New("unrelated")) {
 		t.Error("IsExhausted(unrelated) should be false")
 	}
+}
+
+func buildFallbackPickerForTest(candidates []string, cfg *FallbackConfig) *FallbackPicker {
+	if cfg == nil {
+		defaultCfg := DefaultFallbackConfig()
+		cfg = &defaultCfg
+	}
+	store := NewInMemoryScoreStore()
+	health := alwaysHealthyChecker(candidates)
+	score := picker.NewCapabilityScore(&picker.PickerConfig{})
+	p := picker.NewPicker(&picker.PickerConfig{}, score, health, candidates)
+	orderer := NewOrderer(score, health, cfg)
+	classifier := NewFailureClassifier()
+	translator := NewPassThroughTranslator()
+	fb := NewFallback(classifier, orderer, translator, store, cfg, candidates)
+	return NewFallbackPicker(p, fb, store, cfg)
 }
