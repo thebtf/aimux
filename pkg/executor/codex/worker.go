@@ -62,11 +62,11 @@ func defaultCompactionConfig() CompactionConfig {
 // The worker is stateless — it holds no per-task state. Concurrent Execute
 // calls on different tasks are safe.
 type CodexWorker struct {
-	pool        *CodexPool
-	loom        progressSink
-	loomGet     taskGetter
-	model       string // default model; overridden by task.Model if set
-	compaction  CompactionConfig
+	pool       *CodexPool
+	loom       progressSink
+	loomGet    taskGetter
+	model      string // default model; overridden by task.Model if set
+	compaction CompactionConfig
 
 	// lastCompactedAtTurn tracks per-thread turn count at last compaction.
 	// Keyed by threadId. Protected by compactMu.
@@ -258,7 +258,7 @@ func (w *CodexWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worke
 
 	content := strings.Join(lines, "\n")
 
-	// Store updated meta for resume. Record LastInputTokens for codex_status (FR-12).
+	// Store updated meta for resume and task status visibility.
 	updatedMeta.TurnID = turnCompleted.Turn.ID
 	if usage, ok := proc.TokenUsage(thread.ID); ok {
 		updatedMeta.LastInputTokens = usage.InputTokens

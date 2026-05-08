@@ -24,10 +24,10 @@ type JSONRPCRequest struct {
 // JSONRPCResponse is the inbound response envelope.
 // Exactly one of Result or Error is set.
 type JSONRPCResponse struct {
-	JSONRPC string           `json:"jsonrpc"`
-	ID      int64            `json:"id"`
-	Result  json.RawMessage  `json:"result,omitempty"`
-	Error   *JSONRPCError    `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int64           `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *JSONRPCError   `json:"error,omitempty"`
 }
 
 // JSONRPCError represents a JSON-RPC error object.
@@ -51,12 +51,12 @@ type JSONRPCNotification struct {
 // inboundMessage is used to detect whether an inbound line is a response,
 // notification, or server request.
 type inboundMessage struct {
-	JSONRPC string           `json:"jsonrpc"`
-	ID      *int64           `json:"id,omitempty"`
-	Method  string           `json:"method,omitempty"`
-	Result  json.RawMessage  `json:"result,omitempty"`
-	Error   *JSONRPCError    `json:"error,omitempty"`
-	Params  json.RawMessage  `json:"params,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      *int64          `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *JSONRPCError   `json:"error,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
 }
 
 // isResponse returns true when the message is a response to a call we made.
@@ -83,8 +83,8 @@ func (m *inboundMessage) isServerRequest() bool {
 type SandboxMode string
 
 const (
-	SandboxModeReadOnly        SandboxMode = "read-only"
-	SandboxModeWorkspaceWrite  SandboxMode = "workspace-write"
+	SandboxModeReadOnly         SandboxMode = "read-only"
+	SandboxModeWorkspaceWrite   SandboxMode = "workspace-write"
 	SandboxModeDangerFullAccess SandboxMode = "danger-full-access"
 )
 
@@ -136,20 +136,20 @@ type ClientNotification struct {
 // Thread mirrors v2/Thread.ts (minimal subset for v1).
 // VERIFIED: thread/start response is result.thread.id (not result.threadId).
 type Thread struct {
-	ID       string `json:"id"`
-	CWD      string `json:"cwd,omitempty"`
+	ID        string `json:"id"`
+	CWD       string `json:"cwd,omitempty"`
 	Ephemeral bool   `json:"ephemeral,omitempty"`
-	Preview  string `json:"preview,omitempty"`
-	Path     string `json:"path,omitempty"`
+	Preview   string `json:"preview,omitempty"`
+	Path      string `json:"path,omitempty"`
 }
 
 // Turn mirrors v2/Turn.ts (minimal subset for v1).
 // VERIFIED: turn/start response is result.turn.id (not result.turnId).
 type Turn struct {
-	ID          string    `json:"id"`
+	ID          string     `json:"id"`
 	Status      TurnStatus `json:"status,omitempty"`
-	StartedAt   *int64    `json:"startedAt,omitempty"`
-	CompletedAt *int64    `json:"completedAt,omitempty"`
+	StartedAt   *int64     `json:"startedAt,omitempty"`
+	CompletedAt *int64     `json:"completedAt,omitempty"`
 	Error       *TurnError `json:"error,omitempty"`
 }
 
@@ -281,11 +281,11 @@ type CodexTaskMeta struct {
 	OutputSchema any `json:"output_schema,omitempty"`
 
 	// LastInputTokens is the cumulative input token count written by Worker on each turn
-	// completion. Readable via codex_status with include_content=true (FR-12).
+	// completion. Readable through task status metadata.
 	LastInputTokens int64 `json:"last_input_tokens,omitempty"`
 
 	// CompactionCount tracks how many times Worker triggered compaction for this task.
-	// Readable via codex_status with include_content=true (FR-12).
+	// Readable through task status metadata.
 	CompactionCount int `json:"compaction_count,omitempty"`
 }
 
@@ -332,10 +332,10 @@ var OptOutNotificationMethods = []string{
 
 // Notification methods we care about.
 const (
-	MethodItemCompleted      = "item/completed"
-	MethodTurnCompleted      = "turn/completed"
-	MethodInitialized        = "initialized"
-	MethodTokenUsageUpdated  = "thread/tokenUsage/updated"
+	MethodItemCompleted     = "item/completed"
+	MethodTurnCompleted     = "turn/completed"
+	MethodInitialized       = "initialized"
+	MethodTokenUsageUpdated = "thread/tokenUsage/updated"
 )
 
 // ThreadCompactStartParams mirrors the thread/compact/start request.

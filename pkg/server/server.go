@@ -142,13 +142,11 @@ type Server struct {
 	capCache     *driver.CapabilityCache
 	capRefresher *driver.CapabilityRefresher
 
-	// AIMUX-18 Phase 6: Codex executor surface.
+	// AIMUX-21: Codex executor backend for code/review workers.
 	// codexPool owns one AppServerProcess per ProjectContext.ID. It is nil when
-	// the `codex` binary is not on PATH (non-fatal — codex_* tools return errors
-	// rather than panicking).
-	// codexHandlers wires the pool + loom into the 5 MCP tool handlers (FR-1..FR-5).
-	codexPool     *codexexec.CodexPool
-	codexHandlers *codexexec.CodexHandlers
+	// the `codex` binary is not on PATH (non-fatal; task router surfaces worker
+	// availability errors at call time).
+	codexPool *codexexec.CodexPool
 
 	// AIMUX-4: cross-CLI fallback re-rank engine (FR-10).
 	// Nil when no CLIs are available at daemon startup — task tool surfaces a clear
@@ -397,13 +395,13 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		s.loom.RegisterWorker(loom.WorkerTypeThinker, loomworkers.NewThinkerWorker())
 		s.registerTaskWorkers()
 
-		// AIMUX-18 Phase 6: CodexWorker + CodexPool.
+		// AIMUX-21: CodexWorker + CodexPool behind generic task/code/review entries.
 		// Pool construction validates that the codex binary is on PATH. When codex
-		// is absent (e.g. CI without codex installed) the pool is nil and the 5
-		// codex_* tools return actionable errors rather than panicking.
+		// is absent (e.g. CI without codex installed) the pool is nil and generic
+		// workers report availability errors rather than panicking.
 		codexPath, pathErr := lookupCodexBinary()
 		if pathErr != nil {
-			log.Info("codex: binary not found on PATH — codex_* tools will return errors (%v)", pathErr)
+			log.Info("codex: binary not found on PATH - generic workers will report unavailable (%v)", pathErr)
 		} else {
 			pool, poolErr := codexexec.NewCodexPool(codexPath, codexexec.DefaultPoolConfig())
 			if poolErr != nil {
@@ -419,13 +417,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 					log.Warn("codex: worker init failed: %v", workerErr)
 				} else {
 					s.loom.RegisterWorker(codexexec.WorkerTypeCodex, worker)
-					handlers, hErr := codexexec.NewCodexHandlers(pool, s.loom)
-					if hErr != nil {
-						log.Warn("codex: handlers init failed: %v", hErr)
-					} else {
-						s.codexHandlers = handlers
-						log.Info("codex: pool + worker + handlers initialized (binary: %s)", codexPath)
-					}
+					log.Info("codex: pool + worker initialized (binary: %s)", codexPath)
 				}
 			}
 		}
@@ -849,11 +841,6 @@ func (s *Server) registerTools() {
 		),
 		s.handleUpgrade,
 	)
-
-	// AIMUX-18 Phase 6: 5 Codex executor tools (FR-1 through FR-5).
-	// Handlers are nil when codex binary is not on PATH — registered as stubs
-	// that return an actionable error so tool discovery still succeeds.
-	s.registerCodexTools()
 
 	// AIMUX-4: cross-CLI fallback re-rank engine (FR-10).
 	s.registerTaskTool()
