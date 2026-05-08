@@ -38,16 +38,23 @@ var ErrLoomQuotaExceeded = errors.New("loom: quota exceeded: too many in-flight 
 // '__legacy__' in migrateV4Columns (ADR-011).
 const LegacyTenantID = "__legacy__"
 
-const DefaultMaxSubtaskDepth = 8
+const (
+	DefaultMaxSubtaskDepth   = 8
+	DefaultMaxSubtaskBreadth = 16
+)
 
 // Config contains LoomEngine runtime limits.
 type Config struct {
-	MaxSubtaskDepth int
+	MaxSubtaskDepth   int
+	MaxSubtaskBreadth int
 }
 
 // DefaultConfig returns LoomEngine's production defaults.
 func DefaultConfig() Config {
-	return Config{MaxSubtaskDepth: DefaultMaxSubtaskDepth}
+	return Config{
+		MaxSubtaskDepth:   DefaultMaxSubtaskDepth,
+		MaxSubtaskBreadth: DefaultMaxSubtaskBreadth,
+	}
 }
 
 // Option configures LoomEngine.
@@ -67,9 +74,28 @@ func WithMaxSubtaskDepth(n int) Option {
 	}
 }
 
+// WithMaxSubtaskBreadth sets the accepted active sub-task budget per root task.
+func WithMaxSubtaskBreadth(n int) Option {
+	return func(l *LoomEngine) {
+		cfg := l.config
+		cfg.MaxSubtaskBreadth = n
+		l.config = normalizeConfig(cfg)
+	}
+}
+
 // WithMaxRetries sets the maximum retry count (default 2).
 func WithMaxRetries(n int) Option {
 	return func(l *LoomEngine) { l.maxRetries = n }
+}
+
+type subtaskContext struct {
+	projectID  string
+	rootTaskID string
+}
+
+type subtaskRootLockKey struct {
+	tenantID   string
+	rootTaskID string
 }
 
 // LoomEngine is the central task mediator.
@@ -99,6 +125,10 @@ type LoomEngine struct {
 	// check, all insert → cap exceeded by goroutine count. The lock serializes
 	// quota-check + insert per tenant. Different tenants remain parallel.
 	tenantSubmitLocks sync.Map // tenantID string → *sync.Mutex
+	// AIMUX-21 T022: per-root sub-task submit serialization. Closes the TOCTOU
+	// race where concurrent children under the same root all pass the breadth
+	// count and then insert beyond the root budget.
+	subtaskRootLocks sync.Map // subtaskRootLockKey → *sync.Mutex
 	// T030 instruments — initialised in New() after options are applied.
 	taskSubmittedCounter otelmetric.Int64Counter
 	taskCompletedCounter otelmetric.Int64Counter
@@ -182,6 +212,12 @@ func (l *LoomEngine) TenantSubmitLock(tenantID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
+func (l *LoomEngine) subtaskRootSubmitLock(tenantID, rootTaskID string) *sync.Mutex {
+	key := subtaskRootLockKey{tenantID: tenantID, rootTaskID: rootTaskID}
+	v, _ := l.subtaskRootLocks.LoadOrStore(key, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 // Submit creates a persistent task and dispatches to the appropriate worker.
 // Returns immediately with taskID. Execution happens in a background goroutine.
 // RequestID is extracted from ctx via RequestIDFrom for distributed tracing.
@@ -220,9 +256,17 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	if tenantID == "" {
 		tenantID = LegacyTenantID
 	}
-	projectID, err := l.resolveSubtaskProjectID(req, tenantID)
+	subtaskCtx, err := l.resolveSubtaskContext(req, tenantID)
 	if err != nil {
 		return "", err
+	}
+	if subtaskCtx.rootTaskID != "" {
+		lock := l.subtaskRootSubmitLock(tenantID, subtaskCtx.rootTaskID)
+		lock.Lock()
+		defer lock.Unlock()
+		if err := l.validateSubtaskBreadth(subtaskCtx.rootTaskID); err != nil {
+			return "", err
+		}
 	}
 
 	taskID := l.idGen.NewID()
@@ -231,7 +275,7 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		ID:           taskID,
 		Status:       TaskStatusPending,
 		WorkerType:   req.WorkerType,
-		ProjectID:    projectID,
+		ProjectID:    subtaskCtx.projectID,
 		RequestID:    reqID,
 		ParentTaskID: req.ParentTaskID,
 		TenantID:     tenantID,
@@ -305,50 +349,94 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	return task.ID, nil
 }
 
-func (l *LoomEngine) resolveSubtaskProjectID(req TaskRequest, tenantID string) (string, error) {
+func (l *LoomEngine) resolveSubtaskContext(req TaskRequest, tenantID string) (subtaskContext, error) {
 	if req.ParentTaskID == "" {
-		return req.ProjectID, nil
+		return subtaskContext{projectID: req.ProjectID}, nil
 	}
 
 	parent, err := l.store.GetForTenant(req.ParentTaskID, tenantID)
 	if err != nil {
-		return "", fmt.Errorf("loom: get parent task %s: %w", req.ParentTaskID, err)
+		return subtaskContext{}, fmt.Errorf("loom: get parent task %s: %w", req.ParentTaskID, err)
 	}
-	if err := l.validateSubtaskDepth(parent, tenantID); err != nil {
-		return "", err
+	rootTaskID, err := l.validateSubtaskDepth(parent, tenantID)
+	if err != nil {
+		return subtaskContext{}, err
 	}
 	if parent.ProjectID == "" {
-		return req.ProjectID, nil
+		return subtaskContext{projectID: req.ProjectID, rootTaskID: rootTaskID}, nil
 	}
 	if req.ProjectID != "" && req.ProjectID != parent.ProjectID {
-		return "", clierror.NewCapabilityMismatch("subtask ProjectID must match parent ProjectID", nil)
+		return subtaskContext{}, clierror.NewCapabilityMismatch("subtask ProjectID must match parent ProjectID", nil)
 	}
-	return parent.ProjectID, nil
+	return subtaskContext{projectID: parent.ProjectID, rootTaskID: rootTaskID}, nil
 }
 
-func (l *LoomEngine) validateSubtaskDepth(parent *Task, tenantID string) error {
+func (l *LoomEngine) validateSubtaskDepth(parent *Task, tenantID string) (string, error) {
 	maxDepth := normalizeConfig(l.config).MaxSubtaskDepth
 	depth := 0
 	current := parent
 	for {
 		if depth >= maxDepth {
-			return clierror.NewCapabilityMismatch(fmt.Sprintf("subtask depth exceeded; max=%d", maxDepth), nil)
+			return "", clierror.NewCapabilityMismatch(fmt.Sprintf("subtask depth exceeded; max=%d", maxDepth), nil)
 		}
 		if current.ParentTaskID == "" {
-			return nil
+			return current.ID, nil
 		}
 		next, err := l.store.GetForTenant(current.ParentTaskID, tenantID)
 		if err != nil {
-			return fmt.Errorf("loom: get parent ancestor task %s: %w", current.ParentTaskID, err)
+			return "", fmt.Errorf("loom: get parent ancestor task %s: %w", current.ParentTaskID, err)
 		}
 		current = next
 		depth++
 	}
 }
 
+func (l *LoomEngine) validateSubtaskBreadth(rootTaskID string) error {
+	maxBreadth := normalizeConfig(l.config).MaxSubtaskBreadth
+	inflight, err := l.countInflightSubtasks(rootTaskID)
+	if err != nil {
+		return err
+	}
+	if inflight >= maxBreadth {
+		return clierror.NewCapabilityMismatch("root subtask budget exhausted", nil)
+	}
+	return nil
+}
+
+func (l *LoomEngine) countInflightSubtasks(rootTaskID string) (int, error) {
+	visited := map[string]struct{}{rootTaskID: struct{}{}}
+	return l.countInflightSubtasksFrom(rootTaskID, visited)
+}
+
+func (l *LoomEngine) countInflightSubtasksFrom(parentTaskID string, visited map[string]struct{}) (int, error) {
+	children, err := l.store.ListChildren(parentTaskID)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, child := range children {
+		if _, ok := visited[child.ID]; ok {
+			return 0, fmt.Errorf("loom: subtask cycle at %s", child.ID)
+		}
+		visited[child.ID] = struct{}{}
+		if child.Status.IsActive() {
+			total++
+		}
+		childTotal, err := l.countInflightSubtasksFrom(child.ID, visited)
+		if err != nil {
+			return 0, err
+		}
+		total += childTotal
+	}
+	return total, nil
+}
+
 func normalizeConfig(cfg Config) Config {
 	if cfg.MaxSubtaskDepth <= 0 {
 		cfg.MaxSubtaskDepth = DefaultMaxSubtaskDepth
+	}
+	if cfg.MaxSubtaskBreadth <= 0 {
+		cfg.MaxSubtaskBreadth = DefaultMaxSubtaskBreadth
 	}
 	return cfg
 }
