@@ -76,7 +76,7 @@ func TestCodeWorkerIntegrationRetryThenApply(t *testing.T) {
 	if client.driverCalls != 2 || client.navigatorCalls != 2 {
 		t.Fatalf("round calls driver=%d navigator=%d, want 2/2", client.driverCalls, client.navigatorCalls)
 	}
-	assertTaskMetadata(t, task.Metadata, "rounds", 1)
+	assertTaskMetadata(t, task.Metadata, "rounds", 2)
 	assertFile(t, root, "message.go", "package sample\n\nconst Message = \"new\"\n")
 	assertTransitionLogContains(t, task.Metadata, StateNavigator, StateRetry)
 	assertTransitionLogContains(t, task.Metadata, StateRetry, StateDriver)

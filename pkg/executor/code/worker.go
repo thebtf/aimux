@@ -288,7 +288,11 @@ func (w *CodeWorker) recordTaskMetadata(task *loom.Task, machine *Machine, crite
 	task.Metadata[MetadataWorkerType] = string(WorkerTypeCode)
 	task.Metadata["driver_cli"] = w.driverCLI
 	task.Metadata["navigator_cli"] = w.navigatorCLI
-	task.Metadata["rounds"] = machine.Rounds()
+	rounds := machine.Rounds()
+	if verdict.Action != "" {
+		rounds++
+	}
+	task.Metadata["rounds"] = rounds
 	if verdict.Action != "" {
 		task.Metadata["confidence_score"] = verdict.Confidence
 		task.Metadata["verdict"] = string(verdict.Action)

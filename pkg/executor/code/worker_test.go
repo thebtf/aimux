@@ -36,7 +36,7 @@ func TestCodeWorkerApplyPathRecordsMetadataAndTransitions(t *testing.T) {
 	assertFile(t, root, "note.txt", "new\n")
 	assertTaskMetadata(t, task.Metadata, "driver_cli", "codex")
 	assertTaskMetadata(t, task.Metadata, "navigator_cli", "claude")
-	assertTaskMetadata(t, task.Metadata, "rounds", 0)
+	assertTaskMetadata(t, task.Metadata, "rounds", 1)
 	assertTaskMetadata(t, task.Metadata, "confidence_score", 0.91)
 	assertTaskMetadata(t, task.Metadata, "gate_result", "passed")
 	assertTransitionLogContains(t, task.Metadata, StatePrep, StateDriver)
@@ -62,7 +62,7 @@ func TestCodeWorkerRetryLoopIncrementsRounds(t *testing.T) {
 	if pair.calls != 2 {
 		t.Fatalf("pair calls = %d, want 2", pair.calls)
 	}
-	assertTaskMetadata(t, task.Metadata, "rounds", 1)
+	assertTaskMetadata(t, task.Metadata, "rounds", 2)
 	assertTaskMetadata(t, task.Metadata, "gate_result", "skipped")
 	assertTransitionLogContains(t, task.Metadata, StateRetry, StateDriver)
 }
