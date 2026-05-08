@@ -261,6 +261,41 @@ func TestTaskRouterDispatchTimeoutCancelsBlockingGet(t *testing.T) {
 	}
 }
 
+func TestTaskRouterWaitTimeoutHonorsLongRequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	router := mustTaskRouter(t, newFakeTaskRouterLoom(), 20*time.Millisecond)
+
+	if got, want := router.waitTimeoutForRequest(1), time.Second+time.Millisecond; got != want {
+		t.Fatalf("wait timeout = %v, want %v", got, want)
+	}
+}
+
+func TestTaskRouterRejectsExplicitThinkByDefault(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeTaskRouterLoom()
+	router := mustTaskRouter(t, fake, 500*time.Millisecond)
+
+	_, err := router.Dispatch(context.Background(), TaskRequest{
+		Prompt:    "Think through this architecture.",
+		TaskClass: "think",
+	})
+	if err == nil {
+		t.Fatal("Dispatch() error = nil, want unsupported task_class")
+	}
+	var cliErr *extypes.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != extypes.CLIErrorCodeUserInputError {
+		t.Fatalf("code = %s, want %s", cliErr.Code, extypes.CLIErrorCodeUserInputError)
+	}
+	if got := fake.submissionCount(); got != 0 {
+		t.Fatalf("submission count = %d, want 0", got)
+	}
+}
+
 func TestTaskRouterRejectsUnregisteredClassBeforeSubmit(t *testing.T) {
 	t.Parallel()
 

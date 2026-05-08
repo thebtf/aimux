@@ -210,7 +210,7 @@ func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID st
 	defer ticker.Stop()
 
 	for {
-		drained, err := d.previousWorktreeDrained(projectID)
+		drained, err := d.previousWorktreeDrained(projectID, tenantIDFromContext(ctx))
 		if err != nil {
 			return false, err
 		}
@@ -228,7 +228,14 @@ func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID st
 	}
 }
 
-func (d *fullDelegate) previousWorktreeDrained(projectID string) (bool, error) {
+func (d *fullDelegate) previousWorktreeDrained(projectID, tenantID string) (bool, error) {
+	if tenantID != "" {
+		tasks, err := loom.NewTenantScopedEngine(d.srv.loom, tenantID, nil).List(projectID, loom.ActiveTaskStatuses()...)
+		if err != nil {
+			return false, err
+		}
+		return len(tasks) == 0, nil
+	}
 	tasks, err := d.srv.loom.List(projectID, loom.ActiveTaskStatuses()...)
 	if err != nil {
 		return false, err

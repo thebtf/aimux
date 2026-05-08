@@ -68,7 +68,7 @@ func (s *Server) registerTaskTool() {
 	s.mcp.AddTool(
 		mcp.NewTool("task",
 			mcp.WithDescription("[delegate — Loom routed, sync] Submit a task through the v5.11 task meta-router. "+
-				"Provide task_class to route directly to code, review, or think. "+
+				"Provide task_class to route directly to code or review. "+
 				"Omit task_class or pass task to use the deterministic classifier. "+
 				"Review mode accepts target and gate; code mode accepts sandbox and cli driver override. "+
 				"Returns a JSON TaskResult with task_id, content, task_class, rounds, and confidence_score."),
@@ -78,7 +78,7 @@ func (s *Server) registerTaskTool() {
 			),
 			mcp.WithString("task_class",
 				mcp.Description("Explicit task class. Omit or use task to classify from prompt."),
-				mcp.Enum("code", "review", "think", "task"),
+				mcp.Enum("code", "review", "task"),
 				mcp.DefaultString("task"),
 			),
 			mcp.WithString("cli",
@@ -293,7 +293,7 @@ func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string
 
 func validTaskToolClass(taskClass string) bool {
 	switch taskClass {
-	case "", taskClassTask, classifier.TaskClassCode, classifier.TaskClassReview, taskClassThink:
+	case "", taskClassTask, classifier.TaskClassCode, classifier.TaskClassReview:
 		return true
 	default:
 		return false

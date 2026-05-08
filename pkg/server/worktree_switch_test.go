@@ -81,6 +81,38 @@ func TestWorktreeSwitchDrainTimeoutAcceptsNewProject(t *testing.T) {
 	}
 }
 
+func TestWorktreeSwitchDrainIgnoresOtherTenantTasks(t *testing.T) {
+	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 1})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1006)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+	projectA := muxcore.ProjectContext{ID: "drain-tenant-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "drain-tenant-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest: %v", err)
+	}
+	tenantBTaskID, _ := submitBlockingLoomTaskForTenant(t, srv, projectA.ID, "tenant-b")
+
+	start := time.Now()
+	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("switch waited on other tenant task: elapsed=%v", elapsed)
+	}
+	tenantBTask, err := srv.loom.Get(tenantBTaskID)
+	if err != nil {
+		t.Fatalf("loom.Get tenant B: %v", err)
+	}
+	if tenantBTask.Status != loom.TaskStatusRunning {
+		t.Fatalf("tenant B task status = %s, want still running", tenantBTask.Status)
+	}
+}
+
 func TestWorktreeSwitchForcedSwitchCancelsPreviousProjectTasks(t *testing.T) {
 	srv := testServerWithWorktreeSwitch(t, config.WorktreeConfig{DrainTimeoutSeconds: 30, ForcedSwitch: true})
 	delegate := newWorktreeSwitchTestDelegate(srv)

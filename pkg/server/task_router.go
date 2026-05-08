@@ -18,7 +18,6 @@ const (
 	defaultTaskRouterWaitTimeout  = 5 * time.Minute
 	defaultTaskRouterPollInterval = 50 * time.Millisecond
 	taskClassTask                 = "task"
-	taskClassThink                = "think"
 )
 
 // TaskRouterLoom is the Loom surface used by TaskRouter.
@@ -121,7 +120,6 @@ func DefaultTaskRoutes() map[string]loom.WorkerType {
 	return map[string]loom.WorkerType{
 		classifier.TaskClassCode:   code.WorkerTypeCode,
 		classifier.TaskClassReview: review.WorkerTypeReview,
-		taskClassThink:             loom.WorkerTypeThinker,
 	}
 }
 
@@ -159,7 +157,7 @@ func (r *TaskRouter) Dispatch(ctx context.Context, req TaskRequest) (TaskResult,
 		return TaskResult{TaskClass: resolvedClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}, ensureCLIError(err)
 	}
 
-	result, err := r.wait(ctx, taskID, resolvedClass, workerType, confidence, candidates)
+	result, err := r.wait(ctx, taskID, resolvedClass, workerType, confidence, candidates, r.waitTimeoutForRequest(req.TimeoutSeconds))
 	if err != nil {
 		return result, err
 	}
@@ -252,8 +250,8 @@ func canonicalLoomRequest(req TaskRequest, prompt string, taskClass string, work
 	}
 }
 
-func (r *TaskRouter) wait(ctx context.Context, taskID string, taskClass string, workerType loom.WorkerType, confidence float64, candidates []classifier.Candidate) (TaskResult, error) {
-	waitCtx, cancel := context.WithTimeout(ctx, r.waitTimeout)
+func (r *TaskRouter) wait(ctx context.Context, taskID string, taskClass string, workerType loom.WorkerType, confidence float64, candidates []classifier.Candidate, timeout time.Duration) (TaskResult, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var lastTask *loom.Task
@@ -295,6 +293,18 @@ func (r *TaskRouter) wait(ctx context.Context, taskID string, taskClass string, 
 		case <-timer.C:
 		}
 	}
+}
+
+func (r *TaskRouter) waitTimeoutForRequest(timeoutSeconds int) time.Duration {
+	timeout := r.waitTimeout
+	if timeoutSeconds <= 0 {
+		return timeout
+	}
+	requestTimeout := time.Duration(timeoutSeconds) * time.Second
+	if requestTimeout > timeout {
+		timeout = requestTimeout + r.pollInterval
+	}
+	return timeout
 }
 
 func contextError(ctx context.Context, err error) error {
