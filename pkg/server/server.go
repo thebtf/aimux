@@ -390,6 +390,11 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		}
 	}()
 
+	// AIMUX-4/AIMUX-21: build FallbackPicker after the driver registry is probed so
+	// EnabledCLIs() returns the real available set. Task workers need it during
+	// registration so CodeWorker can preserve healthy cross-family pair selection.
+	s.fallbackPicker = buildFallbackPicker(s)
+
 	// Register LoomEngine workers for the reduced surface.
 	if s.loom != nil {
 		s.loom.RegisterWorker(loom.WorkerTypeThinker, loomworkers.NewThinkerWorker())
@@ -495,11 +500,6 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 
 	// Enable sampling capability — allows think patterns to request LLM calls from the client.
 	s.mcp.EnableSampling()
-
-	// AIMUX-4: build FallbackPicker after the driver registry is probed so
-	// EnabledCLIs() returns the real available set. Runs after MCP server construction
-	// but before registerTools so the task tool can reference s.fallbackPicker.
-	s.fallbackPicker = buildFallbackPicker(s)
 
 	s.registerTools()
 	s.registerResources()
