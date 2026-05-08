@@ -19,6 +19,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// @critical - release blocker per Constitution rule #10.
 func TestE2E_CodeEntry_RealCLIs(t *testing.T) {
 	if os.Getenv("AIMUX21_E2E") != "1" {
 		t.Skip("AIMUX21_E2E=1 not set - skipping real code entry e2e")

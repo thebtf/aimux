@@ -10,6 +10,7 @@ import (
 	"github.com/thebtf/aimux/loom"
 )
 
+// @critical - release blocker per Constitution rule #10.
 func TestReviewIntegrationThreePassGateAllow(t *testing.T) {
 	engine := newReviewWorkerEngine(t)
 	worker, err := NewReviewWorker(ReviewWorkerConfig{Loom: engine})
@@ -32,6 +33,7 @@ func TestReviewIntegrationThreePassGateAllow(t *testing.T) {
 	assertReviewIntegrationTree(t, engine, task.ID)
 }
 
+// @critical - release blocker per Constitution rule #10.
 func TestReviewIntegrationThreePassGateBlock(t *testing.T) {
 	engine := newReviewWorkerEngine(t)
 	worker, err := NewReviewWorker(ReviewWorkerConfig{Loom: engine})
@@ -59,6 +61,7 @@ func TestReviewIntegrationThreePassGateBlock(t *testing.T) {
 	assertReviewIntegrationTree(t, engine, task.ID)
 }
 
+// @critical - release blocker per Constitution rule #10.
 func TestReviewIntegrationFailOpenTimeout(t *testing.T) {
 	runner := &blockingPassRunner{}
 	worker, err := NewReviewWorker(ReviewWorkerConfig{PassRunner: runner})

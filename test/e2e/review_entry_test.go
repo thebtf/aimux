@@ -15,6 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// @critical - release blocker per Constitution rule #10.
 func TestE2E_ReviewEntry_DecisionShape(t *testing.T) {
 	if os.Getenv("AIMUX21_E2E") != "1" {
 		t.Skip("AIMUX21_E2E=1 not set - skipping review entry e2e")
