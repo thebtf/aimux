@@ -467,8 +467,10 @@ func commandArgsTemplateArgs(profile *config.CLIProfile, spec picker.TaskSpec) (
 		Prompt:          commandTemplateArgValue(spec.Prompt),
 		Model:           commandTemplateArgValue(taskModelForArgs(profile, spec)),
 		ReasoningEffort: commandTemplateArgValue(strings.TrimSpace(spec.Effort)),
+		SessionID:       commandTemplateArgValue(strings.TrimSpace(spec.SessionID)),
 		Headless:        profile.Features.Headless,
 		ReadOnly:        spec.Sandbox == "read-only",
+		SessionResume:   spec.SessionResume || strings.TrimSpace(spec.SessionID) != "",
 		JSON:            profile.Features.JSON || strings.EqualFold(profile.OutputFormat, "json"),
 	}
 	var buf bytes.Buffer

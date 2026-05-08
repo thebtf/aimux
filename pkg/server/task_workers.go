@@ -99,13 +99,15 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 	}
 
 	spec := picker.TaskSpec{
-		TaskClass: w.taskClass,
-		Prompt:    task.Prompt,
-		CWD:       task.CWD,
-		Env:       cloneEnv(task.Env),
-		Model:     task.Model,
-		Effort:    task.Effort,
-		Sandbox:   sandboxFromTaskMetadata(task.Metadata),
+		TaskClass:     w.taskClass,
+		Prompt:        task.Prompt,
+		CWD:           task.CWD,
+		Env:           cloneEnv(task.Env),
+		Model:         task.Model,
+		Effort:        task.Effort,
+		Sandbox:       sandboxFromTaskMetadata(task.Metadata),
+		SessionID:     sessionIDFromTaskMetadata(task.Metadata),
+		SessionResume: sessionResumeFromTaskMetadata(task.Metadata),
 	}
 	raw, selectedCLI, failedAttempts, err := w.dispatch(ctx, cli, task.Metadata, spec)
 	if err != nil {
@@ -179,14 +181,32 @@ func sandboxFromTaskMetadata(metadata map[string]any) string {
 	return ""
 }
 
+func sessionIDFromTaskMetadata(metadata map[string]any) string {
+	for _, key := range []string{code.MetadataThreadID, "cli_session_id"} {
+		if value, ok := metadataString(metadata, key); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func sessionResumeFromTaskMetadata(metadata map[string]any) bool {
+	return sessionIDFromTaskMetadata(metadata) != ""
+}
+
 func (s *Server) registerTaskWorkers() {
 	if s == nil || s.loom == nil {
 		return
 	}
 	subtaskLoom := tenantAwareSubtaskLoom{engine: s.loom}
+	var pairSelector code.PairSelector
+	if s.fallbackPicker != nil {
+		pairSelector = s.fallbackPicker
+	}
 
 	codeWorker, codeErr := code.NewCodeWorker(code.CodeWorkerConfig{
-		Loom: subtaskLoom,
+		Loom:         subtaskLoom,
+		PairSelector: pairSelector,
 	})
 	if codeErr != nil {
 		s.log.Warn("task workers: code worker init failed: %v", codeErr)

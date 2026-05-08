@@ -47,6 +47,11 @@ type ResumeDelegate interface {
 	ResumeFromTask(ctx context.Context, prevTaskID string) (map[string]any, error)
 }
 
+// PairSelector chooses healthy cross-family CLIs for Strong-Style code work.
+type PairSelector interface {
+	PickPair(ctx context.Context, taskClass string) (driver, navigator types.CLIName, err error)
+}
+
 // CodeWorkerConfig holds CodeWorker dependencies and defaults.
 type CodeWorkerConfig struct {
 	Loom                LoomClient
@@ -54,6 +59,7 @@ type CodeWorkerConfig struct {
 	GateRunner          GateRunner
 	Apply               ApplyFunc
 	DriverResumer       ResumeDelegate
+	PairSelector        PairSelector
 	DriverCLI           types.CLIName
 	NavigatorCLI        types.CLIName
 	MaxRounds           int
@@ -67,6 +73,7 @@ type CodeWorker struct {
 	gateRunner          GateRunner
 	apply               ApplyFunc
 	driverResumer       ResumeDelegate
+	pairSelector        PairSelector
 	driverCLI           types.CLIName
 	navigatorCLI        types.CLIName
 	maxRounds           int
@@ -102,10 +109,6 @@ func NewCodeWorker(cfg CodeWorkerConfig) (*CodeWorker, error) {
 	if driverCLI == "" {
 		driverCLI = "codex"
 	}
-	navigatorCLI := cfg.NavigatorCLI
-	if navigatorCLI == "" {
-		navigatorCLI = "claude"
-	}
 
 	return &CodeWorker{
 		loom:                cfg.Loom,
@@ -113,8 +116,9 @@ func NewCodeWorker(cfg CodeWorkerConfig) (*CodeWorker, error) {
 		gateRunner:          gateRunner,
 		apply:               apply,
 		driverResumer:       cfg.DriverResumer,
+		pairSelector:        cfg.PairSelector,
 		driverCLI:           driverCLI,
-		navigatorCLI:        navigatorCLI,
+		navigatorCLI:        cfg.NavigatorCLI,
 		maxRounds:           maxRounds,
 		confidenceThreshold: threshold,
 	}, nil
@@ -140,6 +144,12 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 		return w.failTask(task, machine, cliErr)
 	}
 
+	driverCLI, navigatorCLI, err := w.pairCLIsForTask(ctx, task)
+	if err != nil {
+		return w.failTask(task, machine, err)
+	}
+	recordSelectedPair(task, driverCLI, navigatorCLI)
+
 	prompt := task.Prompt
 	var lastVerdict Verdict
 	if cliErr := machine.Advance(StateDriver, "code worker prepared pair round"); cliErr != nil {
@@ -155,8 +165,8 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 			TenantID:       task.TenantID,
 			CWD:            task.CWD,
 			ResumeMetadata: resumeMeta,
-			DriverCLI:      w.driverCLIForTask(task),
-			NavigatorCLI:   w.navigatorCLI,
+			DriverCLI:      driverCLI,
+			NavigatorCLI:   navigatorCLI,
 			Model:          task.Model,
 			Effort:         task.Effort,
 			Sandbox:        sandboxForTask(task),
@@ -323,6 +333,47 @@ func (w *CodeWorker) driverCLIForTask(task *loom.Task) types.CLIName {
 	return w.driverCLI
 }
 
+func (w *CodeWorker) pairCLIsForTask(ctx context.Context, task *loom.Task) (types.CLIName, types.CLIName, error) {
+	if taskHasDriverOverride(task) {
+		return w.driverCLIForTask(task), w.defaultNavigatorCLI(), nil
+	}
+	if w.navigatorCLI != "" {
+		return w.driverCLIForTask(task), w.navigatorCLI, nil
+	}
+	if w.pairSelector != nil {
+		return w.pairSelector.PickPair(ctx, "code")
+	}
+	return w.driverCLIForTask(task), w.defaultNavigatorCLI(), nil
+}
+
+func (w *CodeWorker) defaultNavigatorCLI() types.CLIName {
+	if w.navigatorCLI != "" {
+		return w.navigatorCLI
+	}
+	return "claude"
+}
+
+func taskHasDriverOverride(task *loom.Task) bool {
+	if task == nil {
+		return false
+	}
+	if strings.TrimSpace(task.CLI) != "" {
+		return true
+	}
+	if cli, ok := metadataString(task.Metadata, "driver_cli_override"); ok && strings.TrimSpace(cli) != "" {
+		return true
+	}
+	return false
+}
+
+func recordSelectedPair(task *loom.Task, driverCLI, navigatorCLI types.CLIName) {
+	if task.Metadata == nil {
+		task.Metadata = map[string]any{}
+	}
+	task.Metadata["driver_cli"] = string(driverCLI)
+	task.Metadata["navigator_cli"] = string(navigatorCLI)
+}
+
 func resumeTaskIDFromMetadata(metadata map[string]any) string {
 	for _, key := range []string{"resume_id", MetadataResumeTaskID} {
 		if value, ok := metadataString(metadata, key); ok && strings.TrimSpace(value) != "" {
@@ -348,8 +399,12 @@ func (w *CodeWorker) recordTaskMetadata(task *loom.Task, machine *Machine, crite
 		task.Metadata = map[string]any{}
 	}
 	task.Metadata[MetadataWorkerType] = string(WorkerTypeCode)
-	task.Metadata["driver_cli"] = w.driverCLIForTask(task)
-	task.Metadata["navigator_cli"] = w.navigatorCLI
+	if _, ok := metadataString(task.Metadata, "driver_cli"); !ok {
+		task.Metadata["driver_cli"] = string(w.driverCLIForTask(task))
+	}
+	if _, ok := metadataString(task.Metadata, "navigator_cli"); !ok {
+		task.Metadata["navigator_cli"] = string(w.defaultNavigatorCLI())
+	}
 	rounds := machine.Rounds()
 	if verdict.Action != "" {
 		rounds++

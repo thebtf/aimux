@@ -433,6 +433,44 @@ func TestBuildTaskArgsUsesCommandArgsTemplate(t *testing.T) {
 	}
 }
 
+func TestBuildTaskArgsPassesResumeStateToCommandArgsTemplate(t *testing.T) {
+	t.Parallel()
+
+	profile := &config.CLIProfile{
+		Binary:         "codex",
+		PromptFlagType: "positional",
+		Command: config.CommandConfig{
+			Base:         "codex exec",
+			ArgsTemplate: `{{if .SessionResume}}resume {{.SessionID}}{{end}} "{{.Prompt}}"`,
+		},
+	}
+
+	got := buildTaskArgs(profile, picker.TaskSpec{
+		Prompt:        "continue work",
+		SessionID:     "thread-123",
+		SessionResume: true,
+	})
+	want := []string{"exec", "resume", "thread-123", "continue work"}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionResumeFromTaskMetadataUsesThreadID(t *testing.T) {
+	t.Parallel()
+
+	metadata := map[string]any{
+		code.MetadataThreadID: "thread-123",
+		"resume_id":           "root-task-1",
+	}
+	if got := sessionIDFromTaskMetadata(metadata); got != "thread-123" {
+		t.Fatalf("session id = %q, want thread-123", got)
+	}
+	if !sessionResumeFromTaskMetadata(metadata) {
+		t.Fatal("session resume = false, want true")
+	}
+}
+
 func TestSplitCommandLinePreservesWindowsBackslashesInQuotes(t *testing.T) {
 	got, err := splitCommandLine(`codex exec "C:\Program Files\cli.exe" --flag`)
 	if err != nil {

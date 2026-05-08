@@ -29,6 +29,12 @@ type TaskSpec struct {
 
 	// Sandbox carries the requested code sandbox mode to leaf CLI dispatch.
 	Sandbox string
+
+	// SessionID carries the CLI-native session/thread id when resuming a task.
+	SessionID string
+
+	// SessionResume requests resume-mode command rendering for the CLI.
+	SessionResume bool
 }
 
 // Picker selects the optimal CLI for a TaskSpec when the caller does not

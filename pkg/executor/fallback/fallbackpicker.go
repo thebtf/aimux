@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/thebtf/aimux/pkg/executor/picker"
+	"github.com/thebtf/aimux/pkg/executor/types"
 )
 
 // FallbackPicker composes Picker + Fallback into a single entry point (spec FR-10).
@@ -72,6 +73,15 @@ func (fp *FallbackPicker) Run(
 	}
 
 	return fp.RunPrimary(ctx, primaryCLI, spec, opts, dispatch)
+}
+
+// PickPair exposes the underlying healthy cross-family pair selection for
+// orchestrators that dispatch driver and navigator subtasks themselves.
+func (fp *FallbackPicker) PickPair(ctx context.Context, taskClass string) (types.CLIName, types.CLIName, error) {
+	if fp == nil || fp.p == nil {
+		return "", "", types.NewCapabilityMismatch("fallback picker requires an initialized picker", nil)
+	}
+	return fp.p.PickPair(ctx, taskClass)
 }
 
 // RunPrimary dispatches a caller-selected primary CLI, then uses the fallback

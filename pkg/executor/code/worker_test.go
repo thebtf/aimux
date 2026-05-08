@@ -137,6 +137,42 @@ func TestCodeWorkerHonorsDriverCLIOverride(t *testing.T) {
 	assertTaskMetadata(t, task.Metadata, "driver_cli", "gemini")
 }
 
+func TestCodeWorkerUsesPairSelectorForDefaultCLIs(t *testing.T) {
+	root := codeWorkerFixture(t)
+	pair := &mockWorkerPair{verdicts: []Verdict{{
+		Action:     StateApply,
+		Confidence: 0.91,
+		Diff:       renameDiff("note.txt", "old", "new"),
+	}}}
+	selector := &mockPairSelector{driver: "codex", navigator: "gemini"}
+	worker, err := NewCodeWorker(CodeWorkerConfig{
+		Loom:         newMockLoom(`{\"verdict\":\"APPLY\",\"confidence\":1}`),
+		PairRunner:   pair,
+		GateRunner:   &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+		PairSelector: selector,
+		MaxRounds:    3,
+	})
+	if err != nil {
+		t.Fatalf("NewCodeWorker returned error: %v", err)
+	}
+	task := codeWorkerTask(root)
+
+	_, err = worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if selector.calls != 1 {
+		t.Fatalf("selector calls = %d, want 1", selector.calls)
+	}
+	if pair.configs[0].DriverCLI != "codex" {
+		t.Fatalf("DriverCLI = %q, want codex", pair.configs[0].DriverCLI)
+	}
+	if pair.configs[0].NavigatorCLI != "gemini" {
+		t.Fatalf("NavigatorCLI = %q, want gemini", pair.configs[0].NavigatorCLI)
+	}
+	assertTaskMetadata(t, task.Metadata, "navigator_cli", "gemini")
+}
+
 func TestCodeWorkerEscalateReturnsTypedCLIError(t *testing.T) {
 	root := codeWorkerFixture(t)
 	worker := newTestCodeWorker(t, workerTestDeps{
@@ -390,6 +426,20 @@ type mockWorkerGate struct {
 func (m *mockWorkerGate) Run(_ context.Context, _ applygate.Project) applygate.Result {
 	m.calls++
 	return m.result
+}
+
+type mockPairSelector struct {
+	driver    types.CLIName
+	navigator types.CLIName
+	calls     int
+}
+
+func (m *mockPairSelector) PickPair(_ context.Context, taskClass string) (types.CLIName, types.CLIName, error) {
+	m.calls++
+	if taskClass != "code" {
+		return "", "", errors.New("unexpected task class")
+	}
+	return m.driver, m.navigator, nil
 }
 
 type mockResumeDelegate struct {
