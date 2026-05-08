@@ -96,6 +96,45 @@ func TestCodeWorkerEscalateReturnsTypedCLIError(t *testing.T) {
 	assertTransitionLogContains(t, task.Metadata, StateNavigator, StateEscalate)
 }
 
+func TestCodeWorkerApplyPathEscapePreservesSandboxDenial(t *testing.T) {
+	root := codeWorkerFixture(t)
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	diff := strings.ReplaceAll(`--- a/file.txt
++++ ABSOLUTE
+@@ -0,0 +1 @@
++owned
+`, "ABSOLUTE", filepath.ToSlash(outside))
+	gate := &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}}
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: &mockWorkerPair{verdicts: []Verdict{{
+			Action:     StateApply,
+			Confidence: 0.91,
+			Diff:       diff,
+		}}},
+		gate: gate,
+	})
+	task := codeWorkerTask(root)
+
+	_, err := worker.Execute(context.Background(), task)
+	if err == nil {
+		t.Fatal("Execute returned nil, want SandboxDenial")
+	}
+	var cliErr *types.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != types.CLIErrorCodeSandboxDenial {
+		t.Fatalf("CLIError code = %s, want %s", cliErr.Code, types.CLIErrorCodeSandboxDenial)
+	}
+	if gate.calls != 0 {
+		t.Fatalf("gate calls = %d, want 0", gate.calls)
+	}
+	assertFile(t, root, "note.txt", "old\n")
+	if _, statErr := os.Stat(outside); !os.IsNotExist(statErr) {
+		t.Fatalf("outside path exists after rejected diff: stat err=%v", statErr)
+	}
+}
+
 type workerTestDeps struct {
 	pair    PairRoundRunner
 	gate    GateRunner
@@ -212,9 +251,11 @@ func (m *mockWorkerPair) RunRound(_ context.Context, prompt string, _ SuccessCri
 
 type mockWorkerGate struct {
 	result applygate.Result
+	calls  int
 }
 
 func (m *mockWorkerGate) Run(_ context.Context, _ applygate.Project) applygate.Result {
+	m.calls++
 	return m.result
 }
 

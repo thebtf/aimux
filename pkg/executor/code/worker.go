@@ -200,6 +200,10 @@ func (w *CodeWorker) applyAndGate(ctx context.Context, task *loom.Task, machine 
 		return w.failTask(task, machine, cliErr)
 	}
 	if _, _, err := w.apply(ctx, verdict.Diff, Project{CWD: task.CWD}); err != nil {
+		var cliErr *types.CLIError
+		if errors.As(err, &cliErr) {
+			return w.failTask(task, machine, cliErr)
+		}
 		return w.failTask(task, machine, types.NewUserInputError("apply diff failed: "+err.Error(), err))
 	}
 	if cliErr := machine.Advance(StateGate, "diff written to disk"); cliErr != nil {

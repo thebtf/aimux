@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/thebtf/aimux/pkg/executor/types"
 )
 
 var hunkHeaderRE = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
@@ -286,36 +288,53 @@ func normalizeProjectRoot(cwd string) (string, error) {
 func resolvePatchTarget(root string, patchPath string) (string, error) {
 	patchPath = filepath.FromSlash(strings.TrimSpace(patchPath))
 	if filepath.IsAbs(patchPath) {
-		return "", fmt.Errorf("patch path is absolute: %s", patchPath)
+		return "", pathEscapesWorktreeError(patchPath)
 	}
 	clean := filepath.Clean(patchPath)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("patch path escapes project root: %s", patchPath)
+		return "", pathEscapesWorktreeError(patchPath)
 	}
 	target := filepath.Join(root, clean)
 	absTarget, err := filepath.Abs(target)
 	if err != nil {
 		return "", fmt.Errorf("resolve patch target: %w", err)
 	}
-	if err := ensureInsideRoot(root, absTarget); err != nil {
+	if err := ensurePatchTargetInsideRoot(root, absTarget); err != nil {
 		return "", err
+	}
+	return absTarget, nil
+}
+
+func ensurePatchTargetInsideRoot(root string, absTarget string) error {
+	if err := ensureInsideRoot(root, absTarget); err != nil {
+		return err
 	}
 	if realTarget, err := filepath.EvalSymlinks(absTarget); err == nil {
 		if err := ensureInsideRoot(root, realTarget); err != nil {
-			return "", err
+			return err
 		}
+		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("resolve patch target realpath: %w", err)
+		return fmt.Errorf("resolve patch target realpath: %w", err)
 	}
-	parent := filepath.Dir(absTarget)
-	if realParent, err := filepath.EvalSymlinks(parent); err == nil {
-		if err := ensureInsideRoot(root, realParent); err != nil {
-			return "", err
+	return ensureExistingAncestorInsideRoot(root, filepath.Dir(absTarget))
+}
+
+func ensureExistingAncestorInsideRoot(root string, path string) error {
+	for {
+		real, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			return ensureInsideRoot(root, real)
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("resolve patch parent realpath: %w", err)
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("resolve patch parent realpath: %w", err)
+		}
+		next := filepath.Dir(path)
+		if next == path {
+			return fmt.Errorf("resolve patch parent realpath: %w", err)
+		}
+		path = next
 	}
-	return absTarget, nil
 }
 
 func ensureInsideRoot(root string, target string) error {
@@ -324,9 +343,13 @@ func ensureInsideRoot(root string, target string) error {
 		return fmt.Errorf("compare path to project root: %w", err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("path escapes project root: %s", target)
+		return pathEscapesWorktreeError(target)
 	}
 	return nil
+}
+
+func pathEscapesWorktreeError(path string) *types.CLIError {
+	return types.NewSandboxDenial("path escapes worktree root: "+path, nil)
 }
 
 func writePlannedFiles(ctx context.Context, writes []plannedWrite) error {
