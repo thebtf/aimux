@@ -4,6 +4,14 @@
 
 - **AIMUX-21 — Entry Point Convergence**. The CLI-specific `codex_*` MCP tools are removed in v5.11.0. The public MCP surface now routes code and review work through the methodology-bearing `task` entry point, while Codex remains available as a backend worker. This follows Constitution Principle 3 / Frozen Surface policy (`.agent/specs/constitution.md:45-55`, `.agent/specs/constitution.md:224-231`), spec FR-11 and NFR-5 (`.agent/specs/AIMUX-21-entry-point-convergence/spec.md:418-427`, `:468-472`), plan Phase 1.7 (`.agent/specs/AIMUX-21-entry-point-convergence/plan.md:669-673`), and architecture ADR-013 (`.agent/specs/AIMUX-21-entry-point-convergence/architecture.md:516-529`).
 
+### Worktree-Native Isolation
+
+- **0-day git worktree support for AIMUX-21 task routing**. CR-002 makes worktree isolation explicit before the breaking release ships, based on NFR-9 / NFR-10 and FR-3 / FR-9 amendments (`.agent/specs/AIMUX-21-entry-point-convergence/changes/CR-002-worktree-native-isolation/change.md:37-41`; `.agent/specs/AIMUX-21-entry-point-convergence/spec.md:236`, `:397-402`, `:505-544`).
+- **W1 — Cross-worktree resume rejection:** `task(task_class="code", resume_id=...)` rejects a task created in another worktree with `CLIErrResumeWorkerMismatch` and reason `cross-worktree resume rejected`.
+- **W2 — Sub-task ProjectID inheritance:** Loom sub-tasks inherit the parent ProjectID; explicit child mismatch fails with `CLIErrCapabilityMismatch` (`subtask ProjectID must match parent ProjectID`).
+- **W3 — Worktree switch detection:** SessionHandler detects same-client ProjectContext switches, drains previous worktree tasks by default, and `worktree.forced_switch=true` cancels old active tasks with `CLIErrCanceled` / `worktree switched mid-task`.
+- **W4 — Apply/gate worktree binding:** code apply and gate execution bind to `realpath(ProjectContext.Cwd)`; escaped absolute/traversal/symlink targets fail atomically with `CLIErrSandboxDenial` / `path escapes worktree root`.
+
 ### Migration Table
 
 | Removed invocation | Replacement invocation | Parameter mapping |
@@ -20,6 +28,7 @@
 
 - `test/e2e/codex_tools_removed_test.go` asserts all five removed `codex_*` tools are absent from `tools/list` and the replacement `task` tool is present.
 - `test/e2e/aimux21_smoke_test.go` runs the gated AIMUX-21 independent smoke (`AIMUX21_E2E=1`): build v5.11.0, call `task(task_class="code")`, verify `TaskResult` metadata, mutate `README.md`, verify subtree visibility through the internal debug helper, and re-check removed tool absence.
+- `test/e2e/aimux21_worktree_test.go` runs the gated two-worktree isolation smoke (`AIMUX21_E2E=1`): create two git worktrees, run a code task in A, verify all Loom children inherit project_id_A, reject resume from B, and reject an escaped write from B.
 
 ---
 
