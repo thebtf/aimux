@@ -1,0 +1,240 @@
+package code
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/thebtf/aimux/loom"
+	applygate "github.com/thebtf/aimux/pkg/executor/code/gate"
+	"github.com/thebtf/aimux/pkg/executor/types"
+)
+
+func TestCodeWorkerApplyPathRecordsMetadataAndTransitions(t *testing.T) {
+	root := codeWorkerFixture(t)
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: &mockWorkerPair{verdicts: []Verdict{{
+			Action:     StateApply,
+			Confidence: 0.91,
+			Diff:       renameDiff("note.txt", "old", "new"),
+			Evidence:   "criteria pass",
+		}}},
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+	})
+	task := codeWorkerTask(root)
+
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Execute returned nil result")
+	}
+	assertFile(t, root, "note.txt", "new\n")
+	assertTaskMetadata(t, task.Metadata, "driver_cli", "codex")
+	assertTaskMetadata(t, task.Metadata, "navigator_cli", "claude")
+	assertTaskMetadata(t, task.Metadata, "rounds", 0)
+	assertTaskMetadata(t, task.Metadata, "confidence_score", 0.91)
+	assertTaskMetadata(t, task.Metadata, "gate_result", "passed")
+	assertTransitionLogContains(t, task.Metadata, StatePrep, StateDriver)
+	assertTransitionLogContains(t, task.Metadata, StateGate, StateDone)
+}
+
+func TestCodeWorkerRetryLoopIncrementsRounds(t *testing.T) {
+	root := codeWorkerFixture(t)
+	pair := &mockWorkerPair{verdicts: []Verdict{
+		{Action: StateRetry, Confidence: 0.40, Feedback: "missing acceptance test"},
+		{Action: StateApply, Confidence: 0.90, Diff: renameDiff("note.txt", "old", "new")},
+	}}
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: pair,
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusSkipped}},
+	})
+	task := codeWorkerTask(root)
+
+	_, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if pair.calls != 2 {
+		t.Fatalf("pair calls = %d, want 2", pair.calls)
+	}
+	assertTaskMetadata(t, task.Metadata, "rounds", 1)
+	assertTaskMetadata(t, task.Metadata, "gate_result", "skipped")
+	assertTransitionLogContains(t, task.Metadata, StateRetry, StateDriver)
+}
+
+func TestCodeWorkerEscalateReturnsTypedCLIError(t *testing.T) {
+	root := codeWorkerFixture(t)
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: &mockWorkerPair{verdicts: []Verdict{{
+			Action:     StateEscalate,
+			Confidence: 0.10,
+			Evidence:   "spec contradiction",
+		}}},
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+	})
+	task := codeWorkerTask(root)
+
+	_, err := worker.Execute(context.Background(), task)
+	if err == nil {
+		t.Fatal("Execute returned nil, want CLIError")
+	}
+	var cliErr *types.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error type = %T, want *types.CLIError", err)
+	}
+	if cliErr.Code != types.CLIErrorCodeCapabilityMismatch {
+		t.Fatalf("CLIError code = %s, want %s", cliErr.Code, types.CLIErrorCodeCapabilityMismatch)
+	}
+	if task.Error == "" {
+		t.Fatal("task.Error is empty")
+	}
+	assertTransitionLogContains(t, task.Metadata, StateNavigator, StateEscalate)
+}
+
+func TestCodeWorkerResumeFromTaskDelegates(t *testing.T) {
+	resumer := &mockResumeDelegate{meta: map[string]any{"thread_id": "thread-1"}}
+	worker := newTestCodeWorker(t, workerTestDeps{resumer: resumer})
+
+	meta, err := worker.ResumeFromTask(context.Background(), "task-1")
+	if err != nil {
+		t.Fatalf("ResumeFromTask returned error: %v", err)
+	}
+	if resumer.prevTaskID != "task-1" {
+		t.Fatalf("prevTaskID = %q, want task-1", resumer.prevTaskID)
+	}
+	if meta["thread_id"] != "thread-1" {
+		t.Fatalf("resume meta = %#v, want thread_id", meta)
+	}
+}
+
+type workerTestDeps struct {
+	pair    PairRoundRunner
+	gate    GateRunner
+	resumer ResumeDelegate
+}
+
+func newTestCodeWorker(t *testing.T, deps workerTestDeps) *CodeWorker {
+	t.Helper()
+	if deps.pair == nil {
+		deps.pair = &mockWorkerPair{verdicts: []Verdict{{Action: StateApply, Confidence: 1, Diff: renameDiff("note.txt", "old", "new")}}}
+	}
+	if deps.gate == nil {
+		deps.gate = &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}}
+	}
+	worker, err := NewCodeWorker(CodeWorkerConfig{
+		Loom:          newMockLoom(`{"verdict":"APPLY","confidence":1}`),
+		PairRunner:    deps.pair,
+		GateRunner:    deps.gate,
+		DriverResumer: deps.resumer,
+		DriverCLI:     "codex",
+		NavigatorCLI:  "claude",
+		MaxRounds:     3,
+	})
+	if err != nil {
+		t.Fatalf("NewCodeWorker returned error: %v", err)
+	}
+	return worker
+}
+
+func codeWorkerFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return root
+}
+
+func codeWorkerTask(root string) *loom.Task {
+	return &loom.Task{
+		ID:         "root-task",
+		Status:     loom.TaskStatusRunning,
+		WorkerType: WorkerTypeCode,
+		ProjectID:  "project-1",
+		RequestID:  "request-1",
+		Prompt:     "rename old to new",
+		CWD:        root,
+		Metadata:   map[string]any{},
+	}
+}
+
+func renameDiff(path string, old string, next string) string {
+	return "--- a/" + path + "\n+++ b/" + path + "\n@@ -1 +1 @@\n-" + old + "\n+" + next + "\n"
+}
+
+func assertFile(t *testing.T, root string, rel string, want string) {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(root, rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	if string(content) != want {
+		t.Fatalf("%s content = %q, want %q", rel, string(content), want)
+	}
+}
+
+func assertTaskMetadata(t *testing.T, metadata map[string]any, key string, want any) {
+	t.Helper()
+	if metadata[key] != want {
+		t.Fatalf("metadata[%s] = %#v, want %#v", key, metadata[key], want)
+	}
+}
+
+func assertTransitionLogContains(t *testing.T, metadata map[string]any, from State, to State) {
+	t.Helper()
+	raw := metadata[MetadataTransitionsKey]
+	log, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("transition log type = %T, want []any", raw)
+	}
+	for _, rawEntry := range log {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if entry["from"] == string(from) && entry["to"] == string(to) {
+			return
+		}
+	}
+	t.Fatalf("transition log missing %s -> %s: %#v", from, to, log)
+}
+
+type mockWorkerPair struct {
+	verdicts []Verdict
+	calls    int
+}
+
+func (m *mockWorkerPair) RunRound(_ context.Context, prompt string, _ SuccessCriteria, _ PairConfig) (Verdict, error) {
+	if m.calls >= len(m.verdicts) {
+		return Verdict{}, errors.New("unexpected pair call")
+	}
+	verdict := m.verdicts[m.calls]
+	m.calls++
+	if verdict.Action == StateRetry && !strings.Contains(prompt, "Navigator feedback") && m.calls > 1 {
+		return Verdict{}, errors.New("retry prompt missing feedback")
+	}
+	return verdict, nil
+}
+
+type mockWorkerGate struct {
+	result applygate.Result
+}
+
+func (m *mockWorkerGate) Run(_ context.Context, _ applygate.Project) applygate.Result {
+	return m.result
+}
+
+type mockResumeDelegate struct {
+	prevTaskID string
+	meta       map[string]any
+}
+
+func (m *mockResumeDelegate) ResumeFromTask(_ context.Context, prevTaskID string) (map[string]any, error) {
+	m.prevTaskID = prevTaskID
+	return m.meta, nil
+}
