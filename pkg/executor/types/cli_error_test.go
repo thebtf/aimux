@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/thebtf/aimux/loom/clierror"
 	"github.com/thebtf/aimux/pkg/executor/types"
 )
 
@@ -132,6 +133,17 @@ func TestErrorsAsThroughFmtWrap(t *testing.T) {
 	}
 	if target.Code != types.CLIErrorCodeBinaryNotFound {
 		t.Fatalf("extracted code = %v, want BinaryNotFound", target.Code)
+	}
+}
+
+func TestCLIErrorAliasAcceptsLoomCLIError(t *testing.T) {
+	var err error = clierror.NewCapabilityMismatch("subtask ProjectID must match parent ProjectID", nil)
+	var target *types.CLIError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As into *types.CLIError returned false")
+	}
+	if target.Code != types.CLIErrorCodeCapabilityMismatch {
+		t.Fatalf("Code = %v, want CapabilityMismatch", target.Code)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 
+	"github.com/thebtf/aimux/loom/clierror"
 	"github.com/thebtf/aimux/loom/deps"
 )
 
@@ -187,17 +188,22 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		reqID = req.RequestID
 	}
 
-	taskID := l.idGen.NewID()
-	now := l.clock.Now().UTC()
 	tenantID := req.TenantID
 	if tenantID == "" {
 		tenantID = LegacyTenantID
 	}
+	projectID, err := l.resolveSubtaskProjectID(req, tenantID)
+	if err != nil {
+		return "", err
+	}
+
+	taskID := l.idGen.NewID()
+	now := l.clock.Now().UTC()
 	task := &Task{
 		ID:           taskID,
 		Status:       TaskStatusPending,
 		WorkerType:   req.WorkerType,
-		ProjectID:    req.ProjectID,
+		ProjectID:    projectID,
 		RequestID:    reqID,
 		ParentTaskID: req.ParentTaskID,
 		TenantID:     tenantID,
@@ -269,6 +275,24 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	go l.dispatch(task)
 
 	return task.ID, nil
+}
+
+func (l *LoomEngine) resolveSubtaskProjectID(req TaskRequest, tenantID string) (string, error) {
+	if req.ParentTaskID == "" {
+		return req.ProjectID, nil
+	}
+
+	parent, err := l.store.GetForTenant(req.ParentTaskID, tenantID)
+	if err != nil {
+		return "", fmt.Errorf("loom: get parent task %s: %w", req.ParentTaskID, err)
+	}
+	if parent.ProjectID == "" {
+		return req.ProjectID, nil
+	}
+	if req.ProjectID != "" && req.ProjectID != parent.ProjectID {
+		return "", clierror.NewCapabilityMismatch("subtask ProjectID must match parent ProjectID", nil)
+	}
+	return parent.ProjectID, nil
 }
 
 // Close signals engine shutdown and waits for all in-flight dispatch goroutines

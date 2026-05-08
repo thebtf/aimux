@@ -117,6 +117,44 @@ func TestGet_CrossTenantReturns404(t *testing.T) {
 	}
 }
 
+func TestSubmit_CrossTenantParentTaskIDReturns404(t *testing.T) {
+	db := newTestDB(t)
+	engine, err := NewEngine(db, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker := &testWorker{wtype: WorkerTypeThinker, result: "ok"}
+	engine.RegisterWorker(WorkerTypeThinker, worker)
+
+	tenantA := NewTenantScopedEngine(engine, "tenant-A", nil)
+	tenantB := NewTenantScopedEngine(engine, "tenant-B", nil)
+
+	rootID, err := tenantA.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeThinker,
+		ProjectID:  "proj-A",
+		Prompt:     "tenant-A parent",
+	})
+	if err != nil {
+		t.Fatalf("tenantA.Submit: %v", err)
+	}
+
+	childID, err := tenantB.Submit(context.Background(), TaskRequest{
+		WorkerType:   WorkerTypeThinker,
+		ParentTaskID: rootID,
+		Prompt:       "tenant-B child attempt",
+	})
+	if err == nil {
+		t.Fatal("tenantB.Submit with tenant-A parent: expected error, got nil")
+	}
+	if childID != "" {
+		t.Fatalf("childID = %q, want empty on cross-tenant parent rejection", childID)
+	}
+	if !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("tenantB.Submit with tenant-A parent: got %v; want ErrTaskNotFound", err)
+	}
+}
+
 // ---- T021: TestList_FiltersToTenant ----
 
 // TestList_FiltersToTenant verifies that List only returns tasks scoped to the
@@ -433,7 +471,6 @@ func TestLoomSubmit_QuotaAuditEvent(t *testing.T) {
 		}
 	}
 }
-
 
 // ---- W2: TestLoomSubmit_BurstConcurrentSubmits_RespectsQuota ----
 
