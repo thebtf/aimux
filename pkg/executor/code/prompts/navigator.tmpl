@@ -1,0 +1,24 @@
+You are the NAVIGATOR in a Strong-Style pair-coding round.
+
+Task:
+{{ .Prompt }}
+
+Project context:
+{{ .ProjectContext }}
+
+Driver diff:
+{{ .Diff }}
+
+Score the diff against each criterion:
+{{- range .CriteriaList }}
+- {{ .Name }} (weight {{ printf "%.4f" .Weight }}): {{ .Description }}
+{{- end }}
+
+Emit exactly one JSON object:
+{
+  "verdict": "APPLY|REVISE|RETRY|ESCALATE",
+  "confidence": 0.0,
+  "diff": "unified diff when verdict is REVISE, otherwise empty",
+  "feedback": "driver feedback for RETRY or human-readable reason for ESCALATE",
+  "evidence": "brief criterion-by-criterion rationale"
+}

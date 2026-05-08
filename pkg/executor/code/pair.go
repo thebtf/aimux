@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/executor/code/prompts"
 	"github.com/thebtf/aimux/pkg/executor/types"
 )
 
@@ -67,13 +68,17 @@ func RunRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg 
 		return Verdict{}, err
 	}
 
+	driverPrompt, err := renderDriverPrompt(prompt, criteria, cfg)
+	if err != nil {
+		return Verdict{}, err
+	}
 	driverTaskID, err := cfg.Loom.Submit(ctx, loom.TaskRequest{
 		WorkerType:   driverWorkerType(cfg),
 		ProjectID:    cfg.ProjectID,
 		RequestID:    cfg.RequestID,
 		ParentTaskID: cfg.ParentTaskID,
 		TenantID:     cfg.TenantID,
-		Prompt:       prompt,
+		Prompt:       driverPrompt,
 		CWD:          cfg.CWD,
 		CLI:          cfg.DriverCLI,
 		Role:         "driver",
@@ -92,13 +97,17 @@ func RunRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg 
 		return Verdict{}, types.NewUserInputError("driver sub-task returned empty diff", nil)
 	}
 
+	navPrompt, err := renderNavigatorPrompt(prompt, diff, criteria, cfg)
+	if err != nil {
+		return Verdict{}, err
+	}
 	navigatorTaskID, err := cfg.Loom.Submit(ctx, loom.TaskRequest{
 		WorkerType:   navigatorWorkerType(cfg),
 		ProjectID:    cfg.ProjectID,
 		RequestID:    cfg.RequestID,
 		ParentTaskID: cfg.ParentTaskID,
 		TenantID:     cfg.TenantID,
-		Prompt:       navigatorPrompt(prompt, diff, criteria),
+		Prompt:       navPrompt,
 		CWD:          cfg.CWD,
 		CLI:          cfg.NavigatorCLI,
 		Role:         "navigator",
@@ -207,24 +216,39 @@ func parseNavigatorVerdict(output string, driverDiff string) (Verdict, error) {
 	}
 }
 
-func navigatorPrompt(prompt string, diff string, criteria SuccessCriteria) string {
-	var b strings.Builder
-	b.WriteString("Original prompt:\n")
-	b.WriteString(prompt)
-	b.WriteString("\n\nDriver diff:\n")
-	b.WriteString(diff)
-	b.WriteString("\n\nSuccess criteria:\n")
-	for _, criterion := range criteria.Criteria() {
-		b.WriteString("- ")
-		b.WriteString(criterion.Name)
-		b.WriteString(" (weight ")
-		b.WriteString(fmt.Sprintf("%.4f", criterion.Weight))
-		b.WriteString("): ")
-		b.WriteString(criterion.Description)
-		b.WriteByte('\n')
+func renderDriverPrompt(prompt string, criteria SuccessCriteria, cfg PairConfig) (string, error) {
+	return prompts.RenderDriver(prompts.RenderData{
+		Prompt:         prompt,
+		ProjectContext: pairProjectContext(cfg),
+		CriteriaList:   criteriaPromptViews(criteria),
+	})
+}
+
+func renderNavigatorPrompt(prompt string, diff string, criteria SuccessCriteria, cfg PairConfig) (string, error) {
+	return prompts.RenderNavigator(prompts.RenderData{
+		Prompt:         prompt,
+		ProjectContext: pairProjectContext(cfg),
+		CriteriaList:   criteriaPromptViews(criteria),
+		Diff:           diff,
+	})
+}
+
+func criteriaPromptViews(criteria SuccessCriteria) []prompts.CriterionView {
+	active := criteria.NormalizeWeights().Criteria()
+	views := make([]prompts.CriterionView, 0, len(active))
+	for _, criterion := range active {
+		views = append(views, prompts.CriterionView{
+			Name:        criterion.Name,
+			Description: criterion.Description,
+			Weight:      criterion.Weight,
+		})
 	}
-	b.WriteString("\nReturn JSON with verdict, confidence, diff, feedback, and evidence.")
-	return b.String()
+	return views
+}
+
+func pairProjectContext(cfg PairConfig) string {
+	return fmt.Sprintf("CWD=%s\nProjectID=%s\nParentTaskID=%s\nDriverCLI=%s\nNavigatorCLI=%s",
+		cfg.CWD, cfg.ProjectID, cfg.ParentTaskID, cfg.DriverCLI, cfg.NavigatorCLI)
 }
 
 func driverWorkerType(cfg PairConfig) loom.WorkerType {
