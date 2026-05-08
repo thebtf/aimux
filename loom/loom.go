@@ -699,6 +699,9 @@ func (l *LoomEngine) dispatch(task *Task) {
 		l.failTask(task, TaskStatusRunning, execErr.Error())
 		return
 	}
+	if !l.persistWorkerMetadata(taskCtx, task, latest, result) {
+		return
+	}
 
 	// Quality gate: validate result before accepting.
 	// Retry loop: continues until gate accepts, retries exhausted, or non-retryable rejection.
@@ -888,5 +891,51 @@ func (l *LoomEngine) dispatch(task *Task) {
 			l.failTask(task, TaskStatusRunning, execErr.Error())
 			return
 		}
+		if !l.persistWorkerMetadata(taskCtx, task, latest, result) {
+			return
+		}
 	}
+}
+
+func (l *LoomEngine) persistWorkerMetadata(ctx context.Context, task *Task, latest *Task, result *WorkerResult) bool {
+	if latest == nil {
+		return true
+	}
+	if len(latest.Metadata) == 0 && (result == nil || len(result.Metadata) == 0) {
+		return true
+	}
+	metadata := mergeTaskMetadata(latest.Metadata, nil)
+	if result != nil {
+		metadata = mergeTaskMetadata(metadata, result.Metadata)
+	}
+	if err := l.store.SetMetadata(latest.ID, metadata); err != nil {
+		l.logger.ErrorContext(ctx, "dispatch: store.SetMetadata failed",
+			"module", "loom",
+			"task_id", latest.ID,
+			"project_id", latest.ProjectID,
+			"worker_type", string(latest.WorkerType),
+			"task_status", string(TaskStatusRunning),
+			"request_id", latest.RequestID,
+			"error_code", "store_set_metadata",
+			"error", err,
+		)
+		l.failTask(task, TaskStatusRunning, fmt.Sprintf("dispatch: persist metadata failed: %v", err))
+		return false
+	}
+	latest.Metadata = metadata
+	return true
+}
+
+func mergeTaskMetadata(base map[string]any, overlay map[string]any) map[string]any {
+	if len(base) == 0 && len(overlay) == 0 {
+		return map[string]any{}
+	}
+	merged := make(map[string]any, len(base)+len(overlay))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range overlay {
+		merged[key] = value
+	}
+	return merged
 }

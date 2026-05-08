@@ -680,6 +680,28 @@ func (s *TaskStore) SetResult(id string, result string, errMsg string) error {
 	return nil
 }
 
+// SetMetadata stores the latest worker metadata for an active task.
+func (s *TaskStore) SetMetadata(id string, metadata map[string]any) error {
+	metaJSON, err := marshalJSON(metadata)
+	if err != nil {
+		return fmt.Errorf("loom store: marshal metadata: %w", err)
+	}
+	res, err := s.db.Exec(
+		`UPDATE tasks
+		 SET metadata = ?
+		 WHERE id = ? AND status IN ('pending', 'dispatched', 'running', 'retrying')`,
+		metaJSON, id,
+	)
+	if err != nil {
+		return fmt.Errorf("loom store: set metadata: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("loom store: task %s not found or not active", id)
+	}
+	return nil
+}
+
 // IncrementRetries bumps the retry count for a task.
 func (s *TaskStore) IncrementRetries(id string) error {
 	res, err := s.db.Exec(`UPDATE tasks SET retries = retries + 1 WHERE id = ?`, id)
