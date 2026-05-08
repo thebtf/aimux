@@ -201,6 +201,9 @@ func canonicalLoomRequest(req TaskRequest, prompt string, taskClass string, work
 		metadata["gate"] = true
 		metadata["review_gate"] = true
 	}
+	if req.CLI != "" {
+		metadata["driver_cli_override"] = req.CLI
+	}
 
 	return loom.TaskRequest{
 		WorkerType:   workerType,

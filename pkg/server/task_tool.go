@@ -15,6 +15,7 @@ import (
 	"github.com/thebtf/aimux/pkg/executor/picker"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
+	"github.com/thebtf/aimux/pkg/server/classifier"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -65,30 +66,48 @@ func buildFallbackPicker(s *Server) *fallback.FallbackPicker {
 func (s *Server) registerTaskTool() {
 	s.mcp.AddTool(
 		mcp.NewTool("task",
-			mcp.WithDescription("[delegate — multi-CLI, sync] Submit a task to the best available CLI. "+
-				"Automatically selects the highest-scoring CLI via capability scoring, "+
-				"and falls back to the next-best CLI if the primary fails with a retryable error "+
-				"(rate limit, auth expiry, timeout, capability mismatch). "+
-				"task_class controls capability routing: \"code\" prefers codex/claude, \"research\" prefers gemini. "+
-				"Returns the CLI output content directly. "+
-				"Use codex_task for async Codex-specific work with Loom persistence."),
+			mcp.WithDescription("[delegate — Loom routed, sync] Submit a task through the v5.11 task meta-router. "+
+				"Provide task_class to route directly to code, review, research, spec, prompt, or think. "+
+				"Omit task_class or pass task to use the deterministic classifier. "+
+				"Review mode accepts target and gate; code mode accepts sandbox and cli driver override. "+
+				"Returns a JSON TaskResult with task_id, content, task_class, rounds, and confidence_score."),
 			mcp.WithString("prompt",
 				mcp.Required(),
-				mcp.Description("Task prompt sent to the selected CLI."),
+				mcp.Description("Task prompt routed through TaskRouter."),
 			),
 			mcp.WithString("task_class",
-				mcp.Description("Semantic task class for capability routing: code, review, research, write-task, task. Default: task."),
-				mcp.Enum("code", "review", "research", "write-task", "task"),
+				mcp.Description("Explicit task class. Omit or use task to classify from prompt."),
+				mcp.Enum("code", "review", "research", "spec", "prompt", "think", "task"),
 				mcp.DefaultString("task"),
 			),
 			mcp.WithString("cli",
-				mcp.Description("Override: force a specific CLI by name (e.g. \"claude\", \"gemini\"). Skips picker scoring when set."),
+				mcp.Description("Driver CLI override for code tasks; does not bypass cross-family navigator selection."),
+			),
+			mcp.WithString("resume_id",
+				mcp.Description("Loom root task_id to resume."),
+			),
+			mcp.WithString("target",
+				mcp.Description("Review target, such as HEAD, a diff, or a PR ref."),
+			),
+			mcp.WithBoolean("gate",
+				mcp.Description("Review sub-mode flag. Requires review routing and target."),
+			),
+			mcp.WithString("sandbox",
+				mcp.Description("Code sandbox sub-mode."),
+				mcp.Enum("read-only", "workspace-write", "danger"),
+			),
+			mcp.WithString("mode",
+				mcp.Description("Prompt sub-mode."),
+				mcp.Enum("universal", "delegate", "review", "diagnose"),
+			),
+			mcp.WithNumber("timeout_seconds",
+				mcp.Description("Worker timeout in seconds, used by review-gate and long-running workers."),
 			),
 			mcp.WithBoolean("fallback_enabled",
-				mcp.Description("Whether to retry with alternative CLIs on eligible errors. Default: true."),
+				mcp.Description("Worker fallback policy hint. Default: true."),
 			),
 			mcp.WithNumber("max_attempts",
-				mcp.Description("Maximum number of CLIs to try (including the primary). 0 = use server default (2)."),
+				mcp.Description("Worker fallback attempt hint. 0 = worker default."),
 			),
 			mcp.WithToolAnnotation(mcp.ToolAnnotation{
 				ReadOnlyHint:    mcp.ToBoolPtr(false),
@@ -103,60 +122,231 @@ func (s *Server) registerTaskTool() {
 
 // handleTask is the MCP handler for the `task` tool.
 func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	taskReq, parseErr := parseTaskToolRequest(ctx, req)
+	if parseErr != nil {
+		return taskToolError(TaskResult{}, parseErr)
+	}
+	loomClient := s.taskRouterLoom(ctx)
+	if loomClient == nil {
+		return taskToolError(TaskResult{}, extypes.NewCapabilityMismatch("task router requires Loom", nil))
+	}
+	router, err := NewTaskRouter(TaskRouterConfig{
+		Loom:       loomClient,
+		Classifier: classifier.New(),
+	})
+	if err != nil {
+		return taskToolError(TaskResult{}, extypes.NewCapabilityMismatch(err.Error(), err))
+	}
+	result, err := router.Dispatch(ctx, taskReq)
+	if err != nil {
+		return taskToolError(result, err)
+	}
+	return marshalToolResult(result)
+}
+
+func (s *Server) taskRouterLoom(ctx context.Context) TaskRouterLoom {
+	if scoped, ok := TenantScopedLoomFromContext(ctx); ok && scoped != nil {
+		return scoped
+	}
+	if s == nil {
+		return nil
+	}
+	return s.loom
+}
+
+func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskRequest, error) {
 	prompt, err := req.RequireString("prompt")
 	if err != nil || strings.TrimSpace(prompt) == "" {
-		return mcp.NewToolResultError("task: prompt is required and must not be empty"), nil
+		return TaskRequest{}, extypes.NewUserInputError("task: prompt is required and must not be empty", err)
 	}
 
-	taskClass := req.GetString("task_class", "task")
-	cliOverride := req.GetString("cli", "")
+	rawTaskClass := req.GetString("task_class", "")
+	cliOverride := strings.TrimSpace(req.GetString("cli", ""))
+	resumeID := strings.TrimSpace(req.GetString("resume_id", ""))
+	target := strings.TrimSpace(req.GetString("target", ""))
+	gate := req.GetBool("gate", false)
+	sandbox := strings.TrimSpace(req.GetString("sandbox", ""))
+	mode := strings.TrimSpace(req.GetString("mode", ""))
+	timeoutSeconds := req.GetInt("timeout_seconds", 0)
 	maxAttempts := req.GetInt("max_attempts", 0)
 
-	// fallback_enabled: absent = nil (use config default), present = explicit override.
-	// Use Params.Arguments to distinguish "not set" from "set to false".
-	var fallbackEnabled *bool
+	if timeoutSeconds < 0 {
+		return TaskRequest{}, extypes.NewUserInputError("task: timeout_seconds must be >= 0", nil)
+	}
+	if maxAttempts < 0 {
+		return TaskRequest{}, extypes.NewUserInputError("task: max_attempts must be >= 0", nil)
+	}
+	taskClass, classErr := normalizeTaskToolClass(rawTaskClass, target, gate, sandbox, mode)
+	if classErr != nil {
+		return TaskRequest{}, classErr
+	}
+
+	metadata := map[string]any{}
+	if sandbox != "" {
+		metadata["sandbox"] = sandbox
+	}
+	if mode != "" {
+		metadata["mode"] = mode
+	}
+	if timeoutSeconds > 0 {
+		metadata["timeout_seconds"] = timeoutSeconds
+	}
+	if maxAttempts > 0 {
+		metadata["max_attempts"] = maxAttempts
+	}
 	if args, ok := req.Params.Arguments.(map[string]any); ok {
 		if _, present := args["fallback_enabled"]; present {
-			b := req.GetBool("fallback_enabled", true)
-			fallbackEnabled = &b
+			metadata["fallback_enabled"] = req.GetBool("fallback_enabled", true)
 		}
 	}
 
-	if s.fallbackPicker == nil {
-		return mcp.NewToolResultError("task: no CLIs available — FallbackPicker not initialized"), nil
-	}
+	return TaskRequest{
+		Prompt:         prompt,
+		TaskClass:      taskClass,
+		ProjectID:      req.GetString("project_id", projectIDFromContext(ctx)),
+		RequestID:      req.GetString("request_id", ""),
+		CWD:            cwdFromRequestOrContext(req, ctx),
+		Env:            sessionEnvFromContext(ctx),
+		CLI:            cliOverride,
+		Model:          req.GetString("model", ""),
+		Effort:         req.GetString("effort", ""),
+		TimeoutSeconds: timeoutSeconds,
+		ResumeID:       resumeID,
+		Target:         target,
+		Gate:           gate,
+		Metadata:       metadata,
+	}, nil
+}
 
-	spec := picker.TaskSpec{
-		TaskClass: taskClass,
-		Prompt:    prompt,
+func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string, mode string) (string, error) {
+	taskClass := strings.ToLower(strings.TrimSpace(raw))
+	if !validTaskToolClass(taskClass) {
+		return "", extypes.NewUserInputError(fmt.Sprintf("task: unsupported task_class %q", raw), nil)
 	}
-
-	// When cli override is specified, dispatch directly without picker scoring.
-	if cliOverride != "" {
-		content, dispErr := s.taskDispatch(ctx, cliOverride, spec)
-		if dispErr != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("task: cli %q failed: %v", cliOverride, dispErr)), nil
+	implied := ""
+	setImplied := func(next string, reason string) error {
+		if implied == "" || implied == next {
+			implied = next
+			return nil
 		}
-		return mcp.NewToolResultText(content), nil
+		return extypes.NewUserInputError(fmt.Sprintf("task: conflicting sub-mode params: %s implies %s but another param implies %s", reason, next, implied), nil)
 	}
-
-	opts := fallback.RunOptions{
-		FallbackEnabled: fallbackEnabled,
-		MaxAttempts:     maxAttempts,
-	}
-
-	result, runErr := s.fallbackPicker.Run(ctx, spec, opts, s.taskDispatch)
-	if runErr != nil {
-		if fallback.IsExhausted(runErr) {
-			var exErr *fallback.ErrAllFallbackExhausted
-			if errors.As(runErr, &exErr) {
-				return mcp.NewToolResultError(formatExhaustedError(exErr)), nil
+	if taskClass == "" || taskClass == taskClassTask {
+		if target != "" || gate {
+			if err := setImplied(classifier.TaskClassReview, "target/gate"); err != nil {
+				return "", err
 			}
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("task failed: %v", runErr)), nil
+		if sandbox != "" {
+			if err := validateSandbox(sandbox); err != nil {
+				return "", err
+			}
+			if err := setImplied(classifier.TaskClassCode, "sandbox"); err != nil {
+				return "", err
+			}
+		}
+		if mode != "" {
+			if err := validatePromptMode(mode); err != nil {
+				return "", err
+			}
+			if err := setImplied(classifier.TaskClassPrompt, "mode"); err != nil {
+				return "", err
+			}
+		}
+		if implied != "" {
+			taskClass = implied
+		}
+	} else {
+		if sandbox != "" {
+			if err := validateSandbox(sandbox); err != nil {
+				return "", err
+			}
+		}
+		if mode != "" {
+			if err := validatePromptMode(mode); err != nil {
+				return "", err
+			}
+		}
 	}
 
-	return mcp.NewToolResultText(result.Content), nil
+	if (target != "" || gate) && taskClass != classifier.TaskClassReview {
+		return "", extypes.NewUserInputError("task: target/gate params require task_class review", nil)
+	}
+	if sandbox != "" && taskClass != classifier.TaskClassCode {
+		return "", extypes.NewUserInputError("task: sandbox param requires task_class code", nil)
+	}
+	if mode != "" && taskClass != classifier.TaskClassPrompt {
+		return "", extypes.NewUserInputError("task: mode param requires task_class prompt", nil)
+	}
+	if taskClass == classifier.TaskClassReview && strings.TrimSpace(target) == "" {
+		return "", extypes.NewUserInputError("task: target is required for review task_class", nil)
+	}
+	return taskClass, nil
+}
+
+func validTaskToolClass(taskClass string) bool {
+	switch taskClass {
+	case "", taskClassTask, classifier.TaskClassCode, classifier.TaskClassReview,
+		classifier.TaskClassResearch, classifier.TaskClassSpec, classifier.TaskClassPrompt, taskClassThink:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateSandbox(sandbox string) error {
+	switch sandbox {
+	case "read-only", "workspace-write", "danger":
+		return nil
+	default:
+		return extypes.NewUserInputError(fmt.Sprintf("task: invalid sandbox %q", sandbox), nil)
+	}
+}
+
+func validatePromptMode(mode string) error {
+	switch mode {
+	case "universal", "delegate", "review", "diagnose":
+		return nil
+	default:
+		return extypes.NewUserInputError(fmt.Sprintf("task: invalid mode %q", mode), nil)
+	}
+}
+
+func taskToolError(result TaskResult, err error) (*mcp.CallToolResult, error) {
+	cliErr := taskCLIError(err)
+	payload := map[string]any{
+		"code":      cliErr.Code.String(),
+		"message":   cliErr.Message,
+		"retryable": cliErr.Retryable,
+	}
+	if cliErr.CauseStr != "" {
+		payload["cause"] = cliErr.CauseStr
+	}
+	if result.TaskID != "" {
+		payload["task_id"] = result.TaskID
+	}
+	if result.TaskClass != "" {
+		payload["task_class"] = result.TaskClass
+	}
+	if len(result.Candidates) > 0 {
+		payload["candidates"] = result.Candidates
+	}
+	b, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("internal error: response serialization failed: %v", marshalErr)), nil
+	}
+	return mcp.NewToolResultError(string(b)), nil
+}
+
+func taskCLIError(err error) *extypes.CLIError {
+	if err == nil {
+		return extypes.NewUnknown("task failed", nil)
+	}
+	var cliErr *extypes.CLIError
+	if errors.As(err, &cliErr) {
+		return cliErr
+	}
+	return extypes.NewUnknown(err.Error(), err)
 }
 
 // taskDispatch dispatches a single CLI call using the pipe executor.
