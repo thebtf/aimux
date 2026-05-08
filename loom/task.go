@@ -98,6 +98,7 @@ type Task struct {
 	WorkerType        WorkerType        `json:"worker_type"`
 	ProjectID         string            `json:"project_id"`
 	RequestID         string            `json:"request_id,omitempty"`
+	ParentTaskID      string            `json:"parent_task_id,omitempty"`
 	EngineName        string            `json:"engine_name,omitempty"`
 	TenantID          string            `json:"tenant_id,omitempty"`
 	Prompt            string            `json:"prompt"`
@@ -122,17 +123,18 @@ type Task struct {
 
 // TaskRequest is the input for submitting a new task.
 type TaskRequest struct {
-	WorkerType WorkerType
-	ProjectID  string
-	RequestID  string
-	TenantID   string
-	Prompt     string
-	CWD        string
-	Env        map[string]string
-	CLI        string
-	Role       string
-	Model      string
-	Effort     string
-	Timeout    int
-	Metadata   map[string]any
+	WorkerType   WorkerType
+	ProjectID    string
+	RequestID    string
+	ParentTaskID string
+	TenantID     string
+	Prompt       string
+	CWD          string
+	Env          map[string]string
+	CLI          string
+	Role         string
+	Model        string
+	Effort       string
+	Timeout      int
+	Metadata     map[string]any
 }

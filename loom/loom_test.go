@@ -448,6 +448,40 @@ func TestLoomEngine_Submit(t *testing.T) {
 	}
 }
 
+func TestLoomEngine_Submit_ParentTaskIDRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+
+	worker := &testWorker{wtype: WorkerTypeCLI, result: "child"}
+	engine.RegisterWorker(WorkerTypeCLI, worker)
+
+	rootID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "proj-parent",
+		Prompt:     "root",
+	})
+	if err != nil {
+		t.Fatalf("Submit root: %v", err)
+	}
+	childID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType:   WorkerTypeCLI,
+		ProjectID:    "proj-parent",
+		ParentTaskID: rootID,
+		Prompt:       "child",
+	})
+	if err != nil {
+		t.Fatalf("Submit child: %v", err)
+	}
+
+	child, err := engine.Get(childID)
+	if err != nil {
+		t.Fatalf("Get child: %v", err)
+	}
+	if child.ParentTaskID != rootID {
+		t.Fatalf("ParentTaskID = %q, want %q", child.ParentTaskID, rootID)
+	}
+}
+
 func TestLoomEngine_Submit_NoWorker(t *testing.T) {
 	store := newTestStore(t)
 	engine := New(store)

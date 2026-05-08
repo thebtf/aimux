@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     worker_type TEXT NOT NULL,
     project_id TEXT NOT NULL,
     request_id TEXT NOT NULL DEFAULT '',
+    parent_task_id TEXT REFERENCES tasks(id),
     prompt TEXT NOT NULL,
     cwd TEXT DEFAULT '',
     env TEXT DEFAULT '{}',
@@ -150,6 +151,21 @@ var migrateV5DownColumns = []string{
 	`ALTER TABLE tasks DROP COLUMN last_output_line`,
 }
 
+// migrateV6Columns adds parent_task_id for AIMUX-21 sub-task tree observability.
+// The index supports GetTree child lookups by parent id. Duplicate-column and
+// already-exists errors are ignored by NewTaskStore, matching previous migration
+// phases.
+var migrateV6Columns = []string{
+	`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id)`,
+	`CREATE INDEX IF NOT EXISTS idx_tasks_parent_task_id ON tasks(parent_task_id)`,
+}
+
+// migrateV6DownColumns is the reverse of migrateV6Columns.
+var migrateV6DownColumns = []string{
+	`DROP INDEX IF EXISTS idx_tasks_parent_task_id`,
+	`ALTER TABLE tasks DROP COLUMN parent_task_id`,
+}
+
 // MigrateV5Down reverts the v5 progress columns. Returns an error on the
 // first DROP that fails for a reason other than "no such column" (which is
 // idempotent — the column was already absent).
@@ -160,6 +176,21 @@ func MigrateV5Down(db *sql.DB) error {
 				continue
 			}
 			return fmt.Errorf("loom store: migrate v5 down: %w", err)
+		}
+	}
+	return nil
+}
+
+// MigrateV6Down reverts the parent_task_id column and index. Returns an error
+// on the first DROP that fails for a reason other than "no such column" (which
+// is idempotent — the column was already absent).
+func MigrateV6Down(db *sql.DB) error {
+	for _, stmt := range migrateV6DownColumns {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "no such column") {
+				continue
+			}
+			return fmt.Errorf("loom store: migrate v6 down: %w", err)
 		}
 	}
 	return nil
@@ -230,6 +261,18 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 			return nil, fmt.Errorf("loom store: migrate v5 columns: %w", err)
 		}
 	}
+	// AIMUX-21 T002: add parent_task_id column and child lookup index for
+	// sub-task tree observability. Existing rows remain root tasks
+	// (parent_task_id=NULL).
+	for _, stmt := range migrateV6Columns {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") ||
+				strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return nil, fmt.Errorf("loom store: migrate v6 columns: %w", err)
+		}
+	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
 	// These PRAGMAs are idempotent — safe even if already set.
 	db.Exec("PRAGMA journal_mode=WAL")   //nolint:errcheck
@@ -260,15 +303,16 @@ func (s *TaskStore) Create(task *Task) error {
 
 	_, err = s.db.Exec(`
 		INSERT INTO tasks
-			(id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
+			(id, status, worker_type, project_id, request_id, parent_task_id, prompt, cwd, env, cli, role, model,
 			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
 			 daemon_uuid, last_seen_at, engine_name, tenant_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID,
 		string(task.Status),
 		string(task.WorkerType),
 		task.ProjectID,
 		task.RequestID,
+		nullableString(task.ParentTaskID),
 		task.Prompt,
 		task.CWD,
 		envJSON,
@@ -332,15 +376,16 @@ func (s *TaskStore) Import(task *Task) error {
 
 	_, err = s.db.Exec(`
 		INSERT INTO tasks
-			(id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
+			(id, status, worker_type, project_id, request_id, parent_task_id, prompt, cwd, env, cli, role, model,
 			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
 			 daemon_uuid, last_seen_at, engine_name, tenant_id, last_output_line, progress_lines, progress_updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			status              = excluded.status,
 			worker_type         = excluded.worker_type,
 			project_id          = excluded.project_id,
 			request_id          = excluded.request_id,
+			parent_task_id      = excluded.parent_task_id,
 			prompt              = excluded.prompt,
 			cwd                 = excluded.cwd,
 			env                 = excluded.env,
@@ -368,6 +413,7 @@ func (s *TaskStore) Import(task *Task) error {
 		string(task.WorkerType),
 		task.ProjectID,
 		task.RequestID,
+		nullableString(task.ParentTaskID),
 		task.Prompt,
 		task.CWD,
 		envJSON,
@@ -400,7 +446,7 @@ func (s *TaskStore) Import(task *Task) error {
 // taskSelectColumns is the canonical column list for SELECT statements that
 // hydrate a *Task via scanTask. Defining it once avoids drift between the
 // query columns and scanTask's destination order.
-const taskSelectColumns = `id, status, worker_type, project_id, request_id, prompt, cwd, env, cli, role, model,
+const taskSelectColumns = `id, status, worker_type, project_id, request_id, parent_task_id, prompt, cwd, env, cli, role, model,
 		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
 		       engine_name, tenant_id, last_output_line, progress_lines, progress_updated_at`
 
@@ -538,6 +584,31 @@ func (s *TaskStore) ListAll(statuses ...TaskStatus) ([]*Task, error) {
 	return tasks, rows.Err()
 }
 
+// ListChildren returns direct child tasks for a parent in deterministic
+// creation order. It intentionally applies no engine/project filter: the
+// parent_task_id edge is the tree boundary, and later CR-002 invariants enforce
+// project consistency at Submit time.
+func (s *TaskStore) ListChildren(parentID string) ([]*Task, error) {
+	rows, err := s.db.Query(`
+		SELECT `+taskSelectColumns+`
+		FROM tasks WHERE parent_task_id = ?
+		ORDER BY created_at ASC, id ASC`, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("loom store: list child tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*Task
+	for rows.Next() {
+		task, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("loom store: scan child task: %w", scanErr)
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
+}
+
 // CountForTenant returns the number of in-flight tasks (pending, dispatched, running)
 // for the given tenantID. Used by TenantScopedLoomEngine for quota enforcement (T060).
 // This query uses live SQL count (not cached) to avoid race window issues per IF-WRONG directive.
@@ -655,6 +726,7 @@ func scanTask(s scanner) (*Task, error) {
 		task              Task
 		envJSON           string
 		metaJSON          string
+		parentTaskID      sql.NullString
 		dispatchedAt      sql.NullTime
 		completedAt       sql.NullTime
 		progressUpdatedAt sql.NullTime
@@ -666,6 +738,7 @@ func scanTask(s scanner) (*Task, error) {
 		&task.WorkerType,
 		&task.ProjectID,
 		&task.RequestID,
+		&parentTaskID,
 		&task.Prompt,
 		&task.CWD,
 		&envJSON,
@@ -689,6 +762,9 @@ func scanTask(s scanner) (*Task, error) {
 	)
 	if err != nil {
 		return nil, err
+	}
+	if parentTaskID.Valid {
+		task.ParentTaskID = parentTaskID.String
 	}
 
 	if err := unmarshalJSON(envJSON, &task.Env); err != nil {
@@ -730,6 +806,13 @@ func unmarshalJSON(s string, v any) error {
 		return nil
 	}
 	return json.Unmarshal([]byte(s), v)
+}
+
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // isNoRows returns true when err wraps sql.ErrNoRows.

@@ -32,6 +32,29 @@ func loomColumnExists(t *testing.T, db *sql.DB, column string) bool {
 	return false
 }
 
+func loomIndexExists(t *testing.T, db *sql.DB, index string) bool {
+	t.Helper()
+	rows, err := db.Query(`PRAGMA index_list(tasks)`)
+	if err != nil {
+		t.Fatalf("PRAGMA index_list(tasks): %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index info: %v", err)
+		}
+		if name == index {
+			return true
+		}
+	}
+	return false
+}
+
 // TestTaskStore_MigrateV2_FreshDB verifies that NewTaskStore on a fresh DB
 // creates the tasks table with all v2 columns present.
 func TestTaskStore_MigrateV2_FreshDB(t *testing.T) {
@@ -247,5 +270,59 @@ func TestTaskStore_EngineName_RoundTrip(t *testing.T) {
 	}
 	if got.EngineName != name {
 		t.Errorf("EngineName = %q; want %q", got.EngineName, name)
+	}
+}
+
+func TestTaskStore_MigrateV6_FreshDB(t *testing.T) {
+	store := newTestStore(t)
+	if !loomColumnExists(t, store.db, "parent_task_id") {
+		t.Fatal("tasks.parent_task_id column missing after NewTaskStore (v6 migration)")
+	}
+	if !loomIndexExists(t, store.db, "idx_tasks_parent_task_id") {
+		t.Fatal("idx_tasks_parent_task_id missing after NewTaskStore (v6 migration)")
+	}
+}
+
+func TestTaskStore_MigrateV6_Idempotent(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := NewTaskStore(db, "v6-idempotent"); err != nil {
+		t.Fatalf("first NewTaskStore: %v", err)
+	}
+	if _, err := NewTaskStore(db, "v6-idempotent"); err != nil {
+		t.Fatalf("second NewTaskStore: %v", err)
+	}
+}
+
+func TestTaskStore_MigrateV6_Down(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := MigrateV6Down(store.db); err != nil {
+		t.Fatalf("MigrateV6Down: %v", err)
+	}
+	if loomColumnExists(t, store.db, "parent_task_id") {
+		t.Fatal("tasks.parent_task_id column still present after MigrateV6Down")
+	}
+	if loomIndexExists(t, store.db, "idx_tasks_parent_task_id") {
+		t.Fatal("idx_tasks_parent_task_id still present after MigrateV6Down")
+	}
+
+	if err := MigrateV6Down(store.db); err != nil {
+		t.Fatalf("MigrateV6Down second call: %v", err)
+	}
+}
+
+func TestTaskStore_ParentTaskID_NullForRoot(t *testing.T) {
+	store := newTestStore(t)
+	task := makeTask("root-parent-null", "proj-parent-null", TaskStatusPending)
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var parent sql.NullString
+	if err := store.db.QueryRow(`SELECT parent_task_id FROM tasks WHERE id = ?`, task.ID).Scan(&parent); err != nil {
+		t.Fatalf("scan parent_task_id: %v", err)
+	}
+	if parent.Valid {
+		t.Fatalf("parent_task_id = %q, want NULL", parent.String)
 	}
 }
