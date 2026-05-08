@@ -93,11 +93,6 @@ type subtaskContext struct {
 	rootTaskID string
 }
 
-type subtaskRootLockKey struct {
-	tenantID   string
-	rootTaskID string
-}
-
 // LoomEngine is the central task mediator.
 // All tool handler work flows through LoomEngine which owns task creation,
 // dispatch, execution, persistence, and delivery.
@@ -125,10 +120,10 @@ type LoomEngine struct {
 	// check, all insert → cap exceeded by goroutine count. The lock serializes
 	// quota-check + insert per tenant. Different tenants remain parallel.
 	tenantSubmitLocks sync.Map // tenantID string → *sync.Mutex
-	// AIMUX-21 T022: per-root sub-task submit serialization. Closes the TOCTOU
-	// race where concurrent children under the same root all pass the breadth
-	// count and then insert beyond the root budget.
-	subtaskRootLocks sync.Map // subtaskRootLockKey → *sync.Mutex
+	// AIMUX-21 T022: serializes sub-task breadth check + insert. The critical
+	// section is short and avoids an unbounded per-root lock registry in the
+	// long-running daemon.
+	subtaskSubmitMu sync.Mutex
 	// T030 instruments — initialised in New() after options are applied.
 	taskSubmittedCounter otelmetric.Int64Counter
 	taskCompletedCounter otelmetric.Int64Counter
@@ -212,12 +207,6 @@ func (l *LoomEngine) TenantSubmitLock(tenantID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-func (l *LoomEngine) subtaskRootSubmitLock(tenantID, rootTaskID string) *sync.Mutex {
-	key := subtaskRootLockKey{tenantID: tenantID, rootTaskID: rootTaskID}
-	v, _ := l.subtaskRootLocks.LoadOrStore(key, &sync.Mutex{})
-	return v.(*sync.Mutex)
-}
-
 // Submit creates a persistent task and dispatches to the appropriate worker.
 // Returns immediately with taskID. Execution happens in a background goroutine.
 // RequestID is extracted from ctx via RequestIDFrom for distributed tracing.
@@ -261,9 +250,8 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		return "", err
 	}
 	if subtaskCtx.rootTaskID != "" {
-		lock := l.subtaskRootSubmitLock(tenantID, subtaskCtx.rootTaskID)
-		lock.Lock()
-		defer lock.Unlock()
+		l.subtaskSubmitMu.Lock()
+		defer l.subtaskSubmitMu.Unlock()
 		if err := l.validateSubtaskBreadth(subtaskCtx.rootTaskID); err != nil {
 			return "", err
 		}
