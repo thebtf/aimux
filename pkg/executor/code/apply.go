@@ -151,7 +151,10 @@ func parsePatchPath(header string) (string, error) {
 	if path == "" {
 		return "", errors.New("empty patch target path")
 	}
-	return strings.TrimPrefix(strings.TrimPrefix(path, "b/"), "a/"), nil
+	if strings.HasPrefix(path, "a/") || strings.HasPrefix(path, "b/") {
+		return path[2:], nil
+	}
+	return path, nil
 }
 
 func parseHunk(lines []string, start int) (hunkPatch, int, error) {

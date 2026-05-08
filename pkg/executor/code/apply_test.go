@@ -74,6 +74,28 @@ func TestWriteDiffAbsolutePathRejected(t *testing.T) {
 	}
 }
 
+func TestWriteDiffPreservesTopLevelADirectory(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "a/foo.txt", "old\n")
+	writeProjectFile(t, root, "foo.txt", "old\n")
+
+	diff := `--- a/a/foo.txt
++++ b/a/foo.txt
+@@ -1 +1 @@
+-old
++new
+`
+	files, hunks, err := WriteDiff(context.Background(), diff, Project{CWD: root})
+	if err != nil {
+		t.Fatalf("WriteDiff returned error: %v", err)
+	}
+	if files != 1 || hunks != 1 {
+		t.Fatalf("WriteDiff counts = (%d,%d), want (1,1)", files, hunks)
+	}
+	assertProjectFile(t, root, "a/foo.txt", "new\n")
+	assertProjectFile(t, root, "foo.txt", "old\n")
+}
+
 func writeProjectFile(t *testing.T, root string, rel string, content string) {
 	t.Helper()
 	path := filepath.Join(root, rel)
