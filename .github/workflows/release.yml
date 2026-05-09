@@ -11,6 +11,8 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    env:
+      GOVULNCHECK_VERSION: v1.3.0
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,7 +47,7 @@ jobs:
         run: go mod verify
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
 
       - name: Vulnerability scan
         run: $(go env GOPATH)/bin/govulncheck ./...

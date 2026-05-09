@@ -97,6 +97,11 @@ go test ./... -count=1
 | `sessions` | Просмотр, инспекция, отмена, kill, garbage collection и health-check состояния сессий и задач. |
 | `deepresearch` | Gemini-backed исследование со structured output. |
 | `upgrade` | Проверка или применение обновлений aimux binary, включая local source install с честным deferred fallback. |
+
+### Task Entry Point
+
+| Tool | Назначение |
+|---|---|
 | `task` | Generic Loom-backed entry point для code/review tasks. |
 
 ### Think Harness

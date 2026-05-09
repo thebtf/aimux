@@ -96,6 +96,11 @@ for customer-mode release walkthroughs.
 | `sessions` | List, inspect, cancel, kill, garbage-collect, and health-check session/task state. |
 | `deepresearch` | Run Gemini-backed research with structured output. |
 | `upgrade` | Check or apply aimux binary updates, including local source installs with truthful deferred fallback. |
+
+### Task Entry Point
+
+| Tool | Purpose |
+|---|---|
 | `task` | Route code and review tasks through the generic Loom-backed worker entry point. |
 
 ### Think Harness

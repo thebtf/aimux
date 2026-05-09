@@ -38,3 +38,16 @@ func TestHTTPTransportAuthPolicyRejectsNonLocalhostWithoutTokenEvenWithOverride(
 		t.Fatalf("error = %q, want non-localhost denial", err)
 	}
 }
+
+func TestHTTPTransportAuthPolicyRejectsLocalhostPrefixHost(t *testing.T) {
+	t.Setenv(allowUnauthenticatedHTTPEnv, "1")
+	srv := &Server{log: newTestLogger(t)}
+
+	err := srv.requireHTTPTransportAuth("HTTP", "localhost.example.com:8080")
+	if err == nil {
+		t.Fatal("expected localhost prefix host to be denied")
+	}
+	if !strings.Contains(err.Error(), "non-localhost") {
+		t.Fatalf("error = %q, want non-localhost denial", err)
+	}
+}

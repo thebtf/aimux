@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -237,9 +238,18 @@ func ensureLocalhostBinding(addr string) string {
 	return addr
 }
 
-// isLocalhostAddr checks if the address is bound to localhost/127.0.0.1.
+// isLocalhostAddr checks if the address is bound to an exact localhost name or loopback IP.
 func isLocalhostAddr(addr string) bool {
-	return strings.HasPrefix(addr, "127.0.0.1") || strings.HasPrefix(addr, "localhost") || strings.HasPrefix(addr, "[::1]")
+	host := addr
+	if parsedHost, _, err := net.SplitHostPort(addr); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 const allowUnauthenticatedHTTPEnv = "AIMUX_ALLOW_UNAUTHENTICATED_HTTP"

@@ -373,14 +373,6 @@ func (c *Coordinator) applyFromLocal(_ context.Context, sourcePath string) (*upd
 		return nil, err
 	}
 
-	info, err := os.Stat(validatedSource)
-	if err != nil {
-		return nil, fmt.Errorf("source binary not found: %w", err)
-	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("source path is a directory, not a binary: %s", validatedSource)
-	}
-
 	if err := atomicReplaceBinary(c.BinaryPath, validatedSource); err != nil {
 		return nil, fmt.Errorf("rename current binary: %w", err)
 	}
@@ -408,43 +400,64 @@ func (c *Coordinator) validateLocalSource(sourcePath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve current binary path: %w", err)
 	}
+	sourceResolved, err := filepath.EvalSymlinks(sourceAbs)
+	if err != nil {
+		return "", fmt.Errorf("source binary not found: %w", err)
+	}
+	binaryResolved, err := filepath.EvalSymlinks(binaryAbs)
+	if err != nil {
+		return "", fmt.Errorf("current binary path not found: %w", err)
+	}
 
-	info, err := os.Stat(sourceAbs)
+	info, err := os.Stat(sourceResolved)
 	if err != nil {
 		return "", fmt.Errorf("source binary not found: %w", err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("source path is a directory, not a binary: %s", sourceAbs)
+		return "", fmt.Errorf("source path is a directory, not a binary: %s", sourceResolved)
 	}
 
-	binaryExt := filepath.Ext(binaryAbs)
-	if !strings.EqualFold(filepath.Ext(sourceAbs), binaryExt) {
-		return "", fmt.Errorf("source binary extension %q does not match current binary extension %q", filepath.Ext(sourceAbs), binaryExt)
+	binaryExt := filepath.Ext(binaryResolved)
+	sourceExt := filepath.Ext(sourceResolved)
+	if !strings.EqualFold(sourceExt, binaryExt) {
+		return "", fmt.Errorf("source binary extension %q does not match current binary extension %q", sourceExt, binaryExt)
 	}
 
 	if os.Getenv(allowSourceOutsideBinDirEnv) == "1" {
-		return sourceAbs, nil
+		return sourceResolved, nil
 	}
 
-	allowedDirs := []string{filepath.Dir(binaryAbs)}
+	allowedDirs := []string{filepath.Dir(binaryResolved)}
 	if stagingDir := strings.TrimSpace(os.Getenv(sourceStagingDirEnv)); stagingDir != "" {
 		stagingAbs, err := filepath.Abs(stagingDir)
 		if err != nil {
 			return "", fmt.Errorf("resolve %s: %w", sourceStagingDirEnv, err)
 		}
-		allowedDirs = append(allowedDirs, stagingAbs)
+		stagingResolved, err := filepath.EvalSymlinks(stagingAbs)
+		if err != nil {
+			return "", fmt.Errorf("resolve %s symlinks: %w", sourceStagingDirEnv, err)
+		}
+		allowedDirs = append(allowedDirs, stagingResolved)
 	}
 
 	for _, dir := range allowedDirs {
-		if pathWithinDir(sourceAbs, dir) {
-			return sourceAbs, nil
+		if pathWithinDir(sourceResolved, dir) {
+			return sourceResolved, nil
 		}
 	}
-	return "", fmt.Errorf("local source %s is outside trusted upgrade directories; place it beside the running binary, set %s, or explicitly set %s=1 for local development", sourceAbs, sourceStagingDirEnv, allowSourceOutsideBinDirEnv)
+	return "", fmt.Errorf("local source %s is outside trusted upgrade directories; place it beside the running binary, set %s, or explicitly set %s=1 for local development", sourceResolved, sourceStagingDirEnv, allowSourceOutsideBinDirEnv)
 }
 
 func pathWithinDir(path, dir string) bool {
-	rel, err := filepath.Rel(dir, path)
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(resolvedDir), filepath.Clean(resolvedPath))
 	if err != nil {
 		return false
 	}

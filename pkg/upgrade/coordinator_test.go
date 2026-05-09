@@ -688,6 +688,37 @@ func TestCoordinator_ApplyFromLocal_RejectsSourceOutsideTrustedDirs(t *testing.T
 	}
 }
 
+func TestCoordinator_ApplyFromLocal_RejectsSymlinkToSourceOutsideTrustedDirs(t *testing.T) {
+	binDir := t.TempDir()
+	sourceDir := t.TempDir()
+	binaryPath := filepath.Join(binDir, "aimux.exe")
+	outsideSource := filepath.Join(sourceDir, "aimux-next.exe")
+	sourceLink := filepath.Join(binDir, "aimux-next.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(outsideSource, []byte("v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+	if err := os.Symlink(outsideSource, sourceLink); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		BinaryPath: binaryPath,
+		Source:     sourceLink,
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false)
+	if err == nil {
+		t.Fatal("expected symlinked source outside trusted directories to be denied")
+	}
+	if !strings.Contains(err.Error(), "outside trusted upgrade directories") {
+		t.Fatalf("error = %q, want trusted directory denial", err)
+	}
+}
+
 func TestCoordinator_ApplyFromLocal_AllowsConfiguredStagingDir(t *testing.T) {
 	binDir := t.TempDir()
 	stagingDir := t.TempDir()

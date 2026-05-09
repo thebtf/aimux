@@ -107,3 +107,21 @@ func TestAdaptReviewPassOutputAcceptsStructuredJSON(t *testing.T) {
 		t.Fatalf("meta = %v, want empty map", meta)
 	}
 }
+
+func TestAdaptReviewPassOutputRejectsEmptySummary(t *testing.T) {
+	input := `{"findings":[],"summary":"   "}`
+
+	content, meta, err := adaptReviewPassOutput(&loom.Task{}, input)
+	if err == nil {
+		t.Fatal("expected empty summary to be rejected")
+	}
+	if content != "" {
+		t.Fatalf("content = %q, want empty on error", content)
+	}
+	if meta != nil {
+		t.Fatalf("meta = %v, want nil on error", meta)
+	}
+	if !strings.Contains(err.Error(), "non-empty summary") {
+		t.Fatalf("error = %q, want non-empty summary detail", err)
+	}
+}
