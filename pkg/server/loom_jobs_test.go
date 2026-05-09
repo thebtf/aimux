@@ -343,6 +343,63 @@ func TestSessionsHealth_OperatorSeesAllLoomRunningWithoutProjectContext(t *testi
 	}
 }
 
+func TestLoomTenantScope_DerivesScopedEngineWhenMissingFromContext(t *testing.T) {
+	srv := testServerWithLoom(t)
+	srv.dispatchMW = NewDispatchMiddleware(multiTenantRegistryWithTenants(t, "tenant-a", "tenant-b"), nil)
+	tenantATaskID, _ := submitBlockingLoomTaskForTenant(t, srv, "proj-derived-a", "tenant-a")
+	tenantBTaskID, _ := submitBlockingLoomTaskForTenant(t, srv, "proj-derived-b", "tenant-b")
+	ctx := tenant.WithContext(context.Background(), tenant.TenantContext{
+		TenantID: "tenant-a",
+		Role:     tenant.RolePlain,
+	})
+
+	tasks, err := srv.listLoomTasksForContext(ctx)
+	if err != nil {
+		t.Fatalf("listLoomTasksForContext returned error: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != tenantATaskID {
+		t.Fatalf("tenant-a visible tasks = %#v, want only %s", tasks, tenantATaskID)
+	}
+	if tasks[0].ID == tenantBTaskID {
+		t.Fatalf("tenant-b task leaked into tenant-a scope: %#v", tasks)
+	}
+
+	running, err := srv.loomRunningCount(ctx)
+	if err != nil {
+		t.Fatalf("loomRunningCount returned error: %v", err)
+	}
+	if running != 1 {
+		t.Fatalf("loomRunningCount = %d, want 1", running)
+	}
+}
+
+func TestLoomTenantScope_FailsClosedWhenTenantContextMissing(t *testing.T) {
+	srv := testServerWithLoom(t)
+	srv.dispatchMW = NewDispatchMiddleware(multiTenantRegistryWithTenants(t, "tenant-a"), nil)
+	submitBlockingLoomTaskForTenant(t, srv, "proj-missing-context", "tenant-a")
+
+	if tasks, err := srv.listLoomTasksForContext(context.Background()); err == nil {
+		t.Fatalf("listLoomTasksForContext err = nil tasks=%#v, want fail-closed error", tasks)
+	}
+	if running, err := srv.loomRunningCount(context.Background()); err == nil {
+		t.Fatalf("loomRunningCount err = nil running=%d, want fail-closed error", running)
+	}
+}
+
+func multiTenantRegistryWithTenants(t *testing.T, names ...string) *tenant.TenantRegistry {
+	t.Helper()
+	entries := make(map[int]tenant.TenantConfig, len(names))
+	for i, name := range names {
+		entries[1001+i] = tenant.TenantConfig{Name: name, UID: 1001 + i, Role: tenant.RolePlain}
+	}
+	reg := tenant.NewRegistry()
+	reg.Swap(tenant.NewSnapshot(entries))
+	if !reg.IsMultiTenant() {
+		t.Fatal("test setup: expected multi-tenant registry")
+	}
+	return reg
+}
+
 func tenantScopedNoProjectContext(srv *Server, tenantID string) context.Context {
 	return tenantScopedNoProjectContextWithRole(srv, tenantID, tenant.RolePlain)
 }
