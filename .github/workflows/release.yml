@@ -31,10 +31,14 @@ jobs:
       - name: Critical suite
         run: go test ./tests/critical -count=1 -timeout 300s
 
+      # CodeEntry is intentionally excluded: it requires real vendor CLIs and stays outside the deterministic tag gate.
       - name: AIMUX-21 deterministic product gate
         env:
           AIMUX21_E2E: "1"
-        run: go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
+        run: |
+          set -euo pipefail
+          go test ./test/e2e -list 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' | grep -q '^TestE2E_'
+          go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
 
       - name: Loom module tests
         working-directory: loom
