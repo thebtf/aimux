@@ -15,9 +15,18 @@ import (
 
 var hunkHeaderRE = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
+const defaultPatchFileMode os.FileMode = 0o644
+
+const (
+	gitModeTypeMask = 0o170000
+	gitModeRegular  = 0o100000
+)
+
 type filePatch struct {
-	path  string
-	hunks []hunkPatch
+	path         string
+	mode         os.FileMode
+	modeExplicit bool
+	hunks        []hunkPatch
 }
 
 type hunkPatch struct {
@@ -26,12 +35,15 @@ type hunkPatch struct {
 }
 
 type plannedWrite struct {
-	path    string
-	content []byte
+	path         string
+	content      []byte
+	mode         os.FileMode
+	modeExplicit bool
 }
 
 type fileBackup struct {
 	content []byte
+	mode    os.FileMode
 	existed bool
 }
 
@@ -73,7 +85,12 @@ func WriteDiff(ctx context.Context, diff string, project Project) (int, int, err
 		if err != nil {
 			return 0, 0, fmt.Errorf("apply patch %s: %w", patch.path, err)
 		}
-		writes = append(writes, plannedWrite{path: target, content: next})
+		writes = append(writes, plannedWrite{
+			path:         target,
+			content:      next,
+			mode:         patch.mode,
+			modeExplicit: patch.modeExplicit,
+		})
 		hunksApplied += len(patch.hunks)
 	}
 
@@ -86,9 +103,31 @@ func WriteDiff(ctx context.Context, diff string, project Project) (int, int, err
 func parseUnifiedDiff(diff string) ([]filePatch, error) {
 	lines := strings.Split(strings.ReplaceAll(diff, "\r\n", "\n"), "\n")
 	patches := make([]filePatch, 0)
+	var pendingMode os.FileMode
+	pendingModeExplicit := false
 	for i := 0; i < len(lines); {
 		line := lines[i]
-		if isDiffMetadataLine(line) || line == "" {
+		if line == "" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(line, "diff --git ") {
+			pendingMode = 0
+			pendingModeExplicit = false
+			i++
+			continue
+		}
+		mode, ok, err := parsePatchFileMode(line)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			pendingMode = mode
+			pendingModeExplicit = true
+			i++
+			continue
+		}
+		if isDiffMetadataLine(line) {
 			i++
 			continue
 		}
@@ -104,7 +143,9 @@ func parseUnifiedDiff(diff string) ([]filePatch, error) {
 		}
 		i += 2
 
-		patch := filePatch{path: path}
+		patch := filePatch{path: path, mode: pendingMode, modeExplicit: pendingModeExplicit}
+		pendingMode = 0
+		pendingModeExplicit = false
 		for i < len(lines) {
 			if lines[i] == "" && i == len(lines)-1 {
 				break
@@ -138,9 +179,32 @@ func isDiffMetadataLine(line string) bool {
 		strings.HasPrefix(line, "index ") ||
 		strings.HasPrefix(line, "new file mode ") ||
 		strings.HasPrefix(line, "deleted file mode ") ||
+		strings.HasPrefix(line, "old mode ") ||
+		strings.HasPrefix(line, "new mode ") ||
 		strings.HasPrefix(line, "similarity index ") ||
 		strings.HasPrefix(line, "rename from ") ||
 		strings.HasPrefix(line, "rename to ")
+}
+
+func parsePatchFileMode(line string) (os.FileMode, bool, error) {
+	var raw string
+	switch {
+	case strings.HasPrefix(line, "new file mode "):
+		raw = strings.TrimPrefix(line, "new file mode ")
+	case strings.HasPrefix(line, "new mode "):
+		raw = strings.TrimPrefix(line, "new mode ")
+	default:
+		return 0, false, nil
+	}
+	raw = strings.TrimSpace(raw)
+	mode, err := strconv.ParseUint(raw, 8, 32)
+	if err != nil {
+		return 0, true, fmt.Errorf("parse file mode %q: %w", raw, err)
+	}
+	if mode&gitModeTypeMask != gitModeRegular {
+		return 0, true, fmt.Errorf("unsupported file mode %q", raw)
+	}
+	return os.FileMode(mode) & os.ModePerm, true, nil
 }
 
 func parsePatchPath(header string) (string, error) {
@@ -370,15 +434,30 @@ func writePlannedFiles(ctx context.Context, writes []plannedWrite) error {
 			}
 			backups[write.path] = fileBackup{existed: false}
 		} else {
-			backups[write.path] = fileBackup{content: content, existed: true}
+			info, err := os.Stat(write.path)
+			if err != nil {
+				rollbackWrites(backups)
+				return fmt.Errorf("stat patch target %s: %w", write.path, err)
+			}
+			backups[write.path] = fileBackup{content: content, mode: info.Mode().Perm(), existed: true}
 		}
 		if err := os.MkdirAll(filepath.Dir(write.path), 0o755); err != nil {
 			rollbackWrites(backups)
 			return fmt.Errorf("create patch target dir: %w", err)
 		}
-		if err := os.WriteFile(write.path, write.content, 0o644); err != nil {
+		mode := defaultPatchFileMode
+		if write.modeExplicit {
+			mode = write.mode
+		}
+		if err := os.WriteFile(write.path, write.content, mode); err != nil {
 			rollbackWrites(backups)
 			return fmt.Errorf("write patch target %s: %w", write.path, err)
+		}
+		if write.modeExplicit {
+			if err := os.Chmod(write.path, mode); err != nil {
+				rollbackWrites(backups)
+				return fmt.Errorf("chmod patch target %s: %w", write.path, err)
+			}
 		}
 	}
 	return nil
@@ -387,7 +466,8 @@ func writePlannedFiles(ctx context.Context, writes []plannedWrite) error {
 func rollbackWrites(backups map[string]fileBackup) {
 	for path, backup := range backups {
 		if backup.existed {
-			_ = os.WriteFile(path, backup.content, 0o644)
+			_ = os.WriteFile(path, backup.content, backup.mode)
+			_ = os.Chmod(path, backup.mode)
 			continue
 		}
 		_ = os.Remove(path)
