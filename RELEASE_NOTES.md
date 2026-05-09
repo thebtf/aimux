@@ -15,9 +15,10 @@
 
 ### Release Hygiene
 
-- The release workflow now runs the product gates before publishing artifacts:
-  build, full Go tests, critical suite, gated AIMUX-21 e2e tests, Loom tests,
-  `go vet`, `go mod verify`, and `govulncheck`.
+- The release workflow now runs deterministic product gates before publishing
+  artifacts: build, full Go tests, critical suite, AIMUX-21 e2e test subset,
+  Loom tests, `go vet`, `go mod verify`, and `govulncheck`. The tag workflow
+  does not require private OpenAI or Anthropic account secrets.
 - README, operator notes, live MCP instructions, and production playbook now
   document the 28-tool surface including `task`.
 - Production playbook Scenario B6 now includes the required `prompt` parameter
