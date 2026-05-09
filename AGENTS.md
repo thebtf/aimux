@@ -21,6 +21,20 @@ aimux is an MCP server. After AIMUX-21, the live MCP surface is
 
 Pre-purge CLI-launching tools (exec, agent, agents, critique, investigate, consensus, debate, dialog, audit, workflow) — **REMOVED**. Pipeline v5 packages (`pkg/workflow/`, `pkg/dialogue/`, `pkg/swarm/`, `pkg/executor/`, `pkg/resolve/`, `pkg/driver/`, `pkg/routing/`, `loom/`) remain in-repo as dormant seams pending the next Layer 5 design. Pre-purge architecture frozen at branch `snapshot/v5.0.3-pre-cli-purge` and documented in `docs/architecture/cli-tools-current.md`.
 
+## Mission & Principles
+
+Canonical project constitution: `.agent/specs/constitution.md` (v1.0.0,
+ratified 2026-05-08).
+
+aimux is a vertical-specialist autonomous agent: it executes a narrow set of
+high-value engineering tasks (think, prompt, code, review, research, spec) at a
+top-quality bar through compiled code-behind, not through runtime hooks,
+plugins, or YAML-configurable workflows. AIMUX-21 implements the entry-point
+convergence rule: public MCP tools are methodology-bearing task entries, not
+CLI-specific prompt-forwarding functions. Code-class tasks must follow mandatory
+Strong-Style pair coding: a driver produces the diff, and a cross-family
+navigator reviews before apply.
+
 ## Agent Instructions
 
 ### Memory-First — NON-NEGOTIABLE
