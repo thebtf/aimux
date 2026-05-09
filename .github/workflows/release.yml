@@ -34,6 +34,7 @@ jobs:
       - name: AIMUX-21 product gate
         env:
           AIMUX21_E2E: "1"
+          AIMUX21_REQUIRE_REAL_CLIS: "1"
         run: go test ./test/e2e -run 'TestE2E_(AIMUX21|CodeEntry|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
 
       - name: Loom module tests
