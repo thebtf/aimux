@@ -91,6 +91,9 @@ func TestDispatch_TenantAResolved(t *testing.T) {
 	if tc.TenantID != "tenantA" {
 		t.Errorf("expected TenantID=%q, got %q", "tenantA", tc.TenantID)
 	}
+	if tc.Role != tenant.RoleOperator {
+		t.Errorf("expected Role=%q, got %q", tenant.RoleOperator, tc.Role)
+	}
 	if tc.PeerUID != 1001 {
 		t.Errorf("expected PeerUid=1001, got %d", tc.PeerUID)
 	}

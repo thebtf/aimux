@@ -25,12 +25,12 @@ func buildInstructions(
 	}
 
 	patternCount := len(think.GetAllPatterns())
-	toolCount := 4 + patternCount
+	toolCount := 5 + patternCount
 
 	lines := []string{
 		fmt.Sprintf("aimux — AI CLI Multiplexer (%d tools, %d CLIs, %d think patterns)", toolCount, cliCount, patternCount),
 		"",
-		"aimux currently exposes a reduced MCP surface: server state tools, deep research, upgrade control, and dedicated think pattern tools.",
+		"aimux currently exposes a reduced MCP surface: server state tools, task routing, deep research, upgrade control, and dedicated think pattern tools.",
 		"",
 		"## Available CLIs",
 	}

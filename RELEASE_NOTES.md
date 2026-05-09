@@ -1,3 +1,30 @@
+## v5.11.1 — 2026-05-09 (hardening)
+
+### Security
+
+- HTTP/SSE transports now fail closed without bearer auth. The only unauthenticated
+  escape hatch is explicit local development mode via `AIMUX_ALLOW_UNAUTHENTICATED_HTTP=1`.
+- Privileged management actions now require tenant role `operator`:
+  `upgrade(action=apply)`, `sessions(action=list, all=true)`, and
+  `sessions(action=cancel|kill|gc|refresh-warmup)`.
+- Local-source upgrades are restricted to trusted source paths: beside the
+  running binary or under `AIMUX_UPGRADE_SOURCE_DIR`, unless the operator
+  explicitly sets `AIMUX_ALLOW_UPGRADE_SOURCE_OUTSIDE_BIN_DIR=1`.
+- Review pass adaptation now fails closed on malformed reviewer output instead
+  of adapting it to an empty findings list.
+
+### Release Hygiene
+
+- The release workflow now runs the product gates before publishing artifacts:
+  build, full Go tests, critical suite, gated AIMUX-21 e2e tests, Loom tests,
+  `go vet`, `go mod verify`, and `govulncheck`.
+- README, operator notes, live MCP instructions, and production playbook now
+  document the 28-tool surface including `task`.
+- Production playbook Scenario B6 now includes the required `prompt` parameter
+  for review-gate `task` calls.
+
+---
+
 ## v5.11.0 — 2026-05-08 (BREAKING)
 
 ### Breaking Changes

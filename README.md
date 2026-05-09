@@ -2,9 +2,9 @@
 
 # aimux
 
-[![Go](https://img.shields.io/badge/go-1.25.9%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/go-1.25.10%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![MCP Tools](https://img.shields.io/badge/MCP-27%20tools-blueviolet)](https://modelcontextprotocol.io)
+[![MCP Tools](https://img.shields.io/badge/MCP-28%20tools-blueviolet)](https://modelcontextprotocol.io)
 
 aimux is an MCP server for durable task state, session operations, deep
 research, binary upgrades, and caller-centered structured reasoning.
@@ -12,6 +12,7 @@ research, binary upgrades, and caller-centered structured reasoning.
 The current post-purge live surface is intentionally small:
 
 - 4 server tools: `status`, `sessions`, `deepresearch`, `upgrade`
+- 1 methodology-bearing `task` entry point for code and review workflows
 - 1 caller-centered `think` harness plus 22 cognitive move tools
 
 The former CLI-launching MCP tools (`exec`, `agent`, `agents`, `critique`,
@@ -26,12 +27,12 @@ The next Layer 5 surface is tracked separately by AIMUX-9 / DEF-1.
 ### Build
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.9"
+$env:GOTOOLCHAIN = "go1.25.10"
 go build -o aimux.exe ./cmd/aimux/
 .\aimux.exe --version
 ```
 
-Use Go 1.25.9 or newer for production builds.
+Use Go 1.25.10 or newer for production builds.
 
 ### Configure An MCP Client
 
@@ -51,7 +52,8 @@ Add the binary to your MCP client configuration:
 ### Verify The Tool Surface
 
 Run `tools/list` from any MCP-capable client. A current build should expose
-27 tools: the 4 server tools, the `think` harness, and 22 cognitive move tools.
+28 tools: the 4 server tools, the `task` entry point, the `think` harness,
+and 22 cognitive move tools.
 
 ```json
 {
@@ -67,10 +69,12 @@ Run `tools/list` from any MCP-capable client. A current build should expose
 Common development and release checks:
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.9"
+$env:GOTOOLCHAIN = "go1.25.10"
 go build ./...
 go test ./... -count=1 -timeout 300s
-go test -tags=critical ./tests/critical/... -count=1 -timeout 300s
+go test ./tests/critical -count=1 -timeout 300s
+$env:AIMUX21_E2E = "1"
+go test ./test/e2e -run 'TestE2E_(AIMUX21|CodeEntry|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
 go vet ./...
 go mod verify
 govulncheck ./...
@@ -92,6 +96,7 @@ for customer-mode release walkthroughs.
 | `sessions` | List, inspect, cancel, kill, garbage-collect, and health-check session/task state. |
 | `deepresearch` | Run Gemini-backed research with structured output. |
 | `upgrade` | Check or apply aimux binary updates, including local source installs with truthful deferred fallback. |
+| `task` | Route code and review tasks through the generic Loom-backed worker entry point. |
 
 ### Think Harness
 
@@ -219,7 +224,7 @@ future design work under AIMUX-9 / DEF-1.
 
 Before a release:
 
-1. Build with Go 1.25.9 or newer.
+1. Build with Go 1.25.10 or newer.
 2. Run the full Go test suite.
 3. Run the critical suite under `tests/critical/`.
 4. Run `go vet`, `go mod verify`, and `govulncheck`.

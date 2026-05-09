@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,5 +72,38 @@ func TestTenantAwareSubtaskLoomGetContextScopesTenant(t *testing.T) {
 	}
 	if task.ID != taskID {
 		t.Fatalf("task ID = %q, want %q", task.ID, taskID)
+	}
+}
+
+func TestAdaptReviewPassOutputFailsClosedOnMalformedJSON(t *testing.T) {
+	task := &loom.Task{Metadata: map[string]any{"review_pass": "structural"}}
+
+	content, meta, err := adaptReviewPassOutput(task, "not json")
+	if err == nil {
+		t.Fatal("expected malformed review pass output to fail closed")
+	}
+	if content != "" {
+		t.Fatalf("content = %q, want empty on error", content)
+	}
+	if meta != nil {
+		t.Fatalf("meta = %v, want nil on error", meta)
+	}
+	if !strings.Contains(err.Error(), "structured JSON") {
+		t.Fatalf("error = %q, want structured JSON detail", err)
+	}
+}
+
+func TestAdaptReviewPassOutputAcceptsStructuredJSON(t *testing.T) {
+	input := `{"findings":[],"summary":"review pass complete"}`
+
+	content, meta, err := adaptReviewPassOutput(&loom.Task{}, input)
+	if err != nil {
+		t.Fatalf("adaptReviewPassOutput: %v", err)
+	}
+	if content != input {
+		t.Fatalf("content = %q, want original JSON", content)
+	}
+	if len(meta) != 0 {
+		t.Fatalf("meta = %v, want empty map", meta)
 	}
 }

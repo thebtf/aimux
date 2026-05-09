@@ -1,7 +1,7 @@
 # aimux Production Testing Playbook
 
-**Last updated:** 2026-05-08
-**Tested surface:** v5.11.0 entry-point surface: 4 server tools, `task`,
+**Last updated:** 2026-05-09
+**Tested surface:** v5.11.1 hardening surface: 4 server tools, `task`,
 `think(action=start|step|finalize)`, and 22 cognitive move tools.
 **Mode:** customer (no internal code knowledge — operator perspective)
 
@@ -32,7 +32,7 @@ aggregate: PRODUCT_WORKS / PARTIALLY_WORKS / BROKEN.
 
 - Linux, macOS, or Windows host with a POSIX-like shell (bash, zsh, or PowerShell
   with `kill` shimmed).
-- Go 1.25.9+ available **only for the build step**. After the binary is produced,
+- Go 1.25.10+ available **only for the build step**. After the binary is produced,
   the operator should drop the toolchain assumption — only `./aimux`, `cat`,
   `kill`, and `mcp-launcher` (optional) are used.
 - Two unprivileged user accounts on the host with distinct numeric UIDs (used
@@ -49,7 +49,7 @@ aggregate: PRODUCT_WORKS / PARTIALLY_WORKS / BROKEN.
 From the project root:
 
 ```bash
-export GOTOOLCHAIN=go1.25.9
+export GOTOOLCHAIN=go1.25.10
 go build -o aimux ./cmd/aimux/
 ./aimux --version
 ```
@@ -333,7 +333,7 @@ v5.11.0 maintainer debug helper because the first-class
 6. Exercise the review gate replacement path:
    ```
    tool: task
-   args: {"task_class":"review","target":"HEAD","gate":true,"timeout_seconds":300,"project_id":"playbook-aimux21","request_id":"playbook-review-gate"}
+   args: {"task_class":"review","prompt":"review HEAD and return a gate decision","target":"HEAD","gate":true,"timeout_seconds":300,"project_id":"playbook-aimux21","request_id":"playbook-review-gate"}
    ```
 
 **Expected:**
@@ -653,7 +653,7 @@ installed-daemon paths.
      -mode install `
      -source D:\Dev\aimux\aimux-dev-next.exe `
      -force `
-     -expect-tools 27 `
+     -expect-tools 28 `
      -expect-version $mcpVersion `
      -timeout 30
    ```
@@ -669,7 +669,7 @@ installed-daemon paths.
   unsupported because `SessionHandler` mode has no transferable upstream
   process.
 - Reconnect verification reaches `sessions(action="health")`, reads
-  `aimux://health`, sees `tools: 27`, and reports the expected version.
+  `aimux://health`, sees `tools: 28`, and reports the expected version.
 - The final installer line is `[install] PASS`.
 - `aimux-dev.exe.old` may remain as the rollback backup created by the atomic
   replace path. Its presence is not a failure; a locked stale old-slot that

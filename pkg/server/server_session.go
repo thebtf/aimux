@@ -426,6 +426,7 @@ func (h *aimuxHandler) HandleRequestWithSessionMeta(
 	if meta.TenantID != "" && h.srv.dispatchMW != nil {
 		tc := tenant.TenantContext{
 			TenantID:         meta.TenantID,
+			Role:             h.srv.tenantRoleForID(meta.TenantID),
 			PeerUID:          meta.Conn.PeerUid,
 			SessionID:        project.ID,
 			RequestStartedAt: time.Now(),

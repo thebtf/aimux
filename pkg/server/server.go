@@ -57,10 +57,11 @@ import (
 var Version = build.Version
 
 // legacyInstructions is kept as fallback for proxy/shim mode where live state is unavailable.
-const legacyInstructions = `aimux — AI CLI Multiplexer (4 server tools + think harness + 22 cognitive moves, post Layer 5 purge)
+const legacyInstructions = `aimux — AI CLI Multiplexer (4 server tools + task + think harness + 22 cognitive moves, post Layer 5 purge)
 
-Reduced MCP surface: server state management, deep research via Gemini SDK,
-and structured reasoning via think(action=start|step|finalize) plus 22 dedicated cognitive move tools.
+Reduced MCP surface: server state management, code/review task routing, deep
+research via Gemini SDK, and structured reasoning via think(action=start|step|finalize)
+plus 22 dedicated cognitive move tools.
 
 ## Tool Selection — "I need to..."
 
@@ -68,6 +69,7 @@ and structured reasoning via think(action=start|step|finalize) plus 22 dedicated
 |---|---|---|
 | Check async job status | status | job_id |
 | Manage sessions | sessions | action (list/health/gc/cancel/kill/info/refresh-warmup) |
+| Route code/review work | task | task_class (code/review), prompt |
 | Caller-centered thinking workflow | think | action (start/step/finalize) |
 | Low-level cognitive move | <pattern_name> | 22 individual cognitive move tools |
 | Deep research via Gemini API | deepresearch | topic |
@@ -719,6 +721,7 @@ func (s *Server) registerTools() {
 				"Session status=aborted indicates the daemon restarted while this session had running jobs (SIGKILL/crash recovery). "+
 				"aborted_job_ids lists the job IDs that were aborted during that restart reconciliation. "+
 				"Task rows are served from Loom; legacy job rows are imported at startup and are not used as a fallback backend. "+
+				"Operator role is required for cancel, kill, gc, refresh-warmup, and all=true. "+
 				"Pass all=true to sessions(action=\"list\") to return a cross-engine global view (all daemons' tasks)."),
 			mcp.WithString("action",
 				mcp.Required(),
@@ -812,7 +815,7 @@ func (s *Server) registerTools() {
 				"action=check returns compact status fields (fits ~4k chars); release_notes are omitted by default (release_notes_length is reported). "+
 				"Use include_content=true to return the full release_notes body. "+
 				"action=apply with force=true re-runs the full upgrade pipeline even when already up-to-date. "+
-				"action=apply with source=<path> installs a local binary instead of downloading from GitHub (for dev iteration)."),
+				"action=apply requires operator role. source=<path> installs a local binary from a trusted source directory instead of downloading from GitHub (for dev iteration)."),
 			mcp.WithString("action",
 				mcp.Required(),
 				mcp.Description("Action: check (detect latest version) or apply (download and replace binary)"),
@@ -913,7 +916,13 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			return mcp.NewToolResultError(budgetErr.Error()), nil
 		}
 		statusFilter := request.GetString("status", "")
-		allSessions := s.sessions.List(types.SessionStatus(statusFilter))
+		allFlag := request.GetBool("all", false)
+		if allFlag {
+			if err := s.requireOperator(ctx, "sessions list all=true"); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+		}
+		allSessions := s.listSessionsForContext(ctx, types.SessionStatus(statusFilter))
 
 		jobCounts := s.countLoomBySession(ctx)
 		sessionBriefs := make([]SessionBrief, len(allSessions))
@@ -927,7 +936,6 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			}
 		}
 
-		allFlag := request.GetBool("all", false)
 		var allLoomTasks []*loom.Task
 		if s.loom != nil {
 			if allFlag {
@@ -1000,7 +1008,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if sessionID == "" {
 			return mcp.NewToolResultError("session_id required for info"), nil
 		}
-		sess := s.sessions.Get(sessionID)
+		sess := s.getSessionForContext(ctx, sessionID)
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
@@ -1034,11 +1042,14 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		if loomRunningErr != nil {
 			s.log.Warn("sessions health: loom running count failed: %v", loomRunningErr)
 		}
-		snap := s.metrics.Snapshot()
+		operator := s.isOperatorContext(ctx)
 		health := map[string]any{
-			"total_sessions": s.sessions.Count(),
+			"total_sessions": len(s.listSessionsForContext(ctx, "")),
 			"running_jobs":   loomRunning,
-			"per_project":    snap.PerProject,
+		}
+		if operator {
+			snap := s.metrics.Snapshot()
+			health["per_project"] = snap.PerProject
 		}
 		// Include Loom task counts when available.
 		if s.loom != nil {
@@ -1072,6 +1083,9 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		return marshalToolResult(health)
 
 	case "cancel":
+		if err := s.requireOperator(ctx, "sessions cancel"); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		jobID := request.GetString("job_id", "")
 		if jobID == "" {
 			return mcp.NewToolResultError("job_id required for cancel"), nil
@@ -1091,11 +1105,14 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError("job not found"), nil
 
 	case "kill":
+		if err := s.requireOperator(ctx, "sessions kill"); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		sessionID := request.GetString("session_id", "")
 		if sessionID == "" {
 			return mcp.NewToolResultError("session_id required for kill"), nil
 		}
-		sess := s.sessions.Get(sessionID)
+		sess := s.getSessionForContext(ctx, sessionID)
 		if sess == nil {
 			return mcp.NewToolResultError("session not found"), nil
 		}
@@ -1108,6 +1125,9 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultText(`{"status":"killed"}`), nil
 
 	case "gc":
+		if err := s.requireOperator(ctx, "sessions gc"); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		// Garbage collect expired sessions (idle > 1 hour)
 		collected := 0
 		for _, sess := range s.sessions.List("") {
@@ -1119,6 +1139,9 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		return marshalToolResult(map[string]any{"collected": collected})
 
 	case "refresh-warmup":
+		if err := s.requireOperator(ctx, "sessions refresh-warmup"); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		// Re-run CLI warmup probes and update registry availability.
 		// Returns refreshed=false (with reason) when warmup is disabled via env or config.
 		if os.Getenv("AIMUX_WARMUP") == "false" {
@@ -1385,6 +1408,9 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		return marshalToolResult(payload)
 
 	case "apply":
+		if err := s.requireOperator(ctx, "upgrade apply"); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		mode := upgrade.Mode(request.GetString("mode", string(upgrade.ModeAuto)))
 		if mode != upgrade.ModeAuto && mode != upgrade.ModeHotSwap && mode != upgrade.ModeDeferred {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid upgrade mode %q (use auto, hot_swap, or deferred)", mode)), nil

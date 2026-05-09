@@ -8,13 +8,14 @@ STACKS: [GO]
 
 ## Project Context
 
-aimux is an MCP server. After the v5.0.3 Layer 5 purge, the live MCP surface is
-**4 server tools + 1 caller-centered think harness + 22 cognitive move tools**:
+aimux is an MCP server. After AIMUX-21, the live MCP surface is
+**4 server tools + 1 task entry point + 1 caller-centered think harness + 22 cognitive move tools**:
 
 - `status` — async job status
 - `sessions` — session/job management (action: list/health/gc/cancel/kill/info/refresh-warmup)
 - `deepresearch` — Gemini SDK
 - `upgrade` — binary update (action: check/apply, mode: auto/hot_swap/deferred)
+- `task` — generic code/review entry point backed by Loom workers
 - `think` — caller-centered thinking harness (action: start/step/finalize)
 - 22 cognitive move tools (architecture_analysis, collaborative_reasoning, critical_thinking, debugging_approach, decision_framework, domain_modeling, experimental_loop, literature_review, mental_model, metacognitive_monitoring, peer_review, problem_decomposition, recursive_thinking, replication_analysis, research_synthesis, scientific_method, sequential_thinking, source_comparison, stochastic_algorithm, structured_argumentation, temporal_thinking, visual_reasoning)
 
@@ -181,8 +182,8 @@ $cliVersion = (.\aimux-dev-next.exe --version).Trim()
 $mcpVersion = if ($cliVersion -match '^aimux\s+(\S+)') { $Matches[1] } else { $cliVersion }
 
 # 2. Smoke test the new binary in isolation (must succeed before step 3)
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 27 -expect-version $mcpVersion
-#    Expect: "tools: 27" (4 server + 1 think harness + 22 cognitive moves).
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 28 -expect-version $mcpVersion
+#    Expect: "tools: 28" (4 server + task + 1 think harness + 22 cognitive moves).
 #    If handshake fails or count is wrong — DO NOT proceed.
 
 # 3. Clean any stale aimux-dev-next processes left by mcp-launcher
@@ -194,12 +195,12 @@ mcp__aimux-dev__upgrade(action="apply", source="D:/Dev/aimux/aimux-dev-next.exe"
 #    handoff_error="hot-swap unsupported: aimux muxcore SessionHandler mode has no transferable upstream process".
 
 # 4B. Codex/operator path when project-scoped MCP tools are unavailable
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode install -source .\aimux-dev-next.exe -force -expect-tools 27 -expect-version $mcpVersion
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode install -source .\aimux-dev-next.exe -force -expect-tools 28 -expect-version $mcpVersion
 #    Expect: [install] PASS after reconnect verification.
 
 # 5. Verify
 mcp__aimux-dev__sessions(action="health")     # daemon answers → upgrade landed
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode resource -uri aimux://health -expect-tools 27 -expect-version $mcpVersion
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode resource -uri aimux://health -expect-tools 28 -expect-version $mcpVersion
 .\aimux-dev.exe --version                      # version string matches step 1 output
 ```
 
