@@ -37,7 +37,9 @@ jobs:
           AIMUX21_E2E: "1"
         run: |
           set -euo pipefail
-          go test ./test/e2e -list 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' | grep -q '^TestE2E_'
+          matched_tests="$(go test ./test/e2e -list 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)')"
+          printf '%s\n' "$matched_tests"
+          grep -q '^TestE2E_' <<< "$matched_tests"
           go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
 
       - name: Loom module tests
