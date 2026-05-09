@@ -26,7 +26,10 @@ func (s *Server) isOperatorContext(ctx context.Context) bool {
 
 func (s *Server) tenantRoleForID(tenantID string) string {
 	if tenantID == "" || tenantID == tenant.LegacyDefault {
-		return tenant.RoleOperator
+		if s == nil || s.dispatchMW == nil || !s.dispatchMW.IsMultiTenant() {
+			return tenant.RoleOperator
+		}
+		return ""
 	}
 	if s != nil && s.dispatchMW != nil {
 		if cfg, ok := s.dispatchMW.ResolveTenantByName(tenantID); ok {

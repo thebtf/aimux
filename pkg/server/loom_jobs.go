@@ -17,7 +17,7 @@ func (s *Server) getLoomTask(ctx context.Context, taskID string) (*loom.Task, bo
 	if s == nil || s.loom == nil {
 		return nil, false, nil
 	}
-	if scoped, ok := TenantScopedLoomFromContext(ctx); ok {
+	if scoped, ok := TenantScopedLoomFromContext(ctx); ok && !s.isOperatorContext(ctx) {
 		task, err := scoped.Get(taskID)
 		if err == nil {
 			return task, true, nil
@@ -57,7 +57,7 @@ func (s *Server) listLoomTasksForContext(ctx context.Context, statuses ...loom.T
 		return nil, nil
 	}
 	projectID := projectIDFromContext(ctx)
-	if scoped, ok := TenantScopedLoomFromContext(ctx); ok {
+	if scoped, ok := TenantScopedLoomFromContext(ctx); ok && !s.isOperatorContext(ctx) {
 		if projectID != "" {
 			return scoped.List(projectID, statuses...)
 		}
@@ -108,7 +108,7 @@ func (s *Server) loomRunningCount(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	projectID := projectIDFromContext(ctx)
-	if scoped, ok := TenantScopedLoomFromContext(ctx); ok {
+	if scoped, ok := TenantScopedLoomFromContext(ctx); ok && !s.isOperatorContext(ctx) {
 		if projectID != "" {
 			tasks, err := scoped.List(projectID, loom.TaskStatusRunning)
 			return len(tasks), err

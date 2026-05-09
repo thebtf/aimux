@@ -322,10 +322,35 @@ func TestSessionsHealth_ScopesLoomRunningForTenantWithoutProjectContext(t *testi
 	}
 }
 
+func TestSessionsHealth_OperatorSeesAllLoomRunningWithoutProjectContext(t *testing.T) {
+	srv := testServerWithLoom(t)
+	submitBlockingLoomTaskForTenant(t, srv, "proj-health-a", "tenant-a")
+	submitBlockingLoomTaskForTenant(t, srv, "proj-health-b", "tenant-b")
+	ctx := tenantScopedNoProjectContextWithRole(srv, "operator-a", tenant.RoleOperator)
+
+	result, err := srv.handleSessions(ctx, makeRequest("sessions", map[string]any{
+		"action": "health",
+	}))
+	if err != nil {
+		t.Fatalf("handleSessions health: %v", err)
+	}
+	data := parseResult(t, result)
+	if data["running_jobs"] != float64(2) {
+		t.Fatalf("running_jobs = %v, want 2", data["running_jobs"])
+	}
+	if data["loom_tasks"] != float64(2) {
+		t.Fatalf("loom_tasks = %v, want 2", data["loom_tasks"])
+	}
+}
+
 func tenantScopedNoProjectContext(srv *Server, tenantID string) context.Context {
+	return tenantScopedNoProjectContextWithRole(srv, tenantID, tenant.RolePlain)
+}
+
+func tenantScopedNoProjectContextWithRole(srv *Server, tenantID, role string) context.Context {
 	ctx := tenant.WithContext(context.Background(), tenant.TenantContext{
 		TenantID: tenantID,
-		Role:     tenant.RolePlain,
+		Role:     role,
 	})
 	return context.WithValue(ctx, tenantScopedLoomKey{}, loom.NewTenantScopedEngine(srv.loom, tenantID, nil))
 }
@@ -355,6 +380,33 @@ func TestSessionsInfo_IncludesLoomTasksBySessionMetadata(t *testing.T) {
 		}
 	}
 	t.Fatalf("sessions info did not include loom task %s: %v", taskID, jobs)
+}
+
+func TestSessionsInfo_OperatorSeesLoomTasksForOtherTenantSession(t *testing.T) {
+	srv := testServerWithLoom(t)
+	importSession(t, srv, "tenant-a-session", "tenant-a")
+	taskID, _ := submitBlockingLoomTaskWithTenant(t, srv, "proj-info-a", "tenant-a-session", "tenant-a")
+	ctx := tenantScopedNoProjectContextWithRole(srv, "operator-a", tenant.RoleOperator)
+
+	result, err := srv.handleSessions(ctx, makeRequest("sessions", map[string]any{
+		"action":     "info",
+		"session_id": "tenant-a-session",
+	}))
+	if err != nil {
+		t.Fatalf("handleSessions info: %v", err)
+	}
+	data := parseResult(t, result)
+	jobs, ok := data["jobs"].([]any)
+	if !ok {
+		t.Fatalf("jobs type = %T, want []any", data["jobs"])
+	}
+	for _, raw := range jobs {
+		job := raw.(map[string]any)
+		if job["id"] == taskID {
+			return
+		}
+	}
+	t.Fatalf("operator info did not include other tenant task %s: %v", taskID, jobs)
 }
 
 func TestSessionsKill_FailsLoomTasksBySessionMetadata(t *testing.T) {

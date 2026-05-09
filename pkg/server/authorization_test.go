@@ -127,6 +127,25 @@ func TestUpgradeApplyRequiresOperator(t *testing.T) {
 	}
 }
 
+func TestTenantRoleForID_DoesNotPromoteLegacyDefaultInMultiTenantMode(t *testing.T) {
+	srv := testServer(t)
+	reg := tenant.NewRegistry()
+	reg.Swap(tenant.NewSnapshot(map[int]tenant.TenantConfig{
+		1001: {Name: "tenant-a", UID: 1001, Role: tenant.RolePlain},
+	}))
+	srv.dispatchMW = NewDispatchMiddleware(reg, discardAuditLog{})
+
+	if got := srv.tenantRoleForID(tenant.LegacyDefault); got != "" {
+		t.Fatalf("legacy-default role in multi-tenant mode = %q, want empty deny role", got)
+	}
+	if got := srv.tenantRoleForID(""); got != "" {
+		t.Fatalf("empty tenant role in multi-tenant mode = %q, want empty deny role", got)
+	}
+	if got := srv.tenantRoleForID("tenant-a"); got != tenant.RolePlain {
+		t.Fatalf("tenant-a role = %q, want %q", got, tenant.RolePlain)
+	}
+}
+
 func importSession(t *testing.T, srv *Server, id, tenantID string) {
 	t.Helper()
 	now := time.Now()

@@ -30,17 +30,11 @@ package e2e
 //	  process, not the shim. Since fsnotify does not expose the originating PID,
 //	  we cannot filter by PID directly.
 //
-//	  Mitigation applied: shimActive flag gates event counting to the exact
-//	  window between shim spawn and shim exit. The shim performs 3 lightweight
-//	  tools/list requests that do not touch SQLite in a correct implementation.
-//	  The window is < 2 seconds. WAL auto-checkpoint fires every 1000 pages
-//	  written (default) — unlikely during a 2-second idle window after daemon
-//	  startup is complete and no new writes are occurring.
-//
-//	  If a daemon WAL checkpoint false-positive is observed in CI:
-//	    TODO(UR-2): investigate if muxcore exposes a "shim connected" callback
-//	    to narrow the measurement window further. Tracked as AIMUX-6 spec open
-//	    question UR-2 (not yet filed as of 2026-04-21).
+//	  Mitigation applied: this test forces eager stdin-EOF exit and gates event
+//	  counting to the window between shim spawn and shim exit. The shim performs
+//	  3 lightweight tools/list requests that do not touch SQLite in a correct
+//	  implementation. The bounded window avoids counting daemon-side WAL events
+//	  that can occur after the client already closed stdin.
 //
 //	Linux (inotify backend):
 //	  Inotify delivers events per-inode with no WAL checkpoint false positives
@@ -231,16 +225,21 @@ func TestShim_NoSQLiteWrites(t *testing.T) {
 	shimEnv := append(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,
 		"AIMUX_ENGINE_NAME="+engineName,
+		// Bound the assertion window to request handling. The default
+		// wait-for-disconnect policy can keep the shim alive after stdin EOF,
+		// letting daemon-side SQLite WAL housekeeping create false positives.
+		"AIMUX_STDIN_EOF_POLICY=eager",
 	)
 
 	shimStdinR, shimStdinW, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("shim stdin pipe: %v", err)
 	}
-	defer shimStdinR.Close()
 
 	shimStdoutR, shimStdoutW, err := os.Pipe()
 	if err != nil {
+		shimStdinR.Close()
+		shimStdinW.Close()
 		t.Fatalf("shim stdout pipe: %v", err)
 	}
 	defer shimStdoutR.Close()
@@ -252,6 +251,10 @@ func TestShim_NoSQLiteWrites(t *testing.T) {
 
 	shimStderrR, shimStderrW, err := os.Pipe()
 	if err != nil {
+		shimStdinR.Close()
+		shimStdinW.Close()
+		shimStdoutR.Close()
+		shimStdoutW.Close()
 		t.Fatalf("shim stderr pipe: %v", err)
 	}
 	shimCmd.Stderr = shimStderrW
@@ -264,6 +267,8 @@ func TestShim_NoSQLiteWrites(t *testing.T) {
 		shimStderrW.Close()
 		t.Fatalf("start shim: %v", err)
 	}
+	// Parent closes child-side ends after Start.
+	shimStdinR.Close()
 	shimStdoutW.Close() // parent closes write-end so our reads can detect EOF
 	shimStderrW.Close()
 	go forwardLines(t, shimStderrR, "[shim stderr]")
