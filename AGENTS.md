@@ -24,7 +24,8 @@ Pre-purge CLI-launching tools (exec, agent, agents, critique, investigate, conse
 ## Mission & Principles
 
 Canonical project constitution: `.agent/specs/constitution.md` (v1.0.0,
-ratified 2026-05-08).
+ratified 2026-05-08). The specbook is repo-local and ignored; if it is absent
+in a fresh checkout, this section is the authoritative public summary.
 
 aimux is a vertical-specialist autonomous agent: it executes a narrow set of
 high-value engineering tasks (think, prompt, code, review, research, spec) at a
@@ -32,8 +33,8 @@ top-quality bar through compiled code-behind, not through runtime hooks,
 plugins, or YAML-configurable workflows. AIMUX-21 implements the entry-point
 convergence rule: public MCP tools are methodology-bearing task entries, not
 CLI-specific prompt-forwarding functions. Code-class tasks must follow mandatory
-Strong-Style pair coding: a driver produces the diff, and a cross-family
-navigator reviews before apply.
+aimux Constitution's Strong-Style pair coding: a read-only driver produces the
+diff, and a cross-family navigator reviews it before apply.
 
 ## Agent Instructions
 
