@@ -22,13 +22,6 @@ jobs:
         with:
           go-version: '1.25.10'
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install AIMUX-21 real CLI dependencies
-        run: npm install -g @openai/codex @anthropic-ai/claude-code
-
       - name: Build
         run: go build ./...
 
@@ -38,24 +31,14 @@ jobs:
       - name: Critical suite
         run: go test ./tests/critical -count=1 -timeout 300s
 
-      - name: AIMUX-21 product gate
+      # CodeEntry is intentionally excluded: it requires real vendor CLIs and stays outside the deterministic tag gate.
+      - name: AIMUX-21 deterministic product gate
         env:
           AIMUX21_E2E: "1"
-          AIMUX21_REQUIRE_REAL_CLIS: "1"
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -z "${OPENAI_API_KEY}" ]; then
-            echo "::error::OPENAI_API_KEY secret is required for AIMUX-21 real Codex release gate"
-            exit 1
-          fi
-          if [ -z "${ANTHROPIC_API_KEY}" ]; then
-            echo "::error::ANTHROPIC_API_KEY secret is required for AIMUX-21 real Claude release gate"
-            exit 1
-          fi
-          codex --version
-          claude --version
-          go test ./test/e2e -run 'TestE2E_(AIMUX21|CodeEntry|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
+          set -euo pipefail
+          go test ./test/e2e -list 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' | grep -q '^TestE2E_'
+          go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
 
       - name: Loom module tests
         working-directory: loom

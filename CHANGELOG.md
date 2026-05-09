@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed the tag release workflow so it runs deterministic release gates without
+  requiring private OpenAI or Anthropic account secrets.
+
 ## [5.11.1] — 2026-05-09 — Security and release hardening
 
 Patch release hardening for the v5.11.0 AIMUX-21 surface after production
@@ -29,9 +32,9 @@ readiness review.
 
 ### Release Hygiene
 
-- Release workflow now runs build, full Go tests, critical suite, gated AIMUX-21
-  e2e product tests, Loom module tests, `go vet`, `go mod verify`, and
-  `govulncheck` before GoReleaser publishes artifacts.
+- Release workflow now runs build, full Go tests, critical suite, deterministic
+  AIMUX-21 e2e product test subset, Loom module tests, `go vet`,
+  `go mod verify`, and `govulncheck` before GoReleaser publishes artifacts.
 - README, operator notes, live MCP instructions, and production playbook now
   document the 28-tool v5.11 surface including `task`.
 - Production playbook Scenario B6 now includes the required `prompt` parameter

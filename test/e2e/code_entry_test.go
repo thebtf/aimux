@@ -162,7 +162,7 @@ func requireOnPATH(t *testing.T, name string) {
 		if os.Getenv("AIMUX21_REQUIRE_REAL_CLIS") == "1" {
 			t.Fatalf("%s not found on PATH; AIMUX21_REQUIRE_REAL_CLIS=1 requires real CLI coverage", name)
 		}
-		t.Skipf("%s not found on PATH - skipping real code entry e2e", name)
+		t.Skipf("%s not found on PATH (%v) - skipping real code entry e2e", name, err)
 	}
 }
 
