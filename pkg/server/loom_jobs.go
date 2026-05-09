@@ -57,13 +57,33 @@ func (s *Server) listLoomTasksForContext(ctx context.Context, statuses ...loom.T
 		return nil, nil
 	}
 	projectID := projectIDFromContext(ctx)
-	if scoped, ok := TenantScopedLoomFromContext(ctx); ok && projectID != "" {
-		return scoped.List(projectID, statuses...)
+	if scoped, ok := TenantScopedLoomFromContext(ctx); ok {
+		if projectID != "" {
+			return scoped.List(projectID, statuses...)
+		}
+		return s.listLoomEngineForTenant(scoped.TenantID(), statuses...)
 	}
 	if projectID != "" {
 		return s.loom.List(projectID, statuses...)
 	}
 	return s.loom.ListEngine(statuses...)
+}
+
+func (s *Server) listLoomEngineForTenant(tenantID string, statuses ...loom.TaskStatus) ([]*loom.Task, error) {
+	if tenantID == "" {
+		return nil, nil
+	}
+	tasks, err := s.loom.ListEngine(statuses...)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*loom.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if task.TenantID == tenantID {
+			out = append(out, task)
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) countLoomBySession(ctx context.Context) map[string]int {
@@ -88,8 +108,12 @@ func (s *Server) loomRunningCount(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	projectID := projectIDFromContext(ctx)
-	if scoped, ok := TenantScopedLoomFromContext(ctx); ok && projectID != "" {
-		tasks, err := scoped.List(projectID, loom.TaskStatusRunning)
+	if scoped, ok := TenantScopedLoomFromContext(ctx); ok {
+		if projectID != "" {
+			tasks, err := scoped.List(projectID, loom.TaskStatusRunning)
+			return len(tasks), err
+		}
+		tasks, err := s.listLoomEngineForTenant(scoped.TenantID(), loom.TaskStatusRunning)
 		return len(tasks), err
 	}
 	if projectID != "" {

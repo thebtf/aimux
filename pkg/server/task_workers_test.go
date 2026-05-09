@@ -103,6 +103,9 @@ func TestAdaptReviewPassOutputAcceptsStructuredJSON(t *testing.T) {
 	if content != input {
 		t.Fatalf("content = %q, want original JSON", content)
 	}
+	if meta == nil {
+		t.Fatal("meta is nil, want empty map")
+	}
 	if len(meta) != 0 {
 		t.Fatalf("meta = %v, want empty map", meta)
 	}

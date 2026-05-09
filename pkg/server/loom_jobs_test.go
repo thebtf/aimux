@@ -14,6 +14,7 @@ import (
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/mcp-mux/muxcore"
 	_ "modernc.org/sqlite"
@@ -269,6 +270,64 @@ func TestSessionsList_IncludesLoomTasksWithoutProjectContext(t *testing.T) {
 		}
 	}
 	t.Fatalf("sessions list did not include loom task %s: %v", taskID, loomTasks)
+}
+
+func TestSessionsList_ScopesLoomTasksForTenantWithoutProjectContext(t *testing.T) {
+	srv := testServerWithLoom(t)
+	tenantATaskID, _ := submitBlockingLoomTaskForTenant(t, srv, "proj-tenant-a", "tenant-a")
+	tenantBTaskID, _ := submitBlockingLoomTaskForTenant(t, srv, "proj-tenant-b", "tenant-b")
+	ctx := tenantScopedNoProjectContext(srv, "tenant-a")
+
+	result, err := srv.handleSessions(ctx, makeRequest("sessions", map[string]any{
+		"action": "list",
+	}))
+	if err != nil {
+		t.Fatalf("handleSessions list: %v", err)
+	}
+	data := parseResult(t, result)
+	loomTasks, ok := data["loom_tasks"].([]any)
+	if !ok {
+		t.Fatalf("loom_tasks type = %T, want []any", data["loom_tasks"])
+	}
+	if len(loomTasks) != 1 {
+		t.Fatalf("loom_tasks length = %d, want 1; tasks=%v", len(loomTasks), loomTasks)
+	}
+	row := loomTasks[0].(map[string]any)
+	if row["id"] != tenantATaskID {
+		t.Fatalf("visible loom task = %v, want %s", row["id"], tenantATaskID)
+	}
+	if row["id"] == tenantBTaskID {
+		t.Fatalf("tenant-b task leaked into tenant-a list: %v", loomTasks)
+	}
+}
+
+func TestSessionsHealth_ScopesLoomRunningForTenantWithoutProjectContext(t *testing.T) {
+	srv := testServerWithLoom(t)
+	submitBlockingLoomTaskForTenant(t, srv, "proj-health-a", "tenant-a")
+	submitBlockingLoomTaskForTenant(t, srv, "proj-health-b", "tenant-b")
+	ctx := tenantScopedNoProjectContext(srv, "tenant-a")
+
+	result, err := srv.handleSessions(ctx, makeRequest("sessions", map[string]any{
+		"action": "health",
+	}))
+	if err != nil {
+		t.Fatalf("handleSessions health: %v", err)
+	}
+	data := parseResult(t, result)
+	if data["running_jobs"] != float64(1) {
+		t.Fatalf("running_jobs = %v, want 1", data["running_jobs"])
+	}
+	if data["loom_tasks"] != float64(1) {
+		t.Fatalf("loom_tasks = %v, want 1", data["loom_tasks"])
+	}
+}
+
+func tenantScopedNoProjectContext(srv *Server, tenantID string) context.Context {
+	ctx := tenant.WithContext(context.Background(), tenant.TenantContext{
+		TenantID: tenantID,
+		Role:     tenant.RolePlain,
+	})
+	return context.WithValue(ctx, tenantScopedLoomKey{}, loom.NewTenantScopedEngine(srv.loom, tenantID, nil))
 }
 
 func TestSessionsInfo_IncludesLoomTasksBySessionMetadata(t *testing.T) {
