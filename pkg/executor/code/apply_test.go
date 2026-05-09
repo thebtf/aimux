@@ -96,6 +96,27 @@ func TestWriteDiffPreservesTopLevelADirectory(t *testing.T) {
 	assertProjectFile(t, root, "foo.txt", "old\n")
 }
 
+func TestWriteDiffUnsupportedFileModeRejected(t *testing.T) {
+	root := t.TempDir()
+
+	diff := `diff --git a/link b/link
+new file mode 120000
+index 0000000..1111111
+--- /dev/null
++++ b/link
+@@ -0,0 +1 @@
++target
+`
+	_, _, err := WriteDiff(context.Background(), diff, Project{CWD: root})
+	if err == nil {
+		t.Fatal("WriteDiff returned nil, want unsupported file mode error")
+	}
+	if !strings.Contains(err.Error(), "unsupported file mode") {
+		t.Fatalf("WriteDiff error = %v, want unsupported file mode", err)
+	}
+	assertPathMissing(t, filepath.Join(root, "link"))
+}
+
 func writeProjectFile(t *testing.T, root string, rel string, content string) {
 	t.Helper()
 	path := filepath.Join(root, rel)
