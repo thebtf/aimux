@@ -119,6 +119,7 @@ func DefaultRunner() SubprocessRunner { return execRunner{} }
 // stdout and stderr are merged into a single output buffer.
 func (execRunner) Run(ctx context.Context, spawn SubprocessSpawn) (string, int, error) {
 	cmd := exec.CommandContext(ctx, spawn.Command, spawn.Args...)
+	configureSubprocessCancellation(cmd)
 	if spawn.CWD != "" {
 		cmd.Dir = spawn.CWD
 	}
