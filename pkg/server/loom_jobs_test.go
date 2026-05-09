@@ -14,6 +14,7 @@ import (
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/mcp-mux/muxcore"
 	_ "modernc.org/sqlite"
@@ -271,6 +272,146 @@ func TestSessionsList_IncludesLoomTasksWithoutProjectContext(t *testing.T) {
 	t.Fatalf("sessions list did not include loom task %s: %v", taskID, loomTasks)
 }
 
+func TestSessionsList_ScopesLoomTasksForTenantWithoutProjectContext(t *testing.T) {
+	srv := testServerWithLoom(t)
+	tenantATaskID, _ := submitBlockingLoomTaskForTenant(t, srv, "proj-tenant-a", "tenant-a")
+	tenantBTaskID, _ := submitBlockingLoomTaskForTenant(t, srv, "proj-tenant-b", "tenant-b")
+	ctx := tenantScopedNoProjectContext(srv, "tenant-a")
+
+	result, err := srv.handleSessions(ctx, makeRequest("sessions", map[string]any{
+		"action": "list",
+	}))
+	if err != nil {
+		t.Fatalf("handleSessions list: %v", err)
+	}
+	data := parseResult(t, result)
+	loomTasks, ok := data["loom_tasks"].([]any)
+	if !ok {
+		t.Fatalf("loom_tasks type = %T, want []any", data["loom_tasks"])
+	}
+	if len(loomTasks) != 1 {
+		t.Fatalf("loom_tasks length = %d, want 1; tasks=%v", len(loomTasks), loomTasks)
+	}
+	row := loomTasks[0].(map[string]any)
+	if row["id"] != tenantATaskID {
+		t.Fatalf("visible loom task = %v, want %s", row["id"], tenantATaskID)
+	}
+	if row["id"] == tenantBTaskID {
+		t.Fatalf("tenant-b task leaked into tenant-a list: %v", loomTasks)
+	}
+}
+
+func TestSessionsHealth_ScopesLoomRunningForTenantWithoutProjectContext(t *testing.T) {
+	srv := testServerWithLoom(t)
+	submitBlockingLoomTaskForTenant(t, srv, "proj-health-a", "tenant-a")
+	submitBlockingLoomTaskForTenant(t, srv, "proj-health-b", "tenant-b")
+	ctx := tenantScopedNoProjectContext(srv, "tenant-a")
+
+	result, err := srv.handleSessions(ctx, makeRequest("sessions", map[string]any{
+		"action": "health",
+	}))
+	if err != nil {
+		t.Fatalf("handleSessions health: %v", err)
+	}
+	data := parseResult(t, result)
+	if data["running_jobs"] != float64(1) {
+		t.Fatalf("running_jobs = %v, want 1", data["running_jobs"])
+	}
+	if data["loom_tasks"] != float64(1) {
+		t.Fatalf("loom_tasks = %v, want 1", data["loom_tasks"])
+	}
+}
+
+func TestSessionsHealth_OperatorSeesAllLoomRunningWithoutProjectContext(t *testing.T) {
+	srv := testServerWithLoom(t)
+	submitBlockingLoomTaskForTenant(t, srv, "proj-health-a", "tenant-a")
+	submitBlockingLoomTaskForTenant(t, srv, "proj-health-b", "tenant-b")
+	ctx := tenantScopedNoProjectContextWithRole(srv, "operator-a", tenant.RoleOperator)
+
+	result, err := srv.handleSessions(ctx, makeRequest("sessions", map[string]any{
+		"action": "health",
+	}))
+	if err != nil {
+		t.Fatalf("handleSessions health: %v", err)
+	}
+	data := parseResult(t, result)
+	if data["running_jobs"] != float64(2) {
+		t.Fatalf("running_jobs = %v, want 2", data["running_jobs"])
+	}
+	if data["loom_tasks"] != float64(2) {
+		t.Fatalf("loom_tasks = %v, want 2", data["loom_tasks"])
+	}
+}
+
+func TestLoomTenantScope_DerivesScopedEngineWhenMissingFromContext(t *testing.T) {
+	srv := testServerWithLoom(t)
+	srv.dispatchMW = NewDispatchMiddleware(multiTenantRegistryWithTenants(t, "tenant-a", "tenant-b"), nil)
+	tenantATaskID, _ := submitBlockingLoomTaskForTenant(t, srv, "proj-derived-a", "tenant-a")
+	tenantBTaskID, _ := submitBlockingLoomTaskForTenant(t, srv, "proj-derived-b", "tenant-b")
+	ctx := tenant.WithContext(context.Background(), tenant.TenantContext{
+		TenantID: "tenant-a",
+		Role:     tenant.RolePlain,
+	})
+
+	tasks, err := srv.listLoomTasksForContext(ctx)
+	if err != nil {
+		t.Fatalf("listLoomTasksForContext returned error: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != tenantATaskID {
+		t.Fatalf("tenant-a visible tasks = %#v, want only %s", tasks, tenantATaskID)
+	}
+	if tasks[0].ID == tenantBTaskID {
+		t.Fatalf("tenant-b task leaked into tenant-a scope: %#v", tasks)
+	}
+
+	running, err := srv.loomRunningCount(ctx)
+	if err != nil {
+		t.Fatalf("loomRunningCount returned error: %v", err)
+	}
+	if running != 1 {
+		t.Fatalf("loomRunningCount = %d, want 1", running)
+	}
+}
+
+func TestLoomTenantScope_FailsClosedWhenTenantContextMissing(t *testing.T) {
+	srv := testServerWithLoom(t)
+	srv.dispatchMW = NewDispatchMiddleware(multiTenantRegistryWithTenants(t, "tenant-a"), nil)
+	submitBlockingLoomTaskForTenant(t, srv, "proj-missing-context", "tenant-a")
+
+	if tasks, err := srv.listLoomTasksForContext(context.Background()); err == nil {
+		t.Fatalf("listLoomTasksForContext err = nil tasks=%#v, want fail-closed error", tasks)
+	}
+	if running, err := srv.loomRunningCount(context.Background()); err == nil {
+		t.Fatalf("loomRunningCount err = nil running=%d, want fail-closed error", running)
+	}
+}
+
+func multiTenantRegistryWithTenants(t *testing.T, names ...string) *tenant.TenantRegistry {
+	t.Helper()
+	entries := make(map[int]tenant.TenantConfig, len(names))
+	for i, name := range names {
+		entries[1001+i] = tenant.TenantConfig{Name: name, UID: 1001 + i, Role: tenant.RolePlain}
+	}
+	reg := tenant.NewRegistry()
+	reg.Swap(tenant.NewSnapshot(entries))
+	if !reg.IsMultiTenant() {
+		t.Fatal("test setup: expected multi-tenant registry")
+	}
+	return reg
+}
+
+func tenantScopedNoProjectContext(srv *Server, tenantID string) context.Context {
+	return tenantScopedNoProjectContextWithRole(srv, tenantID, tenant.RolePlain)
+}
+
+func tenantScopedNoProjectContextWithRole(srv *Server, tenantID, role string) context.Context {
+	ctx := tenant.WithContext(context.Background(), tenant.TenantContext{
+		TenantID: tenantID,
+		Role:     role,
+	})
+	return context.WithValue(ctx, tenantScopedLoomKey{}, loom.NewTenantScopedEngine(srv.loom, tenantID, nil))
+}
+
 func TestSessionsInfo_IncludesLoomTasksBySessionMetadata(t *testing.T) {
 	srv := testServerWithLoom(t)
 	ctx, projectID := projectCtxAndID("proj-info")
@@ -296,6 +437,33 @@ func TestSessionsInfo_IncludesLoomTasksBySessionMetadata(t *testing.T) {
 		}
 	}
 	t.Fatalf("sessions info did not include loom task %s: %v", taskID, jobs)
+}
+
+func TestSessionsInfo_OperatorSeesLoomTasksForOtherTenantSession(t *testing.T) {
+	srv := testServerWithLoom(t)
+	importSession(t, srv, "tenant-a-session", "tenant-a")
+	taskID, _ := submitBlockingLoomTaskWithTenant(t, srv, "proj-info-a", "tenant-a-session", "tenant-a")
+	ctx := tenantScopedNoProjectContextWithRole(srv, "operator-a", tenant.RoleOperator)
+
+	result, err := srv.handleSessions(ctx, makeRequest("sessions", map[string]any{
+		"action":     "info",
+		"session_id": "tenant-a-session",
+	}))
+	if err != nil {
+		t.Fatalf("handleSessions info: %v", err)
+	}
+	data := parseResult(t, result)
+	jobs, ok := data["jobs"].([]any)
+	if !ok {
+		t.Fatalf("jobs type = %T, want []any", data["jobs"])
+	}
+	for _, raw := range jobs {
+		job := raw.(map[string]any)
+		if job["id"] == taskID {
+			return
+		}
+	}
+	t.Fatalf("operator info did not include other tenant task %s: %v", taskID, jobs)
 }
 
 func TestSessionsKill_FailsLoomTasksBySessionMetadata(t *testing.T) {

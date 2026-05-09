@@ -23,6 +23,10 @@ type TenantContext struct {
 	// Use LegacyDefault when operating in single-tenant mode.
 	TenantID string
 
+	// Role is the tenant authorization role. Operator tenants may invoke
+	// management tools; plain tenants are limited to standard request paths.
+	Role string
+
 	// PeerUID is the OS UID of the connecting peer (from SO_PEERCRED / getpeereid).
 	// Zero value (0) is treated as unenrolled on non-Windows platforms.
 	PeerUID int
@@ -42,6 +46,7 @@ type TenantContext struct {
 func NewDaemonContext() TenantContext {
 	return TenantContext{
 		TenantID:         daemonInternalScope,
+		Role:             RoleOperator,
 		RequestStartedAt: time.Now(),
 	}
 }
@@ -56,6 +61,7 @@ func NewDaemonContext() TenantContext {
 func NewLegacyDefaultContext(sessionID string) TenantContext {
 	return TenantContext{
 		TenantID:         LegacyDefault,
+		Role:             RoleOperator,
 		SessionID:        sessionID,
 		RequestStartedAt: time.Now(),
 	}

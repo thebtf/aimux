@@ -19,7 +19,7 @@ var ErrTenantUnenrolled = errors.New("tenant unenrolled — multi-tenant registr
 // discardAuditLog is the canonical no-op AuditLog used when the audit file
 // cannot be opened at daemon startup. Events are silently dropped; a startup
 // warning is logged by the caller. Local alias to audit.DiscardLog — kept
-// for backward compatibility со существующими callsites в pkg/server/server.go.
+// for backward compatibility with existing call sites in pkg/server/server.go.
 type discardAuditLog = audit.DiscardLog
 
 // TenantContextFromContext retrieves the TenantContext injected by DispatchMiddleware.
@@ -110,10 +110,21 @@ func (m *DispatchMiddleware) ResolveContext(sessionID string, peerUID int) (tena
 
 	return tenant.TenantContext{
 		TenantID:         cfg.Name,
+		Role:             cfg.Role,
 		PeerUID:          peerUID,
 		SessionID:        sessionID,
 		RequestStartedAt: time.Now(),
 	}, nil
+}
+
+// ResolveTenantByName returns the current tenant config for a resolved tenant ID.
+// It is used when muxcore passes only SessionMeta.TenantID on an already
+// authorised session and tool-level policy still needs the role.
+func (m *DispatchMiddleware) ResolveTenantByName(name string) (tenant.TenantConfig, bool) {
+	if m == nil || m.registry == nil {
+		return tenant.TenantConfig{}, false
+	}
+	return m.registry.ResolveByName(name)
 }
 
 // WithContext returns a new context with tc stored under the tenant context key.

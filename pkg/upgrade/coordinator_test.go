@@ -661,6 +661,122 @@ func TestCoordinator_ApplyFromLocal_SourceIsDirectory(t *testing.T) {
 	}
 }
 
+func TestCoordinator_ApplyFromLocal_RejectsSourceOutsideTrustedDirs(t *testing.T) {
+	binDir := t.TempDir()
+	sourceDir := t.TempDir()
+	binaryPath := filepath.Join(binDir, "aimux.exe")
+	sourcePath := filepath.Join(sourceDir, "aimux-next.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		BinaryPath: binaryPath,
+		Source:     sourcePath,
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false)
+	if err == nil {
+		t.Fatal("expected source outside trusted directories to be denied")
+	}
+	if !strings.Contains(err.Error(), "outside trusted upgrade directories") {
+		t.Fatalf("error = %q, want trusted directory denial", err)
+	}
+}
+
+func TestCoordinator_ApplyFromLocal_RejectsSymlinkToSourceOutsideTrustedDirs(t *testing.T) {
+	binDir := t.TempDir()
+	sourceDir := t.TempDir()
+	binaryPath := filepath.Join(binDir, "aimux.exe")
+	outsideSource := filepath.Join(sourceDir, "aimux-next.exe")
+	sourceLink := filepath.Join(binDir, "aimux-next.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(outsideSource, []byte("v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+	if err := os.Symlink(outsideSource, sourceLink); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		BinaryPath: binaryPath,
+		Source:     sourceLink,
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false)
+	if err == nil {
+		t.Fatal("expected symlinked source outside trusted directories to be denied")
+	}
+	if !strings.Contains(err.Error(), "outside trusted upgrade directories") {
+		t.Fatalf("error = %q, want trusted directory denial", err)
+	}
+}
+
+func TestCoordinator_ApplyFromLocal_AllowsConfiguredStagingDir(t *testing.T) {
+	binDir := t.TempDir()
+	stagingDir := t.TempDir()
+	t.Setenv("AIMUX_UPGRADE_SOURCE_DIR", stagingDir)
+	binaryPath := filepath.Join(binDir, "aimux.exe")
+	sourcePath := filepath.Join(stagingDir, "aimux-next.exe")
+	sourceContent := []byte("v2")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, sourceContent, 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		BinaryPath: binaryPath,
+		Source:     sourcePath,
+	}
+
+	if _, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("ReadFile binary after apply: %v", err)
+	}
+	if string(got) != string(sourceContent) {
+		t.Fatalf("binary content = %q, want %q", got, sourceContent)
+	}
+}
+
+func TestCoordinator_ApplyFromLocal_RejectsExtensionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	sourcePath := filepath.Join(dir, "aimux-next.bin")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		BinaryPath: binaryPath,
+		Source:     sourcePath,
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false)
+	if err == nil {
+		t.Fatal("expected extension mismatch to be denied")
+	}
+	if !strings.Contains(err.Error(), "extension") {
+		t.Fatalf("error = %q, want extension detail", err)
+	}
+}
+
 func runApplyAndReadSingleLogLine(t *testing.T, buildCoordinator func(*logger.Logger) *upgrade.Coordinator, runApply func(*upgrade.Coordinator)) string {
 	t.Helper()
 

@@ -269,18 +269,10 @@ func adaptReviewPassOutput(task *loom.Task, parsed string) (string, map[string]a
 	}
 
 	pass := reviewPassFromTask(task)
-	summary := fmt.Sprintf("%s review completed with no structured findings", pass)
-	if trimmed != "" {
-		summary = fmt.Sprintf("%s review completed; CLI output captured (%d bytes)", pass, len(trimmed))
-	}
-	content, err := json.Marshal(map[string]any{
-		"findings": []review.Finding{},
-		"summary":  summary,
-	})
-	if err != nil {
-		return "", nil, extypes.NewUnknown("review pass serialization failed", err)
-	}
-	return string(content), map[string]any{"review_pass": string(pass)}, nil
+	return "", nil, extypes.NewUserInputError(
+		fmt.Sprintf("%s review pass output must be structured JSON with a non-empty summary", pass),
+		nil,
+	)
 }
 
 func adaptNavigatorOutput(_ *loom.Task, parsed string) (string, map[string]any, error) {

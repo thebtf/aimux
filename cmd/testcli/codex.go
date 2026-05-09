@@ -55,8 +55,7 @@ func runCodex() int {
 	// Stderr diagnostics (matching codex stderr discipline)
 	toStderr("codex exec: model=%s", *model)
 
-	// Generate response text (echo prompt back with wrapper)
-	response := fmt.Sprintf("Codex response to: %s", prompt)
+	response := codexResponse(prompt)
 
 	if *jsonMode {
 		return codexJSONL(response)
@@ -115,6 +114,13 @@ func codexJSONL(response string) int {
 	toStderr("Tokens: 42 input, 17 output")
 
 	return 0
+}
+
+func codexResponse(prompt string) string {
+	if strings.Contains(prompt, "Return raw JSON only:") && strings.Contains(prompt, `"findings"`) {
+		return `{"findings":[],"summary":"testcli review pass complete"}`
+	}
+	return fmt.Sprintf("Codex response to: %s", prompt)
 }
 
 // codexHuman emits human-readable output matching codex default (non-JSON) mode.

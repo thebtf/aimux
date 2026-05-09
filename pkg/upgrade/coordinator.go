@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -25,6 +26,8 @@ const (
 	defaultApplyModeMessage            = "Binary updated. Restart aimux to load the new version."
 	defaultGracefulRestartDrainTimeout = 10000
 	defaultControlRequestTimeout       = 45 * time.Second
+	sourceStagingDirEnv                = "AIMUX_UPGRADE_SOURCE_DIR"
+	allowSourceOutsideBinDirEnv        = "AIMUX_ALLOW_UPGRADE_SOURCE_OUTSIDE_BIN_DIR"
 )
 
 // ApplyUpdateFunc installs the latest binary release for the current version.
@@ -365,23 +368,100 @@ func (c *Coordinator) afterHotSwapInstall(ctx context.Context, release *updater.
 // provides platform-appropriate semantics (stage-then-swap on Windows; direct
 // rename on Unix).
 func (c *Coordinator) applyFromLocal(_ context.Context, sourcePath string) (*updater.Release, error) {
-	info, err := os.Stat(sourcePath)
+	validatedSource, err := c.validateLocalSource(sourcePath)
 	if err != nil {
-		return nil, fmt.Errorf("source binary not found: %w", err)
-	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("source path is a directory, not a binary: %s", sourcePath)
+		return nil, err
 	}
 
-	if err := atomicReplaceBinary(c.BinaryPath, sourcePath); err != nil {
+	if err := atomicReplaceBinary(c.BinaryPath, validatedSource); err != nil {
 		return nil, fmt.Errorf("rename current binary: %w", err)
 	}
 
 	return &updater.Release{
 		Version:      "local-dev",
-		AssetName:    filepath.Base(sourcePath),
-		ReleaseNotes: fmt.Sprintf("Installed from local source: %s", sourcePath),
+		AssetName:    filepath.Base(validatedSource),
+		ReleaseNotes: fmt.Sprintf("Installed from local source: %s", validatedSource),
 	}, nil
+}
+
+func (c *Coordinator) validateLocalSource(sourcePath string) (string, error) {
+	if strings.TrimSpace(sourcePath) == "" {
+		return "", fmt.Errorf("source binary path is required")
+	}
+	if strings.TrimSpace(c.BinaryPath) == "" {
+		return "", fmt.Errorf("current binary path is required for local-source upgrade")
+	}
+
+	sourceAbs, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve source path: %w", err)
+	}
+	binaryAbs, err := filepath.Abs(c.BinaryPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve current binary path: %w", err)
+	}
+	sourceResolved, err := filepath.EvalSymlinks(sourceAbs)
+	if err != nil {
+		return "", fmt.Errorf("source binary not found: %w", err)
+	}
+	binaryResolved, err := filepath.EvalSymlinks(binaryAbs)
+	if err != nil {
+		return "", fmt.Errorf("current binary path not found: %w", err)
+	}
+
+	info, err := os.Stat(sourceResolved)
+	if err != nil {
+		return "", fmt.Errorf("source binary not found: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("source path is a directory, not a binary: %s", sourceResolved)
+	}
+
+	binaryExt := filepath.Ext(binaryResolved)
+	sourceExt := filepath.Ext(sourceResolved)
+	if !strings.EqualFold(sourceExt, binaryExt) {
+		return "", fmt.Errorf("source binary extension %q does not match current binary extension %q", sourceExt, binaryExt)
+	}
+
+	if os.Getenv(allowSourceOutsideBinDirEnv) == "1" {
+		return sourceResolved, nil
+	}
+
+	allowedDirs := []string{filepath.Dir(binaryResolved)}
+	if stagingDir := strings.TrimSpace(os.Getenv(sourceStagingDirEnv)); stagingDir != "" {
+		stagingAbs, err := filepath.Abs(stagingDir)
+		if err != nil {
+			return "", fmt.Errorf("resolve %s: %w", sourceStagingDirEnv, err)
+		}
+		stagingResolved, err := filepath.EvalSymlinks(stagingAbs)
+		if err != nil {
+			return "", fmt.Errorf("resolve %s symlinks: %w", sourceStagingDirEnv, err)
+		}
+		allowedDirs = append(allowedDirs, stagingResolved)
+	}
+
+	for _, dir := range allowedDirs {
+		if pathWithinDir(sourceResolved, dir) {
+			return sourceResolved, nil
+		}
+	}
+	return "", fmt.Errorf("local source %s is outside trusted upgrade directories; place it beside the running binary, set %s, or explicitly set %s=1 for local development", sourceResolved, sourceStagingDirEnv, allowSourceOutsideBinDirEnv)
+}
+
+func pathWithinDir(path, dir string) bool {
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(resolvedDir), filepath.Clean(resolvedPath))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // NewControlSocketGracefulRestartFunc builds the production daemon-control seam.

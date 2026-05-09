@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -170,12 +172,15 @@ func (s *Server) StdioHandler() func(ctx context.Context, stdin io.Reader, stdou
 }
 
 // ServeSSE starts the MCP server with Server-Sent Events transport.
-// If authToken is configured, all requests must carry a valid Bearer token.
+// HTTP transports require bearer auth unless explicit local development mode is enabled.
 func (s *Server) ServeSSE(addr string) error {
 	addr = ensureLocalhostBinding(addr)
 	s.log.Info("MCP server starting on SSE at %s (aimux v%s)", addr, Version)
 	if !isLocalhostAddr(addr) {
 		s.log.Warn("SSE transport bound to non-localhost address %s", addr)
+	}
+	if err := s.requireHTTPTransportAuth("SSE", addr); err != nil {
+		return err
 	}
 	if s.authToken == "" {
 		return server.NewSSEServer(s.mcp).Start(addr)
@@ -193,12 +198,15 @@ func (s *Server) ServeSSE(addr string) error {
 }
 
 // ServeHTTP starts the MCP server with StreamableHTTP transport.
-// If authToken is configured, all requests must carry a valid Bearer token.
+// HTTP transports require bearer auth unless explicit local development mode is enabled.
 func (s *Server) ServeHTTP(addr string, opts ...server.StreamableHTTPOption) error {
 	addr = ensureLocalhostBinding(addr)
 	s.log.Info("MCP server starting on HTTP at %s (aimux v%s)", addr, Version)
 	if !isLocalhostAddr(addr) {
 		s.log.Warn("HTTP transport bound to non-localhost address %s", addr)
+	}
+	if err := s.requireHTTPTransportAuth("HTTP", addr); err != nil {
+		return err
 	}
 	if s.authToken == "" {
 		return server.NewStreamableHTTPServer(s.mcp, opts...).Start(addr)
@@ -230,9 +238,36 @@ func ensureLocalhostBinding(addr string) string {
 	return addr
 }
 
-// isLocalhostAddr checks if the address is bound to localhost/127.0.0.1.
+// isLocalhostAddr checks if the address is bound to an exact localhost name or loopback IP.
 func isLocalhostAddr(addr string) bool {
-	return strings.HasPrefix(addr, "127.0.0.1") || strings.HasPrefix(addr, "localhost") || strings.HasPrefix(addr, "[::1]")
+	host := addr
+	if parsedHost, _, err := net.SplitHostPort(addr); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+const allowUnauthenticatedHTTPEnv = "AIMUX_ALLOW_UNAUTHENTICATED_HTTP"
+
+func (s *Server) requireHTTPTransportAuth(transport, addr string) error {
+	if s.authToken != "" {
+		return nil
+	}
+	if !isLocalhostAddr(addr) {
+		return fmt.Errorf("%s transport requires bearer auth before binding non-localhost address %s", transport, addr)
+	}
+	if os.Getenv(allowUnauthenticatedHTTPEnv) == "1" {
+		if s.log != nil {
+			s.log.Warn("%s transport running without bearer auth because %s=1", transport, allowUnauthenticatedHTTPEnv)
+		}
+		return nil
+	}
+	return fmt.Errorf("%s transport requires AIMUX_AUTH_TOKEN or server.auth_token; set %s=1 only for local development", transport, allowUnauthenticatedHTTPEnv)
 }
 
 // bearerAuthMiddleware returns an http.Handler that enforces Bearer token authentication.

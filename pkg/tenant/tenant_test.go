@@ -22,6 +22,9 @@ func TestNewDaemonContext_ReturnsDaemonInternalScope(t *testing.T) {
 	if dc.TenantID == "" {
 		t.Fatal("NewDaemonContext() returned empty TenantID")
 	}
+	if dc.Role != tenant.RoleOperator {
+		t.Fatalf("daemon context role = %q, want %q", dc.Role, tenant.RoleOperator)
+	}
 	// Must not equal LegacyDefault — daemon context is separate scope.
 	if dc.TenantID == tenant.LegacyDefault {
 		t.Fatalf("daemon context TenantID must not equal LegacyDefault (%q)", tenant.LegacyDefault)
@@ -54,6 +57,9 @@ func TestNewLegacyDefaultContext_Fields(t *testing.T) {
 	tc := tenant.NewLegacyDefaultContext(sessionID)
 	if tc.TenantID != tenant.LegacyDefault {
 		t.Fatalf("expected TenantID=%q, got %q", tenant.LegacyDefault, tc.TenantID)
+	}
+	if tc.Role != tenant.RoleOperator {
+		t.Fatalf("expected Role=%q, got %q", tenant.RoleOperator, tc.Role)
 	}
 	if tc.SessionID != sessionID {
 		t.Fatalf("expected SessionID=%q, got %q", sessionID, tc.SessionID)

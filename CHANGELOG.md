@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.11.1] — 2026-05-09 — Security and release hardening
+
+Patch release hardening for the v5.11.0 AIMUX-21 surface after production
+readiness review.
+
+### Security
+
+- HTTP and SSE transports now fail closed when bearer authentication is not
+  configured. A local-only development override is available through
+  `AIMUX_ALLOW_UNAUTHENTICATED_HTTP=1`.
+- `TenantContext` now carries the resolved tenant role, and privileged
+  management actions require `operator` role authorization.
+- `sessions(action=list, all=true)`, `sessions(action=cancel|kill|gc|refresh-warmup)`,
+  and `upgrade(action=apply)` are operator-only.
+- Local-source binary upgrades are restricted to trusted source paths: beside
+  the running binary or under `AIMUX_UPGRADE_SOURCE_DIR`, unless an explicit
+  local-development override is set.
+- Review pass adaptation now fails closed when a reviewer returns malformed or
+  summary-less JSON instead of turning it into zero findings.
+
+### Release Hygiene
+
+- Release workflow now runs build, full Go tests, critical suite, gated AIMUX-21
+  e2e product tests, Loom module tests, `go vet`, `go mod verify`, and
+  `govulncheck` before GoReleaser publishes artifacts.
+- README, operator notes, live MCP instructions, and production playbook now
+  document the 28-tool v5.11 surface including `task`.
+- Production playbook Scenario B6 now includes the required `prompt` parameter
+  for the review-gate `task` call.
+
+## [5.11.0] — 2026-05-08 — Entry point convergence
+
+Breaking release for AIMUX-21. The CLI-specific `codex_*` MCP tools were
+removed from the public surface and replaced by the methodology-bearing generic
+`task` entry point, while Codex remains available as a backend worker.
+
+### Added
+
+- `task(task_class="code"|"review", prompt=...)` as the public code and review
+  workflow entry point backed by Loom workers.
+- Worktree-native isolation for task routing, resume validation, sub-task
+  inheritance, worktree switch handling, and apply/gate path binding.
+
+### Changed
+
+- Public MCP surface is now 28 tools: 4 server tools, `task`,
+  `think(action=start|step|finalize)`, and 22 cognitive move tools.
+- Code/review migration path is documented from removed `codex_task`,
+  `codex_review`, `codex_review_gate`, `codex_status`, and `codex_cancel`
+  calls to the generic `task` and `sessions` surfaces.
+
+### Verification
+
+- Added gated AIMUX-21 e2e coverage for removed-tool absence, `task` presence,
+  code task execution, review entry routing, task router behavior, resume
+  validation, and worktree isolation.
+
 ## [5.8.2] — 2026-05-07 — Windows deferred update recovery
 
 Patch release for the Windows local-source update path after the Codex direct
