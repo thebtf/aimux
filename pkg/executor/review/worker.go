@@ -87,6 +87,9 @@ func (w *ReviewWorker) Run(ctx context.Context, task *loom.Task) (*loom.WorkerRe
 	if reviewGateEnabled(task.Metadata) {
 		return w.runGate(ctx, task, target, criteria)
 	}
+	if err := w.checkReviewTimeout(ctx); err != nil {
+		return nil, err
+	}
 	return w.runAggregate(ctx, task, target, criteria)
 }
 
@@ -270,6 +273,26 @@ func metadataInt(metadata map[string]any, key string) (int, bool) {
 		return int(value), true
 	}
 	return 0, false
+}
+
+const minSecondsPerReviewPass = 90
+
+func (w *ReviewWorker) checkReviewTimeout(ctx context.Context) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil
+	}
+	remaining := time.Until(deadline)
+	passCount := len(orderedPasses())
+	minTotal := time.Duration(passCount*minSecondsPerReviewPass) * time.Second
+	if remaining < minTotal {
+		return types.NewTimeout(
+			fmt.Sprintf("review runs %d sequential CLI passes; need at least %ds but only %ds remaining — increase timeout_seconds",
+				passCount, int(minTotal.Seconds()), int(remaining.Seconds())),
+			nil,
+		)
+	}
+	return nil
 }
 
 func marshalWorkerContent(value any) (string, error) {

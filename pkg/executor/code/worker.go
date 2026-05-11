@@ -204,6 +204,13 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 			prompt = promptWithFeedback(task.Prompt, verdict.Feedback)
 			w.recordTaskMetadata(task, machine, criteria, lastVerdict, "")
 		case StateEscalate:
+			if readOnlySandboxForTask(task) {
+				w.recordTaskMetadata(task, machine, criteria, lastVerdict, "read-only-analysis")
+				return &loom.WorkerResult{
+					Content:  verdictEvidence(verdict),
+					Metadata: cloneMetadata(task.Metadata),
+				}, nil
+			}
 			if cliErr := machine.Advance(StateEscalate, "navigator escalated"); cliErr != nil {
 				return w.failTask(task, machine, cliErr)
 			}
