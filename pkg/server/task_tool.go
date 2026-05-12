@@ -417,8 +417,15 @@ func buildTaskArgs(profile *config.CLIProfile, spec picker.TaskSpec) []string {
 	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
 		args = append(args, profile.HeadlessFlags...)
 	}
-	if spec.Sandbox == "read-only" && len(profile.ReadOnlyFlags) > 0 {
-		args = append(args, profile.ReadOnlyFlags...)
+	switch spec.Sandbox {
+	case "read-only":
+		if len(profile.ReadOnlyFlags) > 0 {
+			args = append(args, profile.ReadOnlyFlags...)
+		}
+	case "workspace-write", "danger":
+		if len(profile.WriteSandboxFlags) > 0 {
+			args = append(args, profile.WriteSandboxFlags...)
+		}
 	}
 	if model := taskModelForArgs(profile, spec); model != "" && profile.ModelFlag != "" {
 		args = append(args, profile.ModelFlag, model)
@@ -449,6 +456,7 @@ type taskArgsTemplateData struct {
 	Model           string
 	ReasoningEffort string
 	SessionID       string
+	Sandbox         string
 	Headless        bool
 	ReadOnly        bool
 	SessionResume   bool
@@ -468,6 +476,7 @@ func commandArgsTemplateArgs(profile *config.CLIProfile, spec picker.TaskSpec) (
 		Model:           commandTemplateArgValue(taskModelForArgs(profile, spec)),
 		ReasoningEffort: commandTemplateArgValue(strings.TrimSpace(spec.Effort)),
 		SessionID:       commandTemplateArgValue(strings.TrimSpace(spec.SessionID)),
+		Sandbox:         strings.TrimSpace(spec.Sandbox),
 		Headless:        profile.Features.Headless,
 		ReadOnly:        spec.Sandbox == "read-only",
 		SessionResume:   spec.SessionResume || strings.TrimSpace(spec.SessionID) != "",

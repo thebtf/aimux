@@ -20,7 +20,7 @@ command:
   base: "codex exec"
   args_template: >-
     {{if .Headless}}--full-auto{{end}}
-    {{if .ReadOnly}}--sandbox read-only{{end}}
+    {{if eq .Sandbox "danger"}}--sandbox danger-full-access{{else if eq .Sandbox "read-only"}}--sandbox read-only{{else}}--sandbox workspace-write{{end}}
     {{if .Model}}-m {{.Model}}{{end}}
     {{if .ReasoningEffort}}-c model_reasoning_effort="{{.ReasoningEffort}}"{{end}}
     {{if .SessionResume}}resume {{.SessionID}}{{end}}
@@ -75,8 +75,9 @@ stdin_sentinel: "-"
 # Completion pattern for early termination
 completion_pattern: "turn\\.completed"
 
-# Read-only flags
+# Sandbox flags
 read_only_flags: ["--sandbox", "read-only"]
+write_sandbox_flags: ["--sandbox", "workspace-write"]
 
 # Headless mode flags (appended when features.headless is true)
 headless_flags: ["--full-auto", "--json"]

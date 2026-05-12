@@ -224,6 +224,7 @@ type CLIProfile struct {
 	StdinSentinel     string   `yaml:"stdin_sentinel,omitempty"`
 	CompletionPattern string   `yaml:"completion_pattern,omitempty"`
 	ReadOnlyFlags     []string `yaml:"read_only_flags"`
+	WriteSandboxFlags []string `yaml:"write_sandbox_flags,omitempty"`
 	HeadlessFlags     []string `yaml:"headless_flags,omitempty"`
 	SearchPaths       []string `yaml:"search_paths,omitempty"`
 
