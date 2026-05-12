@@ -349,27 +349,40 @@ func (w *CodeWorker) driverCLIForTask(task *loom.Task) types.CLIName {
 
 func (w *CodeWorker) pairCLIsForTask(ctx context.Context, task *loom.Task) (types.CLIName, types.CLIName, error) {
 	driverCLI := w.driverCLIForTask(task)
+	navigatorCLI := w.navigatorCLIForTask(task)
+	if navigatorCLI != "" {
+		return driverCLI, navigatorCLI, nil
+	}
 	if taskHasDriverOverride(task) {
-		if w.navigatorCLI != "" {
-			return driverCLI, w.navigatorCLI, nil
-		}
 		if selector, ok := w.pairSelector.(driverPairSelector); ok {
 			return selector.PickPairForDriver(ctx, "code", driverCLI)
 		}
-		return driverCLI, w.defaultNavigatorCLI(), nil
-	}
-	if w.navigatorCLI != "" {
-		return driverCLI, w.navigatorCLI, nil
-	}
-	if w.pairSelector != nil {
+	} else if w.pairSelector != nil {
 		return w.pairSelector.PickPair(ctx, "code")
 	}
-	return driverCLI, w.defaultNavigatorCLI(), nil
+	return driverCLI, w.defaultNavigatorForDriver(driverCLI), nil
 }
 
-func (w *CodeWorker) defaultNavigatorCLI() types.CLIName {
+func (w *CodeWorker) navigatorCLIForTask(task *loom.Task) types.CLIName {
 	if w.navigatorCLI != "" {
 		return w.navigatorCLI
+	}
+	if task != nil {
+		if cli, ok := metadataString(task.Metadata, "navigator_cli_override"); ok && strings.TrimSpace(cli) != "" {
+			return types.CLIName(strings.TrimSpace(cli))
+		}
+	}
+	return ""
+}
+
+func (w *CodeWorker) defaultNavigatorForDriver(driver types.CLIName) types.CLIName {
+	if w.navigatorCLI != "" {
+		return w.navigatorCLI
+	}
+	for _, candidate := range []types.CLIName{"claude", "gemini", "codex"} {
+		if candidate != driver {
+			return candidate
+		}
 	}
 	return "claude"
 }
@@ -431,7 +444,7 @@ func (w *CodeWorker) recordTaskMetadata(task *loom.Task, machine *Machine, crite
 		task.Metadata["driver_cli"] = string(w.driverCLIForTask(task))
 	}
 	if _, ok := metadataString(task.Metadata, "navigator_cli"); !ok {
-		task.Metadata["navigator_cli"] = string(w.defaultNavigatorCLI())
+		task.Metadata["navigator_cli"] = string(w.defaultNavigatorForDriver(w.driverCLIForTask(task)))
 	}
 	rounds := machine.Rounds()
 	if verdict.Action != "" {

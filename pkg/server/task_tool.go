@@ -84,7 +84,10 @@ func (s *Server) registerTaskTool() {
 				mcp.DefaultString("task"),
 			),
 			mcp.WithString("cli",
-				mcp.Description("Driver CLI override for code tasks; does not bypass cross-family navigator selection."),
+				mcp.Description("Driver CLI override for code tasks."),
+			),
+			mcp.WithString("navigator",
+				mcp.Description("Navigator CLI override for code tasks. Defaults to cross-family pick based on driver."),
 			),
 			mcp.WithString("resume_id",
 				mcp.Description("Loom root task_id to resume."),
@@ -164,6 +167,7 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 
 	rawTaskClass := req.GetString("task_class", "")
 	cliOverride := strings.TrimSpace(req.GetString("cli", ""))
+	navigatorOverride := strings.TrimSpace(req.GetString("navigator", ""))
 	resumeID := strings.TrimSpace(req.GetString("resume_id", ""))
 	target := strings.TrimSpace(req.GetString("target", ""))
 	gate := req.GetBool("gate", false)
@@ -213,6 +217,7 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 		CWD:            cwdFromRequestOrContext(req, ctx),
 		Env:            sessionEnvFromContext(ctx),
 		CLI:            cliOverride,
+		Navigator:      navigatorOverride,
 		Model:          req.GetString("model", ""),
 		Effort:         req.GetString("effort", ""),
 		TimeoutSeconds: timeoutSeconds,

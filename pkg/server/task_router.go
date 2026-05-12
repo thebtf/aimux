@@ -52,6 +52,7 @@ type TaskRequest struct {
 	CWD            string
 	Env            map[string]string
 	CLI            string
+	Navigator      string
 	Role           string
 	Model          string
 	Effort         string
@@ -230,6 +231,9 @@ func canonicalLoomRequest(req TaskRequest, prompt string, taskClass string, work
 	}
 	if req.CLI != "" {
 		metadata["driver_cli_override"] = req.CLI
+	}
+	if req.Navigator != "" {
+		metadata["navigator_cli_override"] = req.Navigator
 	}
 
 	return loom.TaskRequest{
