@@ -277,21 +277,12 @@ func adaptReviewPassOutput(task *loom.Task, parsed string) (string, map[string]a
 
 func adaptNavigatorOutput(_ *loom.Task, parsed string) (string, map[string]any, error) {
 	trimmed := strings.TrimSpace(parsed)
-	var verdict struct {
-		Verdict    string  `json:"verdict"`
-		Action     string  `json:"action"`
-		Confidence float64 `json:"confidence"`
-		Diff       string  `json:"diff"`
-		Feedback   string  `json:"feedback"`
-		Evidence   string  `json:"evidence"`
+	if extracted, ok := tryParseNavigatorVerdict(trimmed); ok {
+		return extracted, map[string]any{}, nil
 	}
-	if err := json.Unmarshal([]byte(trimmed), &verdict); err == nil {
-		action := strings.TrimSpace(verdict.Verdict)
-		if action == "" {
-			action = strings.TrimSpace(verdict.Action)
-		}
-		if action != "" {
-			return trimmed, map[string]any{}, nil
+	if extracted := extractJSONFromMarkdown(trimmed); extracted != "" {
+		if result, ok := tryParseNavigatorVerdict(extracted); ok {
+			return result, map[string]any{"navigator_output_normalized": true}, nil
 		}
 	}
 
@@ -305,6 +296,44 @@ func adaptNavigatorOutput(_ *loom.Task, parsed string) (string, map[string]any, 
 		return "", nil, extypes.NewUnknown("navigator verdict serialization failed", err)
 	}
 	return string(content), map[string]any{"navigator_output_normalized": true}, nil
+}
+
+func tryParseNavigatorVerdict(text string) (string, bool) {
+	var verdict struct {
+		Verdict    string  `json:"verdict"`
+		Action     string  `json:"action"`
+		Confidence float64 `json:"confidence"`
+	}
+	if err := json.Unmarshal([]byte(text), &verdict); err != nil {
+		return "", false
+	}
+	action := strings.TrimSpace(verdict.Verdict)
+	if action == "" {
+		action = strings.TrimSpace(verdict.Action)
+	}
+	if action == "" {
+		return "", false
+	}
+	return text, true
+}
+
+func extractJSONFromMarkdown(text string) string {
+	for _, fence := range []string{"```json\n", "```\n"} {
+		start := strings.Index(text, fence)
+		if start < 0 {
+			continue
+		}
+		body := text[start+len(fence):]
+		end := strings.Index(body, "\n```")
+		if end < 0 {
+			continue
+		}
+		candidate := strings.TrimSpace(body[:end])
+		if len(candidate) > 0 && candidate[0] == '{' {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func reviewPassFromTask(task *loom.Task) review.PassName {
