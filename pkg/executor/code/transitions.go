@@ -55,7 +55,7 @@ func isAllowedTransition(from, to State) bool {
 	case StatePrep:
 		return to == StateDriver
 	case StateDriver:
-		return to == StateNavigator
+		return to == StateNavigator || to == StateDone
 	case StateNavigator:
 		return to == StateApply || to == StateRevise || to == StateRetry || to == StateEscalate
 	case StateApply, StateRevise:
