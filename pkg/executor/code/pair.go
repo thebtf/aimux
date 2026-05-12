@@ -206,6 +206,60 @@ func RunSoloRound(ctx context.Context, prompt string, cfg PairConfig) (SoloResul
 	}, nil
 }
 
+// RunSoloDiffRound runs one driver-only round that returns a unified diff (read-only).
+func RunSoloDiffRound(ctx context.Context, prompt string, cfg PairConfig) (SoloResult, error) {
+	if cfg.Loom == nil {
+		return SoloResult{}, types.NewCapabilityMismatch("solo diff round Loom client is required", nil)
+	}
+	if cfg.DriverCLI == "" {
+		return SoloResult{}, types.NewUserInputError("solo diff round driver CLI is required", nil)
+	}
+
+	criteria := prompts.RenderData{
+		Prompt:         prompt,
+		ProjectContext: pairProjectContext(cfg),
+	}
+	diffPrompt, err := prompts.RenderDriver(criteria)
+	if err != nil {
+		return SoloResult{}, err
+	}
+	metadata := driverMetadata(cfg)
+	metadata["solo_mode"] = true
+
+	taskID, err := cfg.Loom.Submit(ctx, loom.TaskRequest{
+		WorkerType:   driverWorkerType(cfg),
+		ProjectID:    cfg.ProjectID,
+		RequestID:    cfg.RequestID,
+		ParentTaskID: cfg.ParentTaskID,
+		TenantID:     cfg.TenantID,
+		Prompt:       diffPrompt,
+		CWD:          cfg.CWD,
+		Env:          cloneEnv(cfg.Env),
+		CLI:          cfg.DriverCLI,
+		Role:         "solo-diff",
+		Model:        cfg.Model,
+		Effort:       cfg.Effort,
+		Metadata:     metadata,
+	})
+	if err != nil {
+		return SoloResult{}, fmt.Errorf("submit solo diff driver sub-task: %w", err)
+	}
+
+	task, err := waitForTask(ctx, cfg, taskID)
+	if err != nil {
+		return SoloResult{}, fmt.Errorf("solo diff driver sub-task: %w", err)
+	}
+	content := strings.TrimSpace(task.Result)
+	if content == "" {
+		return SoloResult{}, types.NewUserInputError("solo diff driver returned empty output", nil)
+	}
+	return SoloResult{
+		Content:  content,
+		TaskID:   taskID,
+		ThreadID: taskThreadID(task),
+	}, nil
+}
+
 func renderSoloDriverPrompt(prompt string, cfg PairConfig) (string, error) {
 	return prompts.RenderDriverSolo(prompts.RenderData{
 		Prompt:         prompt,

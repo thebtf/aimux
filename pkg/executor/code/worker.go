@@ -503,12 +503,17 @@ func soloModeForTask(task *loom.Task) bool {
 
 func (w *CodeWorker) runSolo(ctx context.Context, task *loom.Task, machine *Machine, driverCLI types.CLIName, resumeMeta map[string]any) (*loom.WorkerResult, error) {
 	recordSelectedPair(task, driverCLI, "none")
+	sandbox := sandboxForTask(task)
 
-	if cliErr := machine.Advance(StateDriver, "solo mode: driver with write access"); cliErr != nil {
+	reason := "solo mode: driver with write access"
+	if sandbox == "read-only" {
+		reason = "solo diff: driver returns diff to caller"
+	}
+	if cliErr := machine.Advance(StateDriver, reason); cliErr != nil {
 		return w.failTask(task, machine, cliErr)
 	}
 
-	result, err := RunSoloRound(ctx, task.Prompt, PairConfig{
+	cfg := PairConfig{
 		Loom:           w.loom,
 		ParentTaskID:   task.ID,
 		ProjectID:      task.ProjectID,
@@ -520,9 +525,17 @@ func (w *CodeWorker) runSolo(ctx context.Context, task *loom.Task, machine *Mach
 		DriverCLI:      driverCLI,
 		Model:          task.Model,
 		Effort:         task.Effort,
-		Sandbox:        sandboxForTask(task),
+		Sandbox:        sandbox,
 		TaskTimeout:    pairTaskTimeout(task),
-	})
+	}
+
+	var result SoloResult
+	var err error
+	if sandbox == "read-only" {
+		result, err = RunSoloDiffRound(ctx, task.Prompt, cfg)
+	} else {
+		result, err = RunSoloRound(ctx, task.Prompt, cfg)
+	}
 	if err != nil {
 		return w.failTask(task, machine, err)
 	}
@@ -534,7 +547,17 @@ func (w *CodeWorker) runSolo(ctx context.Context, task *loom.Task, machine *Mach
 		task.Metadata[MetadataThreadID] = result.ThreadID
 	}
 
-	// Synthetic FSM transitions: DRIVER → NAVIGATOR → APPLY → GATE
+	if sandbox == "read-only" {
+		if cliErr := machine.Advance(StateDone, "solo diff: returning diff to caller"); cliErr != nil {
+			return w.failTask(task, machine, cliErr)
+		}
+		w.recordSoloMetadata(task, machine, result)
+		return &loom.WorkerResult{
+			Content:  result.Content,
+			Metadata: cloneMetadata(task.Metadata),
+		}, nil
+	}
+
 	for _, transition := range []struct {
 		state  State
 		reason string
