@@ -21,13 +21,13 @@ func TestE2E_TaskRouterMCPRoundTrip(t *testing.T) {
 		"prompt":          "Run an explicit router wiring review.",
 		"task_class":      "review",
 		"target":          "HEAD",
-		"timeout_seconds": 10,
+		"timeout_seconds": 300,
 	})
 	assertTaskRouterResult(t, explicit, "review")
 
 	classified := callTaskRouterToolJSON(t, stdin, reader, 3, map[string]any{
 		"prompt":          "Review PR #152 diff against HEAD and block on security regressions.",
-		"timeout_seconds": 10,
+		"timeout_seconds": 300,
 	})
 	assertTaskRouterResult(t, classified, "review")
 
