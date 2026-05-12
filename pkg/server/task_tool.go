@@ -208,6 +208,11 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 	if sessionKey, ok := worktreeSessionKeyFromContext(ctx); ok {
 		metadata[worktreeSessionMetadataKey] = sessionKey
 	}
+	soloMode := strings.EqualFold(navigatorOverride, "none")
+	if soloMode {
+		metadata["solo_mode"] = true
+		navigatorOverride = ""
+	}
 
 	return TaskRequest{
 		Prompt:         prompt,
@@ -503,7 +508,7 @@ func commandTemplateArgValue(value string) string {
 }
 
 func appendMissingProfileExecutionFlags(args []string, profile *config.CLIProfile, spec picker.TaskSpec, templateArgs []string) []string {
-	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
+	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 && !containsString(templateArgs, "--dangerously-bypass-approvals-and-sandbox") {
 		args = appendMissingArgs(args, templateArgs, profile.HeadlessFlags)
 	}
 	if spec.Sandbox == "read-only" && len(profile.ReadOnlyFlags) > 0 {

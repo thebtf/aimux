@@ -148,6 +148,71 @@ func RunRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg 
 	return verdict, nil
 }
 
+// SoloResult is the output of a solo driver round (no navigator).
+type SoloResult struct {
+	Content  string
+	TaskID   string
+	ThreadID string
+}
+
+// RunSoloRound runs one driver-only round with write access.
+func RunSoloRound(ctx context.Context, prompt string, cfg PairConfig) (SoloResult, error) {
+	if cfg.Loom == nil {
+		return SoloResult{}, types.NewCapabilityMismatch("solo round Loom client is required", nil)
+	}
+	if cfg.DriverCLI == "" {
+		return SoloResult{}, types.NewUserInputError("solo round driver CLI is required", nil)
+	}
+
+	soloPrompt, err := renderSoloDriverPrompt(prompt, cfg)
+	if err != nil {
+		return SoloResult{}, err
+	}
+	metadata := driverMetadata(cfg)
+	metadata["solo_mode"] = true
+	metadata["sandbox"] = "workspace-write"
+
+	taskID, err := cfg.Loom.Submit(ctx, loom.TaskRequest{
+		WorkerType:   driverWorkerType(cfg),
+		ProjectID:    cfg.ProjectID,
+		RequestID:    cfg.RequestID,
+		ParentTaskID: cfg.ParentTaskID,
+		TenantID:     cfg.TenantID,
+		Prompt:       soloPrompt,
+		CWD:          cfg.CWD,
+		Env:          cloneEnv(cfg.Env),
+		CLI:          cfg.DriverCLI,
+		Role:         "solo",
+		Model:        cfg.Model,
+		Effort:       cfg.Effort,
+		Metadata:     metadata,
+	})
+	if err != nil {
+		return SoloResult{}, fmt.Errorf("submit solo driver sub-task: %w", err)
+	}
+
+	task, err := waitForTask(ctx, cfg, taskID)
+	if err != nil {
+		return SoloResult{}, fmt.Errorf("solo driver sub-task: %w", err)
+	}
+	content := strings.TrimSpace(task.Result)
+	if content == "" {
+		return SoloResult{}, types.NewUserInputError("solo driver sub-task returned empty output", nil)
+	}
+	return SoloResult{
+		Content:  content,
+		TaskID:   taskID,
+		ThreadID: taskThreadID(task),
+	}, nil
+}
+
+func renderSoloDriverPrompt(prompt string, cfg PairConfig) (string, error) {
+	return prompts.RenderDriverSolo(prompts.RenderData{
+		Prompt:         prompt,
+		ProjectContext: pairProjectContext(cfg),
+	})
+}
+
 func validatePairConfig(cfg PairConfig) error {
 	if cfg.Loom == nil {
 		return types.NewCapabilityMismatch("code pair Loom client is required", nil)
@@ -311,14 +376,12 @@ func driverMetadata(cfg PairConfig) map[string]any {
 		"driver_cli":     cfg.DriverCLI,
 		"navigator_cli":  cfg.NavigatorCLI,
 		"parent_task_id": cfg.ParentTaskID,
+		"sandbox":        "read-only",
 	}
 	for _, key := range []string{MetadataThreadID, MetadataResumeTaskID, "resume_id"} {
 		if value, ok := cfg.ResumeMetadata[key]; ok {
 			metadata[key] = value
 		}
-	}
-	if cfg.Sandbox != "" {
-		metadata["sandbox"] = cfg.Sandbox
 	}
 	return metadata
 }

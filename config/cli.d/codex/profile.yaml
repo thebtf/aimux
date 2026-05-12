@@ -19,7 +19,7 @@ output_format: jsonl
 command:
   base: "codex exec"
   args_template: >-
-    --full-auto --sandbox read-only
+    {{if eq .Sandbox "workspace-write"}}--dangerously-bypass-approvals-and-sandbox{{else if eq .Sandbox "danger"}}--dangerously-bypass-approvals-and-sandbox{{else}}--full-auto --sandbox read-only{{end}}
     {{if .Model}}-m {{.Model}}{{end}}
     {{if .ReasoningEffort}}-c model_reasoning_effort="{{.ReasoningEffort}}"{{end}}
     {{if .SessionResume}}resume {{.SessionID}}{{end}}

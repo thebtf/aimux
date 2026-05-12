@@ -153,6 +153,11 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 	if err != nil {
 		return w.failTask(task, machine, err)
 	}
+
+	if soloModeForTask(task) {
+		return w.runSolo(ctx, task, machine, driverCLI, resumeMeta)
+	}
+
 	recordSelectedPair(task, driverCLI, navigatorCLI)
 
 	prompt := task.Prompt
@@ -486,6 +491,95 @@ func promptWithFeedback(original string, feedback string) string {
 		return original
 	}
 	return original + "\n\nNavigator feedback:\n" + feedback
+}
+
+func soloModeForTask(task *loom.Task) bool {
+	if task == nil || task.Metadata == nil {
+		return false
+	}
+	solo, ok := task.Metadata["solo_mode"].(bool)
+	return ok && solo
+}
+
+func (w *CodeWorker) runSolo(ctx context.Context, task *loom.Task, machine *Machine, driverCLI types.CLIName, resumeMeta map[string]any) (*loom.WorkerResult, error) {
+	recordSelectedPair(task, driverCLI, "none")
+
+	if cliErr := machine.Advance(StateDriver, "solo mode: driver with write access"); cliErr != nil {
+		return w.failTask(task, machine, cliErr)
+	}
+
+	result, err := RunSoloRound(ctx, task.Prompt, PairConfig{
+		Loom:           w.loom,
+		ParentTaskID:   task.ID,
+		ProjectID:      task.ProjectID,
+		RequestID:      task.RequestID,
+		TenantID:       task.TenantID,
+		CWD:            task.CWD,
+		Env:            cloneEnv(task.Env),
+		ResumeMetadata: resumeMeta,
+		DriverCLI:      driverCLI,
+		Model:          task.Model,
+		Effort:         task.Effort,
+		Sandbox:        sandboxForTask(task),
+		TaskTimeout:    pairTaskTimeout(task),
+	})
+	if err != nil {
+		return w.failTask(task, machine, err)
+	}
+
+	if strings.TrimSpace(result.ThreadID) != "" {
+		if task.Metadata == nil {
+			task.Metadata = map[string]any{}
+		}
+		task.Metadata[MetadataThreadID] = result.ThreadID
+	}
+
+	// Synthetic FSM transitions: DRIVER → NAVIGATOR → APPLY → GATE
+	for _, transition := range []struct {
+		state  State
+		reason string
+	}{
+		{StateNavigator, "solo: synthetic navigator pass"},
+		{StateApply, "solo: driver already wrote files"},
+		{StateGate, "solo: verifying driver changes"},
+	} {
+		if cliErr := machine.Advance(transition.state, transition.reason); cliErr != nil {
+			return w.failTask(task, machine, cliErr)
+		}
+	}
+
+	gateResult := w.gateRunner.Run(ctx, applygate.Project{CWD: task.CWD})
+	w.recordSoloMetadata(task, machine, result)
+	if gateResult.Status == applygate.StatusFailed {
+		if cliErr := machine.Advance(StateError, "solo gate failed"); cliErr != nil {
+			return w.failTask(task, machine, cliErr)
+		}
+		return w.failTask(task, machine, types.NewUserInputError("solo gate failed: "+gateResult.Reason, nil))
+	}
+	if cliErr := machine.Advance(StateDone, "solo gate "+string(gateResult.Status)); cliErr != nil {
+		return w.failTask(task, machine, cliErr)
+	}
+	w.recordSoloMetadata(task, machine, result)
+	task.Metadata["gate_result"] = string(gateResult.Status)
+
+	return &loom.WorkerResult{
+		Content:  result.Content,
+		Metadata: cloneMetadata(task.Metadata),
+	}, nil
+}
+
+func (w *CodeWorker) recordSoloMetadata(task *loom.Task, machine *Machine, _ SoloResult) {
+	if task.Metadata == nil {
+		task.Metadata = map[string]any{}
+	}
+	task.Metadata[MetadataWorkerType] = string(WorkerTypeCode)
+	task.Metadata["driver_cli"] = string(w.driverCLIForTask(task))
+	task.Metadata["navigator_cli"] = "none"
+	task.Metadata["solo_mode"] = true
+	task.Metadata["rounds"] = 1
+	for key, value := range machine.Metadata() {
+		task.Metadata[key] = value
+	}
 }
 
 func verdictEvidence(verdict Verdict) string {

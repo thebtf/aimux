@@ -8,7 +8,7 @@ import (
 	"text/template"
 )
 
-//go:embed driver.tmpl navigator.tmpl
+//go:embed driver.tmpl navigator.tmpl driver_solo.tmpl
 var templateFS embed.FS
 
 // CriterionView is the prompt-facing shape of one success criterion.
@@ -30,6 +30,11 @@ type RenderData struct {
 // RenderDriver renders the readonly driver prompt.
 func RenderDriver(data RenderData) (string, error) {
 	return render("driver.tmpl", data)
+}
+
+// RenderDriverSolo renders the write-enabled solo driver prompt.
+func RenderDriverSolo(data RenderData) (string, error) {
+	return render("driver_solo.tmpl", data)
 }
 
 // RenderNavigator renders the navigator scoring prompt.
