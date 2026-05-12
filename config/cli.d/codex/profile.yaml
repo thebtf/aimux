@@ -19,8 +19,7 @@ output_format: jsonl
 command:
   base: "codex exec"
   args_template: >-
-    {{if .Headless}}--full-auto{{end}}
-    {{if eq .Sandbox "danger"}}--sandbox danger-full-access{{else if eq .Sandbox "read-only"}}--sandbox read-only{{else}}--sandbox workspace-write{{end}}
+    {{if eq .Sandbox "read-only"}}--full-auto --sandbox read-only{{else}}--dangerously-bypass-approvals-and-sandbox{{end}}
     {{if .Model}}-m {{.Model}}{{end}}
     {{if .ReasoningEffort}}-c model_reasoning_effort="{{.ReasoningEffort}}"{{end}}
     {{if .SessionResume}}resume {{.SessionID}}{{end}}
@@ -77,7 +76,7 @@ completion_pattern: "turn\\.completed"
 
 # Sandbox flags
 read_only_flags: ["--sandbox", "read-only"]
-write_sandbox_flags: ["--sandbox", "workspace-write"]
+write_sandbox_flags: ["--dangerously-bypass-approvals-and-sandbox"]
 
 # Headless mode flags (appended when features.headless is true)
 headless_flags: ["--full-auto", "--json"]

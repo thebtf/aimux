@@ -24,6 +24,7 @@ type RenderData struct {
 	ProjectContext string
 	CriteriaList   []CriterionView
 	Diff           string
+	Sandbox        string
 }
 
 // RenderDriver renders the readonly driver prompt.
