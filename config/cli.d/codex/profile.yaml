@@ -23,12 +23,12 @@ command:
     {{if .Model}}-m {{.Model}}{{end}}
     {{if .ReasoningEffort}}-c model_reasoning_effort="{{.ReasoningEffort}}"{{end}}
     {{if .SessionResume}}resume {{.SessionID}}{{end}}
-    "{{.Prompt}}"
+    -
 
-# Codex uses positional prompt (last argument), NOT -p flag
-# (-p in codex means config profile selector, not prompt)
+# Codex reads prompt from stdin (matching ccg-workflow pattern).
+# Positional arg "-" signals stdin mode. Prompt piped via SpawnArgs.Stdin.
 prompt_flag: ""
-prompt_flag_type: "positional"
+prompt_flag_type: "stdin"
 
 # Default model: gpt-5.5 is OpenAI's latest flagship (April 2026).
 # version note: bump when OpenAI releases a new flagship; verify via
