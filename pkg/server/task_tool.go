@@ -508,7 +508,7 @@ func commandTemplateArgValue(value string) string {
 }
 
 func appendMissingProfileExecutionFlags(args []string, profile *config.CLIProfile, spec picker.TaskSpec, templateArgs []string) []string {
-	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 && !containsString(templateArgs, "--dangerously-bypass-approvals-and-sandbox") {
+	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
 		args = appendMissingArgs(args, templateArgs, profile.HeadlessFlags)
 	}
 	if spec.Sandbox == "read-only" && len(profile.ReadOnlyFlags) > 0 {

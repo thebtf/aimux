@@ -19,7 +19,7 @@ output_format: jsonl
 command:
   base: "codex exec"
   args_template: >-
-    {{if eq .Sandbox "workspace-write"}}--dangerously-bypass-approvals-and-sandbox{{else if eq .Sandbox "danger"}}--dangerously-bypass-approvals-and-sandbox{{else}}--full-auto --sandbox read-only{{end}}
+    --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json
     {{if .Model}}-m {{.Model}}{{end}}
     {{if .ReasoningEffort}}-c model_reasoning_effort="{{.ReasoningEffort}}"{{end}}
     {{if .SessionResume}}resume {{.SessionID}}{{end}}
@@ -79,7 +79,7 @@ read_only_flags: ["--sandbox", "read-only"]
 write_sandbox_flags: ["--dangerously-bypass-approvals-and-sandbox"]
 
 # Headless mode flags (appended when features.headless is true)
-headless_flags: ["--full-auto", "--json"]
+headless_flags: ["--json"]
 
 env_passthrough:
   - OPENAI_API_KEY
