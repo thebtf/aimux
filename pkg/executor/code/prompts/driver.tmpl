@@ -1,17 +1,6 @@
-You are the DRIVER in a Strong-Style pair-coding round.
-
-Sandbox: read-only. Do not write files. Do not run destructive commands.
-Your output is the proposed unified diff. A separate apply step writes it.
+You are producing a unified diff. Do NOT write any files.
 
 Task:
 {{ .Prompt }}
 
-Project context:
-{{ .ProjectContext }}
-
-Acceptance criteria return cycle:
-{{- range .CriteriaList }}
-- {{ .Name }} (weight {{ printf "%.4f" .Weight }}): {{ .Description }}
-{{- end }}
-
-Return only a unified diff. The diff must be applicable from the project root and must use relative paths.
+Return ONLY a unified diff applicable from the project root with relative paths. No explanation, no markdown fences, just the raw diff.
