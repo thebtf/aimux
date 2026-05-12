@@ -75,11 +75,21 @@ archive/v5.0.3/      — frozen v5.0.3 skills + map.yaml + README documenting re
 docs/architecture/   — cli-tools-current.md (pre-purge audit)
 ```
 
-## MCP Tools (4 + 23 think patterns)
+## MCP Tools (5 + 23 think patterns)
 
-status, sessions, deepresearch, upgrade
+status, sessions, deepresearch, upgrade, task
 
 Think surface: 23 dedicated pattern tools, including `think`, `critical_thinking`, `decision_framework`, `debugging_approach`, and the rest of the registered pattern set.
+
+### task tool — 3 execution modes
+
+| Mode | navigator param | sandbox | Behavior |
+|------|----------------|---------|----------|
+| **Pair** | CLI name (e.g. `"codex"`) | any | driver(read-only) → diff → navigator(review) → apply → gate |
+| **Solo write** | `"none"` | `workspace-write` / `danger` | driver writes files → gate verifies |
+| **Solo diff** | `"none"` | `read-only` | driver returns unified diff to caller |
+
+Codex CLI always uses `--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json`. Prompt controls mode behavior.
 
 ## Engine Mode (muxcore)
 
