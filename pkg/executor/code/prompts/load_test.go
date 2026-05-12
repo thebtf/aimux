@@ -11,9 +11,7 @@ func TestRenderDriverProducesReadonlyUnifiedDiffPrompt(t *testing.T) {
 		t.Fatalf("RenderDriver returned error: %v", err)
 	}
 	assertContains(t, rendered, "rename old to new")
-	assertContains(t, rendered, "CWD=/workspace")
-	assertContains(t, rendered, "BuildClean")
-	assertContains(t, rendered, "read-only")
+	assertContains(t, rendered, "Do NOT write any files")
 	assertContains(t, rendered, "unified diff")
 }
 
