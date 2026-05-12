@@ -260,7 +260,6 @@ func renderDriverPrompt(prompt string, criteria SuccessCriteria, cfg PairConfig)
 		Prompt:         prompt,
 		ProjectContext: pairProjectContext(cfg),
 		CriteriaList:   criteriaPromptViews(criteria),
-		Sandbox:        cfg.Sandbox,
 	})
 }
 
