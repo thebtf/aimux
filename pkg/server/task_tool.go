@@ -69,7 +69,7 @@ func buildFallbackPicker(s *Server) *fallback.FallbackPicker {
 func (s *Server) registerTaskTool() {
 	s.mcp.AddTool(
 		mcp.NewTool("task",
-			mcp.WithDescription("[delegate — Loom routed, sync] Submit a task through the v5.11 task meta-router. "+
+			mcp.WithDescription("[delegate — Loom routed, sync] Submit a task through the v5.12 task meta-router. "+
 				"Provide task_class to route directly to code or review. "+
 				"Omit task_class or pass task to use the deterministic classifier. "+
 				"Review mode accepts target and gate; code mode accepts sandbox and cli driver override. "+
@@ -87,7 +87,9 @@ func (s *Server) registerTaskTool() {
 				mcp.Description("Driver CLI override for code tasks."),
 			),
 			mcp.WithString("navigator",
-				mcp.Description("Navigator CLI override for code tasks. Defaults to cross-family pick based on driver."),
+				mcp.Description("Navigator CLI override for code tasks. Defaults to cross-family pick based on driver. "+
+					"Pass \"none\" for solo mode: with sandbox=read-only driver returns unified diff to caller; "+
+					"with sandbox=workspace-write|danger driver writes files directly."),
 			),
 			mcp.WithString("resume_id",
 				mcp.Description("Loom root task_id to resume."),
@@ -99,7 +101,10 @@ func (s *Server) registerTaskTool() {
 				mcp.Description("Review sub-mode flag. Requires review routing and target."),
 			),
 			mcp.WithString("sandbox",
-				mcp.Description("Code sandbox sub-mode."),
+				mcp.Description("Code sandbox sub-mode. "+
+					"read-only: driver returns diff without writing. "+
+					"workspace-write: driver writes files within project. "+
+					"danger: driver has full filesystem access."),
 				mcp.Enum("read-only", "workspace-write", "danger"),
 			),
 			mcp.WithNumber("timeout_seconds",
