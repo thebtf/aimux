@@ -22,9 +22,39 @@ removed from the live surface. Their pre-purge architecture is frozen at
 [docs/architecture/cli-tools-current.md](docs/architecture/cli-tools-current.md).
 The next Layer 5 surface is tracked separately by AIMUX-9 / DEF-1.
 
-## Quick Start
+## Install
 
-### Build
+### From GitHub Release (recommended)
+
+Download the latest release binary for your platform:
+
+**Windows (PowerShell):**
+
+```powershell
+$version = "5.12.0"
+gh release download "v$version" --repo thebtf/aimux --pattern "aimux_${version}_windows_amd64.zip" --output aimux.zip
+Expand-Archive aimux.zip -DestinationPath "$env:LOCALAPPDATA\aimux" -Force
+Remove-Item aimux.zip
+# Add to PATH (current session):
+$env:PATH = "$env:LOCALAPPDATA\aimux;$env:PATH"
+aimux.exe --version
+```
+
+**Linux / macOS (bash):**
+
+```bash
+version="5.12.0"
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+gh release download "v${version}" --repo thebtf/aimux --pattern "aimux_${version}_${os}_${arch}.tar.gz" --output aimux.tar.gz
+mkdir -p ~/.local/bin
+tar xzf aimux.tar.gz -C ~/.local/bin aimux
+rm aimux.tar.gz
+chmod +x ~/.local/bin/aimux
+aimux --version
+```
+
+### From Source
 
 ```powershell
 $env:GOTOOLCHAIN = "go1.25.10"
@@ -32,24 +62,38 @@ go build -o aimux.exe ./cmd/aimux/
 .\aimux.exe --version
 ```
 
-Use Go 1.25.10 or newer for production builds.
+Requires Go 1.25.10 or newer.
 
-### Configure An MCP Client
+### Configure MCP Client
 
-Add the binary to your MCP client configuration:
+Add aimux to `.mcp.json` (Claude Code) or the equivalent config for your MCP
+client:
 
 ```json
 {
   "mcpServers": {
     "aimux": {
-      "command": "D:/Dev/aimux/aimux.exe",
+      "command": "aimux",
       "args": []
     }
   }
 }
 ```
 
-### Verify The Tool Surface
+If the binary is not on PATH, use the full path:
+
+```json
+{
+  "mcpServers": {
+    "aimux": {
+      "command": "C:/Users/you/AppData/Local/aimux/aimux.exe",
+      "args": []
+    }
+  }
+}
+```
+
+### Verify
 
 Run `tools/list` from any MCP-capable client. A current build should expose
 28 tools: the 4 server tools, the `task` entry point, the `think` harness,

@@ -24,9 +24,38 @@ live surface. Их pre-purge архитектура заморожена в ве
 [docs/architecture/cli-tools-current.md](docs/architecture/cli-tools-current.md).
 Следующая Layer 5 surface отслеживается отдельно в AIMUX-9 / DEF-1.
 
-## Быстрый старт
+## Установка
 
-### Сборка
+### Из GitHub Release (рекомендуется)
+
+Скачайте бинарник для вашей платформы:
+
+**Windows (PowerShell):**
+
+```powershell
+$version = "5.12.0"
+gh release download "v$version" --repo thebtf/aimux --pattern "aimux_${version}_windows_amd64.zip" --output aimux.zip
+Expand-Archive aimux.zip -DestinationPath "$env:LOCALAPPDATA\aimux" -Force
+Remove-Item aimux.zip
+$env:PATH = "$env:LOCALAPPDATA\aimux;$env:PATH"
+aimux.exe --version
+```
+
+**Linux / macOS (bash):**
+
+```bash
+version="5.12.0"
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+gh release download "v${version}" --repo thebtf/aimux --pattern "aimux_${version}_${os}_${arch}.tar.gz" --output aimux.tar.gz
+mkdir -p ~/.local/bin
+tar xzf aimux.tar.gz -C ~/.local/bin aimux
+rm aimux.tar.gz
+chmod +x ~/.local/bin/aimux
+aimux --version
+```
+
+### Из исходников
 
 ```powershell
 $env:GOTOOLCHAIN = "go1.25.10"
@@ -34,27 +63,40 @@ go build -o aimux.exe ./cmd/aimux/
 .\aimux.exe --version
 ```
 
-Для production-сборок используйте Go 1.25.10 или новее.
+Требуется Go 1.25.10+.
 
-### Подключение MCP client
+### Настройка MCP-клиента
 
-Добавьте бинарник в конфигурацию MCP client:
+Добавьте aimux в `.mcp.json` (Claude Code) или аналогичный конфиг вашего MCP-клиента:
 
 ```json
 {
   "mcpServers": {
     "aimux": {
-      "command": "D:/Dev/aimux/aimux.exe",
+      "command": "aimux",
       "args": []
     }
   }
 }
 ```
 
-### Проверка tool surface
+Если бинарник не в PATH — укажите полный путь:
 
-Вызовите `tools/list` из любого MCP-capable client. Актуальная сборка должна
-показывать 28 tools: 4 server tools, `task`, `think` harness и 22 cognitive move tools.
+```json
+{
+  "mcpServers": {
+    "aimux": {
+      "command": "C:/Users/you/AppData/Local/aimux/aimux.exe",
+      "args": []
+    }
+  }
+}
+```
+
+### Проверка
+
+Вызовите `tools/list` из любого MCP-клиента. Актуальная сборка должна
+показать 28 tools: 4 server tools, `task`, `think` harness и 22 cognitive move tools.
 
 ```json
 {
