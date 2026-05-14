@@ -1,4 +1,4 @@
-<!-- synced: 2026-05-06 source-commit: 6ce932a -->
+<!-- synced: 2026-05-13 source-commit: a667b0e -->
 [English](README.md) | [Русский](README.ru.md)
 
 # aimux
@@ -102,7 +102,18 @@ go test ./... -count=1
 
 | Tool | Назначение |
 |---|---|
-| `task` | Generic Loom-backed entry point для code/review tasks. |
+| `task` | Loom-backed entry point для code/review tasks с 3 режимами исполнения. |
+
+`task` поддерживает три режима исполнения кода через параметр `navigator`:
+
+| Режим | navigator | sandbox | Поведение |
+|---|---|---|---|
+| **Pair** | имя CLI (напр. `"codex"`) | любой | driver(read-only) → diff → navigator(review) → apply → gate |
+| **Solo write** | `"none"` | `workspace-write` / `danger` | driver пишет файлы напрямую → gate проверяет |
+| **Solo diff** | `"none"` | `read-only` | driver возвращает unified diff вызывающему агенту |
+
+Codex CLI всегда использует `--dangerously-bypass-approvals-and-sandbox
+--skip-git-repo-check --json`. Промпт через stdin определяет поведение.
 
 ### Think Harness
 

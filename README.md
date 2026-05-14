@@ -101,7 +101,19 @@ for customer-mode release walkthroughs.
 
 | Tool | Purpose |
 |---|---|
-| `task` | Route code and review tasks through the generic Loom-backed worker entry point. |
+| `task` | Route code and review tasks through the Loom-backed worker with 3 execution modes. |
+
+The `task` tool supports three code execution modes controlled by the `navigator`
+parameter:
+
+| Mode | navigator | sandbox | Behavior |
+|---|---|---|---|
+| **Pair** | CLI name (e.g. `"codex"`) | any | driver(read-only) → diff → navigator(review) → apply → gate |
+| **Solo write** | `"none"` | `workspace-write` / `danger` | driver writes files directly → gate verifies |
+| **Solo diff** | `"none"` | `read-only` | driver returns unified diff to caller |
+
+Codex CLI always uses `--dangerously-bypass-approvals-and-sandbox
+--skip-git-repo-check --json`. Prompt delivered via stdin controls mode behavior.
 
 ### Think Harness
 
@@ -169,8 +181,13 @@ flowchart TD
     Budget --> Research[deepresearch handler]
     Budget --> Upgrade[upgrade handler]
     Budget --> Think[think harness and cognitive move handlers]
+    Budget --> Task[task router]
 
     Sessions --> Loom[LoomEngine]
+    Task --> Loom
+    Task --> CodeWorker[code worker: pair / solo write / solo diff]
+    Task --> ReviewWorker[review worker: structural / behavioural / adversarial]
+    CodeWorker --> Codex[codex CLI via pipe + stdin]
     Loom --> SQLite[(SQLite task/session state)]
     Research --> Gemini[Gemini SDK]
     Think --> Gates[pattern gates and advisor]
@@ -199,6 +216,9 @@ The Loom engine is also a standalone nested Go module:
 | `pkg/server/` | MCP tool registration, handlers, response budgeting, and transport wiring. |
 | `pkg/think/` | Think pattern execution, gates, and advisor. |
 | `pkg/tools/deepresearch/` | Gemini-backed deep research. |
+| `pkg/executor/code/` | Code worker: pair rounds, solo modes, FSM, diff apply, gate. |
+| `pkg/executor/review/` | Review worker: multi-pass structural/behavioural/adversarial pipeline. |
+| `pkg/executor/fallback/` | Cross-CLI fallback engine with score-based re-ranking. |
 | `pkg/upgrade/`, `pkg/updater/` | Binary update, local source install, and handoff/deferred coordination. |
 | `pkg/session/` | Session metadata store. |
 | `loom/` | Standalone durable task engine module. |
@@ -214,13 +234,13 @@ Current production surface:
 - Binary update with local source install and deferred fallback when live handoff is not supported.
 - Caller-centered `think` harness and 22 local cognitive move tools.
 - Loom-backed task state and recovery.
+- Task entry point with 3 execution modes: pair (driver+navigator), solo write, solo diff.
 
 Out of current scope:
 
-- Direct CLI execution over MCP.
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
-- Pipeline v5 Layer 5 exposure.
+- Pipeline v5 Layer 5 exposure (beyond the task entry point).
 
 Those removed surfaces are not runtime defects in the current build. They are
 future design work under AIMUX-9 / DEF-1.
