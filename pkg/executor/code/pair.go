@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -146,6 +147,121 @@ func RunRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg 
 	verdict.NavigatorTaskID = navigatorTaskID
 	verdict.ThreadID = taskThreadID(driverTask)
 	return verdict, nil
+}
+
+// GitDiffer captures the working-tree diff after the driver writes files.
+type GitDiffer interface {
+	Diff(ctx context.Context, cwd string) (string, error)
+	Revert(ctx context.Context, cwd string) error
+}
+
+// RunWriteReviewRound runs a "write-then-review" pair round: the driver writes
+// files directly (like solo write), git diff captures the real changes, and the
+// navigator reviews the actual diff instead of an AI-generated one.
+func RunWriteReviewRound(ctx context.Context, prompt string, criteria SuccessCriteria, cfg PairConfig, git GitDiffer) (Verdict, error) {
+	if err := validatePairConfig(cfg); err != nil {
+		return Verdict{}, err
+	}
+	if git == nil {
+		return Verdict{}, types.NewCapabilityMismatch("write-review round requires GitDiffer", nil)
+	}
+
+	soloPrompt, err := renderSoloDriverPrompt(prompt, cfg)
+	if err != nil {
+		return Verdict{}, err
+	}
+	metadata := driverMetadata(cfg)
+	metadata["solo_mode"] = true
+	metadata["sandbox"] = "workspace-write"
+	metadata["pair_write_review"] = true
+
+	driverTaskID, err := cfg.Loom.Submit(ctx, loom.TaskRequest{
+		WorkerType:   driverWorkerType(cfg),
+		ProjectID:    cfg.ProjectID,
+		RequestID:    cfg.RequestID,
+		ParentTaskID: cfg.ParentTaskID,
+		TenantID:     cfg.TenantID,
+		Prompt:       soloPrompt,
+		CWD:          cfg.CWD,
+		Env:          cloneEnv(cfg.Env),
+		CLI:          cfg.DriverCLI,
+		Role:         "solo",
+		Model:        cfg.Model,
+		Effort:       cfg.Effort,
+		Metadata:     metadata,
+	})
+	if err != nil {
+		return Verdict{}, fmt.Errorf("submit driver sub-task: %w", err)
+	}
+
+	driverTask, err := waitForTask(ctx, cfg, driverTaskID)
+	if err != nil {
+		return Verdict{}, fmt.Errorf("driver sub-task: %w", err)
+	}
+
+	diff, err := git.Diff(ctx, cfg.CWD)
+	if err != nil {
+		return Verdict{}, fmt.Errorf("capture driver diff: %w", err)
+	}
+	if strings.TrimSpace(diff) == "" {
+		return Verdict{}, types.NewUserInputError("driver produced no file changes", nil)
+	}
+
+	navPrompt, err := renderNavigatorPrompt(prompt, diff, criteria, cfg)
+	if err != nil {
+		return Verdict{}, err
+	}
+	navigatorTaskID, err := cfg.Loom.Submit(ctx, loom.TaskRequest{
+		WorkerType:   navigatorWorkerType(cfg),
+		ProjectID:    cfg.ProjectID,
+		RequestID:    cfg.RequestID,
+		ParentTaskID: cfg.ParentTaskID,
+		TenantID:     cfg.TenantID,
+		Prompt:       navPrompt,
+		CWD:          cfg.CWD,
+		Env:          cloneEnv(cfg.Env),
+		CLI:          cfg.NavigatorCLI,
+		Role:         "navigator",
+		Model:        cfg.Model,
+		Effort:       cfg.Effort,
+		Metadata:     navigatorMetadata(cfg),
+	})
+	if err != nil {
+		return Verdict{}, fmt.Errorf("submit navigator sub-task: %w", err)
+	}
+
+	navigatorTask, navErr := waitForTask(ctx, cfg, navigatorTaskID)
+
+	baseVerdict := Verdict{
+		DriverTaskID:    driverTaskID,
+		NavigatorTaskID: navigatorTaskID,
+		ThreadID:        taskThreadID(driverTask),
+	}
+
+	if navErr != nil {
+		baseVerdict.Action = StateApply
+		baseVerdict.Confidence = 0.55
+		baseVerdict.Diff = diff
+		baseVerdict.Evidence = "navigator timeout fallback: driver changes on disk, gate-only verification"
+		return baseVerdict, nil
+	}
+
+	parsed, parseErr := parseNavigatorVerdict(navigatorTask.Result, diff)
+	if parseErr != nil || parsed.Action == StateEscalate {
+		baseVerdict.Action = StateApply
+		baseVerdict.Confidence = 0.55
+		baseVerdict.Diff = diff
+		if parseErr != nil {
+			baseVerdict.Evidence = "navigator parse fallback: " + truncate(navigatorTask.Result, 200)
+		} else {
+			baseVerdict.Evidence = "navigator escalate overridden: " + truncate(parsed.Evidence, 200)
+		}
+		return baseVerdict, nil
+	}
+	parsed.DriverTaskID = driverTaskID
+	parsed.NavigatorTaskID = navigatorTaskID
+	parsed.ThreadID = taskThreadID(driverTask)
+	return parsed, nil
 }
 
 // SoloResult is the output of a solo driver round (no navigator).
@@ -331,17 +447,90 @@ func cancelTaskIfSupported(client LoomClient, taskID string) {
 }
 
 func parseNavigatorVerdict(output string, driverDiff string) (Verdict, error) {
-	var raw navigatorVerdict
-	if err := json.Unmarshal([]byte(output), &raw); err != nil {
-		return Verdict{}, types.NewUserInputError("navigator verdict must be JSON", err)
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return Verdict{}, types.NewUserInputError("navigator returned empty output", nil)
 	}
-	actionText := strings.ToUpper(strings.TrimSpace(raw.Verdict))
-	if actionText == "" {
-		actionText = strings.ToUpper(strings.TrimSpace(raw.Action))
+	if v, err := tryParseVerdictJSON(output); err == nil {
+		return finalizeVerdict(v, driverDiff)
 	}
+	if extracted := extractVerdictJSON(output); extracted != "" {
+		if v, err := tryParseVerdictJSON(extracted); err == nil {
+			return finalizeVerdict(v, driverDiff)
+		}
+	}
+	if v, ok := heuristicVerdict(output, driverDiff); ok {
+		return v, nil
+	}
+	return Verdict{}, types.NewUserInputError("navigator output contains no parseable verdict", nil)
+}
 
+func tryParseVerdictJSON(s string) (navigatorVerdict, error) {
+	var raw navigatorVerdict
+	if err := json.Unmarshal([]byte(s), &raw); err != nil {
+		return raw, err
+	}
+	action := strings.ToUpper(strings.TrimSpace(raw.Verdict))
+	if action == "" {
+		action = strings.ToUpper(strings.TrimSpace(raw.Action))
+	}
+	if action == "" {
+		return raw, fmt.Errorf("no verdict or action field")
+	}
+	raw.Verdict = action
+	return raw, nil
+}
+
+var jsonObjectRE = regexp.MustCompile(`(?s)\{[^{}]*(?:"verdict"|"action")[^{}]*\}`)
+
+func extractVerdictJSON(text string) string {
+	for _, m := range jsonObjectRE.FindAllString(text, -1) {
+		var raw navigatorVerdict
+		if err := json.Unmarshal([]byte(m), &raw); err == nil {
+			action := strings.ToUpper(strings.TrimSpace(raw.Verdict))
+			if action == "" {
+				action = strings.ToUpper(strings.TrimSpace(raw.Action))
+			}
+			switch State(action) {
+			case StateApply, StateRevise, StateRetry, StateEscalate:
+				return m
+			}
+		}
+	}
+	return ""
+}
+
+var heuristicPatterns = []struct {
+	re     *regexp.Regexp
+	action State
+}{
+	{regexp.MustCompile(`(?i)\b(LGTM|approve[ds]?|looks?\s+good|no\s+issues?|ship\s+it)\b`), StateApply},
+	{regexp.MustCompile(`(?i)\b(appl(?:y|ied)|accept(?:ed)?)\b`), StateApply},
+	{regexp.MustCompile(`(?i)\b(revis(?:e|ion)|needs?\s+changes?|suggest(?:ed|ion)?)\b`), StateRevise},
+	{regexp.MustCompile(`(?i)\b(retry|try\s+again|redo)\b`), StateRetry},
+	{regexp.MustCompile(`(?i)\b(reject(?:ed)?|block(?:ed)?|escalat(?:e|ed)|cannot|unsafe)\b`), StateEscalate},
+}
+
+func heuristicVerdict(text string, driverDiff string) (Verdict, bool) {
+	upper := strings.ToUpper(text)
+	for _, p := range heuristicPatterns {
+		if p.re.MatchString(text) {
+			v := Verdict{Action: p.action, Confidence: 0.6, Evidence: truncate(text, 500)}
+			if p.action == StateApply {
+				v.Diff = driverDiff
+			}
+			if strings.Contains(upper, "APPLY") || strings.Contains(upper, "APPROVE") || strings.Contains(upper, "LGTM") {
+				v.Confidence = 0.75
+			}
+			return v, true
+		}
+	}
+	return Verdict{}, false
+}
+
+func finalizeVerdict(raw navigatorVerdict, driverDiff string) (Verdict, error) {
 	verdict := Verdict{
-		Action:     State(actionText),
+		Action:     State(raw.Verdict),
 		Confidence: raw.Confidence,
 		Diff:       strings.TrimSpace(raw.Diff),
 		Feedback:   raw.Feedback,
@@ -357,8 +546,15 @@ func parseNavigatorVerdict(output string, driverDiff string) (Verdict, error) {
 	case StateApply, StateRevise, StateRetry, StateEscalate:
 		return verdict, nil
 	default:
-		return Verdict{}, types.NewUserInputError(fmt.Sprintf("unsupported navigator verdict %q", actionText), nil)
+		return Verdict{}, types.NewUserInputError(fmt.Sprintf("unsupported navigator verdict %q", verdict.Action), nil)
 	}
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 func taskThreadID(task *loom.Task) string {

@@ -158,6 +158,95 @@ func TestRunRoundPersistsDriverThreadID(t *testing.T) {
 	}
 }
 
+func TestParseNavigatorVerdictJSONExtraction(t *testing.T) {
+	tests := []struct {
+		name       string
+		output     string
+		wantAction State
+	}{
+		{
+			name:       "json embedded in prose",
+			output:     "I reviewed the diff carefully.\n\n```json\n{\"verdict\":\"APPLY\",\"confidence\":0.85,\"evidence\":\"all checks pass\"}\n```\n\nLooks good overall.",
+			wantAction: StateApply,
+		},
+		{
+			name:       "json preceded by explanation",
+			output:     "After thorough review:\n{\"verdict\":\"REVISE\",\"confidence\":0.70,\"diff\":\"--- a\\n+++ b\\n+fix\",\"evidence\":\"type error found\"}",
+			wantAction: StateRevise,
+		},
+		{
+			name:       "action field instead of verdict",
+			output:     `{"action":"APPLY","confidence":0.90,"evidence":"ok"}`,
+			wantAction: StateApply,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict, err := parseNavigatorVerdict(tc.output, testDriverDiff)
+			if err != nil {
+				t.Fatalf("parseNavigatorVerdict returned error: %v", err)
+			}
+			if verdict.Action != tc.wantAction {
+				t.Fatalf("action = %s, want %s", verdict.Action, tc.wantAction)
+			}
+		})
+	}
+}
+
+func TestParseNavigatorVerdictHeuristic(t *testing.T) {
+	tests := []struct {
+		name       string
+		output     string
+		wantAction State
+	}{
+		{
+			name:       "approval keywords",
+			output:     "The code looks good to me. LGTM - no issues found with the implementation.",
+			wantAction: StateApply,
+		},
+		{
+			name:       "approved keyword",
+			output:     "I have reviewed the changes and they are approved. Ship it.",
+			wantAction: StateApply,
+		},
+		{
+			name:       "needs changes",
+			output:     "This needs changes before it can be merged. The error handling is incomplete.",
+			wantAction: StateRevise,
+		},
+		{
+			name:       "rejection",
+			output:     "I reject this diff because it introduces a security vulnerability. Unsafe patterns detected.",
+			wantAction: StateEscalate,
+		},
+		{
+			name:       "retry request",
+			output:     "Please try again with the updated requirements. The scope has changed.",
+			wantAction: StateRetry,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict, err := parseNavigatorVerdict(tc.output, testDriverDiff)
+			if err != nil {
+				t.Fatalf("parseNavigatorVerdict returned error: %v", err)
+			}
+			if verdict.Action != tc.wantAction {
+				t.Fatalf("action = %s, want %s", verdict.Action, tc.wantAction)
+			}
+		})
+	}
+}
+
+func TestParseNavigatorVerdictEmptyOutput(t *testing.T) {
+	_, err := parseNavigatorVerdict("", testDriverDiff)
+	if err == nil {
+		t.Fatal("expected error for empty output")
+	}
+}
+
 func TestWaitForTaskCancelsChildTaskWhenWaitEnds(t *testing.T) {
 	mock := &cancelRecordingLoom{
 		task: &loom.Task{

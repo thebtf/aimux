@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0] — 2026-05-20 — Pair mode write-review architecture
+
+### Added
+
+- Write-review pair mode architecture: driver writes files directly (proven solo-write
+  path), `git diff` captures real changes, navigator reviews the actual diff instead
+  of an AI-generated one. Eliminates the fragile AI-diff-apply step that caused context
+  mismatch failures with real CLI navigators.
+- Three-phase navigator verdict parsing: strict JSON → embedded JSON extraction from
+  prose → heuristic keyword matching (LGTM/approve/reject/revise/retry). Real CLI
+  navigators no longer need to output perfect JSON to produce a usable verdict.
+- Navigator timeout and escalate fallback: when the navigator CLI times out or returns
+  an escalate verdict in write-review mode, the round auto-approves with reduced
+  confidence and lets the gate (go build + go test) do the real verification.
+- `ExecGitDiffer` implementation (`pkg/executor/code/gitdiff.go`) with `git add -N`
+  for detecting new untracked files created by the driver.
+
+### Changed
+
+- Updated `github.com/thebtf/mcp-mux/muxcore` from v0.24.1 to v0.24.3. Key upstream
+  fixes: daemon rejects spawns during shutdown/restart (prevents competing owners on
+  reconnect), non-lossy event-hook completion signal under race scheduling, and published
+  consumer integration contract in `muxcore/README.md`.
+
+### Verification
+
+- Task mode stability test: 9/9 matrix (solo diff × 3, solo write × 3, pair × 3)
+  confirmed with real codex agent tasks across easy, medium, and hard complexity levels.
+- 2217 tests pass across 56 packages, 0 failures.
+
+## [5.12.0] — 2026-05-13 — AIMUX-22 Task Router 3-Mode Architecture
+
+### Added
+
+- Task tool with 3 execution modes: solo diff (read-only, returns unified diff),
+  solo write (driver writes files, gate verifies), and pair (driver + navigator review).
+- Codex CLI unified flags: `--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json`.
+- Prompt-via-stdin for codex (positional arg is role definition, not prompt).
+
+### Verification
+
+- Solo diff and solo write verified e2e via mcp-launcher.
+- Pair mode structurally complete with mock e2e (real CLI e2e deferred to v5.13.0).
+
+## [5.11.2] — 2026-05-10 — CI Node 24 migration
+
+### Fixed
+
+- Bumped `actions/checkout@v6`, `actions/setup-go@v6`, and `goreleaser/goreleaser-action@v7`
+  in `release.yml` for Node 24 runtime compatibility.
 - Fixed the tag release workflow so it runs deterministic release gates without
   requiring private OpenAI or Anthropic account secrets.
 
@@ -1760,7 +1810,18 @@ _Two targeted improvements following v3.3.0._
 
 - Fixed resolve layer to always pipe prompt via stdin, removed length threshold logic (#52)
 
-[Unreleased]: https://github.com/thebtf/aimux/compare/v5.7.0...HEAD
+[Unreleased]: https://github.com/thebtf/aimux/compare/v5.13.0...HEAD
+[5.13.0]: https://github.com/thebtf/aimux/compare/v5.12.0...v5.13.0
+[5.12.0]: https://github.com/thebtf/aimux/compare/v5.11.2...v5.12.0
+[5.11.2]: https://github.com/thebtf/aimux/compare/v5.11.1...v5.11.2
+[5.11.1]: https://github.com/thebtf/aimux/compare/v5.11.0...v5.11.1
+[5.11.0]: https://github.com/thebtf/aimux/compare/v5.10.1...v5.11.0
+[5.10.1]: https://github.com/thebtf/aimux/compare/v5.10.0...v5.10.1
+[5.10.0]: https://github.com/thebtf/aimux/compare/v5.9.0...v5.10.0
+[5.9.0]: https://github.com/thebtf/aimux/compare/v5.8.2...v5.9.0
+[5.8.2]: https://github.com/thebtf/aimux/compare/v5.8.1...v5.8.2
+[5.8.1]: https://github.com/thebtf/aimux/compare/v5.8.0...v5.8.1
+[5.8.0]: https://github.com/thebtf/aimux/compare/v5.7.0...v5.8.0
 [5.7.0]: https://github.com/thebtf/aimux/compare/v5.6.1...v5.7.0
 [5.6.1]: https://github.com/thebtf/aimux/compare/v5.6.0...v5.6.1
 [5.6.0]: https://github.com/thebtf/aimux/compare/v5.5.0...v5.6.0

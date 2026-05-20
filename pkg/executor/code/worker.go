@@ -65,6 +65,7 @@ type CodeWorkerConfig struct {
 	Apply               ApplyFunc
 	DriverResumer       ResumeDelegate
 	PairSelector        PairSelector
+	Git                 GitDiffer
 	DriverCLI           types.CLIName
 	NavigatorCLI        types.CLIName
 	MaxRounds           int
@@ -79,6 +80,7 @@ type CodeWorker struct {
 	apply               ApplyFunc
 	driverResumer       ResumeDelegate
 	pairSelector        PairSelector
+	git                 GitDiffer
 	driverCLI           types.CLIName
 	navigatorCLI        types.CLIName
 	maxRounds           int
@@ -115,6 +117,11 @@ func NewCodeWorker(cfg CodeWorkerConfig) (*CodeWorker, error) {
 		driverCLI = "codex"
 	}
 
+	git := cfg.Git
+	if git == nil {
+		git = ExecGitDiffer{}
+	}
+
 	return &CodeWorker{
 		loom:                cfg.Loom,
 		pairRunner:          pairRunner,
@@ -122,6 +129,7 @@ func NewCodeWorker(cfg CodeWorkerConfig) (*CodeWorker, error) {
 		apply:               apply,
 		driverResumer:       cfg.DriverResumer,
 		pairSelector:        cfg.PairSelector,
+		git:                 git,
 		driverCLI:           driverCLI,
 		navigatorCLI:        cfg.NavigatorCLI,
 		maxRounds:           maxRounds,
@@ -160,6 +168,8 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 
 	recordSelectedPair(task, driverCLI, navigatorCLI)
 
+	useWriteReview := writeSandboxForTask(task)
+
 	prompt := task.Prompt
 	var lastVerdict Verdict
 	if cliErr := machine.Advance(StateDriver, "code worker prepared pair round"); cliErr != nil {
@@ -167,7 +177,7 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 	}
 
 	for {
-		verdict, err := w.pairRunner.RunRound(ctx, prompt, criteria, PairConfig{
+		pairCfg := PairConfig{
 			Loom:           w.loom,
 			ParentTaskID:   task.ID,
 			ProjectID:      task.ProjectID,
@@ -182,7 +192,15 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 			Effort:         task.Effort,
 			Sandbox:        sandboxForTask(task),
 			TaskTimeout:    pairTaskTimeout(task),
-		})
+		}
+
+		var verdict Verdict
+		var err error
+		if useWriteReview {
+			verdict, err = RunWriteReviewRound(ctx, prompt, criteria, pairCfg, w.git)
+		} else {
+			verdict, err = w.pairRunner.RunRound(ctx, prompt, criteria, pairCfg)
+		}
 		if err != nil {
 			return w.failTask(task, machine, err)
 		}
@@ -194,12 +212,22 @@ func (w *CodeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.Worker
 
 		switch verdict.Action {
 		case StateApply, StateRevise:
+			if useWriteReview {
+				result, err := w.gateOnly(ctx, task, machine, verdict)
+				if err != nil {
+					return result, err
+				}
+				return result, nil
+			}
 			result, err := w.applyAndGate(ctx, task, machine, verdict)
 			if err != nil {
 				return result, err
 			}
 			return result, nil
 		case StateRetry:
+			if useWriteReview {
+				_ = w.git.Revert(ctx, task.CWD)
+			}
 			if cliErr := machine.Advance(StateRetry, "navigator requested retry"); cliErr != nil {
 				return w.failTask(task, machine, cliErr)
 			}
@@ -279,6 +307,38 @@ func sandboxForTask(task *loom.Task) string {
 
 func readOnlySandboxForTask(task *loom.Task) bool {
 	return sandboxForTask(task) == "read-only"
+}
+
+func writeSandboxForTask(task *loom.Task) bool {
+	s := sandboxForTask(task)
+	return s == "workspace-write" || s == "danger"
+}
+
+func (w *CodeWorker) gateOnly(ctx context.Context, task *loom.Task, machine *Machine, verdict Verdict) (*loom.WorkerResult, error) {
+	targetState := verdict.Action
+	if cliErr := machine.Advance(targetState, "navigator approved write-review for "+strings.ToLower(string(targetState))); cliErr != nil {
+		return w.failTask(task, machine, cliErr)
+	}
+	if cliErr := machine.Advance(StateGate, "driver files already on disk"); cliErr != nil {
+		return w.failTask(task, machine, cliErr)
+	}
+
+	gateResult := w.gateRunner.Run(ctx, applygate.Project{CWD: task.CWD})
+	w.recordTaskMetadata(task, machine, DefaultSuccessCriteria(task.Metadata != nil && task.Metadata["spec_active"] == true), verdict, string(gateResult.Status))
+	if gateResult.Status == applygate.StatusFailed {
+		if cliErr := machine.Advance(StateError, "gate failed after write-review"); cliErr != nil {
+			return w.failTask(task, machine, cliErr)
+		}
+		return w.failTask(task, machine, types.NewUserInputError("code gate failed: "+gateResult.Reason, nil))
+	}
+	if cliErr := machine.Advance(StateDone, "gate "+string(gateResult.Status)+" after write-review"); cliErr != nil {
+		return w.failTask(task, machine, cliErr)
+	}
+	w.recordTaskMetadata(task, machine, DefaultSuccessCriteria(task.Metadata != nil && task.Metadata["spec_active"] == true), verdict, string(gateResult.Status))
+	return &loom.WorkerResult{
+		Content:  "code task completed (write-review mode)",
+		Metadata: cloneMetadata(task.Metadata),
+	}, nil
 }
 
 func (w *CodeWorker) failTask(task *loom.Task, machine *Machine, err error) (*loom.WorkerResult, error) {
