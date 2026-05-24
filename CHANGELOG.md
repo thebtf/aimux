@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.2] — 2026-05-25 — Security: x/net + x/crypto bump
+
+### Security
+
+- Bumped `golang.org/x/net` v0.53.0 → v0.55.0 (GO-2026-5026: ASCII-only
+  Punycode-encoded label rejection bypass in `idna`).
+- Bumped `golang.org/x/crypto` v0.50.0 → v0.52.0 (GO-2026-5018: pathological
+  RSA/DSA parameters causing DoS in `ssh.ParsePublicKey`).
+- Transitive: `golang.org/x/sys` v0.43.0 → v0.45.0, `golang.org/x/text`
+  v0.36.0 → v0.37.0.
+
+Both CVEs were published after v5.13.0 shipped and triggered govulncheck
+failures during the v5.13.1 release attempt; v5.13.2 carries the v5.13.1
+muxcore follow-ups plus the dependency bumps. No source code changes.
+
 ## [5.13.1] — 2026-05-25 — muxcore consumer audit follow-ups
 
 ### Added
@@ -1830,6 +1845,7 @@ _Two targeted improvements following v3.3.0._
 - Fixed resolve layer to always pipe prompt via stdin, removed length threshold logic (#52)
 
 [Unreleased]: https://github.com/thebtf/aimux/compare/v5.13.0...HEAD
+[5.13.2]: https://github.com/thebtf/aimux/compare/v5.13.1...v5.13.2
 [5.13.1]: https://github.com/thebtf/aimux/compare/v5.13.0...v5.13.1
 [5.13.0]: https://github.com/thebtf/aimux/compare/v5.12.0...v5.13.0
 [5.12.0]: https://github.com/thebtf/aimux/compare/v5.11.2...v5.12.0
