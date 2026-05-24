@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Daemon mode logs the resolved successor binary at startup
+  (`daemon successor: …`), reflecting muxcore's lookup order:
+  `MCPMUX_SUCCESSOR_EXE` → `MCPMUX_ACTIVE_ENGINE_FILE` → `os.Executable()`.
+  Pure observability — does not change muxcore behaviour; lets operators
+  confirm a launcher+versioned-engine override took effect. Addresses
+  muxcore consumer-integration contract item #10.
+
+### Changed
+
+- Daemon `engine.Config` now sets `Handler: srv.StdioHandler()` as a
+  defence-in-depth fallback alongside `SessionHandler`. Proxy mode is still
+  rejected by `detectMode()` per FR-4 (AIMUX-6 startup-path spec); the
+  fallback satisfies muxcore consumer-integration contract item #4 without
+  changing current runtime behaviour.
+
 ## [5.13.0] — 2026-05-20 — Pair mode write-review architecture
 
 ### Added

@@ -222,6 +222,15 @@ func run() error {
 		engineName := aimuxServer.ResolveEngineName()
 
 		log.Info("aimux v%s ready — serving MCP via muxcore engine (name=%s)", aimuxServer.Version, engineName)
+		// Successor binary muxcore will re-exec on graceful restart. mode.go FR-4
+		// rejects proxy mode unconditionally, so successor resolution only matters
+		// for daemon-driven handoff. aimux uses the rename-trick deploy model
+		// (pkg/upgrade/atomic_replace_windows.go) where the configured executable
+		// path holds the new bytes after atomic replace — so os.Executable() is
+		// the correct default. Log the resolved choice so operators can confirm
+		// override env vars (MCPMUX_SUCCESSOR_EXE / MCPMUX_ACTIVE_ENGINE_FILE)
+		// took effect when they expect a launcher+versioned-engine layout.
+		logResolvedSuccessor(log)
 		frameLimiter := ratelimit.NewTenantRateLimiter()
 		frameLimiter.SetRegistry(tenantReg)
 		// Wire the hot-reload drain controller so AuthorizeSession refuses new
@@ -231,6 +240,12 @@ func run() error {
 			Name:             engineName,
 			Persistent:       true,
 			SessionHandler:   srv.SessionHandler(),
+			// Handler is a defence-in-depth fallback that muxcore would select
+			// in proxy mode (MCP_MUX_SESSION_ID set) — not reached today because
+			// detectMode() rejects MCP_MUX_SESSION_ID unconditionally per FR-4
+			// (AIMUX-6 spec). Setting it costs nothing and satisfies muxcore
+			// consumer-integration contract item #4 (proxy-mode compatibility).
+			Handler:          srv.StdioHandler(),
 			Logger:           log.StdLogger(),
 			OnFrameReceived:  frameLimiter.OnFrameReceived,
 			AuthorizeSession: authAdapter.Authorize,
@@ -257,6 +272,29 @@ func run() error {
 		}
 		return nil
 	}
+}
+
+// logResolvedSuccessor records the binary muxcore will spawn on graceful
+// restart. Replicates muxcore/daemon.successorExecutable() lookup order so
+// startup logs reflect the actual env-driven choice (versioned-engine layout
+// via MCPMUX_ACTIVE_ENGINE_FILE, explicit override via MCPMUX_SUCCESSOR_EXE,
+// or os.Executable() fallback). Pure observability — does not change muxcore
+// behaviour; muxcore re-reads the env vars at handoff time itself.
+func logResolvedSuccessor(log *logger.Logger) {
+	if explicit := os.Getenv("MCPMUX_SUCCESSOR_EXE"); explicit != "" {
+		log.Info("daemon successor: MCPMUX_SUCCESSOR_EXE=%s", explicit)
+		return
+	}
+	if pointer := os.Getenv("MCPMUX_ACTIVE_ENGINE_FILE"); pointer != "" {
+		log.Info("daemon successor: MCPMUX_ACTIVE_ENGINE_FILE=%s", pointer)
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		log.Warn("daemon successor: os.Executable() failed: %v (handoff may fail)", err)
+		return
+	}
+	log.Info("daemon successor: os.Executable() fallback = %s", exe)
 }
 
 func findConfigDir() string {
