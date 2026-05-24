@@ -1,5 +1,0 @@
-./algorithms.go
-./digest.go
-./httpsig.go
-./signing.go
-./verifying.go

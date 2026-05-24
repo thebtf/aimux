@@ -1,6 +1,7 @@
 # Binaries
 /aimux
 /aimux.exe
+/bin/
 /dist/
 *.exe
 *.exe.old
@@ -45,6 +46,12 @@ cover.out
 .e2e-test.log
 
 .tmp/
+
+# Go build cache (when GOCACHE points into the repo)
+.cache/
+
+# graphify tool output
+graphify-out/
 
 # Local Go workspace (multi-module dev)
 go.work

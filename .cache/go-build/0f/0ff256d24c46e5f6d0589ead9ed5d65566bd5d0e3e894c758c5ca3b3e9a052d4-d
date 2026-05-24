@@ -1,5 +1,0 @@
-./cli.go
-./cli_spawn.go
-./investigator.go
-./orchestrator.go
-./thinker.go

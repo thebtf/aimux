@@ -19,19 +19,27 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 
+# Deploy targets — both prod (aimux.exe) and dev (aimux-dev.exe) live under bin/.
+# graceful-upgrade-dev only refreshes the dev binary; aimux.exe is reserved for
+# tagged releases installed via the release flow.
+$binDir = "bin"
+$targetDev = Join-Path $binDir "aimux-dev.exe"
+$stageNext = Join-Path $binDir "aimux-dev-next.exe"
+
 # Step 1 — build (unless skipped)
 if (-not $SkipBuild) {
-    Write-Host "[1/5] building aimux-dev-next.exe with version injection..."
-    & ./scripts/build.ps1 -Output "aimux-dev-next.exe"
+    Write-Host "[1/5] building $stageNext with version injection..."
+    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+    & ./scripts/build.ps1 -Output $stageNext
     if ($LASTEXITCODE -ne 0) { throw "build failed (rc=$LASTEXITCODE)" }
 }
 
-if (-not (Test-Path "aimux-dev-next.exe")) {
-    throw "aimux-dev-next.exe not found — run without -SkipBuild or build manually"
+if (-not (Test-Path $stageNext)) {
+    throw "$stageNext not found — run without -SkipBuild or build manually"
 }
 
-$newSize = (Get-Item "aimux-dev-next.exe").Length
-$newVersion = & ./aimux-dev-next.exe --version
+$newSize = (Get-Item $stageNext).Length
+$newVersion = & $stageNext --version
 if ($Verbose) { Write-Host "  new binary: $newSize bytes, version: $newVersion" }
 
 # Step 2 — kill all aimux-dev processes (daemon + shims)
@@ -53,7 +61,11 @@ Start-Sleep -Milliseconds 1500
 
 # Step 3 — clean stale rotation files
 Write-Host "[3/5] cleaning stale rotation files..."
-$stalePaths = @("aimux-dev.exe.old", "aimux-dev.exe~", "aimux-dev-next.exe~")
+$stalePaths = @(
+    (Join-Path $binDir "aimux-dev.exe.old"),
+    (Join-Path $binDir "aimux-dev.exe~"),
+    (Join-Path $binDir "aimux-dev-next.exe~")
+)
 foreach ($path in $stalePaths) {
     if (Test-Path $path) {
         try {
@@ -66,13 +78,13 @@ foreach ($path in $stalePaths) {
 }
 
 # Step 4 — replace + restore -next (so MCP config that points at -next finds a fresh binary)
-Write-Host "[4/5] replacing aimux-dev.exe..."
-Move-Item "aimux-dev-next.exe" "aimux-dev.exe" -Force
-Copy-Item "aimux-dev.exe" "aimux-dev-next.exe"
+Write-Host "[4/5] replacing $targetDev..."
+Move-Item $stageNext $targetDev -Force
+Copy-Item $targetDev $stageNext
 
 # Step 5 — verify
 Write-Host "[5/5] verifying new binary..."
-$verifyVersion = & ./aimux-dev.exe --version
+$verifyVersion = & $targetDev --version
 Write-Host "  $verifyVersion"
 
 if ($verifyVersion -ne $newVersion) {
