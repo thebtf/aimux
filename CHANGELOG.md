@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.1] — 2026-05-25 — muxcore consumer audit follow-ups
+
 ### Added
 
 - Daemon mode logs the resolved successor binary at startup
@@ -1828,6 +1830,7 @@ _Two targeted improvements following v3.3.0._
 - Fixed resolve layer to always pipe prompt via stdin, removed length threshold logic (#52)
 
 [Unreleased]: https://github.com/thebtf/aimux/compare/v5.13.0...HEAD
+[5.13.1]: https://github.com/thebtf/aimux/compare/v5.13.0...v5.13.1
 [5.13.0]: https://github.com/thebtf/aimux/compare/v5.12.0...v5.13.0
 [5.12.0]: https://github.com/thebtf/aimux/compare/v5.11.2...v5.12.0
 [5.11.2]: https://github.com/thebtf/aimux/compare/v5.11.1...v5.11.2
