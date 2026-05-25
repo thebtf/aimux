@@ -6,7 +6,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -48,8 +47,8 @@ func (s *Server) registerSkillPrompts() {
 // handleSkillPrompt returns a prompt handler closure for the named skill.
 // The closure builds SkillData from live server state and renders the template.
 func (s *Server) handleSkillPrompt(name string) func(context.Context, mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-	return func(_ context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		data := s.buildSkillData(req)
+	return func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		data := s.buildSkillData(ctx, req)
 		rendered, err := s.skillEngine.Render(name, data)
 		if err != nil {
 			return nil, fmt.Errorf("render skill %q: %w", name, err)
@@ -71,7 +70,9 @@ func (s *Server) handleSkillPrompt(name string) func(context.Context, mcp.GetPro
 }
 
 // buildSkillData populates a SkillData struct from live server state and request arguments.
-func (s *Server) buildSkillData(req mcp.GetPromptRequest) *skills.SkillData {
+// ctx must carry the ProjectContext so that skill discovery uses the caller's project CWD,
+// not the daemon's own working directory (#243).
+func (s *Server) buildSkillData(ctx context.Context, req mcp.GetPromptRequest) *skills.SkillData {
 	enabledCLIs := s.registry.EnabledCLIs()
 
 	// Compute role routing for the standard set of roles.
@@ -108,10 +109,15 @@ func (s *Server) buildSkillData(req mcp.GetPromptRequest) *skills.SkillData {
 		}
 	}
 
-	// Discover caller's skills from CWD.
+	// Discover caller's skills from the session/project CWD (#243).
+	// Use ProjectContextFromContext so each caller scans their own worktree,
+	// not the daemon's working directory. Falls back to empty when no project
+	// context is available (e.g. direct stdio without muxcore session).
 	var callerSkills []string
-	if cwd, err := os.Getwd(); err == nil {
-		callerSkills = skills.DiscoverCallerSkills(cwd)
+	if pc, ok := ProjectContextFromContext(ctx); ok && pc.Cwd != "" {
+		callerSkills = skills.DiscoverCallerSkills(pc.Cwd)
+	} else {
+		s.log.Debug("buildSkillData: no project context in ctx — skipping caller skill discovery")
 	}
 
 	// Populate related skills from engine graph.
