@@ -111,15 +111,43 @@ func (p *AppServerProcess) Start(ctx context.Context) error {
 
 	if err := p.spawn(ctx); err != nil {
 		p.setState(AppServerStateClosed)
+		p.cleanupAfterStartFailure()
 		return err
 	}
 	if err := p.initialize(ctx); err != nil {
 		p.setState(AppServerStateClosed)
-		_ = p.kill()
+		p.cleanupAfterStartFailure()
 		return err
 	}
 	p.setState(AppServerStateReady)
 	return nil
+}
+
+// cleanupAfterStartFailure tears down partial state when Start() returns an
+// error. Mirrors the Shutdown() cleanup chain (engram #241):
+//   - cancel the read loop so JSONLClient.Start observes ctx.Done() at its
+//     next iteration check;
+//   - close the client so the subprocess sees stdin EOF and pipes close,
+//     unblocking the read loop's scanner.Scan();
+//   - kill the subprocess as a forced terminator if it has not exited.
+//
+// Without this chain the read goroutine relies solely on stdout EOF after
+// process death, which is racy and can leak the goroutine briefly (or
+// indefinitely if kill() does not actually terminate the subprocess).
+//
+// Safe to call when partial state is absent: each step nil-checks its target.
+func (p *AppServerProcess) cleanupAfterStartFailure() {
+	p.mu.Lock()
+	cancel := p.cancelReadLoop
+	client := p.client
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if client != nil {
+		client.Close()
+	}
+	_ = p.kill()
 }
 
 // spawn forks the `codex app-server` process and wires up the JSONLClient.
