@@ -482,15 +482,44 @@ func commandArgsTemplateArgs(profile *config.CLIProfile, spec picker.TaskSpec) (
 	if profile == nil || strings.TrimSpace(profile.Command.ArgsTemplate) == "" {
 		return nil, false
 	}
+
+	// Engram #242 (S1): validate every user-controlled value before it lands in
+	// the rendered template. The args_template path tokenises the rendered
+	// command line via splitCommandLine, so any unescaped whitespace inside an
+	// unquoted template field (e.g. "--model {{.Model}}") injects extra argv
+	// elements into the spawned CLI. Reject control characters in any value,
+	// reject whitespace in identifier-shaped fields (Model/Effort/SessionID)
+	// because those are always rendered unquoted, and reject "'" everywhere as
+	// defence-in-depth for hypothetical single-quote-wrapped template segments.
+	// On any rejection the caller falls back to the argv-based dispatch path
+	// (buildTaskArgs default branch), which passes each value as a discrete
+	// argv element and cannot be injected through splitCommandLine.
+	prompt := spec.Prompt
+	model := taskModelForArgs(profile, spec)
+	effort := strings.TrimSpace(spec.Effort)
+	sessionID := strings.TrimSpace(spec.SessionID)
+	if err := validateCommandTemplateValue("prompt", prompt, templateValueModePrompt); err != nil {
+		return nil, false
+	}
+	if err := validateCommandTemplateValue("model", model, templateValueModeIdentifier); err != nil {
+		return nil, false
+	}
+	if err := validateCommandTemplateValue("effort", effort, templateValueModeIdentifier); err != nil {
+		return nil, false
+	}
+	if err := validateCommandTemplateValue("session_id", sessionID, templateValueModeIdentifier); err != nil {
+		return nil, false
+	}
+
 	tmpl, err := template.New("task_args").Option("missingkey=error").Parse(profile.Command.ArgsTemplate)
 	if err != nil {
 		return nil, false
 	}
 	data := taskArgsTemplateData{
-		Prompt:          commandTemplateArgValue(spec.Prompt),
-		Model:           commandTemplateArgValue(taskModelForArgs(profile, spec)),
-		ReasoningEffort: commandTemplateArgValue(strings.TrimSpace(spec.Effort)),
-		SessionID:       commandTemplateArgValue(strings.TrimSpace(spec.SessionID)),
+		Prompt:          commandTemplateArgValue(prompt),
+		Model:           commandTemplateArgValue(model),
+		ReasoningEffort: commandTemplateArgValue(effort),
+		SessionID:       commandTemplateArgValue(sessionID),
 		Sandbox:         strings.TrimSpace(spec.Sandbox),
 		Headless:        profile.Features.Headless,
 		ReadOnly:        spec.Sandbox == "read-only",
@@ -510,6 +539,39 @@ func commandArgsTemplateArgs(profile *config.CLIProfile, spec picker.TaskSpec) (
 
 func commandTemplateArgValue(value string) string {
 	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value)
+}
+
+// templateValueMode controls which characters are forbidden inside a value
+// destined for the args_template path. See validateCommandTemplateValue.
+type templateValueMode int
+
+const (
+	// templateValueModePrompt: free-form text that normally lands inside a
+	// "..."-quoted template segment. Spaces are allowed; control characters
+	// (\n, \r, \t) and single quotes are not.
+	templateValueModePrompt templateValueMode = iota
+	// templateValueModeIdentifier: short identifier (model, effort, session_id)
+	// that normally lands in an unquoted template position. No whitespace at
+	// all, no single quotes.
+	templateValueModeIdentifier
+)
+
+// validateCommandTemplateValue rejects user-controlled values that would
+// break splitCommandLine tokenisation when rendered into args_template.
+//
+// Returns nil if the value is safe; a non-nil error otherwise. The caller is
+// expected to fall back to the argv-based dispatch path on error.
+func validateCommandTemplateValue(field, value string, mode templateValueMode) error {
+	if strings.ContainsAny(value, "\n\r\t") {
+		return fmt.Errorf("args_template field %q contains a control character", field)
+	}
+	if strings.Contains(value, "'") {
+		return fmt.Errorf("args_template field %q contains a single quote", field)
+	}
+	if mode == templateValueModeIdentifier && strings.ContainsAny(value, " ") {
+		return fmt.Errorf("args_template field %q contains whitespace", field)
+	}
+	return nil
 }
 
 func appendMissingProfileExecutionFlags(args []string, profile *config.CLIProfile, spec picker.TaskSpec, templateArgs []string) []string {
