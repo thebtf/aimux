@@ -205,6 +205,73 @@ func TestAppServerProcess_Compact_RPCError(t *testing.T) {
 	}
 }
 
+// TestAppServerProcess_Compact_ResetsStateOnCallError verifies that Compact resets
+// process state to Ready when thread/compact/start Call() itself returns an error
+// (engram #240 regression guard). Without the fix the process is stuck in
+// TurnInFlight and is permanently unavailable until daemon restart.
+func TestAppServerProcess_Compact_ResetsStateOnCallError(t *testing.T) {
+	serverRead, clientWrite := io.Pipe()
+	clientRead, serverWrite := io.Pipe()
+
+	go func() {
+		dec := json.NewDecoder(serverRead)
+		for {
+			var msg struct {
+				JSONRPC string `json:"jsonrpc"`
+				ID      *int64 `json:"id,omitempty"`
+				Method  string `json:"method"`
+			}
+			if err := dec.Decode(&msg); err != nil {
+				return
+			}
+			if msg.ID == nil {
+				continue
+			}
+			switch msg.Method {
+			case "thread/compact/start":
+				// Return a JSON-RPC error — Call() returns an error, the
+				// notification loop is never entered.
+				reply := fmt.Sprintf(
+					`{"jsonrpc":"2.0","id":%d,"error":{"code":-32001,"message":"compaction unavailable"}}`,
+					*msg.ID,
+				)
+				fmt.Fprintln(serverWrite, reply)
+			default:
+				reply := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":null}`, *msg.ID)
+				fmt.Fprintln(serverWrite, reply)
+			}
+		}
+	}()
+
+	proc := buildProcessFromPipePair(t, clientWrite, clientRead)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := proc.Compact(ctx, "thread-state-reset")
+	if err == nil {
+		t.Fatal("expected error from Compact when Call fails, got nil")
+	}
+
+	// The key assertion: state must be Ready so subsequent StartTurn calls succeed.
+	if got := proc.State(); got != AppServerStateReady {
+		t.Errorf("state after Compact Call error = %s; want Ready (process was permanently poisoned)", got)
+	}
+
+	// Confirm a subsequent StartTurn does not fail with "state TurnInFlight".
+	// We program the fake server to respond with a turn/start result so StartTurn
+	// actually proceeds past the Call(), then confirm the state rejection is not
+	// the cause of failure.
+	_, _, startErr := proc.StartTurn(ctx, TurnStartParams{ThreadID: "thread-state-reset"})
+	if startErr != nil {
+		if strings.Contains(startErr.Error(), "TurnInFlight") {
+			t.Errorf("StartTurn rejected with TurnInFlight after Compact error — state not reset: %v", startErr)
+		}
+		// Any other error (e.g. notification channel behaviour in test) is acceptable
+		// as long as it is not a state-machine rejection.
+	}
+}
+
 // TestAppServerProcess_Compact_ContextCancelled verifies that Compact honours context
 // cancellation while waiting for turn/completed.
 func TestAppServerProcess_Compact_ContextCancelled(t *testing.T) {

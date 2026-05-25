@@ -419,9 +419,15 @@ func (p *AppServerProcess) Compact(ctx context.Context, threadID string) error {
 	// The pool will drain/kill this process on acquire if it is not Ready.
 
 	// Send thread/compact/start. Returns {} (empty result) on success.
+	// If Call itself fails (RPC never started), reset state to Ready so the
+	// process is not permanently stuck in TurnInFlight (engram #240).
+	// We do NOT use a blanket defer here — the notification-loop paths below
+	// intentionally leave state as TurnInFlight until turn/completed arrives
+	// (see "Do NOT use defer" comment above).
 	params := ThreadCompactStartParams{ThreadID: threadID}
 	var result struct{}
 	if err := p.client.Call(ctx, "thread/compact/start", params, &result); err != nil {
+		p.setState(AppServerStateReady)
 		return fmt.Errorf("codex: thread/compact/start: %w", err)
 	}
 
