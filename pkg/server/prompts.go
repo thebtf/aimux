@@ -78,7 +78,7 @@ func (s *Server) buildSkillData(req mcp.GetPromptRequest) *skills.SkillData {
 	roleRouting := make(map[string]string)
 	standardRoles := []string{
 		"coding", "codereview", "debug", "secaudit",
-		"analyze", "refactor", "testgen", "planner", "thinkdeep",
+		"analyze", "refactor", "testgen", "planner", "thinkdeep", "docgen",
 	}
 	for _, role := range standardRoles {
 		if pref, err := s.router.Resolve(role); err == nil {
