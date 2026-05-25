@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.14.0] — 2026-05-25 — Delegation playbook MCP Prompts surface
+
+### Added
+
+- Four new MCP Prompts exposing role-tilted delegation playbooks for consuming
+  agents (Claude Code, Codex, Gemini CLI, and other MCP clients):
+  - `developer` — delegate-tilt playbook for engineering tasks; teaches
+    `pair, diff` default with `pair, write` opt-in, 6-reason persuasion frame
+    for code-mode delegation, 5 self-do exceptions.
+  - `pm` — self-do-tilt playbook for project management; teaches execution-
+    contract ownership, in-line process selection across SpecKit/TDD pipelines,
+    `task_class=task` invocation contract without sandbox to avoid implicit
+    code-mode escalation.
+  - `codereviewer` — hybrid-tilt 8-step review protocol inspired by CodeRabbit:
+    context pack → walkthrough → evidence → 9-type taxonomy with S0-S4
+    severity-to-action mapping → pre-merge checks → verdict → fix prompts.
+    Includes explicit false-positive discipline (evidence strength caps severity).
+  - `docs` — hybrid-tilt source-grounded translator playbook; teaches the
+    10-output-shapes table (incl. Deprecation notice, Security/operational
+    advisory) and 9-branch decision tree for docs gaps including config/deploy/
+    operator behavior paths.
+- Two shared template fragments under `config/skills.d/_fragments/`:
+  - `delegation-protocol.md` — `pair, diff` + `pair, write` mechanics, result
+    protocol, navigator verdict interpretation, safe-recovery wording.
+  - `methodology-compatibility.md` — generic-by-default SpecKit/TDD statement
+    with nvmd-platform overlay escalation pointer.
+- Render-time `docgen` role resolution: added `"docgen"` to `standardRoles`
+  in `pkg/server/prompts.go` so `{{RoleFor "docgen"}}` resolves to a real CLI
+  in the `docs` playbook instead of `unknown`.
+
+### Verification
+
+- Full test suite green: 27 packages PASS including critical-suite (18.5s) and
+  e2e (55.9s). govulncheck: 0 vulnerabilities in code path.
+- Skill engine render validation on staging binary: `prompts/list` shows 4 new
+  playbook prompts alongside 4 legacy; `prompts/get` for each renders cleanly
+  (no raw `{{}}` template literals, no frontmatter leakage from fragments,
+  balanced JSON code fences).
+
+### Notes
+
+- Playbook content is generic public-facing methodology; nvmd-platform overlay
+  pointers are optional and disabled when the platform is not installed.
+- This is a feature addition (minor bump per semver); no breaking changes to
+  existing MCP tools, think patterns, or legacy prompts.
+
 ## [5.13.2] — 2026-05-25 — Security: x/net + x/crypto bump
 
 ### Security
