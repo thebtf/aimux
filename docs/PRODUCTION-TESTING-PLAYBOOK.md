@@ -1,8 +1,9 @@
 # aimux Production Testing Playbook
 
-**Last updated:** 2026-05-09
-**Tested surface:** v5.11.1 hardening surface: 4 server tools, `task`,
-`think(action=start|step|finalize)`, and 22 cognitive move tools.
+**Last updated:** 2026-05-25
+**Tested surface:** v5.14.0 MCP surface: 4 server tools, `task`,
+`think(action=start|step|finalize)`, 22 cognitive move tools, and 4
+delegation playbook MCP Prompts (`developer`, `pm`, `codereviewer`, `docs`).
 **Mode:** customer (no internal code knowledge — operator perspective)
 
 ## How to use
@@ -364,6 +365,70 @@ v5.11.0 maintainer debug helper because the first-class
 - **BROKEN** — `task` is missing, any removed `codex_*` tool is still listed,
   code task fails, file mutation is absent, or review `gate=true` cannot return
   a decision.
+
+### Scenario B7: v5.14.0 MCP Prompts delegation playbooks
+
+This scenario verifies the v5.14.0 user-visible Prompt surface. The operator
+uses a released `aimux` / `aimux-dev` binary and an MCP client. Source files
+stay closed; the product contract is the MCP `prompts/list` and `prompts/get`
+responses.
+
+**Setup:**
+1. Confirm the binary under test reports the release version:
+   ```powershell
+   .\bin\aimux-dev.exe --version
+   ```
+2. Connect an MCP client to the binary. With `mcp-launcher`, use:
+   ```powershell
+   D:\Dev\mcp-launcher\mcp-launcher.exe `
+     -binary .\bin\aimux-dev.exe `
+     -cwd D:\Dev\aimux `
+     -mode call `
+     -method prompts/list `
+     -params '{}' `
+     -expect-tools 28 `
+     -expect-version 5.14.0
+   ```
+
+**Steps:**
+1. Call `prompts/list`.
+2. Confirm the prompt list contains `developer`, `pm`, `codereviewer`, and
+   `docs`.
+3. Call `prompts/get` for each new prompt:
+   ```powershell
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"developer","arguments":{"task":"smoke"}}' -expect-tools 28 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"pm","arguments":{"intent":"smoke"}}' -expect-tools 28 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"codereviewer","arguments":{"target":"HEAD"}}' -expect-tools 28 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"docs","arguments":{"change":"smoke","audience":"operator"}}' -expect-tools 28 -expect-version 5.14.0
+   ```
+4. Inspect each `prompts/get` response body from the MCP client.
+
+**Expected:**
+- Server initialization reports MCP server version `5.14.0`.
+- `tools/list` count remains `28`.
+- `prompts/list` includes exactly the new delegation playbooks:
+  `developer`, `pm`, `codereviewer`, and `docs`, in addition to legacy prompts.
+- Each `prompts/get` response contains a rendered Markdown prompt with
+  `description` and `messages`.
+- `docs` renders `Documentation role: **codex**` (or another concrete CLI name
+  from the live routing table), not `unknown`.
+- Responses do not expose raw template markers such as `{{RoleFor`, `{{template`,
+  or unexpanded `{{`.
+- Fragment frontmatter does not leak into rendered prompts.
+
+**Pass criteria:**
+- Step 1 returns a valid MCP `prompts` array and no MCP error.
+- Step 2 finds all four new prompt names.
+- Step 3 returns success for all four `prompts/get` calls.
+- Step 4 confirms no raw `{{` marker, no `unknown` role value, and no fragment
+  frontmatter leakage in the four rendered prompt bodies.
+
+**Verdict classification:**
+- **PRODUCT_WORKS** — all pass criteria are met.
+- **PARTIALLY_WORKS** — prompts render, but a non-blocking presentation issue is
+  observed (for example, awkward ordering or verbose but valid content).
+- **BROKEN** — any new prompt is missing, any `prompts/get` call fails, role
+  routing renders `unknown`, or template markers/frontmatter leak into output.
 
 ## Phase C — Multi-tenant tenant isolation
 
