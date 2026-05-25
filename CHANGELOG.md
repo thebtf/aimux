@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.14.1] — 2026-05-25 — Maintenance fixes from PRC agent-trio
+
+### Fixed
+
+- **pkg/server/prompts.go — session CWD for skill discovery (engram #243, S2).**
+  `buildSkillData` now resolves the caller's project directory via
+  `ProjectContextFromContext(ctx)` instead of `os.Getwd()`. Previously the
+  daemon's own working directory was used, causing skill discovery to return the
+  wrong (or empty) skill list for every MCP client whose project root differed
+  from the daemon's CWD. Dedicated regression test:
+  `TestBuildSkillData_UsesCallerProjectCWD` (commit `4a92e06`).
+
+- **pkg/executor/codex/appserver.go — Compact state reset on Call error (engram #240, P1).**
+  `Compact()` now resets process state to `Ready` when the initial
+  `thread/compact/start` `Call()` returns an error. Previously the process was
+  left permanently in `TurnInFlight`, preventing the codex process pool from
+  ever reusing it without a full daemon restart. The notification-loop paths
+  intentionally retain `TurnInFlight` until `turn/completed` (existing design);
+  only the early `Call()` failure path was missing the reset. Dedicated
+  regression test: `TestAppServerProcess_Compact_ResetsStateOnCallError`
+  (commit `9a799b3`).
+
+### Notes
+
+- Maintenance patch — no new features, no breaking changes, no dependency bumps.
+- Both fixes carry dedicated regression tests verified green in the commits
+  listed above. Full test suite confirmed green before tag.
+
 ## [5.14.0] — 2026-05-25 — Delegation playbook MCP Prompts surface
 
 ### Added
