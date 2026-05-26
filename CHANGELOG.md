@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.14.2] — 2026-05-26 — Second maintenance fixes batch from PRC agent-trio
+
+### Fixed
+
+- **pkg/server/task_tool.go — reject template-injectable values in args_template path (engram #242, S1).**
+  The args_template dispatch path rendered user-controlled values into a CLI
+  command string and re-tokenised it with `splitCommandLine`. Unquoted
+  template positions like `--model {{.Model}}` meant any whitespace inside
+  Model/Effort/SessionID values injected extra argv elements into the
+  spawned CLI — empirically: `Model="evil --extra-flag injected"` against
+  Gemini produced `[--model, evil, --extra-flag, injected, -p, ok]`. The
+  PRC reviewer's specific scenario (single quote inside double-quoted
+  prompt segment) was a false positive — confirmed by direct test.
+  Fix: validate every user-controlled value before render. Reject control
+  characters in all values, reject whitespace in identifier-shaped fields
+  (Model/Effort/SessionID), reject single quote everywhere as defence
+  in depth. On rejection `commandArgsTemplateArgs` returns ok=false and
+  the caller falls back to the argv-based dispatch path in `buildTaskArgs`
+  which passes each value as a discrete argv element. Dedicated
+  regression tests: `TestSplitCommandLine_SingleQuoteInsideDoubleQuoteStaysLiteral`,
+  `TestSplitCommandLine_SingleQuoteOutsideQuotesIsActiveQuote`,
+  `TestCommandArgsTemplateArgs_RejectsModelWhitespace`,
+  `TestCommandArgsTemplateArgs_AcceptsCleanInput`,
+  `TestCommandArgsTemplateArgs_NewlineInValueIsRejected`,
+  `TestCommandArgsTemplateArgs_SingleQuoteInValueIsRejected`
+  (commit `ad1da03`).
+
+- **pkg/executor/codex/appserver.go — ensure read loop exits on Start failure (engram #241, P1).**
+  `AppServerProcess.Start()` left the JSONLClient read goroutine to rely
+  solely on stdout EOF after subprocess `kill()` in its error paths. This
+  is racy in production (kill can be slow or fail to terminate) and
+  indistinguishable from a leak in tests where no real subprocess exists.
+  Fix: extract `cleanupAfterStartFailure()` helper mirroring `Shutdown`'s
+  full cleanup chain — cancel the read loop, close the JSONLClient so the
+  subprocess sees stdin EOF and pipes close, kill the subprocess as a
+  forced terminator. Both Start() error paths (spawn failure, initialize
+  failure) now call the helper. The helper is safe on partial state
+  (each step nil-checks its target) and idempotent (JSONLClient.Close
+  uses sync.Once). Dedicated regression tests:
+  `TestAppServerProcess_CleanupAfterStartFailure_CancelsAndClosesClient`,
+  `TestAppServerProcess_CleanupAfterStartFailure_IsSafeOnPartialState`,
+  `TestAppServerProcess_CleanupAfterStartFailure_IsIdempotent`
+  (commit `2fae020`).
+
+### Notes
+
+- Maintenance patch — no new features, no breaking changes, no dependency
+  bumps. Engram #208 (graceful daemon restart) is provider-blocker-removed
+  but still adoption-pending; intentionally NOT in scope of this release.
+- Both fixes carry dedicated regression tests verified green in the commits
+  listed above. Full test suite, critical suite, and govulncheck confirmed
+  green before tag.
+
 ## [5.14.1] — 2026-05-25 — Maintenance fixes from PRC agent-trio
 
 ### Fixed
