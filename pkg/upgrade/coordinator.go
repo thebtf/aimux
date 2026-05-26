@@ -20,6 +20,7 @@ import (
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/updater"
 	"github.com/thebtf/mcp-mux/muxcore/control"
+	muxengine "github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
 const (
@@ -44,6 +45,10 @@ type HandoffStatus struct {
 
 // HandoffStatusFunc reads the current daemon handoff counters.
 type HandoffStatusFunc func(ctx context.Context) (HandoffStatus, error)
+
+// ApplyUpdateAndRestartFunc swaps a staged binary into place and restarts the
+// muxcore daemon namespace using the provider-owned restart choreography.
+type ApplyUpdateAndRestartFunc func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error)
 
 // Mode controls how the upgrade is applied.
 type Mode string
@@ -98,6 +103,10 @@ type Coordinator struct {
 
 	// ApplyUpdate installs the latest release. Defaults to updater.ApplyUpdate.
 	ApplyUpdate ApplyUpdateFunc
+
+	// ApplyUpdateAndRestart installs a staged binary and restarts the muxcore
+	// daemon in one provider-owned operation. Nil means the helper is unavailable.
+	ApplyUpdateAndRestart ApplyUpdateAndRestartFunc
 
 	// Logger receives structured log output for upgrade lifecycle events.
 	// May be nil; logging is skipped when nil.
@@ -159,6 +168,10 @@ func (c *Coordinator) Apply(ctx context.Context, mode Mode, force bool) (result 
 		return nil, fmt.Errorf("apply update: %w", errAlreadyInProgress)
 	}
 	defer c.applyInProgress.Store(false)
+
+	if c.shouldUseApplyUpdateAndRestart(mode) {
+		return c.applyWithMuxcoreRestart(ctx, normalizeMode(mode), force)
+	}
 
 	// Local binary source: skip GitHub download and install from local file.
 	if c.Source != "" {
@@ -300,6 +313,21 @@ func normalizeApplyMode(mode Mode) string {
 	return string(mode)
 }
 
+func normalizeMode(mode Mode) Mode {
+	if mode == "" {
+		return ModeAuto
+	}
+	return mode
+}
+
+func (c *Coordinator) shouldUseApplyUpdateAndRestart(mode Mode) bool {
+	mode = normalizeMode(mode)
+	return c.EngineMode &&
+		c.ApplyUpdateAndRestart != nil &&
+		(mode == ModeAuto || mode == ModeHotSwap) &&
+		c.ApplyUpdate == nil
+}
+
 func (c *Coordinator) applyUpdateFunc() ApplyUpdateFunc {
 	if c.ApplyUpdate != nil {
 		return c.ApplyUpdate
@@ -327,6 +355,149 @@ func (c *Coordinator) afterDeferredInstall(release *updater.Release) *Result {
 		PreviousVersion: c.Version,
 		NewVersion:      release.Version,
 		Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+	}
+}
+
+func (c *Coordinator) applyWithMuxcoreRestart(ctx context.Context, mode Mode, force bool) (*Result, error) {
+	release, stagedPath, cleanupStaged, err := c.prepareStagedUpdate(ctx, force)
+	if err != nil {
+		return nil, err
+	}
+	if release == nil {
+		return &Result{
+			Method:          "up_to_date",
+			PreviousVersion: c.Version,
+			NewVersion:      c.Version,
+			Message:         "Already up to date.",
+		}, nil
+	}
+	if cleanupStaged && stagedPath != "" {
+		defer func() { _ = os.Remove(stagedPath) }()
+	}
+
+	restart, err := c.ApplyUpdateAndRestart(ctx, muxengine.UpdateAndRestartOptions{
+		CurrentExe:   c.BinaryPath,
+		StagedExe:    stagedPath,
+		DrainTimeout: time.Duration(defaultGracefulRestartDrainTimeout) * time.Millisecond,
+		CleanStale:   true,
+	})
+	if err != nil {
+		if !updateAndRestartReachedInstall(err) {
+			return nil, err
+		}
+		if mode == ModeHotSwap {
+			return nil, err
+		}
+		fallback := c.afterDeferredInstall(release)
+		fallback.HandoffError = err.Error()
+		if fallback.Message != "" {
+			fallback.Message += " Hot-swap unavailable: " + err.Error()
+		}
+		return fallback, nil
+	}
+
+	if restart.GracefulRestarted && restart.ReplacementReady && !restart.FallbackShutdown {
+		return &Result{
+			Method:          "hot_swap",
+			PreviousVersion: c.Version,
+			NewVersion:      release.Version,
+			Message:         "Binary updated. Daemon handoff completed successfully.",
+		}, nil
+	}
+
+	reason := restartFallbackReason(restart)
+	if mode == ModeHotSwap {
+		return nil, fmt.Errorf("%w: %s", errHotSwapUnsupported, reason)
+	}
+	return &Result{
+		Method:          "deferred",
+		PreviousVersion: c.Version,
+		NewVersion:      release.Version,
+		HandoffError:    reason,
+		Message:         "Binary updated. Daemon restarted without live handoff. Hot-swap unavailable: " + reason,
+	}, nil
+}
+
+func (c *Coordinator) prepareStagedUpdate(ctx context.Context, force bool) (*updater.Release, string, bool, error) {
+	if c.Source != "" {
+		stagedPath, err := c.validateLocalSource(c.Source)
+		if err != nil {
+			return nil, "", false, err
+		}
+		return &updater.Release{
+			Version:      "local-dev",
+			AssetName:    filepath.Base(stagedPath),
+			ReleaseNotes: fmt.Sprintf("Installed from local source: %s", stagedPath),
+		}, stagedPath, false, nil
+	}
+
+	effectiveVersion := c.Version
+	if force {
+		effectiveVersion = "0.0.0"
+	}
+	stagedPath, err := c.newStagedUpdatePath()
+	if err != nil {
+		return nil, "", false, err
+	}
+	release, err := updater.Download(ctx, effectiveVersion, stagedPath)
+	if err != nil {
+		_ = os.Remove(stagedPath)
+		return nil, "", false, err
+	}
+	if release == nil {
+		_ = os.Remove(stagedPath)
+		return nil, "", false, nil
+	}
+	if err := updater.VerifyChecksum(stagedPath, release); err != nil {
+		_ = os.Remove(stagedPath)
+		return nil, "", false, err
+	}
+	return release, stagedPath, true, nil
+}
+
+func (c *Coordinator) newStagedUpdatePath() (string, error) {
+	if strings.TrimSpace(c.BinaryPath) == "" {
+		return "", fmt.Errorf("current binary path is required for staged upgrade")
+	}
+	binaryAbs, err := filepath.Abs(c.BinaryPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve current binary path: %w", err)
+	}
+	dir := filepath.Dir(binaryAbs)
+	ext := filepath.Ext(binaryAbs)
+	f, err := os.CreateTemp(dir, ".aimux-update-*"+ext)
+	if err != nil {
+		return "", fmt.Errorf("create staged update path: %w", err)
+	}
+	path := f.Name()
+	if closeErr := f.Close(); closeErr != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close staged update path: %w", closeErr)
+	}
+	if err := os.Remove(path); err != nil {
+		return "", fmt.Errorf("prepare staged update path: %w", err)
+	}
+	return path, nil
+}
+
+func updateAndRestartReachedInstall(err error) bool {
+	var updateErr *muxengine.UpdateAndRestartError
+	if !errors.As(err, &updateErr) {
+		return false
+	}
+	return updateErr.Phase != muxengine.UpdatePhaseValidate && updateErr.Phase != muxengine.UpdatePhaseSwap
+}
+
+func restartFallbackReason(result muxengine.UpdateAndRestartResult) string {
+	switch {
+	case !result.DaemonWasRunning:
+		return "daemon was not running after binary swap"
+	case result.FallbackShutdown:
+		return "daemon graceful restart fell back to shutdown restart"
+	case !result.ReplacementReady:
+		return "replacement daemon was not ready after restart"
+	default:
+		return "daemon graceful restart did not complete live handoff"
 	}
 }
 

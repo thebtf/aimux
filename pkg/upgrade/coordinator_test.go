@@ -17,6 +17,7 @@ import (
 	"github.com/thebtf/aimux/pkg/updater"
 	"github.com/thebtf/aimux/pkg/upgrade"
 	"github.com/thebtf/mcp-mux/muxcore/control"
+	muxengine "github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
 type mockSessionHandler struct {
@@ -130,6 +131,287 @@ func TestCoordinatorApply_AutoUsesGracefulRestartInEngineMode(t *testing.T) {
 	}
 	if result.Message == "" {
 		t.Fatal("expected non-empty message")
+	}
+}
+
+func TestCoordinatorApply_LocalSourceUsesMuxcoreApplyUpdateAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	sourcePath := filepath.Join(dir, "aimux-next.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	var called bool
+	var got muxengine.UpdateAndRestartOptions
+	coord := &upgrade.Coordinator{
+		Version:    "5.14.2",
+		BinaryPath: binaryPath,
+		Source:     sourcePath,
+		EngineMode: true,
+		ApplyUpdateAndRestart: func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error) {
+			called = true
+			got = opts
+			return muxengine.UpdateAndRestartResult{
+				DaemonWasRunning:   true,
+				GracefulRestarted:  true,
+				ReplacementStarted: true,
+				ReplacementReady:   true,
+			}, nil
+		},
+	}
+
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, true)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !called {
+		t.Fatal("expected muxcore ApplyUpdateAndRestart helper to be called")
+	}
+	if got.CurrentExe != binaryPath {
+		t.Fatalf("CurrentExe = %q, want %q", got.CurrentExe, binaryPath)
+	}
+	resolvedSource, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks source: %v", err)
+	}
+	if got.StagedExe != resolvedSource {
+		t.Fatalf("StagedExe = %q, want %q", got.StagedExe, resolvedSource)
+	}
+	if got.DrainTimeout != 10*time.Second {
+		t.Fatalf("DrainTimeout = %s, want 10s", got.DrainTimeout)
+	}
+	if !got.CleanStale {
+		t.Fatal("expected CleanStale=true")
+	}
+	if result.Method != "hot_swap" {
+		t.Fatalf("Method = %q, want hot_swap", result.Method)
+	}
+	if result.NewVersion != "local-dev" {
+		t.Fatalf("NewVersion = %q, want local-dev", result.NewVersion)
+	}
+}
+
+func TestCoordinatorApply_RemoteDownloadUsesMuxcoreStagedPath(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+
+	var gotCurrentVersion string
+	updater.SetTestHooks(nil, func(ctx context.Context, currentVersion string, targetPath string) (*updater.Release, error) {
+		gotCurrentVersion = currentVersion
+		if filepath.Dir(targetPath) != dir {
+			t.Fatalf("download target dir = %q, want %q", filepath.Dir(targetPath), dir)
+		}
+		if err := os.WriteFile(targetPath, []byte("downloaded-v2"), 0o755); err != nil {
+			t.Fatalf("WriteFile staged target: %v", err)
+		}
+		return &updater.Release{Version: "5.14.3", AssetName: filepath.Base(targetPath)}, nil
+	}, nil, nil)
+	t.Cleanup(func() { updater.SetTestHooks(nil, nil, nil, nil) })
+
+	var got muxengine.UpdateAndRestartOptions
+	coord := &upgrade.Coordinator{
+		Version:    "5.14.2",
+		BinaryPath: binaryPath,
+		EngineMode: true,
+		ApplyUpdateAndRestart: func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error) {
+			got = opts
+			if _, err := os.Stat(opts.StagedExe); err != nil {
+				t.Fatalf("staged exe should exist while helper runs: %v", err)
+			}
+			return muxengine.UpdateAndRestartResult{
+				DaemonWasRunning:   true,
+				GracefulRestarted:  true,
+				ReplacementStarted: true,
+				ReplacementReady:   true,
+			}, nil
+		},
+	}
+
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, true)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if gotCurrentVersion != "0.0.0" {
+		t.Fatalf("download currentVersion = %q, want force version 0.0.0", gotCurrentVersion)
+	}
+	if got.CurrentExe != binaryPath {
+		t.Fatalf("CurrentExe = %q, want %q", got.CurrentExe, binaryPath)
+	}
+	if got.StagedExe == "" {
+		t.Fatal("expected non-empty staged exe")
+	}
+	if _, err := os.Stat(got.StagedExe); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged exe cleanup = %v, want os.ErrNotExist", err)
+	}
+	if result.Method != "hot_swap" {
+		t.Fatalf("Method = %q, want hot_swap", result.Method)
+	}
+	if result.NewVersion != "5.14.3" {
+		t.Fatalf("NewVersion = %q, want 5.14.3", result.NewVersion)
+	}
+}
+
+func TestCoordinatorApply_MuxcoreFallbackShutdownReturnsUpdatedDeferred(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	sourcePath := filepath.Join(dir, "aimux-next.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	mock := &mockSessionHandler{}
+	coord := &upgrade.Coordinator{
+		Version:        "5.14.2",
+		BinaryPath:     binaryPath,
+		Source:         sourcePath,
+		EngineMode:     true,
+		SessionHandler: mock,
+		ApplyUpdateAndRestart: func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error) {
+			return muxengine.UpdateAndRestartResult{
+				DaemonWasRunning:   true,
+				FallbackShutdown:   true,
+				ReplacementStarted: true,
+				ReplacementReady:   true,
+			}, nil
+		},
+	}
+
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, true)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Method != "deferred" {
+		t.Fatalf("Method = %q, want deferred", result.Method)
+	}
+	if !strings.Contains(result.HandoffError, "shutdown restart") {
+		t.Fatalf("HandoffError = %q, want shutdown restart detail", result.HandoffError)
+	}
+	if mock.pendingCalled {
+		t.Fatal("fallback shutdown already restarted the daemon; SetUpdatePending should not be called")
+	}
+}
+
+func TestCoordinatorApply_HotSwapFailsOnMuxcoreFallbackShutdown(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	sourcePath := filepath.Join(dir, "aimux-next.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "5.14.2",
+		BinaryPath: binaryPath,
+		Source:     sourcePath,
+		EngineMode: true,
+		ApplyUpdateAndRestart: func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error) {
+			return muxengine.UpdateAndRestartResult{
+				DaemonWasRunning:   true,
+				FallbackShutdown:   true,
+				ReplacementStarted: true,
+				ReplacementReady:   true,
+			}, nil
+		},
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeHotSwap, true)
+	if err == nil {
+		t.Fatal("expected hot_swap mode to fail on fallback shutdown")
+	}
+	if !strings.Contains(err.Error(), "shutdown restart") {
+		t.Fatalf("error = %q, want shutdown restart detail", err)
+	}
+}
+
+func TestCoordinatorApply_AutoFallsBackWhenMuxcoreRestartFailsAfterSwap(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	sourcePath := filepath.Join(dir, "aimux-next.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	mock := &mockSessionHandler{}
+	coord := &upgrade.Coordinator{
+		Version:        "5.14.2",
+		BinaryPath:     binaryPath,
+		Source:         sourcePath,
+		EngineMode:     true,
+		SessionHandler: mock,
+		ApplyUpdateAndRestart: func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error) {
+			return muxengine.UpdateAndRestartResult{}, &muxengine.UpdateAndRestartError{
+				Phase: muxengine.UpdatePhaseRestart,
+				Err:   errors.New("control socket failed"),
+			}
+		},
+	}
+
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, true)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Method != "deferred" {
+		t.Fatalf("Method = %q, want deferred", result.Method)
+	}
+	if !strings.Contains(result.HandoffError, "control socket failed") {
+		t.Fatalf("HandoffError = %q, want muxcore restart error", result.HandoffError)
+	}
+	if !mock.pendingCalled {
+		t.Fatal("expected deferred fallback to call SetUpdatePending after post-swap restart failure")
+	}
+}
+
+func TestCoordinatorApply_MuxcoreSwapFailureIsHardErrorInAuto(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux.exe")
+	sourcePath := filepath.Join(dir, "aimux-next.exe")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	mock := &mockSessionHandler{}
+	coord := &upgrade.Coordinator{
+		Version:        "5.14.2",
+		BinaryPath:     binaryPath,
+		Source:         sourcePath,
+		EngineMode:     true,
+		SessionHandler: mock,
+		ApplyUpdateAndRestart: func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error) {
+			return muxengine.UpdateAndRestartResult{}, &muxengine.UpdateAndRestartError{
+				Phase: muxengine.UpdatePhaseSwap,
+				Err:   errors.New("rename failed"),
+			}
+		},
+	}
+
+	_, err := coord.Apply(context.Background(), upgrade.ModeAuto, true)
+	if err == nil {
+		t.Fatal("expected swap failure to be a hard error")
+	}
+	if !strings.Contains(err.Error(), "rename failed") {
+		t.Fatalf("error = %q, want swap error", err)
+	}
+	if mock.pendingCalled {
+		t.Fatal("did not expect deferred fallback before binary install was reached")
 	}
 }
 

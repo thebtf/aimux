@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/upgrade"
@@ -103,23 +102,22 @@ func TestUpgrade_EngineMode_StaysSetAfterSecondCall(t *testing.T) {
 
 	// Defensive: log the type so a future regression is loud.
 	t.Logf("after two SessionHandler() calls: srv.sessionHandler=%T, engineMode=%t", srv.sessionHandler, engineMode)
-
-	// Lint: silence unused if checks above are removed.
-	_ = strings.TrimSpace("")
 }
 
-func TestUpgrade_AutoUsesDeferredInSessionHandlerMode(t *testing.T) {
+func TestUpgrade_AutoKeepsRequestedModeInSessionHandlerMode(t *testing.T) {
 	srv := testServer(t)
 	srv.SessionHandler()
 
 	var capturedMode upgrade.Mode
+	var capturedEngineMode bool
 	srv.applyUpgrade = func(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode, force bool) (*upgrade.Result, error) {
 		capturedMode = mode
+		capturedEngineMode = coord.EngineMode
 		return &upgrade.Result{
-			Method:          "deferred",
+			Method:          "hot_swap",
 			PreviousVersion: Version,
 			NewVersion:      "local-dev",
-			Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+			Message:         "Binary updated. Daemon handoff completed successfully.",
 		}, nil
 	}
 
@@ -131,31 +129,37 @@ func TestUpgrade_AutoUsesDeferredInSessionHandlerMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleUpgrade: %v", err)
 	}
-	if capturedMode != upgrade.ModeDeferred {
-		t.Fatalf("captured mode = %q, want %q", capturedMode, upgrade.ModeDeferred)
+	if capturedMode != upgrade.ModeAuto {
+		t.Fatalf("captured mode = %q, want %q", capturedMode, upgrade.ModeAuto)
+	}
+	if !capturedEngineMode {
+		t.Fatal("expected coordinator EngineMode=true in SessionHandler mode")
 	}
 
 	payload := parseResult(t, result)
-	if payload["status"] != "updated_deferred" {
-		t.Fatalf("status = %v, want updated_deferred; payload=%v", payload["status"], payload)
-	}
-	got, ok := payload["handoff_error"].(string)
-	if !ok {
-		t.Fatalf("handoff_error missing or not a string: %v", payload)
-	}
-	if !strings.Contains(got, "SessionHandler mode") {
-		t.Fatalf("handoff_error = %v, want SessionHandler mode reason", got)
+	if payload["status"] != "updated_hot_swap" {
+		t.Fatalf("status = %v, want updated_hot_swap; payload=%v", payload["status"], payload)
 	}
 }
 
-func TestUpgrade_HotSwapRejectedInSessionHandlerMode(t *testing.T) {
+func TestUpgrade_HotSwapAllowedInSessionHandlerMode(t *testing.T) {
 	srv := testServer(t)
 	srv.SessionHandler()
 
 	called := false
+	var capturedMode upgrade.Mode
 	srv.applyUpgrade = func(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode, force bool) (*upgrade.Result, error) {
 		called = true
-		return nil, nil
+		capturedMode = mode
+		if !coord.EngineMode {
+			t.Fatal("expected coordinator EngineMode=true in SessionHandler mode")
+		}
+		return &upgrade.Result{
+			Method:          "hot_swap",
+			PreviousVersion: Version,
+			NewVersion:      "local-dev",
+			Message:         "Binary updated. Daemon handoff completed successfully.",
+		}, nil
 	}
 
 	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
@@ -167,16 +171,14 @@ func TestUpgrade_HotSwapRejectedInSessionHandlerMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleUpgrade: %v", err)
 	}
-	if called {
-		t.Fatal("applyUpgrade was called for unsupported hot_swap mode")
+	if !called {
+		t.Fatal("expected applyUpgrade to be called for hot_swap mode")
 	}
-
+	if capturedMode != upgrade.ModeHotSwap {
+		t.Fatalf("captured mode = %q, want %q", capturedMode, upgrade.ModeHotSwap)
+	}
 	payload := parseResult(t, result)
-	got, ok := payload["text"].(string)
-	if !ok {
-		t.Fatalf("text missing or not a string: %v", payload)
-	}
-	if !strings.Contains(got, "hot-swap unsupported") {
-		t.Fatalf("error payload = %v, want hot-swap unsupported", got)
+	if payload["status"] != "updated_hot_swap" {
+		t.Fatalf("status = %v, want updated_hot_swap; payload=%v", payload["status"], payload)
 	}
 }

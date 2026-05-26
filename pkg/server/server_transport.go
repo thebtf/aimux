@@ -86,6 +86,16 @@ func (s *Server) handoffStatusFunc() upgrade.HandoffStatusFunc {
 	return upgrade.NewControlSocketHandoffStatusFunc(s.daemonControlSocketPath)
 }
 
+func (s *Server) applyUpdateAndRestartFunc() upgrade.ApplyUpdateAndRestartFunc {
+	if s == nil || s.muxEngine == nil {
+		return nil
+	}
+	if s.muxEngine.Mode() != engine.ModeDaemon {
+		return nil
+	}
+	return s.muxEngine.ApplyUpdateAndRestart
+}
+
 func (s *Server) liveDaemon() *muxdaemon.Daemon {
 	if s == nil || s.muxEngine == nil {
 		return nil
