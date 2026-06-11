@@ -1,7 +1,7 @@
 # aimux Production Testing Playbook
 
-**Last updated:** 2026-05-25
-**Tested surface:** v5.14.0 MCP surface: 4 server tools, `task`,
+**Last updated:** 2026-06-12
+**Tested surface:** v5.14.3 candidate MCP surface: 4 server tools, `task`,
 `think(action=start|step|finalize)`, 22 cognitive move tools, and 4
 delegation playbook MCP Prompts (`developer`, `pm`, `codereviewer`, `docs`).
 **Mode:** customer (no internal code knowledge — operator perspective)
@@ -33,7 +33,7 @@ aggregate: PRODUCT_WORKS / PARTIALLY_WORKS / BROKEN.
 
 - Linux, macOS, or Windows host with a POSIX-like shell (bash, zsh, or PowerShell
   with `kill` shimmed).
-- Go 1.25.10+ available **only for the build step**. After the binary is produced,
+- Go 1.25.11+ available **only for the build step**. After the binary is produced,
   the operator should drop the toolchain assumption — only `./aimux`, `cat`,
   `kill`, and `mcp-launcher` (optional) are used.
 - Two unprivileged user accounts on the host with distinct numeric UIDs (used
@@ -50,7 +50,7 @@ aggregate: PRODUCT_WORKS / PARTIALLY_WORKS / BROKEN.
 From the project root:
 
 ```bash
-export GOTOOLCHAIN=go1.25.10
+export GOTOOLCHAIN=go1.25.11
 go build -o aimux ./cmd/aimux/
 ./aimux --version
 ```
@@ -696,56 +696,81 @@ This scenario verifies the installed daemon path, not only a source-tree test
 binary. Use `mcp-launcher` or an equivalent MCP client that can call
 `upgrade(action="apply", source=..., force=true)` and then reconnect.
 
-**Safety note:** do not use `aimux-ctl -cmd graceful-restart` for this scenario
-against a daemon that has not been confirmed to include the muxcore
-SessionHandler snapshot-restore fix tracked as Engram issue `#190`. The
-`upgrade` MCP tool and `mcp-launcher -mode install` remain the safe
-installed-daemon paths.
+**Safety note:** do not use `aimux-ctl -cmd graceful-restart` for this
+scenario. The `upgrade` MCP tool and `mcp-launcher -mode install` are the
+customer-supported installed-daemon paths.
 
 **Steps:**
 1. Build the candidate binary:
    ```powershell
-   .\scripts\build.ps1 -Output aimux-dev-next.exe
-   $cliVersion = (.\aimux-dev-next.exe --version).Trim()
+   .\scripts\build.ps1 -Output .\bin\aimux-dev-next.exe
+   $cliVersion = (.\bin\aimux-dev-next.exe --version).Trim()
    $mcpVersion = if ($cliVersion -match '^aimux\s+(\S+)') { $Matches[1] } else { $cliVersion }
    ```
-2. Install through the running daemon:
+2. Install through the running daemon. If the currently running daemon is
+   older than v5.14.3, this first install may use the legacy deferred path;
+   it still must reconnect and verify the new version:
    ```powershell
    D:\Dev\mcp-launcher\mcp-launcher.exe `
-     -binary D:\Dev\aimux\aimux-dev.exe `
+     -binary D:\Dev\aimux\bin\aimux-dev.exe `
      -cwd D:\Dev\aimux `
      -env-mode clean `
      -mode install `
-     -source D:\Dev\aimux\aimux-dev-next.exe `
+     -source D:\Dev\aimux\bin\aimux-dev-next.exe `
      -force `
      -expect-tools 28 `
      -expect-version $mcpVersion `
      -timeout 30
    ```
-3. Confirm the rollback backup slot is present and not a stale blocker:
+3. Re-run a forced local-source install through the freshly installed v5.14.3+
+   daemon so this scenario exercises the new muxcore restart helper from the
+   code under test:
    ```powershell
-   Test-Path D:\Dev\aimux\aimux-dev.exe.old
+   Copy-Item .\bin\aimux-dev-next.exe .\bin\aimux-dev-next-verify.exe -Force
+   D:\Dev\mcp-launcher\mcp-launcher.exe `
+     -binary D:\Dev\aimux\bin\aimux-dev.exe `
+     -cwd D:\Dev\aimux `
+     -env-mode clean `
+     -mode install `
+     -source D:\Dev\aimux\bin\aimux-dev-next-verify.exe `
+     -force `
+     -expect-tools 28 `
+     -expect-version $mcpVersion `
+     -timeout 30
+   ```
+4. Confirm the rollback backup slot is present and not a stale blocker:
+   ```powershell
+   Test-Path D:\Dev\aimux\bin\aimux-dev.exe.old
    ```
 
 **Expected:**
-- The upgrade payload reports `status: "updated_deferred"` in current muxcore
-  `SessionHandler` mode.
-- The payload includes `handoff_error` explaining that live hot-swap is
-  unsupported because `SessionHandler` mode has no transferable upstream
-  process.
+- The first install may report `status: "updated_deferred"` only when the
+  pre-v5.14.3 daemon is still handling the upgrade request.
+- The second install, handled by the v5.14.3+ daemon, uses muxcore's
+  `ApplyUpdateAndRestart` helper. It reports `status: "updated_hot_swap"` when
+  live handoff succeeds, or `status: "updated_deferred"` with a non-empty
+  `handoff_error` when muxcore falls back after the binary swap. A silent
+  deferred result without `handoff_error` is a failure.
 - Reconnect verification reaches `sessions(action="health")`, reads
   `aimux://health`, sees `tools: 28`, and reports the expected version.
 - The final installer line is `[install] PASS`.
-- `aimux-dev.exe.old` may remain as the rollback backup created by the atomic
+- `bin\aimux-dev.exe.old` may remain as the rollback backup created by the atomic
   replace path. Its presence is not a failure; a locked stale old-slot that
   prevents the next install is a failure.
+- Current Windows blocker observed on 2026-06-12: if the installer reports
+  `apply update and restart failed during swap` while renaming the running
+  `bin\aimux-dev.exe`, classify the release as BLOCKED. The helper was reached,
+  but the binary did not land.
 
 **Pass criteria:**
 - `mcp-launcher` exits `0`.
 - `aimux://health.version` matches `$mcpVersion` from step 1.
-- `aimux-dev-next.exe --version` matches `$cliVersion` from step 1.
+- `bin\aimux-dev-next.exe --version` matches `$cliVersion` from step 1.
 - `sessions(action="health").init_phase == 2`.
-- If `aimux-dev.exe.old` exists after the install, classify it as expected
+- The second install result is either `updated_hot_swap`, or
+  `updated_deferred` with a specific `handoff_error` explaining the muxcore
+  fallback.
+- If `bin\aimux-dev.exe.old` exists after the install, classify it as expected
   rollback state unless the next install reports an old-slot lock.
 
 ## Customer-mode questions to answer

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **upgrade(action=apply) - use muxcore restart orchestration for engine-mode updates (engram #208).**
+  aimux now pins `github.com/thebtf/mcp-mux/muxcore v0.25.0` and wires
+  engine-mode upgrade apply through `MuxEngine.ApplyUpdateAndRestart` when
+  the daemon helper is available. `auto` and `hot_swap` no longer force
+  SessionHandler mode into the legacy deferred path up front; they stage the
+  update, ask muxcore to install and restart the daemon namespace, and report
+  truthful `hot_swap` versus `deferred` results from the provider outcome.
+  Dedicated regression coverage verifies local source installs, remote staged
+  downloads, fallback shutdown reporting, post-swap errors, and pre-swap hard
+  failures.
+
+- **Release toolchain - bump Go to 1.25.11.**
+  `govulncheck` found reachable standard-library vulnerabilities in Go 1.25.10
+  (`GO-2026-5039`, `GO-2026-5037`). The module and release workflow now use
+  Go 1.25.11, which contains the fixed standard library.
+
+### Notes
+
+- Maintenance patch - no breaking MCP surface changes.
+- Release is currently blocked by installed-daemon Windows smoke: muxcore
+  v0.25.0's helper is reached, but the provider swap phase cannot rename the
+  running `bin\aimux-dev.exe` (`Access is denied`). Do not close #208 until
+  the binary replacement/reconnect smoke passes.
+
 ## [5.14.2] — 2026-05-26 — Second maintenance fixes batch from PRC agent-trio
 
 ### Fixed

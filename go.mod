@@ -1,6 +1,6 @@
 module github.com/thebtf/aimux
 
-go 1.25.10
+go 1.25.11
 
 require (
 	github.com/Microsoft/go-winio v0.6.2

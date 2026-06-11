@@ -1,28 +1,27 @@
-## v5.11.1 — 2026-05-09 (hardening)
+## v5.14.3 Draft - BLOCKED
 
-### Security
+### Graceful Upgrade Adoption
 
-- HTTP/SSE transports now fail closed without bearer auth. The only unauthenticated
-  escape hatch is explicit local development mode via `AIMUX_ALLOW_UNAUTHENTICATED_HTTP=1`.
-- Privileged management actions now require tenant role `operator`:
-  `upgrade(action=apply)`, `sessions(action=list, all=true)`, and
-  `sessions(action=cancel|kill|gc|refresh-warmup)`.
-- Local-source upgrades are restricted to trusted source paths: beside the
-  running binary or under `AIMUX_UPGRADE_SOURCE_DIR`, unless the operator
-  explicitly sets `AIMUX_ALLOW_UPGRADE_SOURCE_OUTSIDE_BIN_DIR=1`.
-- Review pass adaptation now fails closed on malformed reviewer output instead
-  of adapting it to an empty findings list.
+- `upgrade(action="apply")` now uses muxcore's restart helper in engine mode
+  when the helper is available, instead of forcing SessionHandler deployments
+  into the old deferred-restart path before trying provider orchestration.
+- aimux now depends on `github.com/thebtf/mcp-mux/muxcore v0.25.0`, which
+  provides the `ApplyUpdateAndRestart` path used for daemon restart
+  choreography.
+- The upgrade result remains honest: successful live handoff reports
+  `hot_swap`; provider fallback or unsupported restart behavior reports
+  `deferred` with the reason preserved in `handoff_error`.
+- The release toolchain now uses Go 1.25.11, fixing reachable
+  standard-library vulnerabilities reported against Go 1.25.10.
 
-### Release Hygiene
+### Verification Focus
 
-- The release workflow now runs deterministic product gates before publishing
-  artifacts: build, full Go tests, critical suite, AIMUX-21 e2e test subset,
-  Loom tests, `go vet`, `go mod verify`, and `govulncheck`. The tag workflow
-  does not require private OpenAI or Anthropic account secrets.
-- README, operator notes, live MCP instructions, and production playbook now
-  document the 28-tool surface including `task`.
-- Production playbook Scenario B6 now includes the required `prompt` parameter
-  for review-gate `task` calls.
+- Added regression coverage for local source upgrades, staged remote downloads,
+  fallback shutdown reporting, pre-swap hard failures, and post-swap errors.
+- Release is not shipped yet. Installed-daemon Windows smoke reaches muxcore
+  `ApplyUpdateAndRestart`, then fails in provider swap phase while renaming the
+  running `bin\aimux-dev.exe` (`Access is denied`). Keep Engram #208 open until
+  binary replacement and reconnect smoke pass.
 
 ---
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/upgrade"
+	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
 
 // TestUpgrade_EngineMode_DetectionWhenSessionHandlerSet verifies that the
@@ -136,6 +137,54 @@ func TestUpgrade_AutoKeepsRequestedModeInSessionHandlerMode(t *testing.T) {
 		t.Fatal("expected coordinator EngineMode=true in SessionHandler mode")
 	}
 
+	payload := parseResult(t, result)
+	if payload["status"] != "updated_hot_swap" {
+		t.Fatalf("status = %v, want updated_hot_swap; payload=%v", payload["status"], payload)
+	}
+}
+
+func TestUpgrade_AutoProvidesMuxcoreRestartHelperBeforeEngineRun(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+	eng, err := engine.New(engine.Config{
+		Name:           "aimux-test-upgrade-helper",
+		SessionHandler: handler,
+		Persistent:     true,
+		BaseDir:        t.TempDir(),
+		SkipSnapshot:   true,
+	})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	srv.SetMuxEngine(eng)
+
+	var capturedEngineMode bool
+	var capturedHelperAvailable bool
+	srv.applyUpgrade = func(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode, force bool) (*upgrade.Result, error) {
+		capturedEngineMode = coord.EngineMode
+		capturedHelperAvailable = coord.ApplyUpdateAndRestart != nil
+		return &upgrade.Result{
+			Method:          "hot_swap",
+			PreviousVersion: Version,
+			NewVersion:      "local-dev",
+			Message:         "Binary updated. Daemon handoff completed successfully.",
+		}, nil
+	}
+
+	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
+		"action": "apply",
+		"source": "local-dev.exe",
+		"force":  true,
+	}))
+	if err != nil {
+		t.Fatalf("handleUpgrade: %v", err)
+	}
+	if !capturedEngineMode {
+		t.Fatal("expected coordinator EngineMode=true in SessionHandler mode")
+	}
+	if !capturedHelperAvailable {
+		t.Fatal("expected coordinator ApplyUpdateAndRestart helper to be available when mux engine is wired")
+	}
 	payload := parseResult(t, result)
 	if payload["status"] != "updated_hot_swap" {
 		t.Fatalf("status = %v, want updated_hot_swap; payload=%v", payload["status"], payload)
