@@ -54,8 +54,12 @@ func TestCoordinatorApply_AutoUsesPostExitInstallWhenRequired(t *testing.T) {
 	if got.CurrentExe != binaryPath {
 		t.Fatalf("CurrentExe = %q, want %q", got.CurrentExe, binaryPath)
 	}
-	if got.StagedExe != sourcePath {
-		t.Fatalf("StagedExe = %q, want %q", got.StagedExe, sourcePath)
+	resolvedSource, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks source: %v", err)
+	}
+	if got.StagedExe != resolvedSource {
+		t.Fatalf("StagedExe = %q, want %q", got.StagedExe, resolvedSource)
 	}
 	if got.DaemonFlag == "" {
 		t.Fatal("expected daemon flag for replacement start")
