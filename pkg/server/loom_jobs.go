@@ -14,7 +14,8 @@ import (
 )
 
 func (s *Server) getLoomTask(ctx context.Context, taskID string) (*loom.Task, bool, error) {
-	if s == nil || s.loom == nil {
+	loomEngine := s.currentLoom()
+	if loomEngine == nil {
 		return nil, false, nil
 	}
 	if scoped, ok, err := s.tenantScopedLoomForContext(ctx); err != nil {
@@ -29,7 +30,7 @@ func (s *Server) getLoomTask(ctx context.Context, taskID string) (*loom.Task, bo
 		}
 		return nil, false, err
 	}
-	task, err := s.loom.Get(taskID)
+	task, err := loomEngine.Get(taskID)
 	if err == nil {
 		return task, true, nil
 	}
@@ -40,13 +41,14 @@ func (s *Server) getLoomTask(ctx context.Context, taskID string) (*loom.Task, bo
 }
 
 func (s *Server) appendLoomProgressIfTask(taskID, line string) bool {
-	if s == nil || s.loom == nil {
+	loomEngine := s.currentLoom()
+	if loomEngine == nil {
 		return false
 	}
-	if _, err := s.loom.Get(taskID); err != nil {
+	if _, err := loomEngine.Get(taskID); err != nil {
 		return false
 	}
-	if err := s.loom.AppendProgress(taskID, line); err != nil {
+	if err := loomEngine.AppendProgress(taskID, line); err != nil {
 		if s.log != nil {
 			s.log.Warn("loom progress append failed for task %s: %v", taskID, err)
 		}
@@ -55,7 +57,8 @@ func (s *Server) appendLoomProgressIfTask(taskID, line string) bool {
 }
 
 func (s *Server) listLoomTasksForContext(ctx context.Context, statuses ...loom.TaskStatus) ([]*loom.Task, error) {
-	if s == nil || s.loom == nil {
+	loomEngine := s.currentLoom()
+	if loomEngine == nil {
 		return nil, nil
 	}
 	projectID := projectIDFromContext(ctx)
@@ -68,16 +71,20 @@ func (s *Server) listLoomTasksForContext(ctx context.Context, statuses ...loom.T
 		return s.listLoomEngineForTenant(scoped.TenantID(), statuses...)
 	}
 	if projectID != "" {
-		return s.loom.List(projectID, statuses...)
+		return loomEngine.List(projectID, statuses...)
 	}
-	return s.loom.ListEngine(statuses...)
+	return loomEngine.ListEngine(statuses...)
 }
 
 func (s *Server) listLoomEngineForTenant(tenantID string, statuses ...loom.TaskStatus) ([]*loom.Task, error) {
 	if tenantID == "" {
 		return nil, nil
 	}
-	tasks, err := s.loom.ListEngine(statuses...)
+	loomEngine := s.currentLoom()
+	if loomEngine == nil {
+		return nil, nil
+	}
+	tasks, err := loomEngine.ListEngine(statuses...)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +115,8 @@ func (s *Server) countLoomBySession(ctx context.Context) map[string]int {
 }
 
 func (s *Server) loomRunningCount(ctx context.Context) (int, error) {
-	if s == nil || s.loom == nil {
+	loomEngine := s.currentLoom()
+	if loomEngine == nil {
 		return 0, nil
 	}
 	projectID := projectIDFromContext(ctx)
@@ -123,17 +131,18 @@ func (s *Server) loomRunningCount(ctx context.Context) (int, error) {
 		return len(tasks), err
 	}
 	if projectID != "" {
-		return s.loom.Count(loom.TaskFilter{
+		return loomEngine.Count(loom.TaskFilter{
 			ProjectID: projectID,
 			Statuses:  []loom.TaskStatus{loom.TaskStatusRunning},
 		})
 	}
-	tasks, err := s.loom.ListEngine(loom.TaskStatusRunning)
+	tasks, err := loomEngine.ListEngine(loom.TaskStatusRunning)
 	return len(tasks), err
 }
 
 func (s *Server) tenantScopedLoomForContext(ctx context.Context) (*loom.TenantScopedLoomEngine, bool, error) {
-	if s == nil || s.loom == nil || s.isOperatorContext(ctx) {
+	loomEngine := s.currentLoom()
+	if loomEngine == nil || s.isOperatorContext(ctx) {
 		return nil, false, nil
 	}
 	if scoped, ok := TenantScopedLoomFromContext(ctx); ok && scoped != nil {
@@ -146,7 +155,7 @@ func (s *Server) tenantScopedLoomForContext(ctx context.Context) (*loom.TenantSc
 	if !ok || tc.TenantID == "" {
 		return nil, false, fmt.Errorf("tenant-scoped loom required in multi-tenant mode")
 	}
-	return loom.NewTenantScopedEngine(s.loom, tc.TenantID, nil), true, nil
+	return loom.NewTenantScopedEngine(loomEngine, tc.TenantID, nil), true, nil
 }
 
 func (s *Server) loomTasksForSession(ctx context.Context, sessionID string) ([]*loom.Task, error) {
@@ -164,6 +173,10 @@ func (s *Server) loomTasksForSession(ctx context.Context, sessionID string) ([]*
 }
 
 func (s *Server) failLoomTasksForSession(ctx context.Context, sessionID, errMsg string) (int, error) {
+	loomEngine := s.currentLoom()
+	if loomEngine == nil {
+		return 0, nil
+	}
 	tasks, err := s.loomTasksForSession(ctx, sessionID)
 	if err != nil {
 		return 0, err
@@ -173,7 +186,7 @@ func (s *Server) failLoomTasksForSession(ctx context.Context, sessionID, errMsg 
 		if !task.Status.IsActive() {
 			continue
 		}
-		ok, failErr := s.loom.FailActive(task.ID, errMsg)
+		ok, failErr := loomEngine.FailActive(task.ID, errMsg)
 		if failErr != nil {
 			return failed, failErr
 		}
@@ -281,9 +294,7 @@ func (s *Server) runLoomGC(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.loomMu.Lock()
-			loomEngine := s.loom
-			s.loomMu.Unlock()
+			loomEngine := s.currentLoom()
 			if loomEngine == nil {
 				continue
 			}

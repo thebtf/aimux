@@ -166,7 +166,7 @@ func (d *fullDelegate) handleWorktreeSwitch(ctx context.Context, previousProject
 }
 
 func (d *fullDelegate) forceCancelPreviousWorktree(ctx context.Context, previousProjectID, newProjectID string) error {
-	if d.srv == nil || d.srv.loom == nil {
+	if d.srv == nil || d.srv.currentLoom() == nil {
 		return nil
 	}
 	tenantID := tenantIDFromContext(ctx)
@@ -186,7 +186,11 @@ func (d *fullDelegate) failActiveByPreviousWorktree(previousProjectID, tenantID,
 	if sessionKey == "" || tenantID == "" {
 		return 0, nil
 	}
-	tasks, err := loom.NewTenantScopedEngine(d.srv.loom, tenantID, nil).List(previousProjectID, loom.ActiveTaskStatuses()...)
+	loomEngine := d.srv.currentLoom()
+	if loomEngine == nil {
+		return 0, nil
+	}
+	tasks, err := loom.NewTenantScopedEngine(loomEngine, tenantID, nil).List(previousProjectID, loom.ActiveTaskStatuses()...)
 	if err != nil {
 		return 0, err
 	}
@@ -195,7 +199,7 @@ func (d *fullDelegate) failActiveByPreviousWorktree(previousProjectID, tenantID,
 		if worktreeSessionKeyFromTask(task) != sessionKey {
 			continue
 		}
-		ok, err := d.srv.loom.FailActive(task.ID, worktreeSwitchCanceledMessage)
+		ok, err := loomEngine.FailActive(task.ID, worktreeSwitchCanceledMessage)
 		if err != nil {
 			return count, err
 		}
@@ -230,7 +234,7 @@ func tenantIDFromContext(ctx context.Context) string {
 }
 
 func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID string, timeout time.Duration) (bool, error) {
-	if d.srv == nil || d.srv.loom == nil {
+	if d.srv == nil || d.srv.currentLoom() == nil {
 		return true, nil
 	}
 	if timeout <= 0 {
@@ -265,7 +269,11 @@ func (d *fullDelegate) previousWorktreeDrained(projectID, tenantID, sessionKey s
 	if tenantID == "" {
 		return true, nil
 	}
-	tasks, err := loom.NewTenantScopedEngine(d.srv.loom, tenantID, nil).List(projectID, loom.ActiveTaskStatuses()...)
+	loomEngine := d.srv.currentLoom()
+	if loomEngine == nil {
+		return true, nil
+	}
+	tasks, err := loom.NewTenantScopedEngine(loomEngine, tenantID, nil).List(projectID, loom.ActiveTaskStatuses()...)
 	if err != nil {
 		return false, err
 	}

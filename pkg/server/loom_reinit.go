@@ -47,6 +47,15 @@ func (s *Server) ensureLoom(ctx context.Context) (*loom.LoomEngine, error) {
 	return s.loom, nil
 }
 
+func (s *Server) currentLoom() *loom.LoomEngine {
+	if s == nil {
+		return nil
+	}
+	s.loomMu.Lock()
+	defer s.loomMu.Unlock()
+	return s.loom
+}
+
 func (s *Server) initLoomEngine() error {
 	if s == nil {
 		return errors.New("server unavailable")

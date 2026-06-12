@@ -15,7 +15,7 @@ import (
 const legacyJobRestartError = "process restarted"
 
 func (s *Server) importLegacyJobsFromSQLite() (int, error) {
-	if s == nil || s.store == nil || s.loom == nil {
+	if s == nil || s.store == nil || s.currentLoom() == nil {
 		return 0, nil
 	}
 	jobs, err := s.store.LoadLegacyJobs()
@@ -26,7 +26,8 @@ func (s *Server) importLegacyJobsFromSQLite() (int, error) {
 }
 
 func (s *Server) importLegacyJobs(jobs []*session.Job) (int, error) {
-	if s == nil || s.loom == nil || len(jobs) == 0 {
+	loomEngine := s.currentLoom()
+	if loomEngine == nil || len(jobs) == 0 {
 		return 0, nil
 	}
 	now := time.Now().UTC()
@@ -36,7 +37,7 @@ func (s *Server) importLegacyJobs(jobs []*session.Job) (int, error) {
 		if task == nil {
 			continue
 		}
-		if err := s.loom.Import(task); err != nil {
+		if err := loomEngine.Import(task); err != nil {
 			return imported, fmt.Errorf("import legacy job %s: %w", job.ID, err)
 		}
 		imported++
