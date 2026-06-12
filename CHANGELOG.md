@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.14.3] — 2026-06-12 — Windows upgrade path and task router containment
+
 ### Fixed
 
 - **upgrade(action=apply) - use muxcore restart orchestration for engine-mode updates (engram #208).**
@@ -49,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2026-06-12: `mcp-launcher -mode install` returned `updated_deferred` with
   `handoff_error: "post-exit install scheduled"`, reconnected, read
   `sessions(action="health")`, and verified `aimux://health.version`.
+- Release commits: `5f42d13`, `3db2aaf`, `dba030d`, `746aa29`.
 
 ## [5.14.2] — 2026-05-26 — Second maintenance fixes batch from PRC agent-trio
 
