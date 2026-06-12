@@ -166,7 +166,13 @@ func (d *fullDelegate) handleWorktreeSwitch(ctx context.Context, previousProject
 }
 
 func (d *fullDelegate) forceCancelPreviousWorktree(ctx context.Context, previousProjectID, newProjectID string) error {
-	if d.srv == nil || d.srv.currentLoom() == nil {
+	if d.srv == nil {
+		return nil
+	}
+	if _, err := d.ensureWorktreeSwitchLoom(context.WithoutCancel(ctx)); err != nil {
+		return err
+	}
+	if d.srv.currentLoom() == nil {
 		return nil
 	}
 	tenantID := tenantIDFromContext(ctx)
@@ -234,7 +240,13 @@ func tenantIDFromContext(ctx context.Context) string {
 }
 
 func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID string, timeout time.Duration) (bool, error) {
-	if d.srv == nil || d.srv.currentLoom() == nil {
+	if d.srv == nil {
+		return true, nil
+	}
+	if _, err := d.ensureWorktreeSwitchLoom(context.WithoutCancel(ctx)); err != nil {
+		return false, err
+	}
+	if d.srv.currentLoom() == nil {
 		return true, nil
 	}
 	if timeout <= 0 {
@@ -263,6 +275,17 @@ func (d *fullDelegate) waitForPreviousWorktree(ctx context.Context, projectID st
 		case <-ticker.C:
 		}
 	}
+}
+
+func (d *fullDelegate) ensureWorktreeSwitchLoom(ctx context.Context) (*loom.LoomEngine, error) {
+	loomEngine, err := d.srv.ensureLoom(ctx)
+	if err != nil {
+		if isLoomStoreUnavailable(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return loomEngine, nil
 }
 
 func (d *fullDelegate) previousWorktreeDrained(projectID, tenantID, sessionKey string) (bool, error) {
