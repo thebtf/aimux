@@ -164,6 +164,11 @@ func (s *Server) taskRouterLoom(ctx context.Context) (TaskRouterLoom, error) {
 	if err != nil {
 		return nil, err
 	}
+	if scoped, ok, scopedErr := s.tenantScopedLoomForContext(ctx); scopedErr != nil {
+		return nil, scopedErr
+	} else if ok {
+		return scoped, nil
+	}
 	return loomClient, nil
 }
 

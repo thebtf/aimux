@@ -5,10 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/audit"
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/metrics"
 	"github.com/thebtf/aimux/pkg/session"
+	"github.com/thebtf/aimux/pkg/tenant"
 )
 
 func newStoreBackedLoomlessServer(t *testing.T) *Server {
@@ -72,5 +75,32 @@ func TestSessionsHealthReinitializesLoomFromStore(t *testing.T) {
 	}
 	if srv.loom == nil {
 		t.Fatal("srv.loom is nil after sessions health; want reinitialized Loom engine")
+	}
+}
+
+func TestTaskRouterLoomReinitializesTenantScopedFromStore(t *testing.T) {
+	t.Parallel()
+
+	srv := newStoreBackedLoomlessServer(t)
+	registry := tenant.NewRegistry()
+	registry.Swap(tenant.NewSnapshot(map[int]tenant.TenantConfig{
+		1001: {Name: "tenant-a", UID: 1001, Role: tenant.RolePlain},
+	}))
+	srv.dispatchMW = NewDispatchMiddleware(registry, audit.DiscardLog{})
+
+	ctx := srv.dispatchMW.WithContext(context.Background(), tenant.TenantContext{
+		TenantID: "tenant-a",
+		Role:     tenant.RolePlain,
+	})
+	got, err := srv.taskRouterLoom(ctx)
+	if err != nil {
+		t.Fatalf("taskRouterLoom error: %v", err)
+	}
+	scoped, ok := got.(*loom.TenantScopedLoomEngine)
+	if !ok {
+		t.Fatalf("taskRouterLoom returned %T, want *loom.TenantScopedLoomEngine", got)
+	}
+	if scoped.TenantID() != "tenant-a" {
+		t.Fatalf("TenantID = %q, want tenant-a", scoped.TenantID())
 	}
 }
