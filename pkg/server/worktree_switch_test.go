@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/config"
+	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/mcp-mux/muxcore"
 )
@@ -213,6 +215,144 @@ func TestWorktreeSwitchForcedSwitchCancelsPreviousProjectTasks(t *testing.T) {
 	}
 	if !strings.Contains(task.Error, "Canceled") || !strings.Contains(task.Error, "worktree switched mid-task") {
 		t.Fatalf("task error = %q, want canceled worktree switch message", task.Error)
+	}
+}
+
+func TestWorktreeSwitchDrainResurrectsLoomBeforeCheckingTasks(t *testing.T) {
+	srv := testServerWithRecoverableWorktreeSwitchLoom(t, config.WorktreeConfig{DrainTimeoutSeconds: 2})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1014)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+	projectA := muxcore.ProjectContext{ID: "drain-reinit-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "drain-reinit-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest: %v", err)
+	}
+	taskStore, taskID := createStoredWorktreeTask(t, srv, projectA.ID, worktreeSwitchSessionKey(1014), "tenant-a")
+	clearServerLoomForWorktreeSwitch(t, srv)
+
+	releaseErr := make(chan error, 1)
+	timer := time.AfterFunc(50*time.Millisecond, func() {
+		_, err := taskStore.FailActive(taskID, "drain released")
+		releaseErr <- err
+	})
+	defer timer.Stop()
+
+	start := time.Now()
+	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
+		t.Fatalf("switch returned before resurrected Loom observed active task: elapsed=%v", elapsed)
+	}
+	select {
+	case err := <-releaseErr:
+		if err != nil {
+			t.Fatalf("release stored task: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stored task release")
+	}
+	if srv.currentLoom() == nil {
+		t.Fatal("srv.loom is nil after worktree drain; want reinitialized Loom")
+	}
+	task := waitForWorktreeTaskTerminal(t, srv, taskID, 2*time.Second)
+	if task.Status != loom.TaskStatusFailed {
+		t.Fatalf("task status = %s, want failed after drain release", task.Status)
+	}
+}
+
+func TestWorktreeSwitchDrainResurrectsLoomBeforeCrashRecovery(t *testing.T) {
+	srv := testServerWithRecoverableWorktreeSwitchLoom(t, config.WorktreeConfig{DrainTimeoutSeconds: 2})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1016)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+	projectA := muxcore.ProjectContext{ID: "drain-recover-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "drain-recover-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest: %v", err)
+	}
+	taskID, _ := submitBlockingStoredLoomTaskWithTenant(t, srv, projectA.ID, worktreeSwitchSessionKey(1016), "tenant-a")
+	clearServerLoomForWorktreeSwitch(t, srv)
+
+	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest: %v", err)
+	}
+	if srv.currentLoom() == nil {
+		t.Fatal("srv.loom is nil after worktree drain; want reinitialized Loom")
+	}
+	task := waitForWorktreeTaskTerminal(t, srv, taskID, 2*time.Second)
+	if task.Status != loom.TaskStatusFailedCrash {
+		t.Fatalf("task status = %s, want failed_crash after Loom recovery", task.Status)
+	}
+}
+
+func TestWorktreeSwitchForcedSwitchResurrectsLoomBeforeCancel(t *testing.T) {
+	srv := testServerWithRecoverableWorktreeSwitchLoom(t, config.WorktreeConfig{DrainTimeoutSeconds: 30, ForcedSwitch: true})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1015)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+	projectA := muxcore.ProjectContext{ID: "forced-reinit-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "forced-reinit-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest: %v", err)
+	}
+	_, taskID := createStoredWorktreeTask(t, srv, projectA.ID, worktreeSwitchSessionKey(1015), "tenant-a")
+	clearServerLoomForWorktreeSwitch(t, srv)
+
+	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest: %v", err)
+	}
+	if srv.currentLoom() == nil {
+		t.Fatal("srv.loom is nil after forced switch; want reinitialized Loom")
+	}
+	task := waitForWorktreeTaskTerminal(t, srv, taskID, 2*time.Second)
+	if task.Status != loom.TaskStatusFailed {
+		t.Fatalf("task status = %s, want failed", task.Status)
+	}
+	if !strings.Contains(task.Error, "Canceled") || !strings.Contains(task.Error, "worktree switched mid-task") {
+		t.Fatalf("task error = %q, want canceled worktree switch message", task.Error)
+	}
+}
+
+func TestWorktreeSwitchForcedSwitchResurrectsLoomBeforeCrashRecovery(t *testing.T) {
+	srv := testServerWithRecoverableWorktreeSwitchLoom(t, config.WorktreeConfig{DrainTimeoutSeconds: 30, ForcedSwitch: true})
+	delegate := newWorktreeSwitchTestDelegate(srv)
+	ctx := tenant.WithContext(
+		contextWithSessionMeta(context.Background(), worktreeSwitchSessionMeta(1017)),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+	projectA := muxcore.ProjectContext{ID: "forced-recover-a", Cwd: t.TempDir()}
+	projectB := muxcore.ProjectContext{ID: "forced-recover-b", Cwd: t.TempDir()}
+	delegate.OnProjectConnect(projectA)
+	delegate.OnProjectConnect(projectB)
+	if _, err := delegate.projectStateForRequest(ctx, projectA); err != nil {
+		t.Fatalf("initial projectStateForRequest: %v", err)
+	}
+	taskID, _ := submitBlockingStoredLoomTaskWithTenant(t, srv, projectA.ID, worktreeSwitchSessionKey(1017), "tenant-a")
+	clearServerLoomForWorktreeSwitch(t, srv)
+
+	if _, err := delegate.projectStateForRequest(ctx, projectB); err != nil {
+		t.Fatalf("switch projectStateForRequest: %v", err)
+	}
+	if srv.currentLoom() == nil {
+		t.Fatal("srv.loom is nil after forced switch; want reinitialized Loom")
+	}
+	task := waitForWorktreeTaskTerminal(t, srv, taskID, 2*time.Second)
+	if task.Status != loom.TaskStatusFailedCrash {
+		t.Fatalf("task status = %s, want failed_crash after Loom recovery", task.Status)
 	}
 }
 
@@ -448,6 +588,18 @@ func testServerWithWorktreeSwitch(t *testing.T, cfg config.WorktreeConfig) *Serv
 	return srv
 }
 
+func testServerWithRecoverableWorktreeSwitchLoom(t *testing.T, cfg config.WorktreeConfig) *Server {
+	t.Helper()
+	srv := testServerWithWorktreeSwitch(t, cfg)
+	store, err := session.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("session.NewStore: %v", err)
+	}
+	srv.store = store
+	srv.engineName = "worktree-switch-reinit"
+	return srv
+}
+
 func newWorktreeSwitchTestDelegate(srv *Server) *fullDelegate {
 	return &fullDelegate{srv: srv}
 }
@@ -463,6 +615,86 @@ func worktreeSwitchSessionMeta(pid int) muxcore.SessionMeta {
 
 func worktreeSwitchSessionKey(pid int) string {
 	return "linux-unix-stream:pid:" + strconv.Itoa(pid)
+}
+
+func createStoredWorktreeTask(t *testing.T, srv *Server, projectID, sessionID, tenantID string) (*loom.TaskStore, string) {
+	t.Helper()
+
+	taskStore, err := loom.NewTaskStore(srv.store.DB(), srv.engineName)
+	if err != nil {
+		t.Fatalf("loom.NewTaskStore: %v", err)
+	}
+	metadata := map[string]any{"session_id": sessionID}
+	if sessionID != "" {
+		metadata[worktreeSessionMetadataKey] = sessionID
+	}
+	taskID := strings.ReplaceAll(t.Name(), "/", "-") + "-" + projectID
+	task := &loom.Task{
+		ID:         taskID,
+		Status:     loom.TaskStatusPending,
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  projectID,
+		TenantID:   tenantID,
+		Prompt:     "stored active task",
+		Metadata:   metadata,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := taskStore.Create(task); err != nil {
+		t.Fatalf("TaskStore.Create: %v", err)
+	}
+	return taskStore, taskID
+}
+
+func submitBlockingStoredLoomTaskWithTenant(t *testing.T, srv *Server, projectID, sessionID, tenantID string) (string, *blockingLoomWorker) {
+	t.Helper()
+
+	taskStore, err := loom.NewTaskStore(srv.store.DB(), srv.engineName)
+	if err != nil {
+		t.Fatalf("loom.NewTaskStore: %v", err)
+	}
+	loomEngine := loom.New(taskStore)
+	worker := newBlockingLoomWorker()
+	loomEngine.RegisterWorker(loom.WorkerTypeCLI, worker)
+	metadata := map[string]any{"session_id": sessionID}
+	if sessionID != "" {
+		metadata[worktreeSessionMetadataKey] = sessionID
+	}
+	taskID, err := loomEngine.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  projectID,
+		TenantID:   tenantID,
+		Prompt:     "block",
+		Metadata:   metadata,
+	})
+	if err != nil {
+		t.Fatalf("loom.Submit: %v", err)
+	}
+	select {
+	case <-worker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("loom worker did not start")
+	}
+	t.Cleanup(func() {
+		select {
+		case <-worker.release:
+		default:
+			close(worker.release)
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := loomEngine.Close(closeCtx); err != nil {
+			t.Fatalf("loom.Close: %v", err)
+		}
+	})
+	return taskID, worker
+}
+
+func clearServerLoomForWorktreeSwitch(t *testing.T, srv *Server) {
+	t.Helper()
+	srv.loomMu.Lock()
+	defer srv.loomMu.Unlock()
+	srv.loom = nil
+	srv.loomRuntimeWired = false
 }
 
 func waitForWorktreeTaskTerminal(t *testing.T, srv *Server, taskID string, timeout time.Duration) *loom.Task {
