@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/audit"
@@ -102,5 +103,57 @@ func TestTaskRouterLoomReinitializesTenantScopedFromStore(t *testing.T) {
 	}
 	if scoped.TenantID() != "tenant-a" {
 		t.Fatalf("TenantID = %q, want tenant-a", scoped.TenantID())
+	}
+}
+
+func TestWireLoomRuntimeRetriesGCWhenContextArrivesAfterWorkers(t *testing.T) {
+	t.Parallel()
+
+	srv := newStoreBackedLoomlessServer(t)
+	if _, err := srv.ensureLoom(context.Background()); err != nil {
+		t.Fatalf("ensureLoom: %v", err)
+	}
+	if !srv.loomRuntimeWired {
+		t.Fatal("loomRuntimeWired = false after ensureLoom; want workers wired")
+	}
+
+	taskStore, err := loom.NewTaskStore(srv.store.DB(), srv.engineName)
+	if err != nil {
+		t.Fatalf("loom.NewTaskStore: %v", err)
+	}
+	staleTask := &loom.Task{
+		ID:         "gc-stale-retry",
+		Status:     loom.TaskStatusRunning,
+		WorkerType: loom.WorkerTypeThinker,
+		ProjectID:  "proj-gc",
+		Prompt:     "stale task",
+		CreatedAt:  time.Now().Add(-30 * time.Minute).UTC(),
+	}
+	if err := taskStore.Create(staleTask); err != nil {
+		t.Fatalf("Create stale task: %v", err)
+	}
+
+	gcCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.gcCtx = gcCtx
+	srv.loomGCInterval = 10 * time.Millisecond
+	srv.wireLoomRuntime()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(2 * time.Second)
+	for {
+		got, err := taskStore.Get(staleTask.ID)
+		if err != nil {
+			t.Fatalf("Get stale task: %v", err)
+		}
+		if got.Status == loom.TaskStatusFailed {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("stale task status = %s, want %s", got.Status, loom.TaskStatusFailed)
+		case <-ticker.C:
+		}
 	}
 }
