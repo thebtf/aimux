@@ -41,6 +41,8 @@ func (s *Server) ensureLoom(ctx context.Context) (*loom.LoomEngine, error) {
 	}
 	if created {
 		s.wireLoomRuntimeLocked()
+	} else if !s.loomRuntimeWired && s.store != nil {
+		s.wireLoomRuntimeLocked()
 	}
 	return s.loom, nil
 }
