@@ -50,6 +50,20 @@ type HandoffStatusFunc func(ctx context.Context) (HandoffStatus, error)
 // muxcore daemon namespace using the provider-owned restart choreography.
 type ApplyUpdateAndRestartFunc func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error)
 
+// PostExitInstallFunc starts an out-of-process installer from the staged binary.
+// The helper waits until the current daemon exits, then replaces CurrentExe and
+// starts the replacement daemon. This is required on platforms that cannot
+// rename the currently running executable in-process.
+type PostExitInstallFunc func(ctx context.Context, opts PostExitInstallOptions) error
+
+// PostExitInstallOptions describes the deferred self-replacement helper.
+type PostExitInstallOptions struct {
+	CurrentExe  string
+	StagedExe   string
+	DaemonFlag  string
+	WaitTimeout time.Duration
+}
+
 // Mode controls how the upgrade is applied.
 type Mode string
 
@@ -107,6 +121,11 @@ type Coordinator struct {
 	// ApplyUpdateAndRestart installs a staged binary and restarts the muxcore
 	// daemon in one provider-owned operation. Nil means the helper is unavailable.
 	ApplyUpdateAndRestart ApplyUpdateAndRestartFunc
+
+	// PostExitInstall installs a staged binary after the current process exits.
+	// Used for Windows self-replacement, where swap-before-exit fails because
+	// the running executable is locked.
+	PostExitInstall PostExitInstallFunc
 
 	// Logger receives structured log output for upgrade lifecycle events.
 	// May be nil; logging is skipped when nil.
@@ -169,6 +188,9 @@ func (c *Coordinator) Apply(ctx context.Context, mode Mode, force bool) (result 
 	}
 	defer c.applyInProgress.Store(false)
 
+	if c.shouldUsePostExitInstall(mode) {
+		return c.applyWithPostExitInstall(ctx, normalizeMode(mode), force)
+	}
 	if c.shouldUseApplyUpdateAndRestart(mode) {
 		return c.applyWithMuxcoreRestart(ctx, normalizeMode(mode), force)
 	}
@@ -328,6 +350,15 @@ func (c *Coordinator) shouldUseApplyUpdateAndRestart(mode Mode) bool {
 		c.ApplyUpdate == nil
 }
 
+func (c *Coordinator) shouldUsePostExitInstall(mode Mode) bool {
+	mode = normalizeMode(mode)
+	return c.EngineMode &&
+		c.PostExitInstall != nil &&
+		postExitInstallRequired() &&
+		(mode == ModeAuto || mode == ModeHotSwap) &&
+		c.ApplyUpdate == nil
+}
+
 func (c *Coordinator) applyUpdateFunc() ApplyUpdateFunc {
 	if c.ApplyUpdate != nil {
 		return c.ApplyUpdate
@@ -415,6 +446,48 @@ func (c *Coordinator) applyWithMuxcoreRestart(ctx context.Context, mode Mode, fo
 		NewVersion:      release.Version,
 		HandoffError:    reason,
 		Message:         "Binary updated. Daemon restarted without live handoff. Hot-swap unavailable: " + reason,
+	}, nil
+}
+
+func (c *Coordinator) applyWithPostExitInstall(ctx context.Context, mode Mode, force bool) (*Result, error) {
+	if mode == ModeHotSwap {
+		return nil, fmt.Errorf("%w: post-exit install requires deferred reconnect", errHotSwapUnsupported)
+	}
+
+	release, stagedPath, cleanupStaged, err := c.prepareStagedUpdate(ctx, force)
+	if err != nil {
+		return nil, err
+	}
+	if release == nil {
+		return &Result{
+			Method:          "up_to_date",
+			PreviousVersion: c.Version,
+			NewVersion:      c.Version,
+			Message:         "Already up to date.",
+		}, nil
+	}
+
+	if err := c.PostExitInstall(ctx, PostExitInstallOptions{
+		CurrentExe:  c.BinaryPath,
+		StagedExe:   stagedPath,
+		DaemonFlag:  defaultPostExitDaemonFlag,
+		WaitTimeout: defaultControlRequestTimeout,
+	}); err != nil {
+		if cleanupStaged && stagedPath != "" {
+			_ = os.Remove(stagedPath)
+		}
+		return nil, err
+	}
+
+	if c.SessionHandler != nil {
+		c.SessionHandler.SetUpdatePending()
+	}
+	return &Result{
+		Method:          "deferred",
+		PreviousVersion: c.Version,
+		NewVersion:      release.Version,
+		HandoffError:    "post-exit install scheduled",
+		Message:         "Binary update scheduled. Daemon will restart after active sessions disconnect.",
 	}, nil
 }
 

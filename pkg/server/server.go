@@ -1445,6 +1445,7 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 			GracefulRestart:       s.gracefulRestartFunc(),
 			HandoffStatus:         s.handoffStatusFunc(),
 			ApplyUpdateAndRestart: s.applyUpdateAndRestartFunc(),
+			PostExitInstall:       upgrade.NewPostExitInstallFunc(),
 			Logger:                s.log,
 			Source:                source,
 		}

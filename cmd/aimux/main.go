@@ -20,8 +20,8 @@ import (
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/ratelimit"
 	"github.com/thebtf/aimux/pkg/routing"
-	"github.com/thebtf/aimux/pkg/tenant"
 	aimuxServer "github.com/thebtf/aimux/pkg/server"
+	"github.com/thebtf/aimux/pkg/tenant"
 	muxdaemon "github.com/thebtf/mcp-mux/muxcore/daemon"
 	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
@@ -45,6 +45,10 @@ func main() {
 }
 
 func run() error {
+	if handled, err := maybeRunPostExitUpgrade(os.Args[1:]); handled || err != nil {
+		return err
+	}
+
 	handoff, err := parseHandoffFlags(os.Args[1:])
 	if err != nil {
 		return err
@@ -87,7 +91,7 @@ func run() error {
 	// Shim: never opens the log file. Forwards to daemon via IPCSink with
 	// stderr fallback for bootstrap and transport failures.
 	var (
-		log    *logger.Logger
+		log     *logger.Logger
 		shimIPC *logger.IPCSink // non-nil only in ModeShim — passed to runShim for OnInject wiring
 	)
 	if mode == ModeShim {
@@ -237,9 +241,9 @@ func run() error {
 		// admissions for tenants in their drain window (FR-12, PRC v3 B2/B6).
 		authAdapter := aimuxServer.NewAuthorizeSessionAdapter(tenantReg, srv.AuditLog(), frameLimiter, hotReloader.DrainController())
 		eng, engErr := engine.New(engine.Config{
-			Name:             engineName,
-			Persistent:       true,
-			SessionHandler:   srv.SessionHandler(),
+			Name:           engineName,
+			Persistent:     true,
+			SessionHandler: srv.SessionHandler(),
 			// Handler is a defence-in-depth fallback that muxcore would select
 			// in proxy mode (MCP_MUX_SESSION_ID set) — not reached today because
 			// detectMode() rejects MCP_MUX_SESSION_ID unconditionally per FR-4

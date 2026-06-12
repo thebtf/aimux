@@ -20,18 +20,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downloads, fallback shutdown reporting, post-swap errors, and pre-swap hard
   failures.
 
+- **Windows upgrade(source=...) - schedule post-exit self replacement for
+  installed daemon updates (engram #208).** In SessionHandler deployments,
+  Windows locks the running `.exe`, so muxcore's swap-before-exit helper cannot
+  rename the active binary in-process. `auto` mode now schedules an aimux
+  post-exit installer, marks the muxcore session update-pending, and reports
+  `updated_deferred` with `handoff_error: "post-exit install scheduled"` while
+  reconnect verification proves the new daemon. `hot_swap` rejects this path
+  instead of silently falling back.
+
 - **Release toolchain - bump Go to 1.25.11.**
   `govulncheck` found reachable standard-library vulnerabilities in Go 1.25.10
   (`GO-2026-5039`, `GO-2026-5037`). The module and release workflow now use
   Go 1.25.11, which contains the fixed standard library.
 
+- **task router - surface missing Loom as a non-retryable capability mismatch
+  (engram #256 partial).** When the daemon starts without a Loom engine, `task`
+  now returns a non-retryable `CapabilityMismatch` with remediation guidance
+  instead of telling callers to retry forever. `sessions(action="health")`
+  reports `loom_status`, `loom_tasks`, and `loom_error` so operators can see
+  the task backend state directly. Automatic Loom resurrection remains open
+  follow-up work under #256.
+
 ### Notes
 
 - Maintenance patch - no breaking MCP surface changes.
-- Release is currently blocked by installed-daemon Windows smoke: muxcore
-  v0.25.0's helper is reached, but the provider swap phase cannot rename the
-  running `bin\aimux-dev.exe` (`Access is denied`). Do not close #208 until
-  the binary replacement/reconnect smoke passes.
+- Installed-daemon Windows smoke for the current daemon path passed on
+  2026-06-12: `mcp-launcher -mode install` returned `updated_deferred` with
+  `handoff_error: "post-exit install scheduled"`, reconnected, read
+  `sessions(action="health")`, and verified `aimux://health.version`.
 
 ## [5.14.2] — 2026-05-26 — Second maintenance fixes batch from PRC agent-trio
 

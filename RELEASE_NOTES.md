@@ -1,4 +1,4 @@
-## v5.14.3 Draft - BLOCKED
+## v5.14.3 Draft
 
 ### Graceful Upgrade Adoption
 
@@ -11,17 +11,29 @@
 - The upgrade result remains honest: successful live handoff reports
   `hot_swap`; provider fallback or unsupported restart behavior reports
   `deferred` with the reason preserved in `handoff_error`.
+- On Windows SessionHandler deployments, `auto` mode uses an aimux post-exit
+  installer because the running `.exe` cannot be renamed before daemon exit.
+  The expected successful result is `updated_deferred` with
+  `handoff_error: "post-exit install scheduled"` followed by reconnect and
+  health/version verification. Explicit `hot_swap` rejects this path.
 - The release toolchain now uses Go 1.25.11, fixing reachable
   standard-library vulnerabilities reported against Go 1.25.10.
+
+### Task Router Containment
+
+- Missing Loom now surfaces as a non-retryable `CapabilityMismatch` with
+  remediation guidance, and `sessions(action="health")` reports Loom status
+  directly. This is a containment fix for Engram #256; automatic Loom
+  resurrection remains a follow-up track.
 
 ### Verification Focus
 
 - Added regression coverage for local source upgrades, staged remote downloads,
   fallback shutdown reporting, pre-swap hard failures, and post-swap errors.
-- Release is not shipped yet. Installed-daemon Windows smoke reaches muxcore
-  `ApplyUpdateAndRestart`, then fails in provider swap phase while renaming the
-  running `bin\aimux-dev.exe` (`Access is denied`). Keep Engram #208 open until
-  binary replacement and reconnect smoke pass.
+- Release is not shipped yet. Installed-daemon Windows smoke for the current
+  daemon path now passes: `mcp-launcher -mode install` reports
+  `updated_deferred`, reconnects, and verifies `sessions(action="health")` plus
+  `aimux://health.version`.
 
 ---
 

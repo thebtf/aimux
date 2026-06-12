@@ -746,21 +746,23 @@ customer-supported installed-daemon paths.
 **Expected:**
 - The first install may report `status: "updated_deferred"` only when the
   pre-v5.14.3 daemon is still handling the upgrade request.
-- The second install, handled by the v5.14.3+ daemon, uses muxcore's
-  `ApplyUpdateAndRestart` helper. It reports `status: "updated_hot_swap"` when
-  live handoff succeeds, or `status: "updated_deferred"` with a non-empty
-  `handoff_error` when muxcore falls back after the binary swap. A silent
-  deferred result without `handoff_error` is a failure.
+- The second install, handled by the v5.14.3+ daemon, uses the supported
+  daemon update path. On Windows SessionHandler deployments it reports
+  `status: "updated_deferred"` with
+  `handoff_error: "post-exit install scheduled"` because replacement occurs
+  after daemon exit. On platforms where muxcore can complete live handoff, it
+  may report `status: "updated_hot_swap"`. A silent deferred result without
+  `handoff_error` is a failure.
 - Reconnect verification reaches `sessions(action="health")`, reads
   `aimux://health`, sees `tools: 28`, and reports the expected version.
 - The final installer line is `[install] PASS`.
 - `bin\aimux-dev.exe.old` may remain as the rollback backup created by the atomic
   replace path. Its presence is not a failure; a locked stale old-slot that
   prevents the next install is a failure.
-- Current Windows blocker observed on 2026-06-12: if the installer reports
-  `apply update and restart failed during swap` while renaming the running
-  `bin\aimux-dev.exe`, classify the release as BLOCKED. The helper was reached,
-  but the binary did not land.
+- Regression guard: if the installer reports `apply update and restart failed
+  during swap` while renaming the running `bin\aimux-dev.exe`, classify the
+  release as BLOCKED. The old muxcore swap-before-exit path was reached instead
+  of the supported Windows post-exit installer.
 
 **Pass criteria:**
 - `mcp-launcher` exits `0`.
@@ -768,8 +770,8 @@ customer-supported installed-daemon paths.
 - `bin\aimux-dev-next.exe --version` matches `$cliVersion` from step 1.
 - `sessions(action="health").init_phase == 2`.
 - The second install result is either `updated_hot_swap`, or
-  `updated_deferred` with a specific `handoff_error` explaining the muxcore
-  fallback.
+  `updated_deferred` with a specific `handoff_error` explaining the deferred
+  reconnect path.
 - If `bin\aimux-dev.exe.old` exists after the install, classify it as expected
   rollback state unless the next install reports an old-slot lock.
 
