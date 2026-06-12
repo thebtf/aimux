@@ -39,7 +39,7 @@ const (
 //
 // Expected line shape (LocalSink format with [role-pid-sess] prefix):
 //
-//   <RFC3339> [INFO] [shim-?<sess>-<sess>] test-emit <i>/<N>
+//	<RFC3339> [INFO] [shim-?<sess>-<sess>] test-emit <i>/<N>
 var testEmitLine = regexp.MustCompile(`\[shim-\?\S+?-([a-f0-9]{8,})\] test-emit (\d+)/(\d+)$`)
 
 // TestMultiProcessLogIntegrity is the FR-10 regression gate. It ensures:
@@ -89,15 +89,17 @@ func TestMultiProcessLogIntegrity(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			stderrPath := filepath.Join(tmpDir, fmt.Sprintf("shim-%02d.stderr", idx))
-			cmd := spawnMultiProcShim(t, binPath, configDir, stderrPath, multiProcLinesPerShim, sessionIDs[idx])
+			cmd, closeStdin := spawnMultiProcShim(t, binPath, configDir, stderrPath, multiProcLinesPerShim, sessionIDs[idx])
+			defer closeStdin()
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
 			select {
 			case err := <-done:
 				if err != nil {
-					shimErrs <- fmt.Errorf("shim %d wait: %v", idx, err)
+					shimErrs <- shimWaitError(idx, err, stderrPath)
 				}
 			case <-time.After(multiProcSpawnTimeout):
+				closeStdin()
 				cmd.Process.Kill()
 				shimErrs <- fmt.Errorf("shim %d: did not exit within %v", idx, multiProcSpawnTimeout)
 			}
@@ -230,7 +232,7 @@ func startMultiProcDaemon(t *testing.T, binPath, configDir string) *exec.Cmd {
 // active so it emits emitLines log entries after IPC handshake, then exits.
 // claudeSessionID is propagated via CLAUDE_SESSION_ID so the daemon assigns a
 // distinct session tag per shim (FR-5 derives sess from this env var).
-func spawnMultiProcShim(t *testing.T, binPath, configDir, stderrPath string, emitLines int, claudeSessionID string) *exec.Cmd {
+func spawnMultiProcShim(t *testing.T, binPath, configDir, stderrPath string, emitLines int, claudeSessionID string) (*exec.Cmd, func()) {
 	t.Helper()
 	stderrFile, err := os.Create(stderrPath)
 	if err != nil {
@@ -252,10 +254,24 @@ func spawnMultiProcShim(t *testing.T, binPath, configDir, stderrPath string, emi
 	cmd.Stdout = nil
 	cmd.Stderr = stderrFile
 	if err := cmd.Start(); err != nil {
+		stdin.Close()
 		t.Fatalf("spawn shim: %v", err)
 	}
-	stdin.Close()
-	return cmd
+	return cmd, func() { _ = stdin.Close() }
+}
+
+func shimWaitError(idx int, err error, stderrPath string) error {
+	stderr, readErr := os.ReadFile(stderrPath)
+	if readErr != nil {
+		return fmt.Errorf("shim %d wait: %v; read stderr: %v", idx, err, readErr)
+	}
+	if len(stderr) > 4096 {
+		stderr = stderr[len(stderr)-4096:]
+	}
+	if len(stderr) == 0 {
+		return fmt.Errorf("shim %d wait: %v; stderr empty", idx, err)
+	}
+	return fmt.Errorf("shim %d wait: %v\nstderr tail:\n%s", idx, err, stderr)
 }
 
 // splitLines splits s on '\n' boundaries while tolerating trailing '\r' from
