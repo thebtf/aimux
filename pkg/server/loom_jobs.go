@@ -281,7 +281,13 @@ func (s *Server) runLoomGC(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if failed, err := s.loom.FailStaleRunning(15*time.Minute, "GC reaped: no progress for 15+ minutes"); err != nil {
+			s.loomMu.Lock()
+			loomEngine := s.loom
+			s.loomMu.Unlock()
+			if loomEngine == nil {
+				continue
+			}
+			if failed, err := loomEngine.FailStaleRunning(15*time.Minute, "GC reaped: no progress for 15+ minutes"); err != nil {
 				s.log.Warn("loom GC: stale task reap failed: %v", err)
 			} else if failed > 0 {
 				s.log.Info("loom GC: reaped %d stale running tasks", failed)

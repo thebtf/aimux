@@ -135,9 +135,9 @@ func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if parseErr != nil {
 		return taskToolError(TaskResult{}, parseErr)
 	}
-	loomClient := s.taskRouterLoom(ctx)
+	loomClient, loomErr := s.taskRouterLoom(ctx)
 	if loomClient == nil {
-		return taskToolError(TaskResult{}, taskRouterLoomUnavailableError())
+		return taskToolError(TaskResult{}, taskRouterLoomUnavailableError(loomErr))
 	}
 	router, err := NewTaskRouter(TaskRouterConfig{
 		Loom:       loomClient,
@@ -153,17 +153,18 @@ func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	return marshalToolResult(result)
 }
 
-func (s *Server) taskRouterLoom(ctx context.Context) TaskRouterLoom {
+func (s *Server) taskRouterLoom(ctx context.Context) (TaskRouterLoom, error) {
 	if scoped, ok := TenantScopedLoomFromContext(ctx); ok && scoped != nil {
-		return scoped
+		return scoped, nil
 	}
 	if s == nil {
-		return nil
+		return nil, nil
 	}
-	if s.loom == nil {
-		return nil
+	loomClient, err := s.ensureLoom(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return s.loom
+	return loomClient, nil
 }
 
 func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskRequest, error) {
@@ -334,8 +335,8 @@ func taskToolError(result TaskResult, err error) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultError(string(b)), nil
 }
 
-func taskRouterLoomUnavailableError() *extypes.CLIError {
-	err := extypes.NewCapabilityMismatch(taskRouterLoomUnavailableMessage, nil)
+func taskRouterLoomUnavailableError(cause error) *extypes.CLIError {
+	err := extypes.NewCapabilityMismatch(formatLoomUnavailableError(cause), cause)
 	err.Retryable = false
 	return err
 }

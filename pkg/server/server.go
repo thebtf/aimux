@@ -16,7 +16,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/thebtf/aimux/loom"
-	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
 	"github.com/thebtf/aimux/pkg/audit"
 	"github.com/thebtf/aimux/pkg/build"
 	"github.com/thebtf/aimux/pkg/config"
@@ -97,6 +96,7 @@ type Server struct {
 	hooks                   *hooks.Registry
 	metrics                 *metrics.Collector
 	store                   *session.Store
+	gcCtx                   context.Context
 	gcCancel                context.CancelFunc
 	skillEngine             *skills.Engine
 	rateLimiter             *ratelimit.Limiter
@@ -110,6 +110,10 @@ type Server struct {
 	daemonControlSocketPath string           // live engine daemon control socket path for upgrade restart seam
 	muxCompatOnce           sync.Once        // ensures configureMuxCompatibility registers its hook exactly once
 	loom                    *loom.LoomEngine // central task mediator (LoomEngine v3)
+	loomMu                  sync.Mutex       // protects Loom resurrection and runtime wiring
+	loomRuntimeWired        bool             // protected by loomMu; workers/recovery registered for current loom
+	loomGCOnce              sync.Once        // starts at most one Loom GC loop for the daemon lifetime
+	loomGCInterval          time.Duration
 	thinkHarness            *harness.Controller
 	thinkHarnessOnce        sync.Once
 
@@ -308,14 +312,8 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 			s.store = store
 			log.Info("SQLite persistence enabled: %s", dbPath)
 
-			// Initialize LoomEngine with shared SQLite DB.
-			taskStore, taskStoreErr := loom.NewTaskStore(store.DB(), s.engineName)
-			if taskStoreErr != nil {
-				log.Warn("LoomEngine unavailable: %v", taskStoreErr)
-			} else {
-				s.loom = loom.New(taskStore)
-				log.Info("LoomEngine initialized (shared SQLite)")
-				log.Info("loom task scoping: engine_name=%s", s.engineName)
+			if err := s.initLoomEngine(); err != nil {
+				log.Warn("LoomEngine unavailable: %v", err)
 			}
 
 			if n, err := s.importLegacyJobsFromSQLite(); err != nil {
@@ -350,6 +348,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 
 	// Start GC reaper for expired sessions
 	gcCtx, gcCancel := context.WithCancel(context.Background())
+	s.gcCtx = gcCtx
 	s.gcCancel = gcCancel
 
 	// Start periodic snapshot (uses gcCtx for graceful shutdown)
@@ -364,11 +363,9 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	if gcInterval <= 0 {
 		gcInterval = 300
 	}
+	s.loomGCInterval = time.Duration(gcInterval) * time.Second
 	gc := session.NewGCReaper(s.sessions, log, ttl)
 	go gc.Run(gcCtx, time.Duration(gcInterval)*time.Second)
-	if s.loom != nil {
-		go s.runLoomGC(gcCtx, time.Duration(gcInterval)*time.Second)
-	}
 
 	// Think session GC: clean up stale think pattern sessions alongside main GC
 	go func() {
@@ -398,44 +395,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	s.fallbackPicker = buildFallbackPicker(s)
 
 	// Register LoomEngine workers for the reduced surface.
-	if s.loom != nil {
-		s.loom.RegisterWorker(loom.WorkerTypeThinker, loomworkers.NewThinkerWorker())
-		s.registerTaskWorkers()
-
-		// AIMUX-21: CodexWorker + CodexPool behind generic task/code/review entries.
-		// Pool construction validates that the codex binary is on PATH. When codex
-		// is absent (e.g. CI without codex installed) the pool is nil and generic
-		// workers report availability errors rather than panicking.
-		codexPath, pathErr := lookupCodexBinary()
-		if pathErr != nil {
-			log.Info("codex: binary not found on PATH - generic workers will report unavailable (%v)", pathErr)
-		} else {
-			pool, poolErr := codexexec.NewCodexPool(codexPath, codexexec.DefaultPoolConfig())
-			if poolErr != nil {
-				log.Warn("codex: pool init failed: %v", poolErr)
-			} else {
-				s.codexPool = pool
-				worker, workerErr := codexexec.NewCodexWorker(codexexec.CodexWorkerConfig{
-					Pool:    pool,
-					Loom:    s.loom,
-					LoomGet: s.loom,
-				})
-				if workerErr != nil {
-					log.Warn("codex: worker init failed: %v", workerErr)
-				} else {
-					s.loom.RegisterWorker(codexexec.WorkerTypeCodex, worker)
-					log.Info("codex: pool + worker initialized (binary: %s)", codexPath)
-				}
-			}
-		}
-
-		// Recover tasks that were dispatched/running when daemon last crashed.
-		if n, err := s.loom.RecoverCrashed(); err != nil {
-			log.Warn("loom crash recovery: %v", err)
-		} else if n > 0 {
-			log.Info("loom: recovered %d crashed tasks", n)
-		}
-	}
+	s.wireLoomRuntime()
 
 	// Initialize prompt engine with built-in and project prompts.d/
 	builtInPrompts := filepath.Join(cfg.ConfigDir, "prompts.d")
@@ -1038,6 +998,13 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		return marshalToolResult(filtered)
 
 	case "health":
+		var loomEnsureErr error
+		if _, err := s.ensureLoom(ctx); err != nil {
+			loomEnsureErr = err
+			if !isLoomStoreUnavailable(err) && s.log != nil {
+				s.log.Warn("sessions health: loom reinitialization failed: %v", err)
+			}
+		}
 		loomRunning, loomRunningErr := s.loomRunningCount(ctx)
 		if loomRunningErr != nil {
 			s.log.Warn("sessions health: loom running count failed: %v", loomRunningErr)
@@ -1048,7 +1015,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			"running_jobs":   loomRunning,
 			"loom_status":    "unavailable",
 			"loom_tasks":     0,
-			"loom_error":     taskRouterLoomUnavailableMessage,
+			"loom_error":     formatLoomUnavailableError(loomEnsureErr),
 		}
 		if operator {
 			snap := s.metrics.Snapshot()
