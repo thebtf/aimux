@@ -16,11 +16,14 @@
 package e2e
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -61,10 +64,12 @@ func TestMultiProcessLogIntegrity(t *testing.T) {
 	tmpDir := t.TempDir()
 	logFile := filepath.Join(tmpDir, "aimux.log")
 	configDir := writeLatencyTestConfig(t, tmpDir, logFile)
+	engineName, isolatedTmp := newMultiProcRuntime(t)
+	t.Logf("multiproc runtime: engine=%s tmp=%s", engineName, isolatedTmp)
 
 	// Phase 2: start daemon under a unique engine name to isolate from any
 	// other test daemon and from any production aimux.
-	daemonCmd := startMultiProcDaemon(t, binPath, configDir)
+	daemonCmd := startMultiProcDaemon(t, binPath, configDir, engineName, isolatedTmp)
 	t.Logf("daemon PID=%d", daemonCmd.Process.Pid)
 	waitForLogPattern(t, logFile, daemonReadyPattern, 30*time.Second)
 	t.Logf("daemon ready; spawning %d shims × %d lines", multiProcShims, multiProcLinesPerShim)
@@ -89,7 +94,7 @@ func TestMultiProcessLogIntegrity(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			stderrPath := filepath.Join(tmpDir, fmt.Sprintf("shim-%02d.stderr", idx))
-			cmd, closeStdin := spawnMultiProcShim(t, binPath, configDir, stderrPath, multiProcLinesPerShim, sessionIDs[idx])
+			cmd, closeStdin := spawnMultiProcShim(t, binPath, configDir, stderrPath, engineName, isolatedTmp, multiProcLinesPerShim, sessionIDs[idx])
 			defer closeStdin()
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
@@ -207,13 +212,16 @@ func TestMultiProcessLogIntegrity(t *testing.T) {
 // startMultiProcDaemon launches the daemon under a dedicated engine name and
 // registers cleanup. Mirrors startLatencyDaemon but with isolated naming so
 // concurrent test runs don't collide.
-func startMultiProcDaemon(t *testing.T, binPath, configDir string) *exec.Cmd {
+func startMultiProcDaemon(t *testing.T, binPath, configDir, engineName, isolatedTmp string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(binPath, "--muxcore-daemon")
-	cmd.Env = append(filterEnv(os.Environ(), "MCP_MUX_SESSION_ID"),
+	cmd.Env = append(filterEnv(os.Environ(), "MCP_MUX_SESSION_ID", "TMPDIR", "TEMP", "TMP"),
 		"AIMUX_CONFIG_DIR="+configDir,
-		"AIMUX_ENGINE_NAME=aimux-multiproc-test",
+		"AIMUX_ENGINE_NAME="+engineName,
 		"AIMUX_WARMUP=false",
+		"TMPDIR="+isolatedTmp,
+		"TEMP="+isolatedTmp,
+		"TMP="+isolatedTmp,
 	)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -232,7 +240,7 @@ func startMultiProcDaemon(t *testing.T, binPath, configDir string) *exec.Cmd {
 // active so it emits emitLines log entries after IPC handshake, then exits.
 // claudeSessionID is propagated via CLAUDE_SESSION_ID so the daemon assigns a
 // distinct session tag per shim (FR-5 derives sess from this env var).
-func spawnMultiProcShim(t *testing.T, binPath, configDir, stderrPath string, emitLines int, claudeSessionID string) (*exec.Cmd, func()) {
+func spawnMultiProcShim(t *testing.T, binPath, configDir, stderrPath, engineName, isolatedTmp string, emitLines int, claudeSessionID string) (*exec.Cmd, func()) {
 	t.Helper()
 	stderrFile, err := os.Create(stderrPath)
 	if err != nil {
@@ -241,11 +249,14 @@ func spawnMultiProcShim(t *testing.T, binPath, configDir, stderrPath string, emi
 	t.Cleanup(func() { stderrFile.Close() })
 
 	cmd := exec.Command(binPath)
-	cmd.Env = append(filterEnv(os.Environ(), "MCP_MUX_SESSION_ID", "CLAUDE_SESSION_ID"),
+	cmd.Env = append(filterEnv(os.Environ(), "MCP_MUX_SESSION_ID", "CLAUDE_SESSION_ID", "TMPDIR", "TEMP", "TMP"),
 		"AIMUX_CONFIG_DIR="+configDir,
-		"AIMUX_ENGINE_NAME=aimux-multiproc-test",
+		"AIMUX_ENGINE_NAME="+engineName,
 		fmt.Sprintf("AIMUX_TEST_EMIT_LINES=%d", emitLines),
 		"CLAUDE_SESSION_ID="+claudeSessionID,
+		"TMPDIR="+isolatedTmp,
+		"TEMP="+isolatedTmp,
+		"TMP="+isolatedTmp,
 	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -258,6 +269,27 @@ func spawnMultiProcShim(t *testing.T, binPath, configDir, stderrPath string, emi
 		t.Fatalf("spawn shim: %v", err)
 	}
 	return cmd, func() { _ = stdin.Close() }
+}
+
+func newMultiProcRuntime(t *testing.T) (engineName, isolatedTmp string) {
+	t.Helper()
+
+	var randSuffix [4]byte
+	if _, err := rand.Read(randSuffix[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	engineName = "amp-" + hex.EncodeToString(randSuffix[:])
+
+	tmpRoot := os.TempDir()
+	if runtime.GOOS == "darwin" {
+		tmpRoot = "/tmp"
+	}
+	shortTmp, err := os.MkdirTemp(tmpRoot, "amp")
+	if err != nil {
+		t.Fatalf("create isolated tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortTmp) })
+	return engineName, shortTmp
 }
 
 func shimWaitError(idx int, err error, stderrPath string) error {
