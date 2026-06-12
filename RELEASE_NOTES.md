@@ -1,39 +1,32 @@
-## v5.14.3 — Windows upgrade path and task router containment
+## v5.14.4 — Loom resurrection and worktree switch safety
 
-### Graceful Upgrade Adoption
+### Task Router Recovery
 
-- `upgrade(action="apply")` now uses muxcore's restart helper in engine mode
-  when the helper is available, instead of forcing SessionHandler deployments
-  into the old deferred-restart path before trying provider orchestration.
-- aimux now depends on `github.com/thebtf/mcp-mux/muxcore v0.25.0`, which
-  provides the `ApplyUpdateAndRestart` path used for daemon restart
-  choreography.
-- The upgrade result remains honest: successful live handoff reports
-  `hot_swap`; provider fallback or unsupported restart behavior reports
-  `deferred` with the reason preserved in `handoff_error`.
-- On Windows SessionHandler deployments, `auto` mode uses an aimux post-exit
-  installer because the running `.exe` cannot be renamed before daemon exit.
-  The expected successful result is `updated_deferred` with
-  `handoff_error: "post-exit install scheduled"` followed by reconnect and
-  health/version verification. Explicit `hot_swap` rejects this path.
-- The release toolchain now uses Go 1.25.11, fixing reachable
-  standard-library vulnerabilities reported against Go 1.25.10.
+- `task` and `sessions(action="health")` can now recover a missing in-memory
+  Loom engine from the live SQLite session store. This addresses the #256
+  failure mode where the MCP surface stayed up but task routing failed with
+  `CapabilityMismatch: task router requires Loom`.
+- The recovered Loom path registers the standard task workers and starts Loom
+  GC once. If the backing store is unavailable, aimux still fails closed with a
+  non-retryable capability error and remediation guidance.
+- Tenant-scoped requests preserve their tenant wrapper after recovery, so
+  multi-tenant callers do not fall back to the raw shared Loom engine.
 
-### Task Router Containment
+### Worktree Switch Safety
 
-- Missing Loom now surfaces as a non-retryable `CapabilityMismatch` with
-  remediation guidance, and `sessions(action="health")` reports Loom status
-  directly. This is a containment fix for Engram #256; automatic Loom
-  resurrection remains a follow-up track.
+- Worktree switch drain and forced-cancel paths now attempt Loom recovery before
+  deciding there is no task state to wait for or cancel. This closes the late
+  review gap where a switch could skip safety checks before a later `task` call
+  resurrected Loom successfully.
+- Regression coverage now covers pending-task drain, running-task crash
+  recovery, forced cancel, and forced-switch recovery after Loom resurrection.
 
-### Verification Focus
+### Test Hardening
 
-- Added regression coverage for local source upgrades, staged remote downloads,
-  fallback shutdown reporting, pre-swap hard failures, and post-swap errors.
-- Release is not shipped yet. Installed-daemon Windows smoke for the current
-  daemon path now passes: `mcp-launcher -mode install` reports
-  `updated_deferred`, reconnects, and verifies `sessions(action="health")` plus
-  `aimux://health.version`.
+- Multiprocess shim log-integrity coverage keeps shim stdin open during the
+  test window and uses a shorter runtime.
+- Windows post-exit installer tests accept resolved staged source paths.
+- No public MCP surface changes in this patch.
 
 ---
 

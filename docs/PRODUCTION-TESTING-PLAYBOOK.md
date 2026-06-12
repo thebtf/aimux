@@ -1,7 +1,7 @@
 # aimux Production Testing Playbook
 
 **Last updated:** 2026-06-12
-**Tested surface:** v5.14.3 candidate MCP surface: 4 server tools, `task`,
+**Tested surface:** v5.14.4 candidate MCP surface: 4 server tools, `task`,
 `think(action=start|step|finalize)`, 22 cognitive move tools, and 4
 delegation playbook MCP Prompts (`developer`, `pm`, `codereviewer`, `docs`).
 **Mode:** customer (no internal code knowledge — operator perspective)

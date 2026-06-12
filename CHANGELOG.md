@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.14.4] — 2026-06-12 — Loom resurrection and worktree switch safety
+
+### Fixed
+
+- **task router - resurrect missing Loom from the live session store (engram #256).**
+  When a running daemon has a live SQLite `session.Store` but its in-memory
+  Loom engine is nil, `task` routing and `sessions(action="health")` now rebuild
+  the Loom task store from the existing database, register the standard workers,
+  and start Loom GC once. Unrecoverable no-store or store-error cases still
+  return a non-retryable `CapabilityMismatch` with remediation guidance.
+
+- **tenant-scoped task routing - preserve scope after Loom resurrection
+  (engram #256).** Requests with tenant context now rebuild a tenant-scoped Loom
+  wrapper after the shared Loom engine is recovered, preventing multi-tenant
+  callers from receiving the raw shared engine.
+
+- **worktree switch safety - reinitialize Loom before drain/cancel decisions
+  (engram #256).** Worktree switch drain and forced-cancel paths now attempt the
+  same recoverable Loom reinitialization before deciding there is no task state
+  to wait for or cancel. Regression coverage verifies pending-task drain,
+  running-task crash recovery, forced cancel, and forced-switch recovery after
+  resurrection.
+
+- **Loom startup/GC robustness - synchronize pointer access and retry late GC
+  wiring.** Loom pointer reads are synchronized, legacy job import tolerates the
+  recovered runtime path, and Loom GC startup is retried when context wiring
+  arrives later than worker initialization.
+
+### Tests
+
+- Stabilized multiprocess shim log-integrity coverage by keeping shim stdin open
+  during the test window and shortening the runtime.
+- Updated Windows post-exit installer coverage to accept resolved source paths
+  after the helper stages a local update.
+
+### Notes
+
+- Maintenance patch - no breaking MCP surface changes.
+- Release commits: `9f085e6`, `f656bc3`, `7190672`, `909ceee`, `9d83266`,
+  `04c3bad`, `7a53ec3`, `d1f3c10`.
+
 ## [5.14.3] — 2026-06-12 — Windows upgrade path and task router containment
 
 ### Fixed
