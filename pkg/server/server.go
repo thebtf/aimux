@@ -1046,6 +1046,9 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		health := map[string]any{
 			"total_sessions": len(s.listSessionsForContext(ctx, "")),
 			"running_jobs":   loomRunning,
+			"loom_status":    "unavailable",
+			"loom_tasks":     0,
+			"loom_error":     taskRouterLoomUnavailableMessage,
 		}
 		if operator {
 			snap := s.metrics.Snapshot()
@@ -1053,8 +1056,11 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		}
 		// Include Loom task counts when available.
 		if s.loom != nil {
+			health["loom_status"] = "ok"
+			delete(health, "loom_error")
 			if tasks, err := s.listLoomTasksForContext(ctx); err != nil {
 				s.log.Warn("sessions health: loom list failed: %v", err)
+				health["loom_status"] = "error"
 				health["loom_error"] = err.Error()
 			} else {
 				health["loom_tasks"] = len(tasks)

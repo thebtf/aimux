@@ -22,6 +22,8 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
+const taskRouterLoomUnavailableMessage = "task router requires Loom; Loom is unavailable in this daemon. Remediation: restart aimux or check SQLite session store initialization."
+
 // buildFallbackPicker constructs the FallbackPicker wired into the task tool.
 // Returns nil when no CLIs are available — the task tool surfaces a clear error
 // at call time rather than panicking during server startup.
@@ -135,7 +137,7 @@ func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	}
 	loomClient := s.taskRouterLoom(ctx)
 	if loomClient == nil {
-		return taskToolError(TaskResult{}, extypes.NewCapabilityMismatch("task router requires Loom", nil))
+		return taskToolError(TaskResult{}, taskRouterLoomUnavailableError())
 	}
 	router, err := NewTaskRouter(TaskRouterConfig{
 		Loom:       loomClient,
@@ -330,6 +332,12 @@ func taskToolError(result TaskResult, err error) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultError(fmt.Sprintf("internal error: response serialization failed: %v", marshalErr)), nil
 	}
 	return mcp.NewToolResultError(string(b)), nil
+}
+
+func taskRouterLoomUnavailableError() *extypes.CLIError {
+	err := extypes.NewCapabilityMismatch(taskRouterLoomUnavailableMessage, nil)
+	err.Retryable = false
+	return err
 }
 
 func taskCLIError(err error) *extypes.CLIError {

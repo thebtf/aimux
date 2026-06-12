@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -79,6 +80,12 @@ func TestHandleTaskNilLoomReturnsCapabilityMismatch(t *testing.T) {
 	payload := decodeTaskToolError(t, result)
 	if payload.Code != extypes.CLIErrorCodeCapabilityMismatch.String() {
 		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeCapabilityMismatch)
+	}
+	if payload.Retryable {
+		t.Fatal("retryable = true, want false for missing Loom")
+	}
+	if !strings.Contains(payload.Message, "restart aimux") {
+		t.Fatalf("message = %q, want restart remediation hint", payload.Message)
 	}
 }
 

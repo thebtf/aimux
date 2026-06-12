@@ -220,6 +220,29 @@ func TestSessionsHealth_CountsLoomRunningTasks(t *testing.T) {
 	if data["loom_tasks"] != float64(1) {
 		t.Fatalf("loom_tasks = %v, want 1", data["loom_tasks"])
 	}
+	if data["loom_status"] != "ok" {
+		t.Fatalf("loom_status = %v, want ok", data["loom_status"])
+	}
+}
+
+func TestSessionsHealth_ReportsLoomUnavailableWhenNil(t *testing.T) {
+	srv := testServerWithLoom(t)
+	srv.loom = nil
+
+	result, err := srv.handleSessions(context.Background(), makeRequest("sessions", map[string]any{"action": "health"}))
+	if err != nil {
+		t.Fatalf("handleSessions health: %v", err)
+	}
+	data := parseResult(t, result)
+	if data["loom_status"] != "unavailable" {
+		t.Fatalf("loom_status = %v, want unavailable", data["loom_status"])
+	}
+	if data["loom_tasks"] != float64(0) {
+		t.Fatalf("loom_tasks = %v, want 0", data["loom_tasks"])
+	}
+	if data["loom_error"] == "" {
+		t.Fatalf("loom_error = %v, want non-empty remediation", data["loom_error"])
+	}
 }
 
 func TestSessionsList_IncludesLoomTasksWithoutProjectContext(t *testing.T) {
