@@ -94,7 +94,11 @@ func (s *Server) wireLoomRuntime() {
 }
 
 func (s *Server) wireLoomRuntimeLocked() {
-	if s.loom == nil || s.loomRuntimeWired {
+	if s.loom == nil {
+		return
+	}
+	if s.loomRuntimeWired {
+		s.startLoomGCLocked()
 		return
 	}
 	s.loom.RegisterWorker(loom.WorkerTypeThinker, loomworkers.NewThinkerWorker())
@@ -108,8 +112,8 @@ func (s *Server) wireLoomRuntimeLocked() {
 	} else if n > 0 && s.log != nil {
 		s.log.Info("loom: recovered %d crashed tasks", n)
 	}
-	s.startLoomGCLocked()
 	s.loomRuntimeWired = true
+	s.startLoomGCLocked()
 }
 
 func (s *Server) registerCodexWorkerLocked() {
