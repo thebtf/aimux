@@ -562,14 +562,14 @@ func (s *Server) Shutdown() {
 		s.codexPool = nil
 	}
 
-	if s.loom != nil {
-		if failed, err := s.loom.FailActiveAll("interrupted: upstream shutdown"); err != nil {
+	if loomEngine := s.currentLoom(); loomEngine != nil {
+		if failed, err := loomEngine.FailActiveAll("interrupted: upstream shutdown"); err != nil {
 			s.log.Warn("loom shutdown: fail active tasks failed: %v", err)
 		} else if failed > 0 {
 			s.log.Info("loom shutdown: failed %d active tasks", failed)
 		}
 		closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if err := s.loom.Close(closeCtx); err != nil {
+		if err := loomEngine.Close(closeCtx); err != nil {
 			s.log.Warn("loom shutdown: close timed out: %v", err)
 		}
 		cancel()
@@ -897,9 +897,9 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 		}
 
 		var allLoomTasks []*loom.Task
-		if s.loom != nil {
+		if loomEngine := s.currentLoom(); loomEngine != nil {
 			if allFlag {
-				tasks, taskErr := s.loom.ListAll()
+				tasks, taskErr := loomEngine.ListAll()
 				if taskErr != nil {
 					s.log.Warn("sessions list: loom list all failed: %v", taskErr)
 				} else {
@@ -1022,7 +1022,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			health["per_project"] = snap.PerProject
 		}
 		// Include Loom task counts when available.
-		if s.loom != nil {
+		if s.currentLoom() != nil {
 			health["loom_status"] = "ok"
 			delete(health, "loom_error")
 			if tasks, err := s.listLoomTasksForContext(ctx); err != nil {
@@ -1069,7 +1069,11 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 			if !task.Status.IsActive() {
 				return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
 			}
-			if _, err := s.loom.FailActive(jobID, "job cancelled"); err == nil {
+			loomEngine := s.currentLoom()
+			if loomEngine == nil {
+				return mcp.NewToolResultError("loom unavailable"), nil
+			}
+			if _, err := loomEngine.FailActive(jobID, "job cancelled"); err == nil {
 				return mcp.NewToolResultText(`{"status":"cancelled"}`), nil
 			} else {
 				return mcp.NewToolResultError(err.Error()), nil

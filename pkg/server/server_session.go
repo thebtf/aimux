@@ -219,9 +219,9 @@ func (d *fullDelegate) HandleRequest(ctx context.Context, project muxcore.Projec
 			// T033: inject TenantScopedLoomEngine so tool handlers can access loom
 			// with per-tenant isolation (CHK076/CHK079) via TenantScopedLoomFromContext.
 			// nil loom (memory-only mode, no SQLite) → no scoped engine injected.
-			if d.srv.loom != nil {
+			if loomEngine := d.srv.currentLoom(); loomEngine != nil {
 				ctx = context.WithValue(ctx, tenantScopedLoomKey{},
-					loom.NewTenantScopedEngine(d.srv.loom, tc.TenantID, nil))
+					loom.NewTenantScopedEngine(loomEngine, tc.TenantID, nil))
 			}
 
 			// T034: emit allow audit event for every multi-tenant dispatch.
@@ -433,9 +433,9 @@ func (h *aimuxHandler) HandleRequestWithSessionMeta(
 		}
 		ctx = h.srv.dispatchMW.WithContext(ctx, tc)
 		ctx = session.WithTenant(ctx, tc)
-		if h.srv.loom != nil {
+		if loomEngine := h.srv.currentLoom(); loomEngine != nil {
 			ctx = context.WithValue(ctx, tenantScopedLoomKey{},
-				loom.NewTenantScopedEngine(h.srv.loom, tc.TenantID, nil))
+				loom.NewTenantScopedEngine(loomEngine, tc.TenantID, nil))
 		}
 		// Emit allow audit event for multi-tenant dispatch (mirrors T034 in HandleRequest).
 		if h.srv.dispatchMW.IsMultiTenant() {
