@@ -275,6 +275,7 @@ func (w *CodeWorker) applyAndGate(ctx context.Context, task *loom.Task, machine 
 		}
 		return w.failTask(task, machine, types.NewUserInputError("apply diff failed: "+err.Error(), err))
 	}
+	recordWorktreePreservationMetadata(ctx, task, WorktreePreserveReasonMutatingTask)
 	if cliErr := machine.Advance(StateGate, "diff written to disk"); cliErr != nil {
 		return w.failTask(task, machine, cliErr)
 	}
@@ -322,6 +323,7 @@ func (w *CodeWorker) gateOnly(ctx context.Context, task *loom.Task, machine *Mac
 	if cliErr := machine.Advance(StateGate, "driver files already on disk"); cliErr != nil {
 		return w.failTask(task, machine, cliErr)
 	}
+	recordWorktreePreservationMetadata(ctx, task, WorktreePreserveReasonMutatingTask)
 
 	gateResult := w.gateRunner.Run(ctx, applygate.Project{CWD: task.CWD})
 	w.recordTaskMetadata(task, machine, DefaultSuccessCriteria(task.Metadata != nil && task.Metadata["spec_active"] == true), verdict, string(gateResult.Status))
@@ -631,6 +633,7 @@ func (w *CodeWorker) runSolo(ctx context.Context, task *loom.Task, machine *Mach
 		}
 	}
 
+	recordWorktreePreservationMetadata(ctx, task, WorktreePreserveReasonMutatingTask)
 	gateResult := w.gateRunner.Run(ctx, applygate.Project{CWD: task.CWD})
 	w.recordSoloMetadata(task, machine, result)
 	if gateResult.Status == applygate.StatusFailed {

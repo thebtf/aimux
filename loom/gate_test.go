@@ -61,6 +61,20 @@ func TestGate_RateLimitError_Rejects(t *testing.T) {
 	}
 }
 
+func TestGate_DiffWithBare429Path_Accepts(t *testing.T) {
+	gate := NewQualityGate()
+	task := &Task{ID: "t1"}
+	result := &WorkerResult{Content: "--- a/escape.txt\n+++ C:/tmp/aimux-429/outside.txt\n@@ -0,0 +1 @@\n+owned\n"}
+
+	decision := gate.Check(task, result)
+	if !decision.Accept {
+		t.Fatalf("decision = %#v, want accept; bare 429 in a diff path is not a rate-limit error", decision)
+	}
+	if decision.Reason != "pass" {
+		t.Fatalf("reason = %q, want pass", decision.Reason)
+	}
+}
+
 func TestGate_ValidContent_Accepts(t *testing.T) {
 	gate := NewQualityGate()
 	task := &Task{ID: "t1"}

@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.16.0] — 2026-06-14 — AIMUX-23 curated recipes, replay, and caller guide
+
+### Added
+
+- **Compiled curated recipe catalog.** Added `aimux://recipes` and
+  `aimux://recipes/{recipe_id}` resources for deterministic in-binary recipe
+  discovery. Initial read-only recipes are `code-review` and `second-opinion`.
+- **Recipe invocation through `task`.** Added `task(recipe_id=...)` routing so
+  curated recipes use the existing Loom-backed task entry point instead of a
+  new workflow tool or runtime DSL.
+- **Provider capability preflight.** Recipe policy is fail-closed before worker
+  spawn. Unsupported provider/profile combinations return non-retryable
+  `CapabilityMismatch` details with requested, missing, and supported
+  capabilities.
+- **Worktree preservation metadata.** Mutating code flows now record
+  `worktree_path`, `worktree_branch`, `worktree_base_sha`, and
+  `worktree_preserve_reason` so callers can recover or review touched
+  checkouts from task resources.
+- **Deterministic replay for read-only recipes.** Repeated matching curated
+  recipe calls can reuse a completed source task and return
+  `recipe_replay_cache_hit=true` with `recipe_replay_source_task_id`.
+- **Read-only task viewer.** Added `aimux://tasks` and
+  `aimux://tasks/{task_id}/viewer` resources for bounded task discovery and
+  browser-readable task inspection without execution controls.
+- **Compiled caller guide.** Added `aimux://guides` and
+  `aimux://guides/caller` resources documenting the supported `task`, `think`,
+  recipe, replay, viewer, and safety surface for the running binary.
+
+### Changed
+
+- Task snapshot metadata now exposes recipe policy, replay, and worktree
+  preservation fields through an allowlisted projection.
+- README and README.ru now point callers to the compiled caller guide and remove
+  stale wording that described provider capability validation as future work.
+
+### Safety
+
+- Curated recipes remain compiled Go definitions; this release does not
+  reintroduce the removed broad `exec`, `agent`, `agents`, `workflow`, `dialog`,
+  or similar CLI-launching MCP tools.
+- The task viewer is read-only and includes no forms, buttons, scripts, task
+  submission controls, mutation endpoints, or workflow controls.
+- `mcp-launcher -mode tool -tool task` remains excluded as release/debug gate
+  evidence because that probe previously hung and left smoke daemons behind.
+- Candidate resource smoke now explicitly clears stale same-name muxcore daemons
+  before validation so a fresh shim cannot reconnect to stale candidate code.
+
+### Verification
+
+- `go build ./...`
+- `go test ./... -count=1 -timeout 300s`
+- `go test ./pkg/recipes ./pkg/server -count=1`
+- `go test ./pkg/server -run "GuideResource|CallerGuide|RecipeResource|Task.*Viewer|TaskList" -count=1`
+- `go test ./tests/critical -count=1 -timeout 300s`
+- `go test ./test/e2e -run TaskInspectability -count=1 -timeout 300s` with `AIMUX23_E2E=1`
+- `go test . -count=1` from `D:\Dev\aimux\loom`
+- `go vet ./...`
+- `go mod verify`
+- `govulncheck ./...`
+
 ## [5.15.0] — 2026-06-14 — AIMUX-23 task inspectability foundation
 
 ### Added

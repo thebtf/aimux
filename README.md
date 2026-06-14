@@ -163,13 +163,72 @@ Codex CLI always uses `--dangerously-bypass-approvals-and-sandbox
 
 | Resource | Purpose |
 |---|---|
+| `aimux://tasks` | Bounded read-only task list with snapshot/viewer/events/progress links. |
 | `aimux://tasks/{task_id}` | Compact Loom task snapshot with status, progress summary, and resource links. |
+| `aimux://tasks/{task_id}/viewer` | Self-contained read-only HTML view of snapshot, metadata, events, and progress. |
 | `aimux://tasks/{task_id}/events` | Bounded lifecycle and terminal artifact page for one task. |
 | `aimux://tasks/{task_id}/progress` | Bounded progress artifact page for one task. |
 
 Use these resources when a caller needs task evidence without reading daemon
 logs. Event and progress pages are cursor/limit paginated, and large task
 results are summarized in the snapshot resource.
+The HTML viewer is server-rendered from the same Loom/resource projection and
+contains no forms, buttons, scripts, or task execution controls.
+
+Mutating code flows also add worktree preservation metadata to the task result
+and task snapshot metadata. Pair apply, write-review, and solo-write flows
+include `worktree_path`, `worktree_branch`, `worktree_base_sha`, and
+`worktree_preserve_reason` so callers can recover or review the touched
+worktree. Read-only recipes and solo-diff flows stay non-mutating and do not
+emit preservation metadata.
+
+### Curated Recipe Resources
+
+| Resource | Purpose |
+|---|---|
+| `aimux://recipes` | Compact compiled recipe catalog with IDs, descriptions, phases, policy needs, and output resource hints. |
+| `aimux://recipes/{recipe_id}` | Detail view for one supported recipe. Unknown IDs return `not_found` plus `available_recipes`. |
+
+Initial recipes are read-only and route through the existing `task` entry point:
+
+| Recipe ID | Task class | Default mode | Purpose |
+|---|---|---|---|
+| `code-review` | `review` | gate | Run the existing review worker as a named code-review recipe. |
+| `second-opinion` | `review` | aggregate | Run the existing review worker for an independent read-only assessment. |
+
+Invoke a recipe through `task(recipe_id=..., target=...)`; no new workflow or
+recipe tool is added. Recipe policy is fail-closed before worker spawn: if the
+selected provider/profile cannot enforce the recipe's declared policy needs,
+`task` returns a non-retryable `CapabilityMismatch` and no Loom task is
+submitted.
+
+Capability mismatch payloads include `recipe_id`, `selected_cli`,
+`requested_policy`, `missing_capabilities`, and `supported_capabilities`.
+Current enforced classes are read-only execution, structured JSON/JSONL output,
+target-required recipe arguments, plus compiled gates for future sandbox,
+approval, schema, max-turn, and version policies.
+
+Read-only curated recipe invocations also carry deterministic replay metadata.
+For matching completed runs, `task(recipe_id=...)` can return the completed
+source task without submitting duplicate Loom work. The replay fingerprint uses
+recipe ID, replay key version, prompt, target, CWD, task/worker class, selected
+CLI, model/role/effort, and enforced policy fingerprints. Cache hits are
+visible in the returned task metadata as `recipe_replay_cache_hit=true` with
+`recipe_replay_source_task_id`; task resources expose the source task's
+`recipe_replay_key_version`, `recipe_replay_fingerprint`, and
+`recipe_replay_cache_hit=false` reusable-source marker. Failed, crashed,
+cancelled, running, policy-mismatched, non-recipe, and changed-precondition
+tasks are not replayed as success.
+
+### Caller Guide Resources
+
+| Resource | Purpose |
+|---|---|
+| `aimux://guides` | Compact catalog of compiled caller guides. |
+| `aimux://guides/caller` | Markdown guide for `task`, `think`, task/recipe resources, replay metadata, viewer usage, and safety rules. |
+
+Use the compiled caller guide as the supported source for task, think, recipe,
+replay, viewer, and safety examples for the running binary.
 
 ### Think Harness
 
@@ -292,12 +351,16 @@ Current production surface:
 - Loom-backed task state and recovery.
 - Task entry point with 3 execution modes: pair (driver+navigator), solo write, solo diff.
 - Task inspection resources under `aimux://tasks/{task_id}`.
+- Compiled read-only recipe discovery under `aimux://recipes` and invocation via `task(recipe_id=...)`.
+- Read-only task list/viewer resources for browser-readable inspection without execution controls.
+- Compiled caller guide resources under `aimux://guides/caller`.
 
 Out of current scope:
 
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
 - Pipeline v5 Layer 5 exposure (beyond the task entry point).
+- Mutation-heavy recipe expansion beyond the compiled read-only initial recipes.
 
 Those removed surfaces are not runtime defects in the current build. They are
 future design work under AIMUX-9 / DEF-1.

@@ -35,7 +35,10 @@ func TestTaskSnapshotResourceTemplatesRegistered(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"aimux://tasks/{task_id}": false,
+		"aimux://tasks":                  false,
+		"aimux://tasks{?limit,status}":   false,
+		"aimux://tasks/{task_id}":        false,
+		"aimux://tasks/{task_id}/viewer": false,
 	}
 	for _, item := range templates {
 		template, ok := item.(map[string]any)
@@ -53,6 +56,155 @@ func TestTaskSnapshotResourceTemplatesRegistered(t *testing.T) {
 			t.Fatalf("resource template %q not registered; templates=%v", uri, templates)
 		}
 	}
+}
+
+func TestTaskListResource_ReadViaMCPWithQuery(t *testing.T) {
+	srv := testServerWithLoom(t)
+
+	_ = srv.mcp.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc":"2.0",
+		"id":1,
+		"method":"initialize",
+		"params":{"protocolVersion":"2024-11-05"}
+	}`))
+
+	response := srv.mcp.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc":"2.0",
+		"id":2,
+		"method":"resources/read",
+		"params":{"uri":"aimux://tasks?limit=5"}
+	}`))
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal response %s: %v", raw, err)
+	}
+	if errObj, hasError := decoded["error"]; hasError {
+		t.Fatalf("resources/read returned error: %v", errObj)
+	}
+	result, ok := decoded["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("resources/read result missing or wrong type: %s", raw)
+	}
+	contents, ok := result["contents"].([]any)
+	if !ok || len(contents) != 1 {
+		t.Fatalf("contents = %#v, want one item", result["contents"])
+	}
+	text, ok := contents[0].(map[string]any)["text"].(string)
+	if !ok {
+		t.Fatalf("content text missing in %v", contents[0])
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		t.Fatalf("unmarshal task list payload %q: %v", text, err)
+	}
+	if payload["status"] != "ok" {
+		t.Fatalf("status = %v, want ok; payload=%v", payload["status"], payload)
+	}
+	if payload["limit"] != float64(5) {
+		t.Fatalf("limit = %v, want 5; payload=%v", payload["limit"], payload)
+	}
+}
+
+func TestTaskListResource_ReadOnlyRows(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-list")
+	firstID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  projectID,
+		Prompt:     "fail because no worker is registered",
+		Env:        map[string]string{"SECRET_TOKEN": "should-not-leak"},
+	})
+	if err != nil {
+		t.Fatalf("loom.Submit first: %v", err)
+	}
+	secondID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  projectID,
+		Prompt:     "fail again because no worker is registered",
+	})
+	if err != nil {
+		t.Fatalf("loom.Submit second: %v", err)
+	}
+	waitForTaskResourceStatus(t, srv, firstID, loom.TaskStatusFailed)
+	waitForTaskResourceStatus(t, srv, secondID, loom.TaskStatusFailed)
+
+	got := readTaskListResource(t, srv, ctx, "aimux://tasks?limit=5")
+	if got["status"] != "ok" {
+		t.Fatalf("status = %v, want ok; payload=%v", got["status"], got)
+	}
+	items, ok := got["items"].([]any)
+	if !ok || len(items) < 2 {
+		t.Fatalf("items = %#v, want at least two rows", got["items"])
+	}
+	row := findTaskListRow(t, items, secondID)
+	if row["canonical_uri"] != "aimux://tasks/"+secondID {
+		t.Fatalf("canonical_uri = %v", row["canonical_uri"])
+	}
+	if row["viewer_uri"] != "aimux://tasks/"+secondID+"/viewer" {
+		t.Fatalf("viewer_uri = %v", row["viewer_uri"])
+	}
+	if row["events_uri"] != "aimux://tasks/"+secondID+"/events" {
+		t.Fatalf("events_uri = %v", row["events_uri"])
+	}
+	if _, leaked := row["prompt"]; leaked {
+		t.Fatalf("task list row leaked prompt: %v", row)
+	}
+	if _, leaked := row["env"]; leaked {
+		t.Fatalf("task list row leaked env: %v", row)
+	}
+	if _, leaked := row["result"]; leaked {
+		t.Fatalf("task list row leaked result: %v", row)
+	}
+}
+
+func TestTaskViewerResource_RendersReadOnlyHTML(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-viewer")
+	taskID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  projectID,
+		Prompt:     "fail because no worker is registered",
+		Metadata: map[string]any{
+			"recipe_replay_key_version": "v1",
+			"recipe_replay_fingerprint": "abc123",
+			"recipe_replay_cache_hit":   false,
+			"worktree_path":             "D:\\Dev\\aimux",
+		},
+		Env: map[string]string{"SECRET_TOKEN": "should-not-leak"},
+	})
+	if err != nil {
+		t.Fatalf("loom.Submit: %v", err)
+	}
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusFailed)
+
+	html := readTaskViewerResource(t, srv, ctx, "aimux://tasks/"+taskID+"/viewer")
+	for _, want := range []string{
+		"Task Viewer",
+		taskID,
+		"Events",
+		"Progress",
+		"recipe_replay_fingerprint",
+		"worktree_path",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("viewer HTML missing %q:\n%s", want, html)
+		}
+	}
+	for _, forbidden := range []string{"<form", "<button", "<script", "task(", "SECRET_TOKEN"} {
+		if strings.Contains(strings.ToLower(html), strings.ToLower(forbidden)) {
+			t.Fatalf("viewer HTML contains forbidden %q:\n%s", forbidden, html)
+		}
+	}
+}
+
+func TestTaskViewerResource_NotFoundUsesCompactShape(t *testing.T) {
+	srv := testServerWithLoom(t)
+	got := readTaskViewerNotFoundResource(t, srv, context.Background(), "aimux://tasks/missing-task/viewer")
+	assertTaskResourceNotFound(t, got, "missing-task")
 }
 
 func TestTaskSnapshotResource_NotFoundAndForeignShareCompactShape(t *testing.T) {
@@ -121,6 +273,40 @@ func TestTaskSnapshotResource_FailedTaskIncludesCanonicalStatusAndLinks(t *testi
 	if artifacts["projection_status"] == "" {
 		t.Fatalf("projection_status empty: %v", artifacts)
 	}
+	if _, leaked := got["env"]; leaked {
+		t.Fatalf("snapshot exposed raw env: %v", got)
+	}
+}
+
+func TestTaskSnapshotResource_IncludesWorktreePreservationMetadata(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-worktree-metadata")
+	taskID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  projectID,
+		Prompt:     "fail because no worker is registered",
+		Metadata: map[string]any{
+			"worktree_path":            "D:\\Dev\\aimux",
+			"worktree_branch":          "master",
+			"worktree_base_sha":        "2990fd8",
+			"worktree_preserve_reason": "code task mutates caller worktree",
+		},
+		Env: map[string]string{"SECRET_TOKEN": "should-not-leak"},
+	})
+	if err != nil {
+		t.Fatalf("loom.Submit: %v", err)
+	}
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusFailed)
+
+	got := readTaskSnapshotResource(t, srv, ctx, "aimux://tasks/"+taskID)
+	metadata, ok := got["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata type = %T, want map; payload=%v", got["metadata"], got)
+	}
+	assertTaskResourceMetadata(t, metadata, "worktree_path", "D:\\Dev\\aimux")
+	assertTaskResourceMetadata(t, metadata, "worktree_branch", "master")
+	assertTaskResourceMetadata(t, metadata, "worktree_base_sha", "2990fd8")
+	assertTaskResourceMetadata(t, metadata, "worktree_preserve_reason", "code task mutates caller worktree")
 	if _, leaked := got["env"]; leaked {
 		t.Fatalf("snapshot exposed raw env: %v", got)
 	}
@@ -344,6 +530,46 @@ func readTaskProgressResource(t *testing.T, srv *Server, ctx context.Context, ur
 	return decodeTaskResourceContents(t, contents, err, uri)
 }
 
+func readTaskListResource(t *testing.T, srv *Server, ctx context.Context, uri string) map[string]any {
+	t.Helper()
+	contents, err := srv.handleTaskListResource(ctx, mcp.ReadResourceRequest{
+		Params: mcp.ReadResourceParams{URI: uri},
+	})
+	return decodeTaskResourceContents(t, contents, err, uri)
+}
+
+func readTaskViewerResource(t *testing.T, srv *Server, ctx context.Context, uri string) string {
+	t.Helper()
+	contents, err := srv.handleTaskViewerResource(ctx, mcp.ReadResourceRequest{
+		Params: mcp.ReadResourceParams{URI: uri},
+	})
+	if err != nil {
+		t.Fatalf("viewer read(%s): %v", uri, err)
+	}
+	if len(contents) != 1 {
+		t.Fatalf("viewer contents len = %d, want 1", len(contents))
+	}
+	text, ok := contents[0].(mcp.TextResourceContents)
+	if !ok {
+		t.Fatalf("viewer content type = %T, want TextResourceContents", contents[0])
+	}
+	if text.URI != uri {
+		t.Fatalf("viewer URI = %q, want %q", text.URI, uri)
+	}
+	if text.MIMEType != taskViewerMIMEType {
+		t.Fatalf("viewer MIMEType = %q, want %s", text.MIMEType, taskViewerMIMEType)
+	}
+	return text.Text
+}
+
+func readTaskViewerNotFoundResource(t *testing.T, srv *Server, ctx context.Context, uri string) map[string]any {
+	t.Helper()
+	contents, err := srv.handleTaskViewerResource(ctx, mcp.ReadResourceRequest{
+		Params: mcp.ReadResourceParams{URI: uri},
+	})
+	return decodeTaskResourceContents(t, contents, err, uri)
+}
+
 func decodeTaskResourceContents(t *testing.T, contents []mcp.ResourceContents, err error, uri string) map[string]any {
 	t.Helper()
 	if err != nil {
@@ -369,6 +595,21 @@ func decodeTaskResourceContents(t *testing.T, contents []mcp.ResourceContents, e
 	return data
 }
 
+func findTaskListRow(t *testing.T, items []any, taskID string) map[string]any {
+	t.Helper()
+	for _, item := range items {
+		row, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("task list row type = %T, want map", item)
+		}
+		if row["task_id"] == taskID {
+			return row
+		}
+	}
+	t.Fatalf("task_id %s not found in rows %v", taskID, items)
+	return nil
+}
+
 func assertTaskResourceNotFound(t *testing.T, got map[string]any, taskID string) {
 	t.Helper()
 	if got["status"] != "not_found" {
@@ -382,6 +623,14 @@ func assertTaskResourceNotFound(t *testing.T, got map[string]any, taskID string)
 	}
 	if _, leaked := got["tenant_id"]; leaked {
 		t.Fatalf("not-found payload leaked tenant_id: %v", got)
+	}
+}
+
+func assertTaskResourceMetadata(t *testing.T, metadata map[string]any, key string, want string) {
+	t.Helper()
+	got, ok := metadata[key].(string)
+	if !ok || got != want {
+		t.Fatalf("metadata[%s] = %#v, want %q", key, metadata[key], want)
 	}
 }
 

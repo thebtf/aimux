@@ -18,6 +18,7 @@ import (
 	"github.com/thebtf/aimux/pkg/executor/picker"
 	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
+	"github.com/thebtf/aimux/pkg/recipes"
 	"github.com/thebtf/aimux/pkg/server/classifier"
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -85,6 +86,9 @@ func (s *Server) registerTaskTool() {
 				mcp.Enum("code", "review", "task"),
 				mcp.DefaultString("task"),
 			),
+			mcp.WithString("recipe_id",
+				mcp.Description("Compiled recipe ID. Resolves before Loom submit and routes through the existing task entry."),
+			),
 			mcp.WithString("cli",
 				mcp.Description("Driver CLI override for code tasks."),
 			),
@@ -135,6 +139,9 @@ func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if parseErr != nil {
 		return taskToolError(TaskResult{}, parseErr)
 	}
+	if policyErr := s.validateRecipeProviderPolicy(taskReq); policyErr != nil {
+		return taskToolError(TaskResult{}, policyErr)
+	}
 	loomClient, loomErr := s.taskRouterLoom(ctx)
 	if loomClient == nil {
 		return taskToolError(TaskResult{}, taskRouterLoomUnavailableError(loomErr))
@@ -179,6 +186,7 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 	}
 
 	rawTaskClass := req.GetString("task_class", "")
+	recipeID := strings.TrimSpace(req.GetString("recipe_id", ""))
 	cliOverride := strings.TrimSpace(req.GetString("cli", ""))
 	navigatorOverride := strings.TrimSpace(req.GetString("navigator", ""))
 	resumeID := strings.TrimSpace(req.GetString("resume_id", ""))
@@ -198,12 +206,35 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 	if maxAttempts < 0 {
 		return TaskRequest{}, extypes.NewUserInputError("task: max_attempts must be >= 0", nil)
 	}
+	var recipe recipes.Recipe
+	if recipeID != "" {
+		resolvedRecipe, ok := recipes.Resolve(recipeID)
+		if !ok {
+			return TaskRequest{}, newUnsupportedRecipeIDError(recipeID)
+		}
+		if err := validateRecipeTaskClass(rawTaskClass, resolvedRecipe); err != nil {
+			return TaskRequest{}, err
+		}
+		recipe = resolvedRecipe
+		rawTaskClass = recipe.TaskClass
+		if recipe.GateDefault && !taskArgumentPresent(req, "gate") {
+			gate = true
+		}
+	}
+
 	taskClass, classErr := normalizeTaskToolClass(rawTaskClass, target, gate, sandbox)
 	if classErr != nil {
 		return TaskRequest{}, classErr
 	}
 
 	metadata := map[string]any{}
+	if recipe.ID != "" {
+		metadata["recipe_id"] = recipe.ID
+		metadata["recipe_title"] = recipe.Title
+		metadata["recipe_read_only"] = recipe.ReadOnly
+		metadata["recipe_phases"] = cloneRecipeStrings(recipe.Phases)
+		metadata["recipe_output_resources"] = cloneRecipeStrings(recipe.OutputResources)
+	}
 	if sandbox != "" {
 		metadata["sandbox"] = sandbox
 	}
@@ -244,6 +275,34 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 		Gate:           gate,
 		Metadata:       metadata,
 	}, nil
+}
+
+func validateRecipeTaskClass(rawTaskClass string, recipe recipes.Recipe) error {
+	taskClass := strings.ToLower(strings.TrimSpace(rawTaskClass))
+	switch taskClass {
+	case "", taskClassTask, recipe.TaskClass:
+		return nil
+	default:
+		return extypes.NewUserInputError(fmt.Sprintf("task: recipe_id %q requires task_class %s", recipe.ID, recipe.TaskClass), nil)
+	}
+}
+
+func taskArgumentPresent(req mcp.CallToolRequest, name string) bool {
+	args, ok := req.Params.Arguments.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, present := args[name]
+	return present
+}
+
+func cloneRecipeStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
 }
 
 func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string) (string, error) {
@@ -321,6 +380,19 @@ func taskToolError(result TaskResult, err error) (*mcp.CallToolResult, error) {
 		"message":   cliErr.Message,
 		"retryable": cliErr.Retryable,
 	}
+	var recipeErr *taskRecipeInputError
+	if errors.As(err, &recipeErr) {
+		payload["available_recipes"] = cloneRecipeStrings(recipeErr.availableRecipes)
+	}
+	var policyErr *taskRecipePolicyError
+	if errors.As(err, &policyErr) {
+		result := policyErr.Result()
+		payload["recipe_id"] = result.RecipeID
+		payload["selected_cli"] = result.SelectedCLI
+		payload["requested_policy"] = result.RequestedPolicy
+		payload["missing_capabilities"] = result.MissingCapabilities
+		payload["supported_capabilities"] = result.SupportedCapabilities
+	}
 	if cliErr.CauseStr != "" {
 		payload["cause"] = cliErr.CauseStr
 	}
@@ -338,6 +410,32 @@ func taskToolError(result TaskResult, err error) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultError(fmt.Sprintf("internal error: response serialization failed: %v", marshalErr)), nil
 	}
 	return mcp.NewToolResultError(string(b)), nil
+}
+
+type taskRecipeInputError struct {
+	err              *extypes.CLIError
+	availableRecipes []string
+}
+
+func newUnsupportedRecipeIDError(recipeID string) error {
+	return &taskRecipeInputError{
+		err:              extypes.NewUserInputError(fmt.Sprintf("task: unsupported recipe_id %q", recipeID), nil),
+		availableRecipes: recipes.AvailableIDs(),
+	}
+}
+
+func (e *taskRecipeInputError) Error() string {
+	if e == nil || e.err == nil {
+		return "task: recipe input error"
+	}
+	return e.err.Error()
+}
+
+func (e *taskRecipeInputError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
 }
 
 func taskRouterLoomUnavailableError(cause error) *extypes.CLIError {
