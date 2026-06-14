@@ -201,6 +201,18 @@ Capability mismatch payload включает `recipe_id`, `selected_cli`,
 target-required recipe arguments, а также compiled gates для будущих sandbox,
 approval, schema, max-turn и version policies.
 
+Read-only curated recipe invocations также получают deterministic replay
+metadata. Для matching completed runs `task(recipe_id=...)` может вернуть
+completed source task без duplicate Loom work. Replay fingerprint включает
+recipe ID, replay key version, prompt, target, CWD, task/worker class, selected
+CLI, model/role/effort и enforced policy fingerprints. Cache hits видны в
+returned task metadata как `recipe_replay_cache_hit=true` плюс
+`recipe_replay_source_task_id`; task resources показывают source task
+`recipe_replay_key_version`, `recipe_replay_fingerprint` и reusable-source
+marker `recipe_replay_cache_hit=false`. Failed, crashed, cancelled, running,
+policy-mismatched, non-recipe и changed-precondition tasks не replayed как
+success.
+
 ### Think Harness
 
 `think(action=start|step|finalize)` — canonical caller-centered thinking

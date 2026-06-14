@@ -210,6 +210,176 @@ func TestHandleTaskRecipeSecondOpinionUsesAggregateReviewMode(t *testing.T) {
 	}
 }
 
+func TestHandleTaskRecipeReplayCacheHitReusesCompletedTask(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	args := map[string]any{
+		"prompt":     "review HEAD for regressions",
+		"recipe_id":  "code-review",
+		"target":     "HEAD",
+		"project_id": "proj-replay-hit",
+	}
+	first := callTaskTool(t, srv, args)
+	if first.IsError {
+		t.Fatalf("first call unexpected error: %s", taskToolResultText(t, first))
+	}
+	firstPayload := decodeTaskToolResult(t, first)
+	firstTaskID, _ := firstPayload["task_id"].(string)
+	if firstTaskID == "" {
+		t.Fatalf("first task_id missing: %v", firstPayload)
+	}
+	firstMetadata := taskToolPayloadMetadata(t, firstPayload)
+	assertMetadataBool(t, firstMetadata, "recipe_replay_cache_hit", false)
+	assertMetadataString(t, firstMetadata, "recipe_replay_key_version", "v1")
+	firstFingerprint := metadataStringValue(t, firstMetadata, "recipe_replay_fingerprint")
+
+	second := callTaskTool(t, srv, args)
+	if second.IsError {
+		t.Fatalf("second call unexpected error: %s", taskToolResultText(t, second))
+	}
+	secondPayload := decodeTaskToolResult(t, second)
+	if secondPayload["task_id"] != firstTaskID {
+		t.Fatalf("second task_id = %v, want replay source %s; payload=%v", secondPayload["task_id"], firstTaskID, secondPayload)
+	}
+	if got := reviewWorker.taskCount(); got != 1 {
+		t.Fatalf("review task count = %d, want cache hit without duplicate submit", got)
+	}
+	secondMetadata := taskToolPayloadMetadata(t, secondPayload)
+	assertMetadataBool(t, secondMetadata, "recipe_replay_cache_hit", true)
+	assertMetadataString(t, secondMetadata, "recipe_replay_source_task_id", firstTaskID)
+	assertMetadataString(t, secondMetadata, "recipe_replay_fingerprint", firstFingerprint)
+
+	snapshot := readTaskSnapshotResource(t, srv, context.Background(), "aimux://tasks/"+firstTaskID)
+	snapshotMetadata, ok := snapshot["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot metadata type = %T, want map; payload=%v", snapshot["metadata"], snapshot)
+	}
+	assertTaskResourceMetadataBool(t, snapshotMetadata, "recipe_replay_cache_hit", false)
+	assertTaskResourceMetadata(t, snapshotMetadata, "recipe_replay_fingerprint", firstFingerprint)
+}
+
+func TestHandleTaskRecipeReplayChangedTargetMissesCache(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	first := callTaskTool(t, srv, map[string]any{
+		"prompt":     "review HEAD for regressions",
+		"recipe_id":  "code-review",
+		"target":     "HEAD",
+		"project_id": "proj-replay-target",
+	})
+	if first.IsError {
+		t.Fatalf("first call unexpected error: %s", taskToolResultText(t, first))
+	}
+	firstPayload := decodeTaskToolResult(t, first)
+	firstFingerprint := metadataStringValue(t, taskToolPayloadMetadata(t, firstPayload), "recipe_replay_fingerprint")
+
+	second := callTaskTool(t, srv, map[string]any{
+		"prompt":     "review HEAD for regressions",
+		"recipe_id":  "code-review",
+		"target":     "HEAD~1",
+		"project_id": "proj-replay-target",
+	})
+	if second.IsError {
+		t.Fatalf("second call unexpected error: %s", taskToolResultText(t, second))
+	}
+	secondPayload := decodeTaskToolResult(t, second)
+	secondFingerprint := metadataStringValue(t, taskToolPayloadMetadata(t, secondPayload), "recipe_replay_fingerprint")
+	if secondPayload["task_id"] == firstPayload["task_id"] {
+		t.Fatalf("changed target reused task_id %v; want fresh task", secondPayload["task_id"])
+	}
+	if firstFingerprint == secondFingerprint {
+		t.Fatalf("fingerprint did not change for changed target: %s", firstFingerprint)
+	}
+	if got := reviewWorker.taskCount(); got != 2 {
+		t.Fatalf("review task count = %d, want cache miss and fresh submit", got)
+	}
+	assertMetadataBool(t, taskToolPayloadMetadata(t, secondPayload), "recipe_replay_cache_hit", false)
+}
+
+func TestHandleTaskDirectReviewSkipsRecipeReplayMetadata(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":     "review HEAD",
+		"task_class": "review",
+		"target":     "HEAD",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+	task := reviewWorker.onlyTask(t)
+	if _, ok := task.Metadata["recipe_replay_fingerprint"]; ok {
+		t.Fatalf("direct review grew recipe replay metadata: %v", task.Metadata)
+	}
+	if _, ok := task.Metadata["recipe_replay_cache_hit"]; ok {
+		t.Fatalf("direct review grew recipe replay cache-hit metadata: %v", task.Metadata)
+	}
+}
+
+func TestHandleTaskRecipeReplayDoesNotReuseFailedTask(t *testing.T) {
+	t.Parallel()
+
+	engine := newTaskToolEngine(t)
+	reviewWorker := &flakyTaskWorker{workerType: review.WorkerTypeReview}
+	engine.RegisterWorker(review.WorkerTypeReview, reviewWorker)
+	registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": defaultRecipeProfile()})
+	registry.SetAvailable("codex", true)
+	srv := &Server{loom: engine, registry: registry}
+
+	args := map[string]any{
+		"prompt":     "review HEAD for regressions",
+		"recipe_id":  "code-review",
+		"target":     "HEAD",
+		"project_id": "proj-replay-failed",
+	}
+	first := callTaskTool(t, srv, args)
+	if !first.IsError {
+		t.Fatalf("first call expected worker failure, got %s", taskToolResultText(t, first))
+	}
+	second := callTaskTool(t, srv, args)
+	if second.IsError {
+		t.Fatalf("second call unexpected error: %s", taskToolResultText(t, second))
+	}
+	if got := reviewWorker.taskCount(); got != 2 {
+		t.Fatalf("review task count = %d, want failed task ignored and fresh submit", got)
+	}
+	assertMetadataBool(t, taskToolPayloadMetadata(t, decodeTaskToolResult(t, second)), "recipe_replay_cache_hit", false)
+}
+
+func TestHandleTaskRecipePolicyMismatchCannotReplayCompletedTask(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	args := map[string]any{
+		"prompt":     "review HEAD for regressions",
+		"recipe_id":  "code-review",
+		"target":     "HEAD",
+		"project_id": "proj-replay-policy",
+	}
+	first := callTaskTool(t, srv, args)
+	if first.IsError {
+		t.Fatalf("first call unexpected error: %s", taskToolResultText(t, first))
+	}
+	limited := driver.NewRegistry(map[string]*config.CLIProfile{"codex": limitedRecipeProfile()})
+	limited.SetAvailable("codex", true)
+	srv.registry = limited
+
+	second := callTaskTool(t, srv, args)
+	if !second.IsError {
+		t.Fatalf("expected policy mismatch before replay, got %s", taskToolResultText(t, second))
+	}
+	payload := decodeTaskToolError(t, second)
+	if payload.Code != extypes.CLIErrorCodeCapabilityMismatch.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeCapabilityMismatch)
+	}
+	if got := reviewWorker.taskCount(); got != 1 {
+		t.Fatalf("review task count = %d, want no duplicate submit after policy mismatch", got)
+	}
+}
+
 func TestHandleTaskUnsupportedRecipeFailsBeforeSubmit(t *testing.T) {
 	t.Parallel()
 
@@ -476,6 +646,72 @@ func (w *recordingTaskWorker) taskCount() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.tasks)
+}
+
+type flakyTaskWorker struct {
+	mu         sync.Mutex
+	workerType loom.WorkerType
+	calls      int
+}
+
+func (w *flakyTaskWorker) Type() loom.WorkerType {
+	return w.workerType
+}
+
+func (w *flakyTaskWorker) Execute(_ context.Context, task *loom.Task) (*loom.WorkerResult, error) {
+	w.mu.Lock()
+	w.calls++
+	call := w.calls
+	w.mu.Unlock()
+	if call == 1 {
+		return nil, errors.New("planned worker failure")
+	}
+	metadata := cloneTaskMetadata(task.Metadata)
+	metadata["rounds"] = 1
+	metadata["confidence_score"] = 0.91
+	return &loom.WorkerResult{
+		Content:  "handled " + string(w.workerType),
+		Metadata: metadata,
+	}, nil
+}
+
+func (w *flakyTaskWorker) taskCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls
+}
+
+func taskToolPayloadMetadata(t *testing.T, payload map[string]any) map[string]any {
+	t.Helper()
+	metadata, ok := payload["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata type = %T, want map; payload=%v", payload["metadata"], payload)
+	}
+	return metadata
+}
+
+func metadataStringValue(t *testing.T, metadata map[string]any, key string) string {
+	t.Helper()
+	value, ok := metadata[key]
+	if !ok {
+		t.Fatalf("metadata[%q] missing", key)
+	}
+	got, ok := value.(string)
+	if !ok {
+		t.Fatalf("metadata[%q] = %#v, want string", key, value)
+	}
+	if got == "" {
+		t.Fatalf("metadata[%q] empty", key)
+	}
+	return got
+}
+
+func assertTaskResourceMetadataBool(t *testing.T, metadata map[string]any, key string, want bool) {
+	t.Helper()
+	got, ok := metadata[key].(bool)
+	if !ok || got != want {
+		t.Fatalf("metadata[%s] = %#v, want %v", key, metadata[key], want)
+	}
 }
 
 type taskToolErrorPayload struct {

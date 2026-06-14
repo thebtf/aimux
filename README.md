@@ -204,6 +204,18 @@ Current enforced classes are read-only execution, structured JSON/JSONL output,
 target-required recipe arguments, plus compiled gates for future sandbox,
 approval, schema, max-turn, and version policies.
 
+Read-only curated recipe invocations also carry deterministic replay metadata.
+For matching completed runs, `task(recipe_id=...)` can return the completed
+source task without submitting duplicate Loom work. The replay fingerprint uses
+recipe ID, replay key version, prompt, target, CWD, task/worker class, selected
+CLI, model/role/effort, and enforced policy fingerprints. Cache hits are
+visible in the returned task metadata as `recipe_replay_cache_hit=true` with
+`recipe_replay_source_task_id`; task resources expose the source task's
+`recipe_replay_key_version`, `recipe_replay_fingerprint`, and
+`recipe_replay_cache_hit=false` reusable-source marker. Failed, crashed,
+cancelled, running, policy-mismatched, non-recipe, and changed-precondition
+tasks are not replayed as success.
+
 ### Think Harness
 
 `think(action=start|step|finalize)` is the canonical caller-centered thinking

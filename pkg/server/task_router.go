@@ -153,6 +153,14 @@ func (r *TaskRouter) Dispatch(ctx context.Context, req TaskRequest) (TaskResult,
 	}
 
 	loomReq := canonicalLoomRequest(req, prompt, resolvedClass, workerType, confidence, candidates)
+	if _, err := attachRecipeReplayMetadata(&loomReq); err != nil {
+		return TaskResult{TaskClass: resolvedClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}, ensureCLIError(err)
+	}
+	if replayTask, ok, err := r.findRecipeReplayTask(loomReq); err != nil {
+		return TaskResult{TaskClass: resolvedClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}, ensureCLIError(err)
+	} else if ok {
+		return r.recipeReplayResult(replayTask, resolvedClass, confidence, candidates)
+	}
 	taskID, err := r.loom.Submit(ctx, loomReq)
 	if err != nil {
 		return TaskResult{TaskClass: resolvedClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}, ensureCLIError(err)
