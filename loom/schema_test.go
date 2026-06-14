@@ -2,6 +2,7 @@ package loom
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -56,6 +57,100 @@ func loomIndexExists(t *testing.T, db *sql.DB, index string) bool {
 		t.Fatalf("iterate index info: %v", err)
 	}
 	return false
+}
+
+func loomTableExists(t *testing.T, db *sql.DB, table string) bool {
+	t.Helper()
+	var name string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("query sqlite_master table %s: %v", table, err)
+	}
+	return name == table
+}
+
+func loomTableColumnExists(t *testing.T, db *sql.DB, table, column string) bool {
+	t.Helper()
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			t.Fatalf("scan %s column info: %v", table, err)
+		}
+		if name == column {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s column info: %v", table, err)
+	}
+	return false
+}
+
+func loomTableIndexExists(t *testing.T, db *sql.DB, table, index string) bool {
+	t.Helper()
+	rows, err := db.Query(`PRAGMA index_list(` + table + `)`)
+	if err != nil {
+		t.Fatalf("PRAGMA index_list(%s): %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan %s index info: %v", table, err)
+		}
+		if name == index {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s index info: %v", table, err)
+	}
+	return false
+}
+
+// TestTaskStore_MigrateV7_FreshDB verifies that NewTaskStore on a fresh DB
+// creates the task artifact projection table and its task/cursor index.
+func TestTaskStore_MigrateV7_FreshDB(t *testing.T) {
+	store := newTestStore(t)
+
+	if !loomTableExists(t, store.db, "task_artifacts") {
+		t.Fatal("task_artifacts table missing after NewTaskStore (v7 migration)")
+	}
+	for _, col := range []string{
+		"seq",
+		"task_id",
+		"kind",
+		"event_type",
+		"summary",
+		"payload_json",
+		"content_length",
+		"redacted",
+		"truncated",
+		"created_at",
+	} {
+		if !loomTableColumnExists(t, store.db, "task_artifacts", col) {
+			t.Errorf("task_artifacts.%s column missing after NewTaskStore (v7 migration)", col)
+		}
+	}
+	if !loomTableIndexExists(t, store.db, "task_artifacts", "idx_task_artifacts_task_seq") {
+		t.Error("idx_task_artifacts_task_seq missing after NewTaskStore (v7 migration)")
+	}
 }
 
 // TestTaskStore_MigrateV2_FreshDB verifies that NewTaskStore on a fresh DB

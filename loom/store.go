@@ -167,6 +167,25 @@ var migrateV6DownColumns = []string{
 	`ALTER TABLE tasks DROP COLUMN parent_task_id`,
 }
 
+// migrateV7Statements adds the Loom task artifact projection table for
+// AIMUX-23. The table is append-only evidence keyed by task_id and seq; it is
+// never used as canonical task status.
+var migrateV7Statements = []string{
+	`CREATE TABLE IF NOT EXISTS task_artifacts (
+		seq INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL,
+		event_type TEXT NOT NULL DEFAULT '',
+		summary TEXT NOT NULL DEFAULT '',
+		payload_json TEXT NOT NULL DEFAULT '{}',
+		content_length INTEGER NOT NULL DEFAULT 0,
+		redacted INTEGER NOT NULL DEFAULT 0,
+		truncated INTEGER NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_seq ON task_artifacts(task_id, seq)`,
+}
+
 // MigrateV5Down reverts the v5 progress columns. Returns an error on the
 // first DROP that fails for a reason other than "no such column" (which is
 // idempotent — the column was already absent).
@@ -272,6 +291,17 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 				continue
 			}
 			return nil, fmt.Errorf("loom store: migrate v6 columns: %w", err)
+		}
+	}
+	// AIMUX-23 CR-001: create append-only task artifact projection table and
+	// per-task cursor index. This migration is idempotent on fresh and existing
+	// databases.
+	for _, stmt := range migrateV7Statements {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return nil, fmt.Errorf("loom store: migrate v7 artifacts: %w", err)
 		}
 	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).

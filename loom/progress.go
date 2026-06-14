@@ -64,9 +64,13 @@ func lastNonEmptyLine(s string) string {
 // (and only when) a row was actually updated — callers use OK to decide
 // whether to emit an event so unknown / cancelled tasks remain truly no-op.
 type ProgressInfo struct {
-	OK        bool
-	ProjectID string
-	RequestID string
+	OK                bool
+	WorkerType        WorkerType
+	ProjectID         string
+	RequestID         string
+	LastOutputLine    string
+	ProgressLines     int64
+	ProgressUpdatedAt *time.Time
 }
 
 // AppendProgress records a single progress line for taskID. The line is
@@ -126,9 +130,13 @@ func (s *TaskStore) AppendProgress(taskID, line string) (ProgressInfo, error) {
 	// where the unknown-task branch was indistinguishable from a successful
 	// update at the caller.
 	var (
-		row    *sql.Row
-		projID string
-		reqID  string
+		row               *sql.Row
+		workerType        WorkerType
+		projID            string
+		reqID             string
+		lastOutputLine    string
+		progressLines     int64
+		progressUpdatedAt sql.NullTime
 	)
 	if truncated != "" {
 		row = s.db.QueryRow(
@@ -137,7 +145,7 @@ func (s *TaskStore) AppendProgress(taskID, line string) (ProgressInfo, error) {
 			     progress_lines = progress_lines + ?,
 			     progress_updated_at = ?
 			 WHERE id = ? AND status = 'running'
-			 RETURNING project_id, request_id`,
+			 RETURNING worker_type, project_id, request_id, last_output_line, progress_lines, progress_updated_at`,
 			truncated, deltaLines, now, taskID,
 		)
 	} else {
@@ -147,15 +155,27 @@ func (s *TaskStore) AppendProgress(taskID, line string) (ProgressInfo, error) {
 			 SET progress_lines = progress_lines + ?,
 			     progress_updated_at = ?
 			 WHERE id = ? AND status = 'running'
-			 RETURNING project_id, request_id`,
+			 RETURNING worker_type, project_id, request_id, last_output_line, progress_lines, progress_updated_at`,
 			deltaLines, now, taskID,
 		)
 	}
-	if err := row.Scan(&projID, &reqID); err != nil {
+	if err := row.Scan(&workerType, &projID, &reqID, &lastOutputLine, &progressLines, &progressUpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ProgressInfo{OK: false}, nil
 		}
 		return ProgressInfo{}, fmt.Errorf("loom store: append progress: %w", err)
 	}
-	return ProgressInfo{OK: true, ProjectID: projID, RequestID: reqID}, nil
+	info := ProgressInfo{
+		OK:             true,
+		WorkerType:     workerType,
+		ProjectID:      projID,
+		RequestID:      reqID,
+		LastOutputLine: lastOutputLine,
+		ProgressLines:  progressLines,
+	}
+	if progressUpdatedAt.Valid {
+		t := progressUpdatedAt.Time
+		info.ProgressUpdatedAt = &t
+	}
+	return info, nil
 }

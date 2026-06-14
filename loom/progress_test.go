@@ -397,6 +397,56 @@ func TestEngine_AppendProgress_EmitsEvent(t *testing.T) {
 	}
 }
 
+func TestEngine_ArtifactProgress_UsesStoredRedactedTail(t *testing.T) {
+	store := newTestStore(t)
+	engine := New(store)
+	defer func() {
+		_ = engine.Close(context.Background())
+	}()
+
+	task := makeProgressTask("task-artifact-progress", "proj-artifact-progress")
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rawSecret := "sk-svcacct-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh"
+	if err := engine.AppendProgress(task.ID, "raw progress "+rawSecret); err != nil {
+		t.Fatalf("AppendProgress: %v", err)
+	}
+
+	got, err := store.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if strings.Contains(got.LastOutputLine, rawSecret) {
+		t.Fatalf("stored LastOutputLine leaked raw secret: %q", got.LastOutputLine)
+	}
+	if !strings.Contains(got.LastOutputLine, "[REDACTED]") {
+		t.Fatalf("stored LastOutputLine = %q; want [REDACTED] marker", got.LastOutputLine)
+	}
+
+	page, err := store.ListArtifacts(task.ID, TaskArtifactListOptions{Kinds: []TaskArtifactKind{TaskArtifactKindProgress}})
+	if err != nil {
+		t.Fatalf("ListArtifacts progress: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("progress artifacts len = %d; want 1", len(page.Items))
+	}
+	artifact := page.Items[0]
+	if artifact.Summary != got.LastOutputLine {
+		t.Fatalf("artifact summary = %q; want stored redacted tail %q", artifact.Summary, got.LastOutputLine)
+	}
+	if !artifact.Redacted {
+		t.Fatalf("artifact.Redacted = false; want true")
+	}
+	if artifact.Payload["last_output_line"] != got.LastOutputLine {
+		t.Fatalf("artifact payload last_output_line = %v; want %q", artifact.Payload["last_output_line"], got.LastOutputLine)
+	}
+	if artifact.Payload["progress_lines"] != float64(got.ProgressLines) {
+		t.Fatalf("artifact payload progress_lines = %v; want %d", artifact.Payload["progress_lines"], got.ProgressLines)
+	}
+}
+
 // TestEngine_AppendProgress_UnknownTask_NoEvent verifies that progress on
 // a task that no longer exists (cancelled, GC'd) does NOT emit an
 // EventTaskProgress. The store reports info.OK=false and the engine MUST

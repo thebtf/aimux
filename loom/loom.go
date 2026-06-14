@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -282,6 +283,7 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	if err := l.store.Create(task); err != nil {
 		return "", fmt.Errorf("loom: persist task: %w", err)
 	}
+	l.appendLifecycleArtifact(context.Background(), task, string(EventTaskCreated), TaskStatusPending)
 
 	l.events.Emit(TaskEvent{
 		Type:      EventTaskCreated,
@@ -299,6 +301,7 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		return "", fmt.Errorf("loom: dispatch task: %w", err)
 	}
 	task.Status = TaskStatusDispatched
+	l.appendLifecycleArtifact(context.Background(), task, string(EventTaskDispatched), TaskStatusDispatched)
 	l.events.Emit(TaskEvent{
 		Type:      EventTaskDispatched,
 		TaskID:    task.ID,
@@ -597,6 +600,7 @@ func (l *LoomEngine) AppendProgress(taskID, line string) error {
 		// for subscribers to observe. Suppress the event per CR-005 design.
 		return nil
 	}
+	l.appendProgressArtifact(context.Background(), taskID, info)
 	l.events.Emit(TaskEvent{
 		Type:      EventTaskProgress,
 		TaskID:    taskID,
@@ -606,6 +610,120 @@ func (l *LoomEngine) AppendProgress(taskID, line string) error {
 		Timestamp: l.clock.Now().UTC(),
 	})
 	return nil
+}
+
+func (l *LoomEngine) appendLifecycleArtifact(ctx context.Context, task *Task, eventType string, status TaskStatus) {
+	if task == nil {
+		return
+	}
+	_, err := l.store.AppendArtifact(task.ID, TaskArtifactAppend{
+		Kind:      TaskArtifactKindLifecycle,
+		EventType: eventType,
+		Summary:   "task " + string(status),
+		Payload: map[string]any{
+			"status":     string(status),
+			"project_id": task.ProjectID,
+			"request_id": task.RequestID,
+		},
+	})
+	if err != nil {
+		l.logArtifactProjectionError(ctx, task, "lifecycle", err)
+	}
+}
+
+func (l *LoomEngine) appendProgressArtifact(ctx context.Context, taskID string, info ProgressInfo) {
+	if taskID == "" {
+		return
+	}
+	payload := map[string]any{
+		"last_output_line": info.LastOutputLine,
+		"progress_lines":   info.ProgressLines,
+		"project_id":       info.ProjectID,
+		"request_id":       info.RequestID,
+	}
+	if info.ProgressUpdatedAt != nil {
+		payload["progress_updated_at"] = info.ProgressUpdatedAt.UTC().Format(time.RFC3339)
+	}
+	_, err := l.store.AppendArtifact(taskID, TaskArtifactAppend{
+		Kind:          TaskArtifactKindProgress,
+		EventType:     string(EventTaskProgress),
+		Summary:       info.LastOutputLine,
+		Payload:       payload,
+		ContentLength: int64(len(info.LastOutputLine)),
+		Redacted:      strings.Contains(info.LastOutputLine, "[REDACTED]"),
+		Truncated:     len(info.LastOutputLine) >= progressLineMaxBytes,
+	})
+	if err != nil {
+		l.logArtifactProjectionError(ctx, &Task{ID: taskID, ProjectID: info.ProjectID, RequestID: info.RequestID, WorkerType: info.WorkerType}, "progress", err)
+	}
+}
+
+func (l *LoomEngine) appendTerminalArtifact(ctx context.Context, task *Task, eventType string, status TaskStatus, errorClass, errMsg string) {
+	if task == nil {
+		return
+	}
+	current, err := l.store.Get(task.ID)
+	if err != nil {
+		current = task
+	}
+	summary := "task " + string(status)
+	if errMsg != "" {
+		summary = errMsg
+	} else if current.Error != "" {
+		summary = current.Error
+	}
+	payload := map[string]any{
+		"status":     string(status),
+		"project_id": current.ProjectID,
+		"request_id": current.RequestID,
+	}
+	if errorClass != "" {
+		payload["error_class"] = errorClass
+	}
+	if current.LastOutputLine != "" {
+		payload["last_output_line"] = current.LastOutputLine
+		payload["progress_lines"] = current.ProgressLines
+	}
+	if current.ProgressUpdatedAt != nil {
+		payload["progress_updated_at"] = current.ProgressUpdatedAt.UTC().Format(time.RFC3339)
+	}
+	_, appendErr := l.store.AppendArtifact(task.ID, TaskArtifactAppend{
+		Kind:      TaskArtifactKindTerminal,
+		EventType: eventType,
+		Summary:   summary,
+		Payload:   payload,
+		Redacted:  strings.Contains(summary, "[REDACTED]"),
+	})
+	if appendErr != nil {
+		l.logArtifactProjectionError(ctx, task, "terminal", appendErr)
+	}
+}
+
+func (l *LoomEngine) logArtifactProjectionError(ctx context.Context, task *Task, kind string, err error) {
+	if task == nil {
+		return
+	}
+	l.logger.ErrorContext(ctx, "task artifact projection failed",
+		"module", "loom",
+		"task_id", task.ID,
+		"project_id", task.ProjectID,
+		"worker_type", string(task.WorkerType),
+		"request_id", task.RequestID,
+		"artifact_kind", kind,
+		"error_code", "artifact_projection",
+		"error", err,
+	)
+}
+
+func classifyTaskError(errMsg string) string {
+	switch {
+	case strings.Contains(errMsg, "no worker registered"):
+		return "worker_unavailable"
+	case strings.Contains(errMsg, "gate rejected"):
+		return "quality_gate"
+	default:
+		return "worker_error"
+	}
 }
 
 func (l *LoomEngine) isTerminalTask(taskID string) bool {
@@ -635,6 +753,7 @@ func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) 
 			"error", err,
 		)
 	}
+	statusUpdated := false
 	if err := l.store.UpdateStatus(task.ID, fromStatus, TaskStatusFailed); err != nil {
 		l.logger.ErrorContext(ctx, "failTask: store.UpdateStatus failed",
 			"module", "loom",
@@ -646,6 +765,11 @@ func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) 
 			"error_code", "store_update_status",
 			"error", err,
 		)
+	} else {
+		statusUpdated = true
+	}
+	if statusUpdated {
+		l.appendTerminalArtifact(ctx, task, string(EventTaskFailed), TaskStatusFailed, classifyTaskError(errMsg), errMsg)
 	}
 	l.events.Emit(TaskEvent{
 		Type:      EventTaskFailed,
@@ -713,6 +837,7 @@ func (l *LoomEngine) dispatch(task *Task) {
 			}
 			// Best-effort: try both running→failed_crash and dispatched→failed_crash
 			// since we don't know exact current status at panic time.
+			statusUpdated := false
 			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailedCrash); err != nil {
 				if err2 := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusFailedCrash); err2 != nil {
 					l.logger.ErrorContext(panicCtx, "dispatch panic: could not mark failed_crash",
@@ -725,7 +850,14 @@ func (l *LoomEngine) dispatch(task *Task) {
 						"error_code", "failed_crash_transition",
 						"error", fmt.Sprintf("running→failed_crash: %v; dispatched→failed_crash: %v", err, err2),
 					)
+				} else {
+					statusUpdated = true
 				}
+			} else {
+				statusUpdated = true
+			}
+			if statusUpdated {
+				l.appendTerminalArtifact(panicCtx, task, string(EventTaskFailedCrash), TaskStatusFailedCrash, "panic", panicMsg)
 			}
 			l.events.Emit(TaskEvent{
 				Type:      EventTaskFailedCrash,
@@ -780,6 +912,8 @@ func (l *LoomEngine) dispatch(task *Task) {
 		l.failTask(task, TaskStatusDispatched, fmt.Sprintf("dispatch: transition to running failed: %v", err))
 		return
 	}
+	task.Status = TaskStatusRunning
+	l.appendLifecycleArtifact(context.Background(), task, string(EventTaskRunning), TaskStatusRunning)
 
 	// Emit running event after successful dispatched→running transition.
 	l.events.Emit(TaskEvent{
@@ -890,6 +1024,7 @@ func (l *LoomEngine) dispatch(task *Task) {
 				// Abort: do not emit EventTaskCompleted — status transition failed.
 				return
 			}
+			l.appendTerminalArtifact(gateCtx, task, string(EventTaskCompleted), TaskStatusCompleted, "", "")
 			l.events.Emit(TaskEvent{
 				Type:      EventTaskCompleted,
 				TaskID:    task.ID,
@@ -955,6 +1090,8 @@ func (l *LoomEngine) dispatch(task *Task) {
 			l.failTask(task, TaskStatusRunning, fmt.Sprintf("retry: UpdateStatus(running→retrying) failed: %v", err))
 			return
 		}
+		task.Status = TaskStatusRetrying
+		l.appendLifecycleArtifact(gateCtx, task, string(EventTaskRetrying), TaskStatusRetrying)
 		if err := l.store.IncrementRetries(task.ID); err != nil {
 			l.logger.ErrorContext(gateCtx, "retry: IncrementRetries failed",
 				"module", "loom",
@@ -994,6 +1131,8 @@ func (l *LoomEngine) dispatch(task *Task) {
 			l.failTask(task, TaskStatusRetrying, fmt.Sprintf("retry: UpdateStatus(retrying→dispatched) failed: %v", err))
 			return
 		}
+		task.Status = TaskStatusDispatched
+		l.appendLifecycleArtifact(gateCtx, task, string(EventTaskDispatched), TaskStatusDispatched)
 		if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
 			l.logger.ErrorContext(gateCtx, "retry: UpdateStatus(dispatched→running) failed",
 				"module", "loom",
@@ -1008,6 +1147,8 @@ func (l *LoomEngine) dispatch(task *Task) {
 			l.failTask(task, TaskStatusDispatched, fmt.Sprintf("retry: UpdateStatus(dispatched→running) failed: %v", err))
 			return
 		}
+		task.Status = TaskStatusRunning
+		l.appendLifecycleArtifact(gateCtx, task, string(EventTaskRunning), TaskStatusRunning)
 
 		latest, err = l.store.Get(task.ID)
 		if err != nil {
