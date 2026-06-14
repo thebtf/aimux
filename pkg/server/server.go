@@ -830,6 +830,8 @@ func (s *Server) registerResources() {
 		),
 		s.handleMetricsResource,
 	)
+
+	s.registerTaskResources()
 }
 
 // --- Tool Handlers ---

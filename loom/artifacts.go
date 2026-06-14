@@ -103,6 +103,15 @@ func TaskArtifactProjectionStatusForTask(task *Task, page TaskArtifactPage) Task
 	return TaskArtifactProjectionOK
 }
 
+// ListArtifacts returns a deterministic projection page through the Loom
+// engine boundary. Canonical task state remains owned by Get/GetContext.
+func (l *LoomEngine) ListArtifacts(taskID string, opts TaskArtifactListOptions) (TaskArtifactPage, error) {
+	if l == nil || l.store == nil {
+		return TaskArtifactPage{}, fmt.Errorf("loom: list artifacts: engine unavailable")
+	}
+	return l.store.ListArtifacts(taskID, opts)
+}
+
 // AppendArtifact persists one projection row for a Loom task. It validates that
 // the source task exists but never updates canonical task state.
 func (s *TaskStore) AppendArtifact(taskID string, input TaskArtifactAppend) (TaskArtifact, error) {
