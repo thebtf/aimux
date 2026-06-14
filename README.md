@@ -171,6 +171,24 @@ Use these resources when a caller needs task evidence without reading daemon
 logs. Event and progress pages are cursor/limit paginated, and large task
 results are summarized in the snapshot resource.
 
+### Curated Recipe Resources
+
+| Resource | Purpose |
+|---|---|
+| `aimux://recipes` | Compact compiled recipe catalog with IDs, descriptions, phases, policy needs, and output resource hints. |
+| `aimux://recipes/{recipe_id}` | Detail view for one supported recipe. Unknown IDs return `not_found` plus `available_recipes`. |
+
+Initial recipes are read-only and route through the existing `task` entry point:
+
+| Recipe ID | Task class | Default mode | Purpose |
+|---|---|---|---|
+| `code-review` | `review` | gate | Run the existing review worker as a named code-review recipe. |
+| `second-opinion` | `review` | aggregate | Run the existing review worker for an independent read-only assessment. |
+
+Invoke a recipe through `task(recipe_id=..., target=...)`; no new workflow or
+recipe tool is added. CR-004 declares provider policy needs in recipe metadata.
+CR-005 is the boundary for enforcement-grade provider capability validation.
+
 ### Think Harness
 
 `think(action=start|step|finalize)` is the canonical caller-centered thinking
@@ -292,12 +310,14 @@ Current production surface:
 - Loom-backed task state and recovery.
 - Task entry point with 3 execution modes: pair (driver+navigator), solo write, solo diff.
 - Task inspection resources under `aimux://tasks/{task_id}`.
+- Compiled read-only recipe discovery under `aimux://recipes` and invocation via `task(recipe_id=...)`.
 
 Out of current scope:
 
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
 - Pipeline v5 Layer 5 exposure (beyond the task entry point).
+- Enforcement-grade provider capability validation for recipes before CR-005.
 
 Those removed surfaces are not runtime defects in the current build. They are
 future design work under AIMUX-9 / DEF-1.

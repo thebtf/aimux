@@ -169,6 +169,24 @@ Codex CLI всегда использует `--dangerously-bypass-approvals-and-
 daemon logs. Event и progress pages используют cursor/limit pagination, а
 большие task results показываются в snapshot как summary.
 
+### Curated Recipe Resources
+
+| Resource | Назначение |
+|---|---|
+| `aimux://recipes` | Компактный compiled recipe catalog с IDs, descriptions, phases, policy needs и output resource hints. |
+| `aimux://recipes/{recipe_id}` | Detail view для одного supported recipe. Unknown IDs возвращают `not_found` плюс `available_recipes`. |
+
+Initial recipes read-only и идут через существующий `task` entry point:
+
+| Recipe ID | Task class | Default mode | Назначение |
+|---|---|---|---|
+| `code-review` | `review` | gate | Запускает существующий review worker как named code-review recipe. |
+| `second-opinion` | `review` | aggregate | Запускает существующий review worker для independent read-only assessment. |
+
+Вызывайте recipe через `task(recipe_id=..., target=...)`; новый workflow или
+recipe tool не добавляется. CR-004 декларирует provider policy needs в recipe
+metadata. CR-005 — граница для enforcement-grade provider capability validation.
+
 ### Think Harness
 
 `think(action=start|step|finalize)` — canonical caller-centered thinking
@@ -281,6 +299,7 @@ Current production surface:
 - Caller-centered `think` harness и 22 local cognitive move tools.
 - Loom-backed task state и recovery.
 - Task inspection resources under `aimux://tasks/{task_id}`.
+- Compiled read-only recipe discovery under `aimux://recipes` и invocation через `task(recipe_id=...)`.
 
 Out of current scope:
 
@@ -288,6 +307,7 @@ Out of current scope:
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
 - Pipeline v5 Layer 5 exposure.
+- Enforcement-grade provider capability validation for recipes before CR-005.
 
 Эти удалённые surfaces не являются runtime defects текущей сборки. Это future
 design work в AIMUX-9 / DEF-1.
