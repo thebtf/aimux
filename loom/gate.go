@@ -89,7 +89,6 @@ func isRateLimitError(lower string) bool {
 		"rate limit",
 		"rate_limit",
 		"too many requests",
-		"429",
 		"quota exceeded",
 		"throttled",
 	}
