@@ -35,6 +35,15 @@ func (s *Server) registerTaskResources() {
 	)
 	s.mcp.AddResourceTemplate(
 		mcp.NewResourceTemplate(
+			"aimux://tasks{?limit,status}",
+			"Task List With Query",
+			mcp.WithTemplateDescription("Bounded read-only Loom task list with optional limit/status filters"),
+			mcp.WithTemplateMIMEType(taskResourceMIMEType),
+		),
+		s.handleTaskListResource,
+	)
+	s.mcp.AddResourceTemplate(
+		mcp.NewResourceTemplate(
 			"aimux://tasks/{task_id}",
 			"Task Snapshot",
 			mcp.WithTemplateDescription("Compact Loom task snapshot with status, progress summary, and task artifact resource links"),

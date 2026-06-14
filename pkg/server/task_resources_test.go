@@ -36,6 +36,7 @@ func TestTaskSnapshotResourceTemplatesRegistered(t *testing.T) {
 
 	want := map[string]bool{
 		"aimux://tasks":                  false,
+		"aimux://tasks{?limit,status}":   false,
 		"aimux://tasks/{task_id}":        false,
 		"aimux://tasks/{task_id}/viewer": false,
 	}
@@ -54,6 +55,57 @@ func TestTaskSnapshotResourceTemplatesRegistered(t *testing.T) {
 		if !found {
 			t.Fatalf("resource template %q not registered; templates=%v", uri, templates)
 		}
+	}
+}
+
+func TestTaskListResource_ReadViaMCPWithQuery(t *testing.T) {
+	srv := testServerWithLoom(t)
+
+	_ = srv.mcp.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc":"2.0",
+		"id":1,
+		"method":"initialize",
+		"params":{"protocolVersion":"2024-11-05"}
+	}`))
+
+	response := srv.mcp.HandleMessage(context.Background(), json.RawMessage(`{
+		"jsonrpc":"2.0",
+		"id":2,
+		"method":"resources/read",
+		"params":{"uri":"aimux://tasks?limit=5"}
+	}`))
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal response %s: %v", raw, err)
+	}
+	if errObj, hasError := decoded["error"]; hasError {
+		t.Fatalf("resources/read returned error: %v", errObj)
+	}
+	result, ok := decoded["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("resources/read result missing or wrong type: %s", raw)
+	}
+	contents, ok := result["contents"].([]any)
+	if !ok || len(contents) != 1 {
+		t.Fatalf("contents = %#v, want one item", result["contents"])
+	}
+	text, ok := contents[0].(map[string]any)["text"].(string)
+	if !ok {
+		t.Fatalf("content text missing in %v", contents[0])
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		t.Fatalf("unmarshal task list payload %q: %v", text, err)
+	}
+	if payload["status"] != "ok" {
+		t.Fatalf("status = %v, want ok; payload=%v", payload["status"], payload)
+	}
+	if payload["limit"] != float64(5) {
+		t.Fatalf("limit = %v, want 5; payload=%v", payload["limit"], payload)
 	}
 }
 
