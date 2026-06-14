@@ -169,6 +169,13 @@ Codex CLI всегда использует `--dangerously-bypass-approvals-and-
 daemon logs. Event и progress pages используют cursor/limit pagination, а
 большие task results показываются в snapshot как summary.
 
+Mutating code flows также добавляют worktree preservation metadata в task result
+и task snapshot metadata. Pair apply, write-review и solo-write flows включают
+`worktree_path`, `worktree_branch`, `worktree_base_sha` и
+`worktree_preserve_reason`, чтобы caller мог восстановить или проверить
+затронутый worktree. Read-only recipes и solo-diff flows остаются
+non-mutating и не публикуют preservation metadata.
+
 ### Curated Recipe Resources
 
 | Resource | Назначение |

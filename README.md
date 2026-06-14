@@ -171,6 +171,13 @@ Use these resources when a caller needs task evidence without reading daemon
 logs. Event and progress pages are cursor/limit paginated, and large task
 results are summarized in the snapshot resource.
 
+Mutating code flows also add worktree preservation metadata to the task result
+and task snapshot metadata. Pair apply, write-review, and solo-write flows
+include `worktree_path`, `worktree_branch`, `worktree_base_sha`, and
+`worktree_preserve_reason` so callers can recover or review the touched
+worktree. Read-only recipes and solo-diff flows stay non-mutating and do not
+emit preservation metadata.
+
 ### Curated Recipe Resources
 
 | Resource | Purpose |

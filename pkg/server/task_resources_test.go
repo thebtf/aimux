@@ -126,6 +126,40 @@ func TestTaskSnapshotResource_FailedTaskIncludesCanonicalStatusAndLinks(t *testi
 	}
 }
 
+func TestTaskSnapshotResource_IncludesWorktreePreservationMetadata(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-worktree-metadata")
+	taskID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  projectID,
+		Prompt:     "fail because no worker is registered",
+		Metadata: map[string]any{
+			"worktree_path":            "D:\\Dev\\aimux",
+			"worktree_branch":          "master",
+			"worktree_base_sha":        "2990fd8",
+			"worktree_preserve_reason": "code task mutates caller worktree",
+		},
+		Env: map[string]string{"SECRET_TOKEN": "should-not-leak"},
+	})
+	if err != nil {
+		t.Fatalf("loom.Submit: %v", err)
+	}
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusFailed)
+
+	got := readTaskSnapshotResource(t, srv, ctx, "aimux://tasks/"+taskID)
+	metadata, ok := got["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata type = %T, want map; payload=%v", got["metadata"], got)
+	}
+	assertTaskResourceMetadata(t, metadata, "worktree_path", "D:\\Dev\\aimux")
+	assertTaskResourceMetadata(t, metadata, "worktree_branch", "master")
+	assertTaskResourceMetadata(t, metadata, "worktree_base_sha", "2990fd8")
+	assertTaskResourceMetadata(t, metadata, "worktree_preserve_reason", "code task mutates caller worktree")
+	if _, leaked := got["env"]; leaked {
+		t.Fatalf("snapshot exposed raw env: %v", got)
+	}
+}
+
 func TestTaskArtifactResource_EventsPaginationWithCursorAndLimit(t *testing.T) {
 	srv := testServerWithLoom(t)
 	ctx, projectID := projectCtxAndID("proj-resource-events")
@@ -382,6 +416,14 @@ func assertTaskResourceNotFound(t *testing.T, got map[string]any, taskID string)
 	}
 	if _, leaked := got["tenant_id"]; leaked {
 		t.Fatalf("not-found payload leaked tenant_id: %v", got)
+	}
+}
+
+func assertTaskResourceMetadata(t *testing.T, metadata map[string]any, key string, want string) {
+	t.Helper()
+	got, ok := metadata[key].(string)
+	if !ok || got != want {
+		t.Fatalf("metadata[%s] = %#v, want %q", key, metadata[key], want)
 	}
 }
 

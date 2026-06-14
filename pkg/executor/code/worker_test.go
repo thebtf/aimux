@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +63,106 @@ func TestCodeWorkerRecordsDriverThreadIDForResume(t *testing.T) {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 	assertTaskMetadata(t, task.Metadata, MetadataThreadID, "thread-from-driver")
+}
+
+func TestCodeWorkerMutatingApplyRecordsWorktreePreservationMetadata(t *testing.T) {
+	root := codeWorkerGitFixture(t)
+	baseSHA := gitOutput(t, root, "rev-parse", "HEAD")
+	branch := gitOutput(t, root, "branch", "--show-current")
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: &mockWorkerPair{verdicts: []Verdict{{
+			Action:     StateApply,
+			Confidence: 0.91,
+			Diff:       renameDiff("note.txt", "old", "new"),
+		}}},
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+	})
+	task := codeWorkerTask(root)
+
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	assertTaskMetadata(t, task.Metadata, "worktree_path", filepath.Clean(root))
+	assertTaskMetadata(t, task.Metadata, "worktree_branch", branch)
+	assertTaskMetadata(t, task.Metadata, "worktree_base_sha", baseSHA)
+	assertTaskMetadata(t, task.Metadata, "worktree_preserve_reason", "code task mutates caller worktree")
+	assertTaskMetadata(t, result.Metadata, "worktree_path", filepath.Clean(root))
+	assertTaskMetadata(t, result.Metadata, "worktree_branch", branch)
+	assertTaskMetadata(t, result.Metadata, "worktree_base_sha", baseSHA)
+	assertTaskMetadata(t, result.Metadata, "worktree_preserve_reason", "code task mutates caller worktree")
+}
+
+func TestCodeWorkerWriteReviewRecordsWorktreePreservationMetadata(t *testing.T) {
+	root := codeWorkerGitFixture(t)
+	baseSHA := gitOutput(t, root, "rev-parse", "HEAD")
+	branch := gitOutput(t, root, "branch", "--show-current")
+	loomClient := newIntegrationLoom(
+		[]string{"driver wrote files"},
+		[]string{navigatorJSON(StateApply, 0.95, "", "ok")},
+	)
+	worker := newTestCodeWorker(t, workerTestDeps{
+		loom: loomClient,
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusSkipped}},
+		git:  &mockGitDiffer{diff: renameDiff("note.txt", "old", "new")},
+	})
+	task := codeWorkerTask(root)
+	task.Metadata["sandbox"] = "workspace-write"
+
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	assertTaskMetadata(t, task.Metadata, "worktree_path", filepath.Clean(root))
+	assertTaskMetadata(t, task.Metadata, "worktree_branch", branch)
+	assertTaskMetadata(t, task.Metadata, "worktree_base_sha", baseSHA)
+	assertTaskMetadata(t, task.Metadata, "worktree_preserve_reason", "code task mutates caller worktree")
+	assertTaskMetadata(t, result.Metadata, "worktree_path", filepath.Clean(root))
+}
+
+func TestCodeWorkerSoloReadOnlyDoesNotRecordWorktreePreservationMetadata(t *testing.T) {
+	root := codeWorkerGitFixture(t)
+	loomClient := newIntegrationLoom([]string{renameDiff("note.txt", "old", "new")}, nil)
+	worker := newTestCodeWorker(t, workerTestDeps{loom: loomClient})
+	task := codeWorkerTask(root)
+	task.Metadata["solo_mode"] = true
+	task.Metadata["sandbox"] = "read-only"
+
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	for _, key := range []string{"worktree_path", "worktree_branch", "worktree_base_sha", "worktree_preserve_reason"} {
+		if _, ok := task.Metadata[key]; ok {
+			t.Fatalf("read-only task metadata[%s] = %#v, want absent", key, task.Metadata[key])
+		}
+		if _, ok := result.Metadata[key]; ok {
+			t.Fatalf("read-only result metadata[%s] = %#v, want absent", key, result.Metadata[key])
+		}
+	}
+}
+
+func TestCodeWorkerWorktreeMetadataDoesNotRequireGitRepository(t *testing.T) {
+	root := codeWorkerFixture(t)
+	worker := newTestCodeWorker(t, workerTestDeps{
+		pair: &mockWorkerPair{verdicts: []Verdict{{
+			Action:     StateApply,
+			Confidence: 0.91,
+			Diff:       renameDiff("note.txt", "old", "new"),
+		}}},
+		gate: &mockWorkerGate{result: applygate.Result{Status: applygate.StatusPassed}},
+	})
+	task := codeWorkerTask(root)
+
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error outside git repository: %v", err)
+	}
+	assertTaskMetadata(t, task.Metadata, "worktree_path", filepath.Clean(root))
+	assertTaskMetadata(t, task.Metadata, "worktree_branch", "unknown")
+	assertTaskMetadata(t, task.Metadata, "worktree_base_sha", "unknown")
+	assertTaskMetadata(t, task.Metadata, "worktree_preserve_reason", "code task mutates caller worktree")
+	assertTaskMetadata(t, result.Metadata, "worktree_branch", "unknown")
 }
 
 func TestCodeWorkerFailTaskHandlesNilError(t *testing.T) {
@@ -398,6 +499,7 @@ type workerTestDeps struct {
 	gate    GateRunner
 	resumer ResumeDelegate
 	loom    LoomClient
+	git     GitDiffer
 }
 
 func newTestCodeWorker(t *testing.T, deps workerTestDeps) *CodeWorker {
@@ -417,6 +519,7 @@ func newTestCodeWorker(t *testing.T, deps workerTestDeps) *CodeWorker {
 		PairRunner:    deps.pair,
 		GateRunner:    deps.gate,
 		DriverResumer: deps.resumer,
+		Git:           deps.git,
 		DriverCLI:     "codex",
 		NavigatorCLI:  "claude",
 		MaxRounds:     3,
@@ -434,6 +537,36 @@ func codeWorkerFixture(t *testing.T) string {
 		t.Fatalf("write fixture: %v", err)
 	}
 	return root
+}
+
+func codeWorkerGitFixture(t *testing.T) string {
+	t.Helper()
+	root := codeWorkerFixture(t)
+	gitRun(t, root, "init")
+	gitRun(t, root, "config", "user.email", "aimux@example.invalid")
+	gitRun(t, root, "config", "user.name", "aimux test")
+	gitRun(t, root, "add", "note.txt")
+	gitRun(t, root, "commit", "-m", "initial")
+	return root
+}
+
+func gitRun(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+func gitOutput(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func codeWorkerTask(root string) *loom.Task {
@@ -517,6 +650,18 @@ type mockWorkerGate struct {
 func (m *mockWorkerGate) Run(_ context.Context, _ applygate.Project) applygate.Result {
 	m.calls++
 	return m.result
+}
+
+type mockGitDiffer struct {
+	diff string
+}
+
+func (m *mockGitDiffer) Diff(_ context.Context, _ string) (string, error) {
+	return m.diff, nil
+}
+
+func (m *mockGitDiffer) Revert(_ context.Context, _ string) error {
+	return nil
 }
 
 type mockPairSelector struct {

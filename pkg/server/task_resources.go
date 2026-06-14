@@ -176,7 +176,84 @@ func taskSnapshotPayload(task *loom.Task, projectionStatus loom.TaskArtifactProj
 	if task.Error != "" {
 		payload["error_summary"] = compactTaskResourceText(task.Error, 512)
 	}
+	if metadata := taskSnapshotMetadataPayload(task.Metadata); len(metadata) > 0 {
+		payload["metadata"] = metadata
+	}
 	return payload
+}
+
+func taskSnapshotMetadataPayload(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range taskSnapshotMetadataKeys {
+		value, ok := metadata[key]
+		if !ok {
+			continue
+		}
+		if cloned, ok := cloneTaskResourceMetadataValue(value); ok {
+			out[key] = cloned
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+var taskSnapshotMetadataKeys = []string{
+	"task_class",
+	"worker_type",
+	"driver_cli",
+	"navigator_cli",
+	"rounds",
+	"confidence_score",
+	"gate_result",
+	"verdict",
+	"recipe_id",
+	"recipe_title",
+	"recipe_read_only",
+	"recipe_phases",
+	"recipe_output_resources",
+	"recipe_policy_enforced",
+	"recipe_policy_selected_cli",
+	"recipe_policy_requested",
+	"recipe_policy_supported",
+	"worktree_path",
+	"worktree_branch",
+	"worktree_base_sha",
+	"worktree_preserve_reason",
+}
+
+func cloneTaskResourceMetadataValue(value any) (any, bool) {
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case bool:
+		return v, true
+	case int:
+		return v, true
+	case int64:
+		return v, true
+	case float64:
+		return v, true
+	case []string:
+		out := make([]string, len(v))
+		copy(out, v)
+		return out, true
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			switch typed := item.(type) {
+			case string, bool, int, int64, float64:
+				out = append(out, typed)
+			}
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 func taskResourceNotFoundPayload(taskID string) map[string]any {
