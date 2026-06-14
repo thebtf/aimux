@@ -217,6 +217,16 @@ marker `recipe_replay_cache_hit=false`. Failed, crashed, cancelled, running,
 policy-mismatched, non-recipe и changed-precondition tasks не replayed как
 success.
 
+### Caller Guide Resources
+
+| Resource | Назначение |
+|---|---|
+| `aimux://guides` | Compact catalog compiled caller guides. |
+| `aimux://guides/caller` | Markdown guide для `task`, `think`, task/recipe resources, replay metadata, viewer usage и safety rules. |
+
+Используйте compiled caller guide как supported source для task, think, recipe,
+replay, viewer и safety examples текущего running binary.
+
 ### Think Harness
 
 `think(action=start|step|finalize)` — canonical caller-centered thinking
@@ -332,6 +342,7 @@ Current production surface:
 - Compiled read-only recipe discovery under `aimux://recipes` и invocation через `task(recipe_id=...)`.
 - Read-only task list/viewer resources для browser-readable inspection без
   execution controls.
+- Compiled caller guide resources under `aimux://guides/caller`.
 
 Out of current scope:
 
@@ -339,7 +350,7 @@ Out of current scope:
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
 - Pipeline v5 Layer 5 exposure.
-- Enforcement-grade provider capability validation for recipes before CR-005.
+- Mutation-heavy recipe expansion beyond compiled read-only initial recipes.
 
 Эти удалённые surfaces не являются runtime defects текущей сборки. Это future
 design work в AIMUX-9 / DEF-1.

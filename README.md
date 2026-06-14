@@ -220,6 +220,16 @@ visible in the returned task metadata as `recipe_replay_cache_hit=true` with
 cancelled, running, policy-mismatched, non-recipe, and changed-precondition
 tasks are not replayed as success.
 
+### Caller Guide Resources
+
+| Resource | Purpose |
+|---|---|
+| `aimux://guides` | Compact catalog of compiled caller guides. |
+| `aimux://guides/caller` | Markdown guide for `task`, `think`, task/recipe resources, replay metadata, viewer usage, and safety rules. |
+
+Use the compiled caller guide as the supported source for task, think, recipe,
+replay, viewer, and safety examples for the running binary.
+
 ### Think Harness
 
 `think(action=start|step|finalize)` is the canonical caller-centered thinking
@@ -343,13 +353,14 @@ Current production surface:
 - Task inspection resources under `aimux://tasks/{task_id}`.
 - Compiled read-only recipe discovery under `aimux://recipes` and invocation via `task(recipe_id=...)`.
 - Read-only task list/viewer resources for browser-readable inspection without execution controls.
+- Compiled caller guide resources under `aimux://guides/caller`.
 
 Out of current scope:
 
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
 - Pipeline v5 Layer 5 exposure (beyond the task entry point).
-- Enforcement-grade provider capability validation for recipes before CR-005.
+- Mutation-heavy recipe expansion beyond the compiled read-only initial recipes.
 
 Those removed surfaces are not runtime defects in the current build. They are
 future design work under AIMUX-9 / DEF-1.

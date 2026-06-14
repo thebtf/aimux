@@ -833,6 +833,7 @@ func (s *Server) registerResources() {
 
 	s.registerTaskResources()
 	s.registerRecipeResources()
+	s.registerGuideResources()
 }
 
 // --- Tool Handlers ---
