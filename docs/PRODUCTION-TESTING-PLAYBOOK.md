@@ -1,9 +1,11 @@
 # aimux Production Testing Playbook
 
-**Last updated:** 2026-06-12
-**Tested surface:** v5.14.4 candidate MCP surface: 4 server tools, `task`,
-`think(action=start|step|finalize)`, 22 cognitive move tools, and 4
-delegation playbook MCP Prompts (`developer`, `pm`, `codereviewer`, `docs`).
+**Last updated:** 2026-06-14
+**Tested surface:** v5.16.0 candidate MCP surface: 4 server tools, `task`,
+`think(action=start|step|finalize)`, 22 cognitive move tools, task resources,
+compiled recipe resources, read-only viewer resources, caller guide resources,
+and 4 delegation playbook MCP Prompts (`developer`, `pm`, `codereviewer`,
+`docs`).
 **Mode:** customer (no internal code knowledge — operator perspective)
 
 ## How to use
@@ -429,6 +431,72 @@ responses.
   observed (for example, awkward ordering or verbose but valid content).
 - **BROKEN** — any new prompt is missing, any `prompts/get` call fails, role
   routing renders `unknown`, or template markers/frontmatter leak into output.
+
+### Scenario B8: AIMUX-23 caller guide and read-only resources
+
+This scenario verifies the v5.16.0 AIMUX-23 caller education and inspection
+surface. The operator uses a released `aimux` / `aimux-dev` binary and an MCP
+client. Source files stay closed; the product contract is the MCP resource
+manifest and resource read responses.
+
+**Setup:**
+1. Confirm the binary under test reports the release or candidate version:
+   ```powershell
+   .\aimux-release-next.exe --version
+   ```
+2. Clear stale candidate daemons before resource reads. Candidate binaries run
+   through muxcore shim/daemon mode; if an older daemon with the same executable
+   name is still alive, the fresh shim can reconnect to stale code:
+   ```powershell
+   Get-Process aimux-release-next -ErrorAction SilentlyContinue | Stop-Process -Force
+   ```
+3. Connect an MCP client to the binary. With `mcp-launcher`, use resource reads:
+   ```powershell
+   D:\Dev\mcp-launcher\mcp-launcher.exe `
+     -binary .\aimux-release-next.exe `
+     -cwd D:\Dev\aimux `
+     -mode resource `
+     -uri aimux://guides/caller `
+     -expect-tools 28 `
+     -expect-version $mcpVersion
+   ```
+
+**Steps:**
+1. Read `aimux://guides`.
+2. Read `aimux://guides/caller`.
+3. Read `aimux://recipes`.
+4. Read `aimux://recipes/code-review`.
+5. Read `aimux://tasks?limit=5`.
+6. Read `aimux://health`.
+
+**Expected:**
+- `aimux://guides` lists `caller` with URI `aimux://guides/caller`.
+- `aimux://guides/caller` is Markdown and contains `task`,
+  `think(action=start|step|finalize)`, `aimux://tasks/{task_id}/viewer`,
+  `aimux://recipes`, `code-review`, `second-opinion`,
+  `recipe_replay_cache_hit`, `recipe_replay_source_task_id`,
+  `worktree_path`, and the warning not to use
+  `mcp-launcher -mode tool -tool task` as a gate.
+- `aimux://recipes` lists `code-review` and `second-opinion`.
+- `aimux://recipes/code-review` reports a read-only review recipe.
+- `aimux://tasks?limit=5` returns a bounded read-only list payload or an empty
+  list; it does not expose raw prompt, environment, or result payloads.
+- `aimux://health` reports the expected version and the normal 28-tool surface.
+
+**Pass criteria:**
+- All six resource reads exit `0`.
+- The caller guide contains all expected strings.
+- Recipe resources include both initial recipe IDs.
+- The task list resource is readable without executing a task.
+- No read response contains a mutation control, form, script, or task
+  submission affordance.
+
+**Verdict classification:**
+- **PRODUCT_WORKS** — all pass criteria are met.
+- **PARTIALLY_WORKS** — resources read successfully but a non-blocking text or
+  presentation issue is observed.
+- **BROKEN** — any resource read fails, expected guide safety text is missing,
+  recipe IDs are missing, or task list read requires task execution.
 
 ## Phase C — Multi-tenant tenant isolation
 
