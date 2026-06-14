@@ -154,6 +154,91 @@ func TestHandleTaskReviewGateMetadata(t *testing.T) {
 	}
 }
 
+func TestHandleTaskRecipeCodeReviewRoutesAsReviewWithMetadata(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":    "review HEAD for regressions",
+		"recipe_id": "code-review",
+		"target":    "HEAD",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	payload := decodeTaskToolResult(t, result)
+	if payload["task_class"] != classifier.TaskClassReview {
+		t.Fatalf("task_class = %v, want review; payload=%v", payload["task_class"], payload)
+	}
+	task := reviewWorker.onlyTask(t)
+	if task.WorkerType != review.WorkerTypeReview {
+		t.Fatalf("worker_type = %s, want %s", task.WorkerType, review.WorkerTypeReview)
+	}
+	assertMetadataString(t, task.Metadata, "target", "HEAD")
+	assertMetadataBool(t, task.Metadata, "gate", true)
+	assertMetadataBool(t, task.Metadata, "review_gate", true)
+	assertMetadataString(t, task.Metadata, "recipe_id", "code-review")
+	assertMetadataString(t, task.Metadata, "recipe_title", "Code Review")
+	assertMetadataBool(t, task.Metadata, "recipe_read_only", true)
+	assertMetadataStringSlice(t, task.Metadata, "recipe_phases", []string{"structural", "behavioural", "adversarial"})
+	assertMetadataStringSlice(t, task.Metadata, "recipe_output_resources", []string{"task_snapshot", "task_events", "task_progress"})
+}
+
+func TestHandleTaskRecipeSecondOpinionUsesAggregateReviewMode(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":    "give a second opinion on HEAD",
+		"recipe_id": "second-opinion",
+		"target":    "HEAD",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	task := reviewWorker.onlyTask(t)
+	assertMetadataString(t, task.Metadata, "recipe_id", "second-opinion")
+	assertMetadataString(t, task.Metadata, "recipe_title", "Second Opinion")
+	if _, ok := task.Metadata["gate"]; ok {
+		t.Fatalf("second-opinion recipe set gate metadata; want aggregate review mode: %v", task.Metadata)
+	}
+	if _, ok := task.Metadata["review_gate"]; ok {
+		t.Fatalf("second-opinion recipe set review_gate metadata; want aggregate review mode: %v", task.Metadata)
+	}
+}
+
+func TestHandleTaskUnsupportedRecipeFailsBeforeSubmit(t *testing.T) {
+	t.Parallel()
+
+	srv, codeWorker, reviewWorker := newTaskToolServer(t)
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":    "review HEAD",
+		"recipe_id": "missing",
+		"target":    "HEAD",
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+	}
+	if !strings.Contains(payload.Message, "unsupported recipe_id") {
+		t.Fatalf("message = %q, want unsupported recipe_id", payload.Message)
+	}
+	if !stringSlicesEqual(payload.AvailableRecipes, []string{"code-review", "second-opinion"}) {
+		t.Fatalf("available_recipes = %#v, want deterministic recipe IDs", payload.AvailableRecipes)
+	}
+	if got := codeWorker.taskCount(); got != 0 {
+		t.Fatalf("code task count = %d, want 0", got)
+	}
+	if got := reviewWorker.taskCount(); got != 0 {
+		t.Fatalf("review task count = %d, want 0", got)
+	}
+}
+
 func TestHandleTaskCLIOverrideDoesNotBypassRouter(t *testing.T) {
 	t.Parallel()
 
@@ -305,10 +390,11 @@ func (w *recordingTaskWorker) taskCount() int {
 }
 
 type taskToolErrorPayload struct {
-	Code       string                 `json:"code"`
-	Message    string                 `json:"message"`
-	Retryable  bool                   `json:"retryable"`
-	Candidates []classifier.Candidate `json:"candidates,omitempty"`
+	Code             string                 `json:"code"`
+	Message          string                 `json:"message"`
+	Retryable        bool                   `json:"retryable"`
+	Candidates       []classifier.Candidate `json:"candidates,omitempty"`
+	AvailableRecipes []string               `json:"available_recipes,omitempty"`
 }
 
 func decodeTaskToolResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
@@ -586,4 +672,30 @@ func stringSlicesEqual(left []string, right []string) bool {
 		}
 	}
 	return true
+}
+
+func assertMetadataStringSlice(t *testing.T, metadata map[string]any, key string, want []string) {
+	t.Helper()
+	value, ok := metadata[key]
+	if !ok {
+		t.Fatalf("metadata[%q] missing", key)
+	}
+	got, ok := value.([]string)
+	if !ok {
+		items, ok := value.([]any)
+		if !ok {
+			t.Fatalf("metadata[%q] = %#v, want string slice %#v", key, value, want)
+		}
+		got = make([]string, len(items))
+		for i, item := range items {
+			text, ok := item.(string)
+			if !ok {
+				t.Fatalf("metadata[%q][%d] = %#v, want string", key, i, item)
+			}
+			got[i] = text
+		}
+	}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("metadata[%q] = %#v, want %#v", key, got, want)
+	}
 }
