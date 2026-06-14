@@ -67,6 +67,7 @@ func TestCodeWorkerRecordsDriverThreadIDForResume(t *testing.T) {
 
 func TestCodeWorkerMutatingApplyRecordsWorktreePreservationMetadata(t *testing.T) {
 	root := codeWorkerGitFixture(t)
+	worktreePath := filepath.Clean(gitOutput(t, root, "rev-parse", "--show-toplevel"))
 	baseSHA := gitOutput(t, root, "rev-parse", "HEAD")
 	branch := gitOutput(t, root, "branch", "--show-current")
 	worker := newTestCodeWorker(t, workerTestDeps{
@@ -83,11 +84,11 @@ func TestCodeWorkerMutatingApplyRecordsWorktreePreservationMetadata(t *testing.T
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	assertTaskMetadata(t, task.Metadata, "worktree_path", filepath.Clean(root))
+	assertTaskMetadata(t, task.Metadata, "worktree_path", worktreePath)
 	assertTaskMetadata(t, task.Metadata, "worktree_branch", branch)
 	assertTaskMetadata(t, task.Metadata, "worktree_base_sha", baseSHA)
 	assertTaskMetadata(t, task.Metadata, "worktree_preserve_reason", "code task mutates caller worktree")
-	assertTaskMetadata(t, result.Metadata, "worktree_path", filepath.Clean(root))
+	assertTaskMetadata(t, result.Metadata, "worktree_path", worktreePath)
 	assertTaskMetadata(t, result.Metadata, "worktree_branch", branch)
 	assertTaskMetadata(t, result.Metadata, "worktree_base_sha", baseSHA)
 	assertTaskMetadata(t, result.Metadata, "worktree_preserve_reason", "code task mutates caller worktree")
@@ -95,6 +96,7 @@ func TestCodeWorkerMutatingApplyRecordsWorktreePreservationMetadata(t *testing.T
 
 func TestCodeWorkerWriteReviewRecordsWorktreePreservationMetadata(t *testing.T) {
 	root := codeWorkerGitFixture(t)
+	worktreePath := filepath.Clean(gitOutput(t, root, "rev-parse", "--show-toplevel"))
 	baseSHA := gitOutput(t, root, "rev-parse", "HEAD")
 	branch := gitOutput(t, root, "branch", "--show-current")
 	loomClient := newIntegrationLoom(
@@ -113,11 +115,11 @@ func TestCodeWorkerWriteReviewRecordsWorktreePreservationMetadata(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	assertTaskMetadata(t, task.Metadata, "worktree_path", filepath.Clean(root))
+	assertTaskMetadata(t, task.Metadata, "worktree_path", worktreePath)
 	assertTaskMetadata(t, task.Metadata, "worktree_branch", branch)
 	assertTaskMetadata(t, task.Metadata, "worktree_base_sha", baseSHA)
 	assertTaskMetadata(t, task.Metadata, "worktree_preserve_reason", "code task mutates caller worktree")
-	assertTaskMetadata(t, result.Metadata, "worktree_path", filepath.Clean(root))
+	assertTaskMetadata(t, result.Metadata, "worktree_path", worktreePath)
 }
 
 func TestCodeWorkerSoloReadOnlyDoesNotRecordWorktreePreservationMetadata(t *testing.T) {
