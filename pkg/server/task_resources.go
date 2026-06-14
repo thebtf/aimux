@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,16 +28,35 @@ func (s *Server) registerTaskResources() {
 		),
 		s.handleTaskSnapshotResource,
 	)
+	s.mcp.AddResourceTemplate(
+		mcp.NewResourceTemplate(
+			"aimux://tasks/{task_id}/events",
+			"Task Events",
+			mcp.WithTemplateDescription("Bounded Loom lifecycle and terminal artifact page for one task"),
+			mcp.WithTemplateMIMEType(taskResourceMIMEType),
+		),
+		s.handleTaskEventsResource,
+	)
+	s.mcp.AddResourceTemplate(
+		mcp.NewResourceTemplate(
+			"aimux://tasks/{task_id}/progress",
+			"Task Progress",
+			mcp.WithTemplateDescription("Bounded Loom progress artifact page for one task"),
+			mcp.WithTemplateMIMEType(taskResourceMIMEType),
+		),
+		s.handleTaskProgressResource,
+	)
 }
 
 func (s *Server) handleTaskSnapshotResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	taskID, err := parseTaskSnapshotURI(request.Params.URI)
+	parsed, err := parseTaskResourceURI(request.Params.URI, taskResourceSnapshot)
 	if err != nil {
 		return taskResourceJSON(request.Params.URI, map[string]any{
 			"status": "invalid_uri",
 			"error":  err.Error(),
 		})
 	}
+	taskID := parsed.taskID
 
 	task, ok, err := s.getLoomTask(ctx, taskID)
 	if err != nil {
@@ -54,6 +75,68 @@ func (s *Server) handleTaskSnapshotResource(ctx context.Context, request mcp.Rea
 	}
 	projectionStatus := loom.TaskArtifactProjectionStatusForTask(task, page)
 	payload := taskSnapshotPayload(task, projectionStatus)
+	return taskResourceJSON(request.Params.URI, payload)
+}
+
+func (s *Server) handleTaskEventsResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return s.handleTaskArtifactPageResource(ctx, request, taskResourceEvents, []loom.TaskArtifactKind{
+		loom.TaskArtifactKindLifecycle,
+		loom.TaskArtifactKindTerminal,
+	})
+}
+
+func (s *Server) handleTaskProgressResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return s.handleTaskArtifactPageResource(ctx, request, taskResourceProgress, []loom.TaskArtifactKind{
+		loom.TaskArtifactKindProgress,
+	})
+}
+
+func (s *Server) handleTaskArtifactPageResource(ctx context.Context, request mcp.ReadResourceRequest, resource taskResourceKind, artifactKinds []loom.TaskArtifactKind) ([]mcp.ResourceContents, error) {
+	parsed, err := parseTaskResourceURI(request.Params.URI, resource)
+	if err != nil {
+		return taskResourceJSON(request.Params.URI, map[string]any{
+			"status": "invalid_uri",
+			"error":  err.Error(),
+		})
+	}
+	task, ok, err := s.getLoomTask(ctx, parsed.taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return taskResourceJSON(request.Params.URI, taskResourceNotFoundPayload(parsed.taskID))
+	}
+	limit, err := parseTaskResourceLimit(parsed.query)
+	if err != nil {
+		return taskResourceJSON(request.Params.URI, map[string]any{
+			"status": "invalid_limit",
+			"error":  "invalid limit",
+		})
+	}
+	cursor := parsed.query.Get("cursor")
+
+	loomEngine := s.currentLoom()
+	if loomEngine == nil {
+		return nil, fmt.Errorf("loom unavailable")
+	}
+	page, err := loomEngine.ListArtifacts(task.ID, loom.TaskArtifactListOptions{
+		Cursor: cursor,
+		Limit:  limit,
+		Kinds:  artifactKinds,
+	})
+	if err != nil {
+		if errors.Is(err, loom.ErrInvalidArtifactCursor) {
+			return taskResourceJSON(request.Params.URI, map[string]any{
+				"status":  "invalid_cursor",
+				"error":   "invalid cursor",
+				"task_id": task.ID,
+				"cursor":  cursor,
+			})
+		}
+		return nil, err
+	}
+
+	payload := taskArtifactPagePayload(task, page, resource, request.Params.URI)
 	return taskResourceJSON(request.Params.URI, payload)
 }
 
@@ -119,23 +202,48 @@ func taskResourceJSON(uri string, payload map[string]any) ([]mcp.ResourceContent
 	}, nil
 }
 
-func parseTaskSnapshotURI(rawURI string) (string, error) {
+type taskResourceKind string
+
+const (
+	taskResourceSnapshot taskResourceKind = "snapshot"
+	taskResourceEvents   taskResourceKind = "events"
+	taskResourceProgress taskResourceKind = "progress"
+)
+
+type parsedTaskResourceURI struct {
+	taskID string
+	query  url.Values
+}
+
+func parseTaskResourceURI(rawURI string, expected taskResourceKind) (parsedTaskResourceURI, error) {
 	u, err := url.Parse(rawURI)
 	if err != nil {
-		return "", fmt.Errorf("invalid task resource URI")
+		return parsedTaskResourceURI{}, fmt.Errorf("invalid task resource URI")
 	}
 	if u.Scheme != "aimux" || u.Host != "tasks" {
-		return "", fmt.Errorf("invalid task resource URI")
+		return parsedTaskResourceURI{}, fmt.Errorf("invalid task resource URI")
 	}
-	taskID := strings.Trim(u.EscapedPath(), "/")
-	if taskID == "" || strings.Contains(taskID, "/") {
-		return "", fmt.Errorf("invalid task resource URI")
+	segments := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+	if len(segments) == 0 || segments[0] == "" {
+		return parsedTaskResourceURI{}, fmt.Errorf("invalid task resource URI")
 	}
-	taskID, err = url.PathUnescape(taskID)
+	taskID, err := url.PathUnescape(segments[0])
 	if err != nil || strings.TrimSpace(taskID) == "" {
-		return "", fmt.Errorf("invalid task resource URI")
+		return parsedTaskResourceURI{}, fmt.Errorf("invalid task resource URI")
 	}
-	return taskID, nil
+	switch expected {
+	case taskResourceSnapshot:
+		if len(segments) != 1 {
+			return parsedTaskResourceURI{}, fmt.Errorf("invalid task resource URI")
+		}
+	case taskResourceEvents, taskResourceProgress:
+		if len(segments) != 2 || segments[1] != string(expected) {
+			return parsedTaskResourceURI{}, fmt.Errorf("invalid task resource URI")
+		}
+	default:
+		return parsedTaskResourceURI{}, fmt.Errorf("invalid task resource URI")
+	}
+	return parsedTaskResourceURI{taskID: taskID, query: u.Query()}, nil
 }
 
 func taskCanonicalURI(taskID string) string {
@@ -162,4 +270,56 @@ func compactTaskResourceText(text string, limit int) string {
 		return text
 	}
 	return util.TruncateUTF8(text, limit) + "...[truncated]"
+}
+
+func parseTaskResourceLimit(query url.Values) (int, error) {
+	raw := strings.TrimSpace(query.Get("limit"))
+	if raw == "" {
+		return 0, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, err
+	}
+	return limit, nil
+}
+
+func taskArtifactPagePayload(task *loom.Task, page loom.TaskArtifactPage, resource taskResourceKind, uri string) map[string]any {
+	payload := map[string]any{
+		"task_id":           task.ID,
+		"canonical_uri":     taskCanonicalURI(task.ID),
+		"resource_uri":      uri,
+		"cursor":            page.Cursor,
+		"next_cursor":       page.NextCursor,
+		"limit":             page.Limit,
+		"has_more":          page.HasMore,
+		"projection_status": string(loom.TaskArtifactProjectionStatusForTask(task, page)),
+		"items":             taskArtifactItems(page.Items),
+	}
+	if resource == taskResourceProgress {
+		payload["progress"] = map[string]any{
+			"last_output_line":    task.LastOutputLine,
+			"progress_lines":      task.ProgressLines,
+			"progress_updated_at": formatTaskResourceTime(task.ProgressUpdatedAt),
+		}
+	}
+	return payload
+}
+
+func taskArtifactItems(items []loom.TaskArtifact) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"seq":            item.Seq,
+			"kind":           string(item.Kind),
+			"event_type":     item.EventType,
+			"summary":        item.Summary,
+			"payload":        item.Payload,
+			"content_length": item.ContentLength,
+			"redacted":       item.Redacted,
+			"truncated":      item.Truncated,
+			"created_at":     formatTaskResourceTime(&item.CreatedAt),
+		})
+	}
+	return out
 }
