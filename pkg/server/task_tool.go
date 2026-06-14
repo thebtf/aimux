@@ -139,6 +139,9 @@ func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if parseErr != nil {
 		return taskToolError(TaskResult{}, parseErr)
 	}
+	if policyErr := s.validateRecipeProviderPolicy(taskReq); policyErr != nil {
+		return taskToolError(TaskResult{}, policyErr)
+	}
 	loomClient, loomErr := s.taskRouterLoom(ctx)
 	if loomClient == nil {
 		return taskToolError(TaskResult{}, taskRouterLoomUnavailableError(loomErr))
@@ -380,6 +383,15 @@ func taskToolError(result TaskResult, err error) (*mcp.CallToolResult, error) {
 	var recipeErr *taskRecipeInputError
 	if errors.As(err, &recipeErr) {
 		payload["available_recipes"] = cloneRecipeStrings(recipeErr.availableRecipes)
+	}
+	var policyErr *taskRecipePolicyError
+	if errors.As(err, &policyErr) {
+		result := policyErr.Result()
+		payload["recipe_id"] = result.RecipeID
+		payload["selected_cli"] = result.SelectedCLI
+		payload["requested_policy"] = result.RequestedPolicy
+		payload["missing_capabilities"] = result.MissingCapabilities
+		payload["supported_capabilities"] = result.SupportedCapabilities
 	}
 	if cliErr.CauseStr != "" {
 		payload["cause"] = cliErr.CauseStr

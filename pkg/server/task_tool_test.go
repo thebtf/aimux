@@ -16,6 +16,7 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/config"
+	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor/code"
 	"github.com/thebtf/aimux/pkg/executor/picker"
 	"github.com/thebtf/aimux/pkg/executor/review"
@@ -239,6 +240,65 @@ func TestHandleTaskUnsupportedRecipeFailsBeforeSubmit(t *testing.T) {
 	}
 }
 
+func TestHandleTaskRecipeCapabilityMismatchFailsBeforeSubmit(t *testing.T) {
+	t.Parallel()
+
+	srv, codeWorker, reviewWorker := newTaskToolServerWithProfile(t, limitedRecipeProfile())
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":    "review HEAD",
+		"recipe_id": "code-review",
+		"target":    "HEAD",
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeCapabilityMismatch.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeCapabilityMismatch)
+	}
+	if payload.Retryable {
+		t.Fatal("retryable = true, want false")
+	}
+	if payload.RecipeID != "code-review" {
+		t.Fatalf("recipe_id = %q, want code-review", payload.RecipeID)
+	}
+	if payload.SelectedCLI != "codex" {
+		t.Fatalf("selected_cli = %q, want codex", payload.SelectedCLI)
+	}
+	if !stringSliceContains(payload.RequestedPolicy, "read_only") {
+		t.Fatalf("requested_policy = %#v, want read_only", payload.RequestedPolicy)
+	}
+	if !stringSliceContains(payload.MissingCapabilities, "read_only") {
+		t.Fatalf("missing_capabilities = %#v, want read_only", payload.MissingCapabilities)
+	}
+	if !stringSliceContains(payload.SupportedCapabilities, "target_required") {
+		t.Fatalf("supported_capabilities = %#v, want target_required evidence", payload.SupportedCapabilities)
+	}
+	if got := codeWorker.taskCount(); got != 0 {
+		t.Fatalf("code task count = %d, want 0", got)
+	}
+	if got := reviewWorker.taskCount(); got != 0 {
+		t.Fatalf("review task count = %d, want 0", got)
+	}
+}
+
+func TestHandleTaskDirectReviewSkipsRecipeCapabilityPreflight(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServerWithProfile(t, limitedRecipeProfile())
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":     "review HEAD",
+		"task_class": "review",
+		"target":     "HEAD",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+	if got := reviewWorker.taskCount(); got != 1 {
+		t.Fatalf("review task count = %d, want 1", got)
+	}
+}
+
 func TestHandleTaskCLIOverrideDoesNotBypassRouter(t *testing.T) {
 	t.Parallel()
 
@@ -306,13 +366,42 @@ func TestHandleTaskRejectsUnregisteredClassBeforeSubmit(t *testing.T) {
 }
 
 func newTaskToolServer(t *testing.T) (*Server, *recordingTaskWorker, *recordingTaskWorker) {
+	return newTaskToolServerWithProfile(t, defaultRecipeProfile())
+}
+
+func newTaskToolServerWithProfile(t *testing.T, profile *config.CLIProfile) (*Server, *recordingTaskWorker, *recordingTaskWorker) {
 	t.Helper()
 	engine := newTaskToolEngine(t)
 	codeWorker := &recordingTaskWorker{workerType: code.WorkerTypeCode}
 	reviewWorker := &recordingTaskWorker{workerType: review.WorkerTypeReview}
 	engine.RegisterWorker(code.WorkerTypeCode, codeWorker)
 	engine.RegisterWorker(review.WorkerTypeReview, reviewWorker)
-	return &Server{loom: engine}, codeWorker, reviewWorker
+	registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": profile})
+	registry.SetAvailable("codex", true)
+	return &Server{loom: engine, registry: registry}, codeWorker, reviewWorker
+}
+
+func defaultRecipeProfile() *config.CLIProfile {
+	return &config.CLIProfile{
+		Name:         "codex",
+		Binary:       "codex",
+		OutputFormat: "jsonl",
+		Features: types.CLIFeatures{
+			ReadOnly: true,
+			JSONL:    true,
+		},
+		ReadOnlyFlags: []string{"--sandbox", "read-only"},
+		Capabilities:  []string{"coding", "review"},
+	}
+}
+
+func limitedRecipeProfile() *config.CLIProfile {
+	return &config.CLIProfile{
+		Name:         "codex",
+		Binary:       "codex",
+		OutputFormat: "text",
+		Capabilities: []string{"review"},
+	}
 }
 
 func newTaskToolEngine(t *testing.T) *loom.LoomEngine {
@@ -390,11 +479,16 @@ func (w *recordingTaskWorker) taskCount() int {
 }
 
 type taskToolErrorPayload struct {
-	Code             string                 `json:"code"`
-	Message          string                 `json:"message"`
-	Retryable        bool                   `json:"retryable"`
-	Candidates       []classifier.Candidate `json:"candidates,omitempty"`
-	AvailableRecipes []string               `json:"available_recipes,omitempty"`
+	Code                  string                 `json:"code"`
+	Message               string                 `json:"message"`
+	Retryable             bool                   `json:"retryable"`
+	Candidates            []classifier.Candidate `json:"candidates,omitempty"`
+	AvailableRecipes      []string               `json:"available_recipes,omitempty"`
+	RecipeID              string                 `json:"recipe_id,omitempty"`
+	SelectedCLI           string                 `json:"selected_cli,omitempty"`
+	RequestedPolicy       []string               `json:"requested_policy,omitempty"`
+	MissingCapabilities   []string               `json:"missing_capabilities,omitempty"`
+	SupportedCapabilities []string               `json:"supported_capabilities,omitempty"`
 }
 
 func decodeTaskToolResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
@@ -672,6 +766,15 @@ func stringSlicesEqual(left []string, right []string) bool {
 		}
 	}
 	return true
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertMetadataStringSlice(t *testing.T, metadata map[string]any, key string, want []string) {
