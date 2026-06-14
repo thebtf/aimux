@@ -1,3 +1,39 @@
+## v5.15.0 — AIMUX-23 task inspectability foundation
+
+### Task Inspectability
+
+- aimux now records durable Loom task artifacts for lifecycle, progress, and
+  terminal evidence. Operators no longer need to reconstruct task behavior from
+  daemon logs when a caller or harness hangs.
+- New MCP resource templates expose task evidence through the supported MCP
+  resource surface:
+  - `aimux://tasks/{task_id}`
+  - `aimux://tasks/{task_id}/events`
+  - `aimux://tasks/{task_id}/progress`
+- Snapshot resources return compact task state, progress summaries, and links
+  to bounded event/progress pages. Event and progress resources support
+  pagination through cursor/limit metadata.
+
+### Diagnostic Smoke
+
+- AIMUX-23 adds a release/debug smoke that separates daemon health, task
+  acceptance, terminal state or timeout, resource reads, and caller cleanup.
+- The smoke intentionally does not use the old `mcp-launcher -mode tool -tool
+  task` probe because that path previously hung and left smoke daemons behind.
+
+### Verification
+
+- `go build ./...`
+- `go vet ./...`
+- `go test ./...`
+- `go test -tags=critical ./tests/critical/...`
+- `go test . -count=1` from `D:\Dev\aimux\loom`
+- `AIMUX23_E2E=1 go test ./test/e2e -run TaskInspectability -count=1 -timeout 300s`
+- `go mod verify`
+- `govulncheck ./...`
+
+---
+
 ## v5.14.4 — Loom resurrection and worktree switch safety
 
 ### Task Router Recovery

@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.15.0] — 2026-06-14 — AIMUX-23 task inspectability foundation
+
+### Added
+
+- **Loom task artifact ledger.** Accepted tasks now persist lifecycle,
+  progress, and terminal evidence in a durable artifact projection so operators
+  can inspect task behavior without internal log archaeology.
+- **MCP task resources.** Added resource templates for task inspection:
+  `aimux://tasks/{task_id}`, `aimux://tasks/{task_id}/events`, and
+  `aimux://tasks/{task_id}/progress`. Snapshot resources include compact task
+  state, progress summaries, and links to bounded event/progress pages.
+- **AIMUX-23 diagnostic smoke.** Added customer-mode coverage that separates
+  daemon health, task acceptance, terminal state or timeout, resource reads, and
+  caller cleanup. This replaces the invalid `mcp-launcher -mode tool -tool task`
+  probe that could hang and leave smoke daemons behind.
+
+### Changed
+
+- Task progress and terminal handling now append durable artifact rows while
+  preserving the existing Loom task lifecycle.
+- Task resource pages use cursor/limit pagination and compact summaries so
+  large progress or terminal payloads do not become unbounded MCP responses.
+
+### Verification
+
+- `go build ./...`
+- `go vet ./...`
+- `go test ./...`
+- `go test -tags=critical ./tests/critical/...`
+- `go test . -count=1` from `D:\Dev\aimux\loom`
+- `AIMUX23_E2E=1 go test ./test/e2e -run TaskInspectability -count=1 -timeout 300s`
+- `go mod verify`
+- `govulncheck ./...`
+
 ## [5.14.4] — 2026-06-12 — Loom resurrection and worktree switch safety
 
 ### Fixed
@@ -2058,7 +2092,13 @@ _Two targeted improvements following v3.3.0._
 
 - Fixed resolve layer to always pipe prompt via stdin, removed length threshold logic (#52)
 
-[Unreleased]: https://github.com/thebtf/aimux/compare/v5.13.0...HEAD
+[Unreleased]: https://github.com/thebtf/aimux/compare/v5.15.0...HEAD
+[5.15.0]: https://github.com/thebtf/aimux/compare/v5.14.4...v5.15.0
+[5.14.4]: https://github.com/thebtf/aimux/compare/v5.14.3...v5.14.4
+[5.14.3]: https://github.com/thebtf/aimux/compare/v5.14.2...v5.14.3
+[5.14.2]: https://github.com/thebtf/aimux/compare/v5.14.1...v5.14.2
+[5.14.1]: https://github.com/thebtf/aimux/compare/v5.14.0...v5.14.1
+[5.14.0]: https://github.com/thebtf/aimux/compare/v5.13.2...v5.14.0
 [5.13.2]: https://github.com/thebtf/aimux/compare/v5.13.1...v5.13.2
 [5.13.1]: https://github.com/thebtf/aimux/compare/v5.13.0...v5.13.1
 [5.13.0]: https://github.com/thebtf/aimux/compare/v5.12.0...v5.13.0

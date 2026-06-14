@@ -157,6 +157,18 @@ go test ./... -count=1
 Codex CLI всегда использует `--dangerously-bypass-approvals-and-sandbox
 --skip-git-repo-check --json`. Промпт через stdin определяет поведение.
 
+### Task Inspection Resources
+
+| Resource | Назначение |
+|---|---|
+| `aimux://tasks/{task_id}` | Компактный Loom task snapshot со status, progress summary и ссылками на resources. |
+| `aimux://tasks/{task_id}/events` | Ограниченная страница lifecycle и terminal artifacts для одной task. |
+| `aimux://tasks/{task_id}/progress` | Ограниченная страница progress artifacts для одной task. |
+
+Эти resources нужны, когда caller должен увидеть task evidence без чтения
+daemon logs. Event и progress pages используют cursor/limit pagination, а
+большие task results показываются в snapshot как summary.
+
 ### Think Harness
 
 `think(action=start|step|finalize)` — canonical caller-centered thinking
@@ -268,6 +280,7 @@ Current production surface:
 - Binary update с local source install и deferred fallback, когда live handoff не поддержан.
 - Caller-centered `think` harness и 22 local cognitive move tools.
 - Loom-backed task state и recovery.
+- Task inspection resources under `aimux://tasks/{task_id}`.
 
 Out of current scope:
 

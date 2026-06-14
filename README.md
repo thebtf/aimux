@@ -159,6 +159,18 @@ parameter:
 Codex CLI always uses `--dangerously-bypass-approvals-and-sandbox
 --skip-git-repo-check --json`. Prompt delivered via stdin controls mode behavior.
 
+### Task Inspection Resources
+
+| Resource | Purpose |
+|---|---|
+| `aimux://tasks/{task_id}` | Compact Loom task snapshot with status, progress summary, and resource links. |
+| `aimux://tasks/{task_id}/events` | Bounded lifecycle and terminal artifact page for one task. |
+| `aimux://tasks/{task_id}/progress` | Bounded progress artifact page for one task. |
+
+Use these resources when a caller needs task evidence without reading daemon
+logs. Event and progress pages are cursor/limit paginated, and large task
+results are summarized in the snapshot resource.
+
 ### Think Harness
 
 `think(action=start|step|finalize)` is the canonical caller-centered thinking
@@ -279,6 +291,7 @@ Current production surface:
 - Caller-centered `think` harness and 22 local cognitive move tools.
 - Loom-backed task state and recovery.
 - Task entry point with 3 execution modes: pair (driver+navigator), solo write, solo diff.
+- Task inspection resources under `aimux://tasks/{task_id}`.
 
 Out of current scope:
 
