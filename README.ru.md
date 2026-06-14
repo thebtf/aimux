@@ -161,13 +161,17 @@ Codex CLI всегда использует `--dangerously-bypass-approvals-and-
 
 | Resource | Назначение |
 |---|---|
+| `aimux://tasks` | Bounded read-only task list со snapshot/viewer/events/progress links. |
 | `aimux://tasks/{task_id}` | Компактный Loom task snapshot со status, progress summary и ссылками на resources. |
+| `aimux://tasks/{task_id}/viewer` | Self-contained read-only HTML view для snapshot, metadata, events и progress. |
 | `aimux://tasks/{task_id}/events` | Ограниченная страница lifecycle и terminal artifacts для одной task. |
 | `aimux://tasks/{task_id}/progress` | Ограниченная страница progress artifacts для одной task. |
 
 Эти resources нужны, когда caller должен увидеть task evidence без чтения
 daemon logs. Event и progress pages используют cursor/limit pagination, а
 большие task results показываются в snapshot как summary.
+HTML viewer server-rendered из той же Loom/resource projection и не содержит
+forms, buttons, scripts или task execution controls.
 
 Mutating code flows также добавляют worktree preservation metadata в task result
 и task snapshot metadata. Pair apply, write-review и solo-write flows включают
@@ -326,6 +330,8 @@ Current production surface:
 - Loom-backed task state и recovery.
 - Task inspection resources under `aimux://tasks/{task_id}`.
 - Compiled read-only recipe discovery under `aimux://recipes` и invocation через `task(recipe_id=...)`.
+- Read-only task list/viewer resources для browser-readable inspection без
+  execution controls.
 
 Out of current scope:
 

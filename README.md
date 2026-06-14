@@ -163,13 +163,17 @@ Codex CLI always uses `--dangerously-bypass-approvals-and-sandbox
 
 | Resource | Purpose |
 |---|---|
+| `aimux://tasks` | Bounded read-only task list with snapshot/viewer/events/progress links. |
 | `aimux://tasks/{task_id}` | Compact Loom task snapshot with status, progress summary, and resource links. |
+| `aimux://tasks/{task_id}/viewer` | Self-contained read-only HTML view of snapshot, metadata, events, and progress. |
 | `aimux://tasks/{task_id}/events` | Bounded lifecycle and terminal artifact page for one task. |
 | `aimux://tasks/{task_id}/progress` | Bounded progress artifact page for one task. |
 
 Use these resources when a caller needs task evidence without reading daemon
 logs. Event and progress pages are cursor/limit paginated, and large task
 results are summarized in the snapshot resource.
+The HTML viewer is server-rendered from the same Loom/resource projection and
+contains no forms, buttons, scripts, or task execution controls.
 
 Mutating code flows also add worktree preservation metadata to the task result
 and task snapshot metadata. Pair apply, write-review, and solo-write flows
@@ -338,6 +342,7 @@ Current production surface:
 - Task entry point with 3 execution modes: pair (driver+navigator), solo write, solo diff.
 - Task inspection resources under `aimux://tasks/{task_id}`.
 - Compiled read-only recipe discovery under `aimux://recipes` and invocation via `task(recipe_id=...)`.
+- Read-only task list/viewer resources for browser-readable inspection without execution controls.
 
 Out of current scope:
 
