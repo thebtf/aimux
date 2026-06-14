@@ -184,8 +184,15 @@ Initial recipes read-only и идут через существующий `task`
 | `second-opinion` | `review` | aggregate | Запускает существующий review worker для independent read-only assessment. |
 
 Вызывайте recipe через `task(recipe_id=..., target=...)`; новый workflow или
-recipe tool не добавляется. CR-004 декларирует provider policy needs в recipe
-metadata. CR-005 — граница для enforcement-grade provider capability validation.
+recipe tool не добавляется. Recipe policy теперь fail-closed до worker spawn:
+если выбранный provider/profile не может enforce declared policy needs,
+`task` возвращает non-retryable `CapabilityMismatch`, и Loom task не создаётся.
+
+Capability mismatch payload включает `recipe_id`, `selected_cli`,
+`requested_policy`, `missing_capabilities` и `supported_capabilities`.
+Текущие enforced classes: read-only execution, structured JSON/JSONL output,
+target-required recipe arguments, а также compiled gates для будущих sandbox,
+approval, schema, max-turn и version policies.
 
 ### Think Harness
 
