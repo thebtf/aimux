@@ -351,6 +351,35 @@ func TestOnProjectConnect_BroadcastsOnReconnect(t *testing.T) {
 	}
 }
 
+func TestAimuxHandler_UpdatePendingCancelsOnLastDisconnect(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	h := handler.(*aimuxHandler)
+	srv.swapDelegateToFull(h, time.Now())
+
+	cancelled := make(chan struct{})
+	h.SetCancelFunc(func() {
+		close(cancelled)
+	})
+
+	project := muxcore.ProjectContext{
+		ID:  "update-pending-cancel",
+		Cwd: t.TempDir(),
+	}
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	lifecycle.OnProjectConnect(project)
+
+	h.SetUpdatePending()
+	lifecycle.OnProjectDisconnect(project.ID)
+
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("expected update-pending last disconnect to cancel daemon context")
+	}
+}
+
 // --- T051: TestHandleRequestWithSessionMeta_UsesMetaTenantID ---
 
 // TestHandleRequestWithSessionMeta_UsesMetaTenantID verifies that when

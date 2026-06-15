@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.16.1] — 2026-06-15 — Windows installed post-exit upgrade recovery
+
+### Fixed
+
+- **Installed Windows update path - cancel daemon after update-pending final
+  disconnect.** Daemon startup now wires the process cancel function into the
+  muxcore `SessionHandler`, so `SetUpdatePending()` can stop the old daemon
+  after the last project disconnects. This fixes the first blocker where
+  `mcp-launcher -mode install` scheduled a post-exit update but reconnected to
+  the old daemon forever.
+- **Post-exit installer - run from a distinct helper executable.** The updater
+  no longer runs the helper from the staged payload path. It creates a distinct
+  helper executable in a writable helper directory, with fallbacks through
+  `AIMUX_POST_EXIT_HELPER_DIR`, user cache, temp, cwd, and finally the staged
+  payload directory.
+- **Post-exit installer - move the staged payload instead of copying it again.**
+  Once the helper is separate from the payload, it consumes the already staged
+  binary by moving `staged -> current`. This avoids Windows `Access is denied`
+  failures observed when the helper attempted to copy/restage PE files while
+  smoke daemons were active.
+
+### Verification
+
+- `go build ./...`
+- `go test ./pkg/upgrade -run "PostExit|MoveStaged" -count=1`
+- `go test ./pkg/server -run "UpdatePendingCancels|Session" -count=1`
+- `go test ./pkg/upgrade -count=1`
+- `go test ./pkg/server -count=1`
+- `go test ./... -count=1 -timeout 300s`
+- Isolated installed Windows smoke PASS:
+  `mcp-launcher -mode install -binary D:\tmp\aimux-postexit-current.exe -source D:\tmp\aimux-postexit-next.exe -expect-version 5.16.1-smoke-next -reconnect-delay 15 -cleanup-binary-processes`
+
+### Notes
+
+- `mcp-launcher` default install reconnect timing remains too aggressive for
+  Windows post-exit installs; Engram issue #278 tracks the launcher-side fix.
+  Use `-reconnect-delay 15` for this smoke until the launcher gate becomes
+  adaptive.
+- A daemon already running the broken `v5.16.0` installed path may need a
+  one-time process stop before it can take `v5.16.1`, because the missing cancel
+  wiring lives in the old daemon process. After `v5.16.1` is running, future
+  post-exit installs use the fixed lifecycle.
+- The workstation `bin\aimux.exe` smoke can be contaminated by live external
+  clients using the same installed path. Use a unique installed smoke binary for
+  release evidence, or stop all same-path clients before validating the real
+  installed name.
+
 ## [5.16.0] — 2026-06-14 — AIMUX-23 curated recipes, replay, and caller guide
 
 ### Added
@@ -2152,7 +2199,9 @@ _Two targeted improvements following v3.3.0._
 
 - Fixed resolve layer to always pipe prompt via stdin, removed length threshold logic (#52)
 
-[Unreleased]: https://github.com/thebtf/aimux/compare/v5.15.0...HEAD
+[Unreleased]: https://github.com/thebtf/aimux/compare/v5.16.1...HEAD
+[5.16.1]: https://github.com/thebtf/aimux/compare/v5.16.0...v5.16.1
+[5.16.0]: https://github.com/thebtf/aimux/compare/v5.15.0...v5.16.0
 [5.15.0]: https://github.com/thebtf/aimux/compare/v5.14.4...v5.15.0
 [5.14.4]: https://github.com/thebtf/aimux/compare/v5.14.3...v5.14.4
 [5.14.3]: https://github.com/thebtf/aimux/compare/v5.14.2...v5.14.3
