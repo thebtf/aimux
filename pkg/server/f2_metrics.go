@@ -33,6 +33,73 @@ type F2Metrics struct {
 	GaveUp          uint64 `json:"shim_reconnect_gave_up"`
 }
 
+// queryNativeStatus contacts the aimux daemon control socket and returns the
+// product-owned subset of muxcore status fields that belong in aimux health
+// responses.
+func queryNativeStatus() (map[string]any, error) {
+	name := ResolveEngineName()
+	return queryNativeStatusAt(serverid.DaemonControlPath("", name), name)
+}
+
+func queryNativeStatusAt(socketPath string, engineName string) (map[string]any, error) {
+	resp, err := control.SendWithTimeout(socketPath, control.Request{Cmd: "status"}, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("control: nil response")
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("control: %s", resp.Message)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(resp.Data, &raw); err != nil {
+		return nil, err
+	}
+	return normalizeNativeStatus(raw, engineName), nil
+}
+
+func normalizeNativeStatus(raw map[string]any, engineName string) map[string]any {
+	status := map[string]any{
+		"engine_name": engineName,
+	}
+	copyNativeStatusField(status, raw, "daemon_generation")
+	copyNativeStatusField(status, raw, "owner_count")
+	copyNativeStatusField(status, raw, "shim_reconnect_refreshed")
+	copyNativeStatusField(status, raw, "shim_reconnect_fallback_spawned")
+	copyNativeStatusField(status, raw, "shim_reconnect_gave_up")
+	copyNativeStatusField(status, raw, "handoff")
+	if servers, ok := normalizeOwnerStatus(raw["servers"]); ok {
+		status["owners"] = servers
+	}
+	return status
+}
+
+func copyNativeStatusField(dst map[string]any, src map[string]any, key string) {
+	if v, ok := src[key]; ok {
+		dst[key] = v
+	}
+}
+
+func normalizeOwnerStatus(raw any) ([]map[string]any, bool) {
+	switch owners := raw.(type) {
+	case []map[string]any:
+		return owners, true
+	case []any:
+		out := make([]map[string]any, 0, len(owners))
+		for _, item := range owners {
+			owner, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			out = append(out, owner)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
 // queryF2Metrics contacts the aimux daemon control socket and extracts
 // the three F2 shim-reconnect counters. Returns zero values and a non-nil
 // error if the socket cannot be reached or the response is malformed.

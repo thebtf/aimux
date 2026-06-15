@@ -312,6 +312,15 @@ func TestCoordinatorApply_MuxcoreFallbackShutdownReturnsUpdatedDeferred(t *testi
 	if mock.pendingCalled {
 		t.Fatal("fallback shutdown already restarted the daemon; SetUpdatePending should not be called")
 	}
+	if result.Topology.UpdateMethod != "deferred" {
+		t.Fatalf("Topology.UpdateMethod = %q, want deferred", result.Topology.UpdateMethod)
+	}
+	if result.Topology.RestartTopology != "fallback_shutdown" {
+		t.Fatalf("Topology.RestartTopology = %q, want fallback_shutdown", result.Topology.RestartTopology)
+	}
+	if !result.Topology.FallbackShutdown || !result.Topology.ReplacementStarted || !result.Topology.ReplacementReady {
+		t.Fatalf("Topology missing muxcore restart flags: %+v", result.Topology)
+	}
 }
 
 func TestCoordinatorApply_HotSwapFailsOnMuxcoreFallbackShutdown(t *testing.T) {
@@ -387,6 +396,9 @@ func TestCoordinatorApply_AutoFallsBackWhenMuxcoreRestartFailsAfterSwap(t *testi
 	}
 	if !mock.pendingCalled {
 		t.Fatal("expected deferred fallback to call SetUpdatePending after post-swap restart failure")
+	}
+	if result.Topology.FailurePhase != string(muxengine.UpdatePhaseRestart) {
+		t.Fatalf("Topology.FailurePhase = %q, want %q", result.Topology.FailurePhase, muxengine.UpdatePhaseRestart)
 	}
 }
 

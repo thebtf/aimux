@@ -174,6 +174,39 @@ type Result struct {
 
 	// Message is the human-readable status suitable for MCP tool response.
 	Message string
+
+	// Topology captures step-level update/restart evidence for product-owned
+	// health and smoke assertions.
+	Topology UpdateTopology
+}
+
+// UpdateTopology describes the observable update/restart path.
+type UpdateTopology struct {
+	UpdateMethod       string
+	RestartTopology    string
+	DaemonWasRunning   bool
+	LockAcquired       bool
+	GracefulRestarted  bool
+	FallbackShutdown   bool
+	ReplacementStarted bool
+	ReplacementReady   bool
+	CleanedStale       int
+	FailurePhase       string
+	Warnings           []string
+}
+
+func (t UpdateTopology) IsZero() bool {
+	return t.UpdateMethod == "" &&
+		t.RestartTopology == "" &&
+		!t.DaemonWasRunning &&
+		!t.LockAcquired &&
+		!t.GracefulRestarted &&
+		!t.FallbackShutdown &&
+		!t.ReplacementStarted &&
+		!t.ReplacementReady &&
+		t.CleanedStale == 0 &&
+		t.FailurePhase == "" &&
+		len(t.Warnings) == 0
 }
 
 var (
@@ -386,6 +419,10 @@ func (c *Coordinator) afterDeferredInstall(release *updater.Release) *Result {
 			PreviousVersion: c.Version,
 			NewVersion:      release.Version,
 			Message:         defaultApplyModeMessage,
+			Topology: UpdateTopology{
+				UpdateMethod:    "deferred",
+				RestartTopology: "direct_deferred",
+			},
 		}
 	}
 
@@ -397,6 +434,10 @@ func (c *Coordinator) afterDeferredInstall(release *updater.Release) *Result {
 		PreviousVersion: c.Version,
 		NewVersion:      release.Version,
 		Message:         "Binary updated. Daemon will restart when all CC sessions disconnect.",
+		Topology: UpdateTopology{
+			UpdateMethod:    "deferred",
+			RestartTopology: "session_drain",
+		},
 	}
 }
 
@@ -432,6 +473,12 @@ func (c *Coordinator) applyWithMuxcoreRestart(ctx context.Context, mode Mode, fo
 		}
 		fallback := c.afterDeferredInstall(release)
 		fallback.HandoffError = err.Error()
+		partial := muxengine.UpdateAndRestartResult{}
+		var updateErr *muxengine.UpdateAndRestartError
+		if errors.As(err, &updateErr) {
+			partial = updateErr.Result
+		}
+		fallback.Topology = topologyFromMuxcoreRestart("deferred", partial, updateAndRestartFailurePhase(err))
 		if fallback.Message != "" {
 			fallback.Message += " Hot-swap unavailable: " + err.Error()
 		}
@@ -444,6 +491,7 @@ func (c *Coordinator) applyWithMuxcoreRestart(ctx context.Context, mode Mode, fo
 			PreviousVersion: c.Version,
 			NewVersion:      release.Version,
 			Message:         "Binary updated. Daemon handoff completed successfully.",
+			Topology:        topologyFromMuxcoreRestart("hot_swap", restart, ""),
 		}, nil
 	}
 
@@ -457,6 +505,7 @@ func (c *Coordinator) applyWithMuxcoreRestart(ctx context.Context, mode Mode, fo
 		NewVersion:      release.Version,
 		HandoffError:    reason,
 		Message:         "Binary updated. Daemon restarted without live handoff. Hot-swap unavailable: " + reason,
+		Topology:        topologyFromMuxcoreRestart("deferred", restart, ""),
 	}, nil
 }
 
@@ -515,6 +564,11 @@ func (c *Coordinator) applyWithPostExitInstall(ctx context.Context, mode Mode, f
 		NewVersion:      release.Version,
 		HandoffError:    "post-exit install scheduled",
 		Message:         "Binary update scheduled. Post-exit helper will stop and restart the daemon.",
+		Topology: UpdateTopology{
+			UpdateMethod:       "deferred",
+			RestartTopology:    "post_exit",
+			ReplacementStarted: true,
+		},
 	}, nil
 }
 
@@ -623,6 +677,43 @@ func updateAndRestartReachedInstall(err error) bool {
 		return false
 	}
 	return updateErr.Phase != muxengine.UpdatePhaseValidate && updateErr.Phase != muxengine.UpdatePhaseSwap
+}
+
+func updateAndRestartFailurePhase(err error) string {
+	var updateErr *muxengine.UpdateAndRestartError
+	if !errors.As(err, &updateErr) {
+		return ""
+	}
+	return string(updateErr.Phase)
+}
+
+func topologyFromMuxcoreRestart(method string, result muxengine.UpdateAndRestartResult, failurePhase string) UpdateTopology {
+	return UpdateTopology{
+		UpdateMethod:       method,
+		RestartTopology:    restartTopology(result),
+		DaemonWasRunning:   result.DaemonWasRunning,
+		LockAcquired:       result.LockAcquired,
+		GracefulRestarted:  result.GracefulRestarted,
+		FallbackShutdown:   result.FallbackShutdown,
+		ReplacementStarted: result.ReplacementStarted,
+		ReplacementReady:   result.ReplacementReady,
+		CleanedStale:       result.CleanedStale,
+		FailurePhase:       failurePhase,
+		Warnings:           result.Warnings,
+	}
+}
+
+func restartTopology(result muxengine.UpdateAndRestartResult) string {
+	switch {
+	case result.GracefulRestarted && result.ReplacementReady && !result.FallbackShutdown:
+		return "graceful_restart"
+	case result.FallbackShutdown:
+		return "fallback_shutdown"
+	case result.ReplacementStarted:
+		return "replacement_restart"
+	default:
+		return "deferred"
+	}
 }
 
 func restartFallbackReason(result muxengine.UpdateAndRestartResult) string {

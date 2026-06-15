@@ -166,3 +166,63 @@ func TestQueryF2Metrics_EnvName(t *testing.T) {
 		t.Errorf("unexpected metrics: %+v", m)
 	}
 }
+
+func TestQueryNativeStatusAt_ExtractsGenerationRestoreAndHandoff(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"daemon_generation":               "daemon-gen-2",
+		"owner_count":                     1,
+		"shim_reconnect_refreshed":        uint64(9),
+		"shim_reconnect_fallback_spawned": uint64(4),
+		"shim_reconnect_gave_up":          uint64(1),
+		"servers": []map[string]any{
+			{
+				"server_id":                      "owner-1",
+				"owner_generation":               "owner-gen-3",
+				"restore_source":                 "snapshot",
+				"restored_from_owner_generation": "owner-gen-2",
+				"active_progress_tokens":         0,
+				"busy":                           false,
+			},
+		},
+		"handoff": map[string]any{
+			"attempted":                   uint64(3),
+			"fallback":                    uint64(2),
+			"successor_daemon_generation": "daemon-gen-2",
+		},
+	})
+	sock := tempSocket(t)
+	done := serveFakeControl(t, sock, control.Response{OK: true, Data: json.RawMessage(data)})
+
+	status, err := queryNativeStatusAt(sock, "testengine")
+	<-done
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status["engine_name"] != "testengine" {
+		t.Fatalf("engine_name = %v, want testengine; status=%v", status["engine_name"], status)
+	}
+	if status["daemon_generation"] != "daemon-gen-2" {
+		t.Fatalf("daemon_generation = %v, want daemon-gen-2; status=%v", status["daemon_generation"], status)
+	}
+	if status["owner_count"] != float64(1) {
+		t.Fatalf("owner_count = %v, want 1; status=%v", status["owner_count"], status)
+	}
+	owners, ok := status["owners"].([]map[string]any)
+	if !ok || len(owners) != 1 {
+		t.Fatalf("owners = %#v, want one normalized owner", status["owners"])
+	}
+	if owners[0]["owner_generation"] != "owner-gen-3" {
+		t.Fatalf("owner_generation = %v, want owner-gen-3", owners[0]["owner_generation"])
+	}
+	if owners[0]["restore_source"] != "snapshot" {
+		t.Fatalf("restore_source = %v, want snapshot", owners[0]["restore_source"])
+	}
+	handoff, ok := status["handoff"].(map[string]any)
+	if !ok {
+		t.Fatalf("handoff = %#v, want map", status["handoff"])
+	}
+	if handoff["fallback"] != float64(2) {
+		t.Fatalf("handoff.fallback = %v, want 2", handoff["fallback"])
+	}
+}

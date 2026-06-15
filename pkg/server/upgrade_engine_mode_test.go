@@ -231,3 +231,64 @@ func TestUpgrade_HotSwapAllowedInSessionHandlerMode(t *testing.T) {
 		t.Fatalf("status = %v, want updated_hot_swap; payload=%v", payload["status"], payload)
 	}
 }
+
+func TestUpgradePayloadIncludesTopologyDetails(t *testing.T) {
+	srv := testServer(t)
+	srv.SessionHandler()
+
+	srv.applyUpgrade = func(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode, force bool) (*upgrade.Result, error) {
+		return &upgrade.Result{
+			Method:          "deferred",
+			PreviousVersion: Version,
+			NewVersion:      "local-dev",
+			HandoffError:    "post-exit install scheduled",
+			Message:         "Binary update scheduled. Post-exit helper will stop and restart the daemon.",
+			Topology: upgrade.UpdateTopology{
+				UpdateMethod:       "deferred",
+				RestartTopology:    "post_exit",
+				DaemonWasRunning:   true,
+				LockAcquired:       true,
+				GracefulRestarted:  false,
+				FallbackShutdown:   false,
+				ReplacementStarted: true,
+				ReplacementReady:   false,
+				FailurePhase:       "post_exit",
+				Warnings:           []string{"waiting for current process exit"},
+			},
+		}, nil
+	}
+
+	result, err := srv.handleUpgrade(context.Background(), makeRequest("upgrade", map[string]any{
+		"action": "apply",
+		"source": "local-dev.exe",
+		"force":  true,
+	}))
+	if err != nil {
+		t.Fatalf("handleUpgrade: %v", err)
+	}
+
+	payload := parseResult(t, result)
+	if payload["status"] != "updated_deferred" {
+		t.Fatalf("status = %v, want updated_deferred; payload=%v", payload["status"], payload)
+	}
+	if payload["update_method"] != "deferred" {
+		t.Fatalf("update_method = %v, want deferred; payload=%v", payload["update_method"], payload)
+	}
+	topology, ok := payload["update_topology"].(map[string]any)
+	if !ok {
+		t.Fatalf("update_topology = %#v, want object; payload=%v", payload["update_topology"], payload)
+	}
+	if topology["restart_topology"] != "post_exit" {
+		t.Fatalf("restart_topology = %v, want post_exit; topology=%v", topology["restart_topology"], topology)
+	}
+	if topology["replacement_started"] != true {
+		t.Fatalf("replacement_started = %v, want true; topology=%v", topology["replacement_started"], topology)
+	}
+	if topology["failure_phase"] != "post_exit" {
+		t.Fatalf("failure_phase = %v, want post_exit; topology=%v", topology["failure_phase"], topology)
+	}
+	warnings, ok := topology["warnings"].([]any)
+	if !ok || len(warnings) != 1 || warnings[0] != "waiting for current process exit" {
+		t.Fatalf("warnings = %#v, want one topology warning", topology["warnings"])
+	}
+}

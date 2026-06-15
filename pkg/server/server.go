@@ -1051,16 +1051,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 				health["loom_tasks"] = len(tasks)
 			}
 		}
-		// F2 shim-reconnect counters (muxcore v0.21.1+). Silent graceful
-		// degradation if control socket unreachable — health endpoint
-		// must never fail because of optional observability passthrough.
-		if f2, err := queryF2Metrics(); err == nil {
-			health["shim_reconnect_refreshed"] = f2.Refreshed
-			health["shim_reconnect_fallback_spawned"] = f2.FallbackSpawned
-			health["shim_reconnect_gave_up"] = f2.GaveUp
-		} else {
-			s.log.Debug("sessions health: F2 metrics unavailable: %v", err)
-		}
+		s.attachNativeMuxcoreHealth(health)
 		// Two-phase init observability (issue #129).
 		health["init_phase"] = s.initPhase.Load()
 		health["init_duration_ms"] = s.initDurationMs.Load()
@@ -1218,6 +1209,62 @@ func (s *Server) attachCapabilityHealth(health map[string]any) {
 	}
 }
 
+func (s *Server) attachNativeMuxcoreHealth(health map[string]any) {
+	engineName := s.engineName
+	if engineName == "" {
+		engineName = ResolveEngineName()
+	}
+	if d := s.liveDaemon(); d != nil {
+		for k, v := range normalizeNativeStatus(d.HandleStatus(), engineName) {
+			health[k] = v
+		}
+		return
+	}
+	status, err := queryNativeStatus()
+	if err != nil {
+		if s.log != nil {
+			s.log.Debug("native muxcore status unavailable: %v", err)
+		}
+		return
+	}
+	for k, v := range status {
+		health[k] = v
+	}
+}
+
+func attachUpgradeTopology(payload map[string]any, result *upgrade.Result) {
+	if result == nil {
+		return
+	}
+	method := result.Topology.UpdateMethod
+	if method == "" {
+		method = result.Method
+	}
+	if method != "" {
+		payload["update_method"] = method
+	}
+	if result.Topology.IsZero() {
+		return
+	}
+	topology := map[string]any{
+		"restart_topology":    result.Topology.RestartTopology,
+		"daemon_was_running":  result.Topology.DaemonWasRunning,
+		"lock_acquired":       result.Topology.LockAcquired,
+		"graceful_restarted":  result.Topology.GracefulRestarted,
+		"fallback_shutdown":   result.Topology.FallbackShutdown,
+		"replacement_started": result.Topology.ReplacementStarted,
+		"replacement_ready":   result.Topology.ReplacementReady,
+		"cleaned_stale":       result.Topology.CleanedStale,
+	}
+	if result.Topology.FailurePhase != "" {
+		topology["failure_phase"] = result.Topology.FailurePhase
+	}
+	if len(result.Topology.Warnings) > 0 {
+		topology["warnings"] = result.Topology.Warnings
+	}
+	payload["update_topology"] = topology
+}
+
 // buildCapabilityCacheReport renders the per-CLI declared-vs-verified surface
 // for the sessions(action="health") response (AIMUX-16 CR-003 / FR-3 signal).
 //
@@ -1300,6 +1347,7 @@ func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResou
 	// Keep the resource schema in sync with sessions(action="health") for the
 	// AIMUX-16 CR-003 capability-cache observability fields. Operators should
 	// be able to scrape the same fields from either surface.
+	s.attachNativeMuxcoreHealth(health)
 	s.attachCapabilityHealth(health)
 	data, _ := json.Marshal(health)
 
@@ -1454,19 +1502,23 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 		// provider-owned restart helper falls back or is unavailable.
 		switch result.Method {
 		case "up_to_date":
-			return marshalToolResult(map[string]any{
+			payload := map[string]any{
 				"status":          "up_to_date",
 				"current_version": Version,
-			})
+			}
+			attachUpgradeTopology(payload, result)
+			return marshalToolResult(payload)
 		case "hot_swap":
-			return marshalToolResult(map[string]any{
+			payload := map[string]any{
 				"status":                  "updated_hot_swap",
 				"previous_version":        result.PreviousVersion,
 				"new_version":             result.NewVersion,
 				"handoff_transferred_ids": result.HandoffTransferred,
 				"handoff_duration_ms":     result.HandoffDurationMs,
 				"message":                 result.Message,
-			})
+			}
+			attachUpgradeTopology(payload, result)
+			return marshalToolResult(payload)
 		case "deferred":
 			status := "updated"
 			payload := map[string]any{
@@ -1480,14 +1532,17 @@ func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest)
 				payload["status"] = status
 				payload["handoff_error"] = result.HandoffError
 			}
+			attachUpgradeTopology(payload, result)
 			return marshalToolResult(payload)
 		default:
-			return marshalToolResult(map[string]any{
+			payload := map[string]any{
 				"status":           "updated",
 				"previous_version": result.PreviousVersion,
 				"new_version":      result.NewVersion,
 				"message":          result.Message,
-			})
+			}
+			attachUpgradeTopology(payload, result)
+			return marshalToolResult(payload)
 		}
 
 	default:

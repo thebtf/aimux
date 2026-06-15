@@ -818,7 +818,14 @@ customer-supported installed-daemon paths.
      -reconnect-delay 15 `
      -cleanup-binary-processes
    ```
-4. Confirm the rollback backup slot is present and not a stale blocker:
+4. Run the same-session old-client gate with the normal MCP entrypoint e2e. This
+   covers the part `mcp-launcher -mode install` cannot express because it closes
+   the installer session before reconnect verification:
+   ```powershell
+   $env:AIMUX21_E2E = "1"
+   go test .\test\e2e -run TestE2E_Upgrade_OldSessionRequestThenFreshSessionNewVersion -count=1 -timeout 180s
+   ```
+5. Confirm the rollback backup slot is present and not a stale blocker:
    ```powershell
    Test-Path D:\Dev\aimux\bin\postexit-smoke\aimux-postexit-current.exe.old
    ```
@@ -828,18 +835,27 @@ customer-supported installed-daemon paths.
   `status: "updated_deferred"` with
   `handoff_error: "post-exit install scheduled"` because a post-exit watchdog
   helper installs the staged payload after aimux stops the old daemon. This is a
-  PASS shape only when reconnect verifies the expected version, 28 tools,
-  `sessions(action="health").init_phase == 2`,
+  PASS shape only when the update response includes
+  `update_method: "deferred"`,
+  `update_topology.restart_topology: "post_exit"`,
+  `update_topology.replacement_started: true`, and reconnect verifies the
+  expected version, 28 tools, `sessions(action="health").init_phase == 2`,
   `sessions(action="health").loom_status == "ok"`, and
   `aimux://health.version`.
 - On platforms where muxcore can complete live handoff, the install may report
-  `status: "updated_hot_swap"`.
+  `status: "updated_hot_swap"` with `update_topology.restart_topology:
+  "graceful_restart"`.
 - A silent deferred result without `handoff_error` is a failure.
 - A first hop from an older broken daemon may require one-time process cleanup
   before the fixed lifecycle can be proven; do not count that contaminated hop
   as v5.16.1 release evidence.
+- The already-open e2e/equivalent-client session can make at least one
+  post-update `aimux://health` request after the `upgrade(action="apply")`
+  response returns.
 - Reconnect verification reaches `sessions(action="health")`, reads
-  `aimux://health`, sees `tools: 28`, and reports the expected version.
+  `aimux://health`, sees `tools: 28`, reports the expected version, and exposes
+  `engine_name`, `daemon_generation`, `owner_generation`, `restore_source`,
+  `handoff`, and shim reconnect counters.
 - The final installer line is `[install] PASS`.
 - The `.old` file beside the chosen current binary may remain as the rollback
   backup created by the atomic replace path. Its presence is not a failure; a
@@ -861,6 +877,14 @@ customer-supported installed-daemon paths.
   `SQLite session store unavailable`.
 - The install result is either `updated_hot_swap`, or `updated_deferred` with a
   specific `handoff_error` explaining the deferred reconnect path.
+- `update_method` is present, and `update_topology` names the restart topology
+  plus replacement/fallback flags. If the update is only partially complete, the
+  payload names `failure_phase`.
+- A same-session post-update `aimux://health` read succeeds before fresh-session
+  reconnect evidence is collected.
+- Both `sessions(action="health")` and `aimux://health` expose native muxcore
+  status fields: `engine_name`, `daemon_generation`, owner generation,
+  `restore_source`, `handoff`, and shim reconnect counters.
 - If the `.old` slot exists after the install, classify it as expected rollback
   state unless the next install reports an old-slot lock.
 

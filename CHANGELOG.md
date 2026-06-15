@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Native muxcore status and update proof.** `sessions(action="health")` and
+  `aimux://health` now include the aimux-owned muxcore status contract:
+  `engine_name`, daemon/owner generation fields, owner restore source, handoff
+  counters, and shim reconnect counters. `upgrade(action="apply")` responses now
+  include `update_method` plus `update_topology` so operators can distinguish
+  graceful restart, fallback shutdown, and post-exit recovery paths.
+- **Installed-daemon old-session update smoke.** Added a Windows e2e smoke that
+  starts an old installed daemon session, applies a local-source update, proves
+  the already-open session can make a post-update health request, and then
+  proves a fresh session reports the replacement version.
+
 ## [5.16.3] — 2026-06-15 — Direct staged writes for release zip upgrades
 
 ### Fixed
