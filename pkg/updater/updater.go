@@ -162,11 +162,23 @@ func Download(ctx context.Context, currentVersion string, targetPath string) (*R
 		return nil, nil // already up to date
 	}
 
+	downloadPath, cleanup, err := releaseExtractionPath(targetPath)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
 	// UpdateTo downloads the asset, verifies the checksum via ChecksumValidator,
-	// decompresses the archive, and writes the binary to targetPath.
-	// targetPath can be any writable path — it does not need to be the current exe.
-	if err := u.UpdateTo(ctx, latest, targetPath); err != nil {
-		return nil, fmt.Errorf("download to %s: %w", targetPath, err)
+	// decompresses the archive, and writes the binary to downloadPath. Release
+	// archives contain the canonical binary name (aimux/aimux.exe), so generated
+	// staging names are handled by extracting first and then moving the result.
+	if err := u.UpdateTo(ctx, latest, downloadPath); err != nil {
+		return nil, fmt.Errorf("download release binary %q to %s for target %s: %w", filepath.Base(downloadPath), downloadPath, targetPath, err)
+	}
+	if downloadPath != targetPath {
+		if err := os.Rename(downloadPath, targetPath); err != nil {
+			return nil, fmt.Errorf("move downloaded release binary from %s to %s: %w", downloadPath, targetPath, err)
+		}
 	}
 
 	return &Release{
@@ -336,7 +348,7 @@ func downloadMockUpdate(ctx context.Context, currentVersion string, targetPath s
 	if err != nil {
 		return nil, fmt.Errorf("mock asset read: %w", err)
 	}
-	binary, err := extractSingleBinary(zipBytes, filepath.Base(targetPath))
+	binary, err := extractSingleBinary(zipBytes, releaseBinaryNameForTarget(targetPath))
 	if err != nil {
 		return nil, err
 	}
@@ -344,6 +356,27 @@ func downloadMockUpdate(ctx context.Context, currentVersion string, targetPath s
 		return nil, fmt.Errorf("write mock binary: %w", err)
 	}
 	return release, nil
+}
+
+func releaseExtractionPath(targetPath string) (string, func(), error) {
+	releaseBinaryName := releaseBinaryNameForTarget(targetPath)
+	if filepath.Base(targetPath) == releaseBinaryName {
+		return targetPath, func() {}, nil
+	}
+
+	dir := filepath.Dir(targetPath)
+	extractDir, err := os.MkdirTemp(dir, ".aimux-update-extract-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create update extraction dir beside %s: %w", targetPath, err)
+	}
+	return filepath.Join(extractDir, releaseBinaryName), func() { _ = os.RemoveAll(extractDir) }, nil
+}
+
+func releaseBinaryNameForTarget(targetPath string) string {
+	if runtime.GOOS == "windows" || strings.EqualFold(filepath.Ext(targetPath), ".exe") {
+		return "aimux.exe"
+	}
+	return "aimux"
 }
 
 func extractSingleBinary(zipBytes []byte, expectedName string) ([]byte, error) {

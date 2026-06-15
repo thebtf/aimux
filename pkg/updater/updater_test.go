@@ -86,11 +86,11 @@ func TestApplyError_NilInnerErrorStillDescribesFailure(t *testing.T) {
 	}
 }
 
-func TestDownload_MockUpdateSelectsExpectedBinaryFromMultiEntryZip(t *testing.T) {
-	targetPath := filepath.Join(t.TempDir(), "aimux-dev-next.exe")
+func TestDownload_MockUpdateExtractsReleaseBinaryToGeneratedWindowsTarget(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), ".aimux-update-12345.exe")
 	zipBytes := makeZip(t, map[string]string{
-		"README.txt":                       "not the binary",
-		"bin/" + filepath.Base(targetPath): "binary-content",
+		"README.txt":    "not the binary",
+		"bin/aimux.exe": "binary-content",
 	})
 
 	mux := http.NewServeMux()
@@ -130,7 +130,7 @@ func TestDownload_MockUpdateSelectsExpectedBinaryFromMultiEntryZip(t *testing.T)
 }
 
 func TestDownload_MockUpdateRejectsUnexpectedSingleEntryZip(t *testing.T) {
-	targetPath := filepath.Join(t.TempDir(), "aimux-dev-next.exe")
+	targetPath := filepath.Join(t.TempDir(), ".aimux-update-12345.exe")
 	zipBytes := makeZip(t, map[string]string{
 		"unexpected.exe": "wrong-binary",
 	})
@@ -159,7 +159,7 @@ func TestDownload_MockUpdateRejectsUnexpectedSingleEntryZip(t *testing.T) {
 	if err == nil {
 		t.Fatal("Download succeeded for zip without the expected binary entry")
 	}
-	if !strings.Contains(err.Error(), `no entry named "aimux-dev-next.exe"`) {
+	if !strings.Contains(err.Error(), `no entry named "aimux.exe"`) {
 		t.Fatalf("Download error = %v, want missing expected binary entry", err)
 	}
 }

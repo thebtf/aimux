@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task-inspectability smoke and production playbook now treat
   `loom_status: "unavailable"` and post-reconnect `CapabilityMismatch` task
   failures as broken installed-daemon states, even if non-Loom tools respond.
+- **GitHub release zip upgrades - extract canonical binary names into generated
+  staging paths.** Remote `upgrade(action="apply")` now accepts release archives
+  that contain `aimux.exe`/`aimux` even when the install coordinator stages to a
+  generated `.aimux-update-*` path.
 
 ## [5.16.1] — 2026-06-15 — Windows installed post-exit upgrade recovery
 
