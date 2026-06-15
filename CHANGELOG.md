@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.16.3] — 2026-06-15 — Direct staged writes for release zip upgrades
+
+### Fixed
+
+- **GitHub release zip upgrades - write extracted binaries directly to staged
+  targets.** Remote `upgrade(action="apply")` now downloads and checksum-validates
+  the published archive, extracts the canonical `aimux`/`aimux.exe` member, and
+  writes it directly to the generated staged update path. This avoids Windows
+  rename failures observed in `v5.16.2` when `go-selfupdate` tried to perform a
+  self-replacement dance on temporary PE payloads.
+
 ## [5.16.2] — 2026-06-15 — Loom startup recovery and release zip upgrades
 
 ### Fixed

@@ -1,7 +1,7 @@
 // Package updater provides binary self-update from GitHub releases.
 //
-// Uses creativeprojects/go-selfupdate for release detection, download,
-// checksum verification, and atomic binary replacement.
+// Uses creativeprojects/go-selfupdate for release detection, checksum
+// verification, archive matching, and atomic binary replacement.
 //
 // The three-step API (Download, VerifyChecksum, Install) supports the
 // hot-swap upgrade flow (Phase 3) where the binary is downloaded to a
@@ -162,22 +162,18 @@ func Download(ctx context.Context, currentVersion string, targetPath string) (*R
 		return nil, nil // already up to date
 	}
 
-	downloadPath, cleanup, err := releaseExtractionPath(targetPath)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
-	// UpdateTo downloads the asset, verifies the checksum via ChecksumValidator,
-	// decompresses the archive, and writes the binary to downloadPath. Release
-	// archives contain the canonical binary name (aimux/aimux.exe), so generated
-	// staging names are handled by extracting first and then moving the result.
-	if err := u.UpdateTo(ctx, latest, downloadPath); err != nil {
-		return nil, fmt.Errorf("download release binary %q to %s for target %s: %w", filepath.Base(downloadPath), downloadPath, targetPath, err)
-	}
-	if downloadPath != targetPath {
-		if err := os.Rename(downloadPath, targetPath); err != nil {
-			return nil, fmt.Errorf("move downloaded release binary from %s to %s: %w", downloadPath, targetPath, err)
+	// Release archives contain the canonical binary name (aimux/aimux.exe),
+	// while the coordinator asks for generated staging names. Do the archive
+	// download/checksum/extract steps explicitly, then write the extracted
+	// binary into the staged target without go-selfupdate's self-replacement
+	// rename dance.
+	if filepath.Base(targetPath) == releaseBinaryNameForTarget(targetPath) {
+		if err := u.UpdateTo(ctx, latest, targetPath); err != nil {
+			return nil, fmt.Errorf("download release binary %q to %s: %w", filepath.Base(targetPath), targetPath, err)
+		}
+	} else {
+		if err := downloadReleaseBinary(ctx, latest, targetPath); err != nil {
+			return nil, fmt.Errorf("download release binary %q to staged target %s: %w", releaseBinaryNameForTarget(targetPath), targetPath, err)
 		}
 	}
 
@@ -358,25 +354,79 @@ func downloadMockUpdate(ctx context.Context, currentVersion string, targetPath s
 	return release, nil
 }
 
-func releaseExtractionPath(targetPath string) (string, func(), error) {
-	releaseBinaryName := releaseBinaryNameForTarget(targetPath)
-	if filepath.Base(targetPath) == releaseBinaryName {
-		return targetPath, func() {}, nil
-	}
-
-	dir := filepath.Dir(targetPath)
-	extractDir, err := os.MkdirTemp(dir, ".aimux-update-extract-*")
-	if err != nil {
-		return "", nil, fmt.Errorf("create update extraction dir beside %s: %w", targetPath, err)
-	}
-	return filepath.Join(extractDir, releaseBinaryName), func() { _ = os.RemoveAll(extractDir) }, nil
-}
-
 func releaseBinaryNameForTarget(targetPath string) string {
 	if runtime.GOOS == "windows" || strings.EqualFold(filepath.Ext(targetPath), ".exe") {
 		return "aimux.exe"
 	}
 	return "aimux"
+}
+
+func downloadReleaseBinary(ctx context.Context, release *selfupdate.Release, targetPath string) error {
+	if release == nil {
+		return selfupdate.ErrInvalidRelease
+	}
+
+	asset, err := downloadURL(ctx, release.AssetURL)
+	if err != nil {
+		return fmt.Errorf("download asset %q: %w", release.AssetName, err)
+	}
+
+	validator := &selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"}
+	if len(release.ValidationChain) == 0 {
+		return fmt.Errorf("release asset %q has no checksum validation asset", release.AssetName)
+	}
+	validationName := release.AssetName
+	validationData := asset
+	for _, validation := range release.ValidationChain {
+		data, err := downloadURL(ctx, validation.ValidationAssetURL)
+		if err != nil {
+			return fmt.Errorf("download validation asset %q: %w", validation.ValidationAssetName, err)
+		}
+		if err := validator.Validate(validationName, validationData, data); err != nil {
+			return fmt.Errorf("validate asset %q: %w", validationName, err)
+		}
+		validationName = validation.ValidationAssetName
+		validationData = data
+	}
+
+	reader, err := selfupdate.DecompressCommand(bytes.NewReader(asset), release.AssetName, strings.TrimSuffix(releaseBinaryNameForTarget(targetPath), ".exe"), runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	if err := writeExecutable(targetPath, reader); err != nil {
+		_ = os.Remove(targetPath)
+		return err
+	}
+	return nil
+}
+
+func downloadURL(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("unexpected HTTP status %s", resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func writeExecutable(path string, reader io.Reader) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(file, reader)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func extractSingleBinary(zipBytes []byte, expectedName string) ([]byte, error) {
