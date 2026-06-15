@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -35,11 +36,29 @@ func RunPostExitInstall(opts PostExitInstallOptions) error {
 	if runningFromStagedPayload(opts.StagedExe) {
 		return relaunchPostExitHelperCopy(opts, timeout)
 	}
+	if err := ensurePostExitGenerationCurrent(opts); err != nil {
+		return err
+	}
+	installed := false
+	defer func() {
+		if installed {
+			clearPostExitGenerationIfCurrent(opts)
+			return
+		}
+		if err := ensurePostExitGenerationCurrent(opts); err == nil {
+			clearPostExitGenerationIfCurrent(opts)
+			_ = os.Remove(opts.StagedExe)
+		}
+	}()
 
 	deadline := time.Now().Add(timeout)
 	for {
-		err := moveStagedBinaryIntoPlace(opts.CurrentExe, opts.StagedExe)
+		if err := ensurePostExitGenerationCurrent(opts); err != nil {
+			return err
+		}
+		err := moveStagedBinary(opts.CurrentExe, opts.StagedExe)
 		if err == nil {
+			installed = true
 			break
 		}
 		if !IsCurrentBinaryLocked(err) && !IsOldSlotLocked(err) {
@@ -62,6 +81,8 @@ func RunPostExitInstall(opts PostExitInstallOptions) error {
 	return nil
 }
 
+var moveStagedBinary = moveStagedBinaryIntoPlace
+
 func runningFromStagedPayload(stagedExe string) bool {
 	runningExe, err := os.Executable()
 	if err != nil {
@@ -78,12 +99,19 @@ func sameExecutablePath(a, b string) bool {
 	}
 	aClean := filepath.Clean(aAbs)
 	bClean := filepath.Clean(bAbs)
-	if strings.EqualFold(aClean, bClean) {
+	if executablePathEqual(aClean, bClean) {
 		return true
 	}
 	aEval, aEvalErr := filepath.EvalSymlinks(aClean)
 	bEval, bEvalErr := filepath.EvalSymlinks(bClean)
-	return aEvalErr == nil && bEvalErr == nil && strings.EqualFold(filepath.Clean(aEval), filepath.Clean(bEval))
+	return aEvalErr == nil && bEvalErr == nil && executablePathEqual(filepath.Clean(aEval), filepath.Clean(bEval))
+}
+
+func executablePathEqual(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func relaunchPostExitHelperCopy(opts PostExitInstallOptions, timeout time.Duration) error {

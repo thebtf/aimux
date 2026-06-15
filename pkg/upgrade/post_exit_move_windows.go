@@ -4,7 +4,6 @@ package upgrade
 
 import (
 	"fmt"
-	"os"
 
 	"golang.org/x/sys/windows"
 )
@@ -26,7 +25,9 @@ func moveStagedBinaryIntoPlace(currentPath, stagedPath string) error {
 	}
 
 	if err := retryMoveFileEx(stagedPath, currentPath, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
-		_ = os.Rename(oldPath, currentPath)
+		if rollbackErr := retryMoveFileEx(oldPath, currentPath, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); rollbackErr != nil {
+			return fmt.Errorf("install staged binary: %w; rollback failed: %v", err, rollbackErr)
+		}
 		return fmt.Errorf("install staged binary: %w", err)
 	}
 	return nil

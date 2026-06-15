@@ -155,6 +155,13 @@ func TestCoordinatorApply_LocalSourceUsesMuxcoreApplyUpdateAndRestart(t *testing
 		ApplyUpdateAndRestart: func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error) {
 			called = true
 			got = opts
+			stagedPayload, err := os.ReadFile(opts.StagedExe)
+			if err != nil {
+				t.Fatalf("ReadFile StagedExe: %v", err)
+			}
+			if string(stagedPayload) != "v2" {
+				t.Fatalf("StagedExe payload = %q, want v2", stagedPayload)
+			}
 			return muxengine.UpdateAndRestartResult{
 				DaemonWasRunning:   true,
 				GracefulRestarted:  true,
@@ -178,8 +185,14 @@ func TestCoordinatorApply_LocalSourceUsesMuxcoreApplyUpdateAndRestart(t *testing
 	if err != nil {
 		t.Fatalf("EvalSymlinks source: %v", err)
 	}
-	if got.StagedExe != resolvedSource {
-		t.Fatalf("StagedExe = %q, want %q", got.StagedExe, resolvedSource)
+	if got.StagedExe == resolvedSource {
+		t.Fatalf("StagedExe = %q, want copied staging path distinct from source", got.StagedExe)
+	}
+	if filepath.Dir(got.StagedExe) != filepath.Dir(binaryPath) {
+		t.Fatalf("StagedExe dir = %q, want binary dir %q", filepath.Dir(got.StagedExe), filepath.Dir(binaryPath))
+	}
+	if _, err := os.Stat(resolvedSource); err != nil {
+		t.Fatalf("source path should remain available after staging: %v", err)
 	}
 	if got.DrainTimeout != 10*time.Second {
 		t.Fatalf("DrainTimeout = %s, want 10s", got.DrainTimeout)

@@ -346,6 +346,27 @@ func (d *fullDelegate) anyActiveProjects() bool {
 	return found
 }
 
+func (d *fullDelegate) activeProjectCount() int {
+	count := 0
+	d.projects.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
+}
+
+func (d *fullDelegate) activeSessionCount() int {
+	count := 0
+	d.projects.Range(func(_, value any) bool {
+		state := value.(*projectState)
+		if refs := int(state.refcount.Load()); refs > 0 {
+			count += refs
+		}
+		return true
+	})
+	return count
+}
+
 // aimuxHandler implements muxcore.SessionHandler and muxcore.ProjectLifecycle.
 // During Phase A it holds a lightweightDelegate; after Phase B completes, the
 // atomic pointer is swapped to a fullDelegate. All muxcore-facing method calls
@@ -354,9 +375,15 @@ type aimuxHandler struct {
 	srv      *Server
 	delegate atomic.Pointer[handlerDelegate] // swapped from lightweight → full on Phase B
 
-	updatePending atomic.Bool // set after successful binary update; daemon exits on last disconnect
-	cancelFunc    func()      // cancels the engine context to stop daemon
+	updatePending         atomic.Bool // set after successful binary update; daemon exits on last disconnect
+	updatePendingStopping atomic.Bool
+
+	updatePendingLaunchMu sync.Mutex
+	updatePendingLauncher func() error
+	cancelFunc            func() // cancels the engine context to stop daemon
 }
+
+var updatePendingNoSessionRestartDelay = 250 * time.Millisecond
 
 // Compile-time interface assertions.
 var _ muxcore.SessionHandler = (*aimuxHandler)(nil)
@@ -472,14 +499,64 @@ func (h *aimuxHandler) OnProjectDisconnect(projectID string) {
 	if fd, ok := d.(*fullDelegate); ok {
 		lastSessionGone = fd.disconnectProject(projectID)
 		if lastSessionGone && h.updatePending.Load() {
-			if !fd.anyActiveProjects() && h.cancelFunc != nil {
-				h.srv.log.Info("session-handler: update pending, no active sessions — stopping daemon for restart")
-				h.cancelFunc()
+			if !fd.anyActiveProjects() && h.hasCancelFunc() {
+				h.tryStopForUpdatePendingRestart()
 			}
 		}
 	} else {
 		d.OnProjectDisconnect(projectID)
+		if lw, ok := d.(*lightweightDelegate); ok && h.updatePending.Load() && h.hasCancelFunc() {
+			if len(lw.connectedProjects()) == 0 {
+				h.tryStopForUpdatePendingRestart()
+			}
+		}
 	}
+}
+
+func (h *aimuxHandler) tryStopForUpdatePendingRestart() bool {
+	if !h.updatePendingStopping.CompareAndSwap(false, true) {
+		return false
+	}
+	if !h.stopForUpdatePendingRestart() {
+		h.updatePendingStopping.Store(false)
+		return false
+	}
+	return true
+}
+
+func (h *aimuxHandler) stopForUpdatePendingRestart() bool {
+	cancel := h.currentCancelFunc()
+	if cancel == nil {
+		return false
+	}
+	if !h.launchUpdatePendingInstaller() {
+		return false
+	}
+	h.srv.log.Info("session-handler: update pending, no active sessions - stopping daemon for restart")
+	cancel()
+	return true
+}
+
+func (h *aimuxHandler) launchUpdatePendingInstaller() bool {
+	h.updatePendingLaunchMu.Lock()
+	launcher := h.updatePendingLauncher
+	h.updatePendingLauncher = nil
+	h.updatePendingLaunchMu.Unlock()
+
+	if launcher == nil {
+		return true
+	}
+	if err := launcher(); err != nil {
+		h.updatePendingLaunchMu.Lock()
+		if h.updatePendingLauncher == nil {
+			h.updatePendingLauncher = launcher
+		}
+		h.updatePendingLaunchMu.Unlock()
+		h.srv.log.Error("session-handler: start post-exit installer failed: %v", err)
+		return false
+	}
+	h.srv.log.Info("session-handler: post-exit installer launched")
+	return true
 }
 
 // SetUpdatePending marks an update as pending. The daemon will exit when all
@@ -487,13 +564,81 @@ func (h *aimuxHandler) OnProjectDisconnect(projectID string) {
 // shim invocation to start the updated binary.
 func (h *aimuxHandler) SetUpdatePending() {
 	h.updatePending.Store(true)
-	h.srv.log.Info("session-handler: update pending — daemon will exit when all sessions disconnect")
+	h.srv.log.Info("session-handler: update pending - daemon will exit when all sessions disconnect")
+	if h.hasCancelFunc() {
+		delay := updatePendingNoSessionRestartDelay
+		go func() {
+			time.Sleep(delay)
+			if h.shouldStopForUpdatePendingTimer() {
+				h.tryStopForUpdatePendingRestart()
+			}
+		}()
+	}
+}
+
+// StopForUpdatePendingRestartAfter schedules an explicit daemon stop for
+// post-exit installs after their watchdog helper has already started.
+func (h *aimuxHandler) StopForUpdatePendingRestartAfter(delay time.Duration) {
+	go func() {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		h.tryStopForUpdatePendingRestart()
+	}()
+}
+
+func (h *aimuxHandler) shouldStopForUpdatePendingTimer() bool {
+	return h.ActiveSessionCount() <= 1
+}
+
+func (h *aimuxHandler) ActiveProjectCount() int {
+	d := h.currentDelegate()
+	switch delegate := d.(type) {
+	case *fullDelegate:
+		return delegate.activeProjectCount()
+	case *lightweightDelegate:
+		return len(delegate.connectedProjects())
+	default:
+		return 0
+	}
+}
+
+func (h *aimuxHandler) ActiveSessionCount() int {
+	d := h.currentDelegate()
+	switch delegate := d.(type) {
+	case *fullDelegate:
+		return delegate.activeSessionCount()
+	case *lightweightDelegate:
+		return len(delegate.connectedProjects())
+	default:
+		return 0
+	}
+}
+
+// SetUpdatePendingLauncher stores the post-exit installer launcher to run just
+// before the daemon context is canceled on the final project disconnect.
+func (h *aimuxHandler) SetUpdatePendingLauncher(launcher func() error) {
+	h.updatePendingLaunchMu.Lock()
+	defer h.updatePendingLaunchMu.Unlock()
+	h.updatePendingLauncher = launcher
 }
 
 // SetCancelFunc stores the context cancel function used to stop the engine.
 // Called during server initialization with the engine's context cancel.
 func (h *aimuxHandler) SetCancelFunc(cancel func()) {
+	h.updatePendingLaunchMu.Lock()
+	defer h.updatePendingLaunchMu.Unlock()
 	h.cancelFunc = cancel
+}
+
+func (h *aimuxHandler) currentCancelFunc() func() {
+	h.updatePendingLaunchMu.Lock()
+	defer h.updatePendingLaunchMu.Unlock()
+	return h.cancelFunc
+}
+
+func (h *aimuxHandler) hasCancelFunc() bool {
+	return h.currentCancelFunc() != nil
 }
 
 // logForwardNotification is the wire format for the "notifications/aimux/log_forward"

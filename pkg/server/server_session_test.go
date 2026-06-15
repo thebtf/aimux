@@ -359,6 +359,11 @@ func TestAimuxHandler_UpdatePendingCancelsOnLastDisconnect(t *testing.T) {
 	srv.swapDelegateToFull(h, time.Now())
 
 	cancelled := make(chan struct{})
+	launched := make(chan struct{}, 1)
+	h.SetUpdatePendingLauncher(func() error {
+		launched <- struct{}{}
+		return nil
+	})
 	h.SetCancelFunc(func() {
 		close(cancelled)
 	})
@@ -374,9 +379,290 @@ func TestAimuxHandler_UpdatePendingCancelsOnLastDisconnect(t *testing.T) {
 	lifecycle.OnProjectDisconnect(project.ID)
 
 	select {
+	case <-launched:
+	case <-time.After(time.Second):
+		t.Fatal("expected post-exit launcher before daemon cancel")
+	}
+	select {
 	case <-cancelled:
 	case <-time.After(time.Second):
 		t.Fatal("expected update-pending last disconnect to cancel daemon context")
+	}
+}
+
+func TestAimuxHandler_UpdatePendingWaitsForAllProjectsBeforeLaunch(t *testing.T) {
+	oldDelay := updatePendingNoSessionRestartDelay
+	updatePendingNoSessionRestartDelay = time.Millisecond
+	t.Cleanup(func() { updatePendingNoSessionRestartDelay = oldDelay })
+
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	h := handler.(*aimuxHandler)
+	srv.swapDelegateToFull(h, time.Now())
+
+	launched := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	h.SetUpdatePendingLauncher(func() error {
+		launched <- struct{}{}
+		return nil
+	})
+	h.SetCancelFunc(func() {
+		cancelled <- struct{}{}
+	})
+
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	first := muxcore.ProjectContext{ID: "update-pending-first", Cwd: t.TempDir()}
+	second := muxcore.ProjectContext{ID: "update-pending-second", Cwd: t.TempDir()}
+	lifecycle.OnProjectConnect(first)
+	lifecycle.OnProjectConnect(second)
+
+	h.SetUpdatePending()
+
+	select {
+	case <-launched:
+		t.Fatal("post-exit launcher ran while multiple projects were active")
+	case <-cancelled:
+		t.Fatal("daemon cancel ran while multiple projects were active")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	lifecycle.OnProjectDisconnect(first.ID)
+
+	select {
+	case <-launched:
+		t.Fatal("post-exit launcher ran before all projects disconnected")
+	case <-cancelled:
+		t.Fatal("daemon cancel ran before all projects disconnected")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	lifecycle.OnProjectDisconnect(second.ID)
+
+	select {
+	case <-launched:
+	case <-time.After(time.Second):
+		t.Fatal("expected post-exit launcher after final project disconnect")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("expected daemon cancel after final project disconnect")
+	}
+}
+
+func TestAimuxHandler_UpdatePendingTimerWaitsForSameProjectSessionRefs(t *testing.T) {
+	oldDelay := updatePendingNoSessionRestartDelay
+	updatePendingNoSessionRestartDelay = time.Millisecond
+	t.Cleanup(func() { updatePendingNoSessionRestartDelay = oldDelay })
+
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	h := handler.(*aimuxHandler)
+	srv.swapDelegateToFull(h, time.Now())
+
+	launched := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	h.SetUpdatePendingLauncher(func() error {
+		launched <- struct{}{}
+		return nil
+	})
+	h.SetCancelFunc(func() {
+		cancelled <- struct{}{}
+	})
+
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	project := muxcore.ProjectContext{ID: "update-pending-same-project-refcount", Cwd: t.TempDir()}
+	lifecycle.OnProjectConnect(project)
+	lifecycle.OnProjectConnect(project)
+
+	if got := h.ActiveSessionCount(); got != 2 {
+		t.Fatalf("ActiveSessionCount = %d, want 2", got)
+	}
+	if got := h.ActiveProjectCount(); got != 1 {
+		t.Fatalf("ActiveProjectCount = %d, want 1", got)
+	}
+
+	h.SetUpdatePending()
+
+	select {
+	case <-launched:
+		t.Fatal("post-exit launcher ran while two sessions shared one project")
+	case <-cancelled:
+		t.Fatal("daemon cancel ran while two sessions shared one project")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	lifecycle.OnProjectDisconnect(project.ID)
+
+	select {
+	case <-launched:
+		t.Fatal("post-exit launcher ran before final same-project session disconnected")
+	case <-cancelled:
+		t.Fatal("daemon cancel ran before final same-project session disconnected")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	lifecycle.OnProjectDisconnect(project.ID)
+
+	select {
+	case <-launched:
+	case <-time.After(time.Second):
+		t.Fatal("expected post-exit launcher after final same-project session disconnect")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("expected daemon cancel after final same-project session disconnect")
+	}
+}
+
+func TestAimuxHandler_UpdatePendingCancelsFromLightweightPhase(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	h := handler.(*aimuxHandler)
+
+	launched := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	h.SetUpdatePendingLauncher(func() error {
+		launched <- struct{}{}
+		return nil
+	})
+	h.SetCancelFunc(func() {
+		cancelled <- struct{}{}
+	})
+
+	project := muxcore.ProjectContext{
+		ID:  "update-pending-lightweight",
+		Cwd: t.TempDir(),
+	}
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	lifecycle.OnProjectConnect(project)
+
+	h.SetUpdatePending()
+	lifecycle.OnProjectDisconnect(project.ID)
+
+	select {
+	case <-launched:
+	case <-time.After(time.Second):
+		t.Fatal("expected post-exit launcher from lightweight delegate disconnect")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("expected daemon cancel from lightweight delegate disconnect")
+	}
+}
+
+func TestAimuxHandler_UpdatePendingCancelsWhenNoProjectsTracked(t *testing.T) {
+	oldDelay := updatePendingNoSessionRestartDelay
+	updatePendingNoSessionRestartDelay = time.Millisecond
+	t.Cleanup(func() { updatePendingNoSessionRestartDelay = oldDelay })
+
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	h := handler.(*aimuxHandler)
+
+	launched := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	h.SetUpdatePendingLauncher(func() error {
+		launched <- struct{}{}
+		return nil
+	})
+	h.SetCancelFunc(func() {
+		cancelled <- struct{}{}
+	})
+
+	h.SetUpdatePending()
+
+	select {
+	case <-launched:
+	case <-time.After(time.Second):
+		t.Fatal("expected post-exit launcher when no active projects are tracked")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("expected daemon cancel when no active projects are tracked")
+	}
+}
+
+func TestAimuxHandler_UpdatePendingCancelsSingleTrackedProjectAfterDelay(t *testing.T) {
+	oldDelay := updatePendingNoSessionRestartDelay
+	updatePendingNoSessionRestartDelay = time.Millisecond
+	t.Cleanup(func() { updatePendingNoSessionRestartDelay = oldDelay })
+
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	h := handler.(*aimuxHandler)
+
+	launched := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	h.SetUpdatePendingLauncher(func() error {
+		launched <- struct{}{}
+		return nil
+	})
+	h.SetCancelFunc(func() {
+		cancelled <- struct{}{}
+	})
+
+	project := muxcore.ProjectContext{
+		ID:  "update-pending-single-tracked",
+		Cwd: t.TempDir(),
+	}
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	lifecycle.OnProjectConnect(project)
+
+	h.SetUpdatePending()
+
+	select {
+	case <-launched:
+	case <-time.After(time.Second):
+		t.Fatal("expected post-exit launcher for a single tracked upgrade caller")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("expected daemon cancel for a single tracked upgrade caller")
+	}
+}
+
+func TestAimuxHandler_UpdatePendingStopSchedulerStopsDespiteActiveProjects(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.SessionHandler()
+
+	h := handler.(*aimuxHandler)
+	srv.swapDelegateToFull(h, time.Now())
+
+	launched := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	h.SetUpdatePendingLauncher(func() error {
+		launched <- struct{}{}
+		return nil
+	})
+	h.SetCancelFunc(func() {
+		cancelled <- struct{}{}
+	})
+
+	lifecycle := handler.(muxcore.ProjectLifecycle)
+	lifecycle.OnProjectConnect(muxcore.ProjectContext{ID: "update-pending-scheduler-first", Cwd: t.TempDir()})
+	lifecycle.OnProjectConnect(muxcore.ProjectContext{ID: "update-pending-scheduler-second", Cwd: t.TempDir()})
+
+	h.StopForUpdatePendingRestartAfter(time.Millisecond)
+
+	select {
+	case <-launched:
+	case <-time.After(time.Second):
+		t.Fatal("expected explicit post-exit scheduler to launch installer")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("expected explicit post-exit scheduler to cancel daemon")
 	}
 }
 
