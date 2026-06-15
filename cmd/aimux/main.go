@@ -240,10 +240,11 @@ func run() error {
 		// Wire the hot-reload drain controller so AuthorizeSession refuses new
 		// admissions for tenants in their drain window (FR-12, PRC v3 B2/B6).
 		authAdapter := aimuxServer.NewAuthorizeSessionAdapter(tenantReg, srv.AuditLog(), frameLimiter, hotReloader.DrainController())
+		sessionHandler := srv.SessionHandler()
 		eng, engErr := engine.New(engine.Config{
 			Name:           engineName,
 			Persistent:     true,
-			SessionHandler: srv.SessionHandler(),
+			SessionHandler: sessionHandler,
 			// Handler is a defence-in-depth fallback that muxcore would select
 			// in proxy mode (MCP_MUX_SESSION_ID set) — not reached today because
 			// detectMode() rejects MCP_MUX_SESSION_ID unconditionally per FR-4
@@ -256,6 +257,9 @@ func run() error {
 		})
 		if engErr != nil {
 			return fmt.Errorf("engine init: %w", engErr)
+		}
+		if h, ok := sessionHandler.(interface{ SetCancelFunc(func()) }); ok {
+			h.SetCancelFunc(cancel)
 		}
 		srv.SetMuxEngine(eng)
 		srv.SetDaemonControlSocketPath(eng.ControlSocketPath())

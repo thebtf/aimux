@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +28,8 @@ const (
 	defaultApplyModeMessage            = "Binary updated. Restart aimux to load the new version."
 	defaultGracefulRestartDrainTimeout = 10000
 	defaultControlRequestTimeout       = 45 * time.Second
+	postExitInstallWatchdogTimeout     = defaultControlRequestTimeout
+	postExitStopDelay                  = 500 * time.Millisecond
 	sourceStagingDirEnv                = "AIMUX_UPGRADE_SOURCE_DIR"
 	allowSourceOutsideBinDirEnv        = "AIMUX_ALLOW_UPGRADE_SOURCE_OUTSIDE_BIN_DIR"
 )
@@ -87,6 +90,14 @@ type SessionHandler interface {
 	// SetUpdatePending signals that a binary update has been staged.
 	// The daemon will exit when all CC sessions disconnect.
 	SetUpdatePending()
+}
+
+type updatePendingLauncher interface {
+	SetUpdatePendingLauncher(func() error)
+}
+
+type updatePendingStopScheduler interface {
+	StopForUpdatePendingRestartAfter(time.Duration)
 }
 
 // Coordinator orchestrates the full upgrade lifecycle.
@@ -467,12 +478,25 @@ func (c *Coordinator) applyWithPostExitInstall(ctx context.Context, mode Mode, f
 		}, nil
 	}
 
-	if err := c.PostExitInstall(ctx, PostExitInstallOptions{
+	opts := PostExitInstallOptions{
 		CurrentExe:  c.BinaryPath,
 		StagedExe:   stagedPath,
 		DaemonFlag:  defaultPostExitDaemonFlag,
-		WaitTimeout: defaultControlRequestTimeout,
-	}); err != nil {
+		WaitTimeout: postExitInstallWatchdogTimeout,
+	}
+	launchCtx := context.WithoutCancel(ctx)
+	var launchOnce sync.Once
+	var launchErr error
+	launch := func() error {
+		launchOnce.Do(func() {
+			launchErr = c.PostExitInstall(launchCtx, opts)
+		})
+		return launchErr
+	}
+	if launcher, ok := c.SessionHandler.(updatePendingLauncher); ok {
+		launcher.SetUpdatePendingLauncher(launch)
+	}
+	if err := launch(); err != nil {
 		if cleanupStaged && stagedPath != "" {
 			_ = os.Remove(stagedPath)
 		}
@@ -482,26 +506,37 @@ func (c *Coordinator) applyWithPostExitInstall(ctx context.Context, mode Mode, f
 	if c.SessionHandler != nil {
 		c.SessionHandler.SetUpdatePending()
 	}
+	if stopper, ok := c.SessionHandler.(updatePendingStopScheduler); ok {
+		stopper.StopForUpdatePendingRestartAfter(postExitStopDelay)
+	}
 	return &Result{
 		Method:          "deferred",
 		PreviousVersion: c.Version,
 		NewVersion:      release.Version,
 		HandoffError:    "post-exit install scheduled",
-		Message:         "Binary update scheduled. Daemon will restart after active sessions disconnect.",
+		Message:         "Binary update scheduled. Post-exit helper will stop and restart the daemon.",
 	}, nil
 }
 
 func (c *Coordinator) prepareStagedUpdate(ctx context.Context, force bool) (*updater.Release, string, bool, error) {
 	if c.Source != "" {
-		stagedPath, err := c.validateLocalSource(c.Source)
+		sourcePath, err := c.validateLocalSource(c.Source)
 		if err != nil {
 			return nil, "", false, err
 		}
+		stagedPath, err := c.newStagedUpdatePath()
+		if err != nil {
+			return nil, "", false, err
+		}
+		if err := copyExecutableDirect(sourcePath, stagedPath); err != nil {
+			_ = os.Remove(stagedPath)
+			return nil, "", false, fmt.Errorf("stage local source binary: %w", err)
+		}
 		return &updater.Release{
 			Version:      "local-dev",
-			AssetName:    filepath.Base(stagedPath),
-			ReleaseNotes: fmt.Sprintf("Installed from local source: %s", stagedPath),
-		}, stagedPath, false, nil
+			AssetName:    filepath.Base(sourcePath),
+			ReleaseNotes: fmt.Sprintf("Installed from local source: %s", sourcePath),
+		}, stagedPath, true, nil
 	}
 
 	effectiveVersion := c.Version
@@ -537,20 +572,49 @@ func (c *Coordinator) newStagedUpdatePath() (string, error) {
 		return "", fmt.Errorf("resolve current binary path: %w", err)
 	}
 	dir := filepath.Dir(binaryAbs)
-	ext := filepath.Ext(binaryAbs)
-	f, err := os.CreateTemp(dir, ".aimux-update-*"+ext)
+	cleanupStaleStagedUpdates(dir)
+	for attempt := 0; attempt < 100; attempt++ {
+		name := fmt.Sprintf("aimux-update-%d-%d-%d.bin", os.Getpid(), time.Now().UnixNano(), attempt)
+		path := filepath.Join(dir, name)
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			return path, nil
+		} else if err != nil {
+			return "", fmt.Errorf("check staged update path: %w", err)
+		}
+	}
+	return "", fmt.Errorf("allocate staged update path in %s: exhausted unique candidates", dir)
+}
+
+func cleanupStaleStagedUpdates(dir string) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return "", fmt.Errorf("create staged update path: %w", err)
+		return
 	}
-	path := f.Name()
-	if closeErr := f.Close(); closeErr != nil {
-		_ = os.Remove(path)
-		return "", fmt.Errorf("close staged update path: %w", closeErr)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		candidate := strings.TrimPrefix(name, ".")
+		if strings.HasPrefix(candidate, "aimux-update-") &&
+			(strings.HasSuffix(candidate, ".bin") ||
+				strings.Contains(candidate, ".bin.") ||
+				strings.HasSuffix(candidate, ".exe") ||
+				strings.Contains(candidate, ".exe.")) {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
 	}
-	if err := os.Remove(path); err != nil {
-		return "", fmt.Errorf("prepare staged update path: %w", err)
+}
+
+func copyExecutableDirect(sourcePath, stagedPath string) error {
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return fmt.Errorf("read local source: %w", err)
 	}
-	return path, nil
+	if err := os.WriteFile(stagedPath, data, 0o755); err != nil {
+		return fmt.Errorf("write staged source: %w", err)
+	}
+	return nil
 }
 
 func updateAndRestartReachedInstall(err error) bool {

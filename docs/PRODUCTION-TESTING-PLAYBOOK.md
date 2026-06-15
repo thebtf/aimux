@@ -763,22 +763,48 @@ the MCP client under different OS user accounts, or (b) using the documented
 This scenario verifies the installed daemon path, not only a source-tree test
 binary. Use `mcp-launcher` or an equivalent MCP client that can call
 `upgrade(action="apply", source=..., force=true)` and then reconnect.
+For release evidence on Windows, prefer unique installed smoke binary names so
+live clients using `bin\aimux-dev.exe` cannot contaminate the reconnect result.
 
 **Safety note:** do not use `aimux-ctl -cmd graceful-restart` for this
 scenario. The `upgrade` MCP tool and `mcp-launcher -mode install` are the
 customer-supported installed-daemon paths.
 
 **Steps:**
-1. Build the candidate binary:
+1. Build an isolated current/next pair with distinct versions:
+   ```powershell
+   New-Item -ItemType Directory -Force .\bin\postexit-smoke | Out-Null
+   $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+   $currentVersion = "postexit-smoke-current"
+   $nextVersion = "postexit-smoke-next"
+
+   go build -ldflags "-s -w -X github.com/thebtf/aimux/pkg/build.Version=$currentVersion -X github.com/thebtf/aimux/pkg/build.Commit=smoke -X github.com/thebtf/aimux/pkg/build.BuildDate=$buildDate" -o .\bin\postexit-smoke\aimux-postexit-current.exe ./cmd/aimux/
+   go build -ldflags "-s -w -X github.com/thebtf/aimux/pkg/build.Version=$nextVersion -X github.com/thebtf/aimux/pkg/build.Commit=smoke -X github.com/thebtf/aimux/pkg/build.BuildDate=$buildDate" -o .\bin\postexit-smoke\aimux-postexit-next.exe ./cmd/aimux/
+   ```
+2. Install through the isolated current daemon and verify reconnect reaches the
+   next binary:
+   ```powershell
+   D:\Dev\mcp-launcher\mcp-launcher.exe `
+     -binary D:\Dev\aimux\bin\postexit-smoke\aimux-postexit-current.exe `
+     -cwd D:\Dev\aimux `
+     -env-mode clean `
+     -mode install `
+     -source D:\Dev\aimux\bin\postexit-smoke\aimux-postexit-next.exe `
+     -force `
+     -expect-tools 28 `
+     -expect-version $nextVersion `
+     -timeout 90 `
+     -reconnect-delay 15 `
+     -cleanup-binary-processes
+   ```
+3. Optional operator-local validation against the shared deployed binary uses
+   the same command shape, but only after same-path `bin\aimux-dev.exe` clients
+   are stopped:
    ```powershell
    .\scripts\build.ps1 -Output .\bin\aimux-dev-next.exe
    $cliVersion = (.\bin\aimux-dev-next.exe --version).Trim()
    $mcpVersion = if ($cliVersion -match '^aimux\s+(\S+)') { $Matches[1] } else { $cliVersion }
-   ```
-2. Install through the running daemon. If the currently running daemon is
-   older than v5.14.3, this first install may use the legacy deferred path;
-   it still must reconnect and verify the new version:
-   ```powershell
+
    D:\Dev\mcp-launcher\mcp-launcher.exe `
      -binary D:\Dev\aimux\bin\aimux-dev.exe `
      -cwd D:\Dev\aimux `
@@ -788,60 +814,48 @@ customer-supported installed-daemon paths.
      -force `
      -expect-tools 28 `
      -expect-version $mcpVersion `
-     -timeout 30
-   ```
-3. Re-run a forced local-source install through the freshly installed v5.14.3+
-   daemon so this scenario exercises the new muxcore restart helper from the
-   code under test:
-   ```powershell
-   Copy-Item .\bin\aimux-dev-next.exe .\bin\aimux-dev-next-verify.exe -Force
-   D:\Dev\mcp-launcher\mcp-launcher.exe `
-     -binary D:\Dev\aimux\bin\aimux-dev.exe `
-     -cwd D:\Dev\aimux `
-     -env-mode clean `
-     -mode install `
-     -source D:\Dev\aimux\bin\aimux-dev-next-verify.exe `
-     -force `
-     -expect-tools 28 `
-     -expect-version $mcpVersion `
-     -timeout 30
+     -timeout 90 `
+     -reconnect-delay 15 `
+     -cleanup-binary-processes
    ```
 4. Confirm the rollback backup slot is present and not a stale blocker:
    ```powershell
-   Test-Path D:\Dev\aimux\bin\aimux-dev.exe.old
+   Test-Path D:\Dev\aimux\bin\postexit-smoke\aimux-postexit-current.exe.old
    ```
 
 **Expected:**
-- The first install may report `status: "updated_deferred"` only when the
-  pre-v5.14.3 daemon is still handling the upgrade request.
-- The second install, handled by the v5.14.3+ daemon, uses the supported
-  daemon update path. On Windows SessionHandler deployments it reports
+- On Windows SessionHandler deployments, the install may report
   `status: "updated_deferred"` with
-  `handoff_error: "post-exit install scheduled"` because replacement occurs
-  after daemon exit. On platforms where muxcore can complete live handoff, it
-  may report `status: "updated_hot_swap"`. A silent deferred result without
-  `handoff_error` is a failure.
+  `handoff_error: "post-exit install scheduled"` because a post-exit watchdog
+  helper installs the staged payload after aimux stops the old daemon. This is a
+  PASS shape only when reconnect verifies the expected version, 28 tools,
+  `sessions(action="health").init_phase == 2`, and `aimux://health.version`.
+- On platforms where muxcore can complete live handoff, the install may report
+  `status: "updated_hot_swap"`.
+- A silent deferred result without `handoff_error` is a failure.
+- A first hop from an older broken daemon may require one-time process cleanup
+  before the fixed lifecycle can be proven; do not count that contaminated hop
+  as v5.16.1 release evidence.
 - Reconnect verification reaches `sessions(action="health")`, reads
   `aimux://health`, sees `tools: 28`, and reports the expected version.
 - The final installer line is `[install] PASS`.
-- `bin\aimux-dev.exe.old` may remain as the rollback backup created by the atomic
-  replace path. Its presence is not a failure; a locked stale old-slot that
-  prevents the next install is a failure.
+- The `.old` file beside the chosen current binary may remain as the rollback
+  backup created by the atomic replace path. Its presence is not a failure; a
+  locked stale old-slot that prevents the next install is a failure.
 - Regression guard: if the installer reports `apply update and restart failed
-  during swap` while renaming the running `bin\aimux-dev.exe`, classify the
-  release as BLOCKED. The old muxcore swap-before-exit path was reached instead
-  of the supported Windows post-exit installer.
+  during swap` while renaming the chosen current binary, classify the release as
+  BLOCKED. The old muxcore swap-before-exit path was reached instead of the
+  supported Windows post-exit installer.
 
 **Pass criteria:**
 - `mcp-launcher` exits `0`.
-- `aimux://health.version` matches `$mcpVersion` from step 1.
-- `bin\aimux-dev-next.exe --version` matches `$cliVersion` from step 1.
+- `aimux://health.version` matches `$nextVersion` from step 1 for the release
+  evidence path.
 - `sessions(action="health").init_phase == 2`.
-- The second install result is either `updated_hot_swap`, or
-  `updated_deferred` with a specific `handoff_error` explaining the deferred
-  reconnect path.
-- If `bin\aimux-dev.exe.old` exists after the install, classify it as expected
-  rollback state unless the next install reports an old-slot lock.
+- The install result is either `updated_hot_swap`, or `updated_deferred` with a
+  specific `handoff_error` explaining the deferred reconnect path.
+- If the `.old` slot exists after the install, classify it as expected rollback
+  state unless the next install reports an old-slot lock.
 
 ## Customer-mode questions to answer
 
