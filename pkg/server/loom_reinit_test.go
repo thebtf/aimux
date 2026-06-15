@@ -41,6 +41,33 @@ func newStoreBackedLoomlessServer(t *testing.T) *Server {
 	return srv
 }
 
+func newRecoverableStorelessServer(t *testing.T, engineName string) *Server {
+	t.Helper()
+
+	log, err := logger.New(filepath.Join(t.TempDir(), "test.log"), logger.LevelError, logger.RotationOpts{})
+	if err != nil {
+		t.Fatalf("logger.New: %v", err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("session.NewStore seed: %v", err)
+	}
+	store.Close()
+	srv := &Server{
+		cfg:        &config.Config{Server: config.ServerConfig{DBPath: dbPath, DefaultTimeoutSeconds: 10}},
+		log:        log,
+		metrics:    metrics.New(),
+		sessions:   session.NewRegistry(),
+		engineName: engineName,
+	}
+	t.Cleanup(func() {
+		srv.Shutdown()
+		_ = log.Close()
+	})
+	return srv
+}
+
 func TestTaskRouterLoomReinitializesFromStore(t *testing.T) {
 	t.Parallel()
 
@@ -76,6 +103,47 @@ func TestSessionsHealthReinitializesLoomFromStore(t *testing.T) {
 	}
 	if srv.loom == nil {
 		t.Fatal("srv.loom is nil after sessions health; want reinitialized Loom engine")
+	}
+}
+
+func TestSessionsHealthReopensStoreAfterStartupFallback(t *testing.T) {
+	t.Parallel()
+
+	srv := newRecoverableStorelessServer(t, "test-reopen-store-health")
+
+	result, err := srv.handleSessions(context.Background(), makeRequest("sessions", map[string]any{"action": "health"}))
+	if err != nil {
+		t.Fatalf("handleSessions health: %v", err)
+	}
+	data := parseResult(t, result)
+	if data["loom_status"] != "ok" {
+		t.Fatalf("loom_status = %v, want ok; loom_error=%v", data["loom_status"], data["loom_error"])
+	}
+	if srv.store == nil || srv.store.DB() == nil {
+		t.Fatal("srv.store is nil after sessions health; want reopened SQLite store")
+	}
+	if srv.loom == nil {
+		t.Fatal("srv.loom is nil after sessions health; want reinitialized Loom engine")
+	}
+}
+
+func TestTaskRouterLoomReopensStoreAfterStartupFallback(t *testing.T) {
+	t.Parallel()
+
+	srv := newRecoverableStorelessServer(t, "test-reopen-store-task")
+
+	got, err := srv.taskRouterLoom(context.Background())
+	if err != nil {
+		t.Fatalf("taskRouterLoom error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("taskRouterLoom returned nil; want reinitialized Loom client")
+	}
+	if srv.store == nil || srv.store.DB() == nil {
+		t.Fatal("srv.store is nil after taskRouterLoom; want reopened SQLite store")
+	}
+	if srv.loom == nil {
+		t.Fatal("srv.loom is nil after taskRouterLoom; want reinitialized Loom engine")
 	}
 }
 

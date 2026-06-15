@@ -7,7 +7,9 @@ import (
 
 	"github.com/thebtf/aimux/loom"
 	loomworkers "github.com/thebtf/aimux/pkg/aimuxworkers"
+	"github.com/thebtf/aimux/pkg/config"
 	codexexec "github.com/thebtf/aimux/pkg/executor/codex"
+	"github.com/thebtf/aimux/pkg/session"
 )
 
 var errLoomStoreUnavailable = errors.New("SQLite session store unavailable")
@@ -66,8 +68,8 @@ func (s *Server) initLoomEngine() error {
 }
 
 func (s *Server) initLoomEngineLocked() error {
-	if s.store == nil || s.store.DB() == nil {
-		return errLoomStoreUnavailable
+	if err := s.ensureSessionStoreLocked(); err != nil {
+		return err
 	}
 	if s.engineName == "" {
 		s.engineName = ResolveEngineName()
@@ -81,6 +83,33 @@ func (s *Server) initLoomEngineLocked() error {
 		s.log.Info("LoomEngine initialized (shared SQLite)")
 		s.log.Info("loom task scoping: engine_name=%s", s.engineName)
 	}
+	return nil
+}
+
+func (s *Server) ensureSessionStoreLocked() error {
+	if s.store != nil && s.store.DB() != nil {
+		return nil
+	}
+	if s.sessionStoreMode == "memory" {
+		return errLoomStoreUnavailable
+	}
+	dbPath := s.sessionStoreDBPath
+	if dbPath == "" && s.cfg != nil {
+		dbPath = config.ExpandPath(s.cfg.Server.DBPath)
+	}
+	if dbPath == "" {
+		return errLoomStoreUnavailable
+	}
+	store, err := session.NewStore(dbPath)
+	if err != nil {
+		return fmt.Errorf("open SQLite session store %q: %w", dbPath, err)
+	}
+	s.store = store
+	s.sessionStoreDBPath = dbPath
+	if s.log != nil {
+		s.log.Info("SQLite persistence recovered: %s", dbPath)
+	}
+	s.startSnapshotLoop()
 	return nil
 }
 

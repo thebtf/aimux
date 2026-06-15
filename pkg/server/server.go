@@ -96,8 +96,11 @@ type Server struct {
 	hooks                   *hooks.Registry
 	metrics                 *metrics.Collector
 	store                   *session.Store
+	sessionStoreMode        string
+	sessionStoreDBPath      string
 	gcCtx                   context.Context
 	gcCancel                context.CancelFunc
+	snapshotLoopOnce        sync.Once
 	skillEngine             *skills.Engine
 	rateLimiter             *ratelimit.Limiter
 	authToken               string
@@ -304,6 +307,8 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 
 	// Initialize SQLite persistence and WAL recovery
 	dbPath := config.ExpandPath(cfg.Server.DBPath)
+	s.sessionStoreMode = sessionStoreMode
+	s.sessionStoreDBPath = dbPath
 	if dbPath != "" && sessionStoreMode != "memory" {
 		store, err := session.NewStore(dbPath)
 		if err != nil {
@@ -352,9 +357,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 	s.gcCancel = gcCancel
 
 	// Start periodic snapshot (uses gcCtx for graceful shutdown)
-	if s.store != nil {
-		go s.runSnapshotLoop(gcCtx, s.store)
-	}
+	s.startSnapshotLoop()
 	ttl := cfg.Server.SessionTTLHours
 	if ttl <= 0 {
 		ttl = 24
@@ -498,6 +501,17 @@ func (s *Server) runSnapshotLoop(ctx context.Context, store *session.Store) {
 			}
 		}
 	}
+}
+
+func (s *Server) startSnapshotLoop() {
+	if s == nil || s.gcCtx == nil || s.store == nil {
+		return
+	}
+	ctx := s.gcCtx
+	store := s.store
+	s.snapshotLoopOnce.Do(func() {
+		go s.runSnapshotLoop(ctx, store)
+	})
 }
 
 // Tool returns the registered MCP tool definition for the named tool.

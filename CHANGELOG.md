@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Loom startup recovery - reopen SQLite after transient startup locks.**
+  When daemon startup falls back to memory-only because SQLite is temporarily
+  locked, later `sessions(action="health")` and `task` routing now retry opening
+  the configured SQLite store and initialize Loom instead of staying permanently
+  stuck with `loom_status: "unavailable"`.
+- **Installed smoke gates - require Loom health after reconnect.** The
+  task-inspectability smoke and production playbook now treat
+  `loom_status: "unavailable"` and post-reconnect `CapabilityMismatch` task
+  failures as broken installed-daemon states, even if non-Loom tools respond.
+
 ## [5.16.1] — 2026-06-15 — Windows installed post-exit upgrade recovery
 
 ### Fixed

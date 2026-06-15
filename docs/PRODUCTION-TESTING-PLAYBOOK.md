@@ -829,7 +829,9 @@ customer-supported installed-daemon paths.
   `handoff_error: "post-exit install scheduled"` because a post-exit watchdog
   helper installs the staged payload after aimux stops the old daemon. This is a
   PASS shape only when reconnect verifies the expected version, 28 tools,
-  `sessions(action="health").init_phase == 2`, and `aimux://health.version`.
+  `sessions(action="health").init_phase == 2`,
+  `sessions(action="health").loom_status == "ok"`, and
+  `aimux://health.version`.
 - On platforms where muxcore can complete live handoff, the install may report
   `status: "updated_hot_swap"`.
 - A silent deferred result without `handoff_error` is a failure.
@@ -852,6 +854,11 @@ customer-supported installed-daemon paths.
 - `aimux://health.version` matches `$nextVersion` from step 1 for the release
   evidence path.
 - `sessions(action="health").init_phase == 2`.
+- `sessions(action="health").loom_status == "ok"`; `loom_status:
+  "unavailable"` after reconnect is a BROKEN installed-daemon state even when
+  other non-Loom tools answer.
+- A post-reconnect `task` probe must not return `CapabilityMismatch` for
+  `SQLite session store unavailable`.
 - The install result is either `updated_hot_swap`, or `updated_deferred` with a
   specific `handoff_error` explaining the deferred reconnect path.
 - If the `.old` slot exists after the install, classify it as expected rollback

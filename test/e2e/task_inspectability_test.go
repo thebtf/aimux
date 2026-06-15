@@ -31,6 +31,10 @@ func TestTaskInspectability_DiagnosticSmoke(t *testing.T) {
 		}
 	}
 	requireEvidenceStatus(t, evidence, "daemon_health", "ok")
+	daemonHealth := requireEvidenceMap(t, evidence, "daemon_health")
+	if daemonHealth["loom_status"] != "ok" {
+		t.Fatalf("daemon_health.loom_status = %#v, want ok; evidence=%#v", daemonHealth["loom_status"], daemonHealth)
+	}
 	taskAcceptance := requireEvidenceMap(t, evidence, "task_acceptance")
 	if taskAcceptance["status"] != "accepted" || taskAcceptance["task_id"] == "" {
 		t.Fatalf("task_acceptance missing accepted task_id: %#v", taskAcceptance)
@@ -101,6 +105,9 @@ func runTaskInspectabilitySmoke(t *testing.T) map[string]any {
 		"loom_tasks":    health["loom_tasks"],
 		"tool_surface":  "sessions.health",
 		"process_probe": "daemon+shim JSON-RPC",
+	}
+	if loomErr, ok := health["loom_error"].(string); ok && loomErr != "" {
+		evidence["daemon_health"].(map[string]any)["loom_error"] = loomErr
 	}
 
 	taskPayload := callTaskInspectabilityToolJSON(t, stdin, reader, 3, "task", map[string]any{
