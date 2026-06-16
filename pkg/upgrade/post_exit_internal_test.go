@@ -372,6 +372,50 @@ func TestRunPostExitInstallRequiresGenerationMarker(t *testing.T) {
 	}
 }
 
+func TestRunPostExitInstallBootstrapsLegacyHelperCopyMissingMarker(t *testing.T) {
+	dir := t.TempDir()
+	currentPath := filepath.Join(dir, "aimux.exe")
+	stagedPath := filepath.Join(dir, "aimux-staged.exe")
+	helperPath := filepath.Join(dir, filepath.Base(stagedPath)+".post-exit-helper.123.456.exe")
+	writeTestFile(t, currentPath, "current")
+	writeTestFile(t, stagedPath, "staged")
+
+	oldExecutablePath := executablePath
+	t.Cleanup(func() { executablePath = oldExecutablePath })
+	executablePath = func() (string, error) { return helperPath, nil }
+
+	oldMove := moveStagedBinary
+	t.Cleanup(func() { moveStagedBinary = oldMove })
+	moveCalls := 0
+	opts := PostExitInstallOptions{
+		CurrentExe:  currentPath,
+		StagedExe:   stagedPath,
+		DaemonFlag:  defaultPostExitDaemonFlag,
+		WaitTimeout: time.Millisecond,
+	}
+	moveStagedBinary = func(currentPath, stagedPath string) error {
+		moveCalls++
+		if err := ensurePostExitGenerationCurrent(opts); err != nil {
+			t.Fatalf("generation marker should be bootstrapped before move: %v", err)
+		}
+		return os.ErrInvalid
+	}
+
+	err := RunPostExitInstall(opts)
+	if err == nil {
+		t.Fatal("expected terminal move error")
+	}
+	if !strings.Contains(err.Error(), os.ErrInvalid.Error()) {
+		t.Fatalf("error = %q, want terminal move error", err)
+	}
+	if moveCalls != 1 {
+		t.Fatalf("move calls = %d, want 1", moveCalls)
+	}
+	if _, statErr := os.Stat(stagedPath); !os.IsNotExist(statErr) {
+		t.Fatalf("staged payload should be removed after terminal failure, stat err=%v", statErr)
+	}
+}
+
 func TestPrepareGenerationForPostExitHelperRelaunchWritesLegacyMissingMarker(t *testing.T) {
 	dir := t.TempDir()
 	currentPath := filepath.Join(dir, "aimux.exe")
@@ -452,6 +496,49 @@ func TestRunPostExitInstallRechecksGenerationBeforeEachMoveAttempt(t *testing.T)
 	}
 	if err := ensurePostExitGenerationCurrent(newOpts); err != nil {
 		t.Fatalf("new generation should remain current: %v", err)
+	}
+}
+
+func TestRunPostExitInstallRetriesStagedBinaryLock(t *testing.T) {
+	dir := t.TempDir()
+	currentPath := filepath.Join(dir, "aimux.exe")
+	stagedPath := filepath.Join(dir, "aimux-staged.exe")
+	writeTestFile(t, currentPath, "current")
+	writeTestFile(t, stagedPath, "staged")
+
+	opts := PostExitInstallOptions{
+		CurrentExe:  currentPath,
+		StagedExe:   stagedPath,
+		DaemonFlag:  defaultPostExitDaemonFlag,
+		WaitTimeout: time.Second,
+	}
+	if err := writePostExitGeneration(opts); err != nil {
+		t.Fatalf("write generation marker: %v", err)
+	}
+
+	oldMove := moveStagedBinary
+	t.Cleanup(func() { moveStagedBinary = oldMove })
+	moveCalls := 0
+	moveStagedBinary = func(currentPath, stagedPath string) error {
+		moveCalls++
+		if moveCalls == 1 {
+			return &ErrStagedBinaryLocked{StagedPath: stagedPath, Cause: os.ErrPermission}
+		}
+		return os.ErrInvalid
+	}
+
+	err := RunPostExitInstall(opts)
+	if err == nil {
+		t.Fatal("expected terminal move error")
+	}
+	if !strings.Contains(err.Error(), os.ErrInvalid.Error()) {
+		t.Fatalf("error = %q, want terminal move error", err)
+	}
+	if moveCalls != 2 {
+		t.Fatalf("move calls = %d, want staged-lock retry then terminal failure", moveCalls)
+	}
+	if _, statErr := os.Stat(stagedPath); !os.IsNotExist(statErr) {
+		t.Fatalf("staged payload should be removed after terminal failure, stat err=%v", statErr)
 	}
 }
 

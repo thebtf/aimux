@@ -23,9 +23,9 @@ func atomicReplaceBinary(currentPath, sourcePath string) error {
 // ErrOldSlotLocked is returned when the .old slot cannot be cleared because
 // another process holds a handle on it (Windows-specific failure mode).
 type ErrOldSlotLocked struct {
-	OldPath  string
-	Holders  []ProcessHolder
-	Cause    error
+	OldPath string
+	Holders []ProcessHolder
+	Cause   error
 }
 
 func (e *ErrOldSlotLocked) Error() string {
@@ -53,6 +53,24 @@ func (e *ErrCurrentBinaryLocked) Error() string {
 }
 
 func (e *ErrCurrentBinaryLocked) Unwrap() error { return e.Cause }
+
+// ErrStagedBinaryLocked is returned when the staged replacement binary cannot
+// be moved into place, usually because the first post-exit payload process has
+// not fully released its executable image yet.
+type ErrStagedBinaryLocked struct {
+	StagedPath string
+	Holders    []ProcessHolder
+	Cause      error
+}
+
+func (e *ErrStagedBinaryLocked) Error() string {
+	if len(e.Holders) == 0 {
+		return fmt.Sprintf("staged binary locked (holders unknown): %s: %v", e.StagedPath, e.Cause)
+	}
+	return fmt.Sprintf("staged binary locked by %d process(es) — %s: %v", len(e.Holders), formatHolders(e.Holders), e.Cause)
+}
+
+func (e *ErrStagedBinaryLocked) Unwrap() error { return e.Cause }
 
 // ProcessHolder carries identifying information about a process holding a file handle.
 type ProcessHolder struct {
@@ -83,5 +101,12 @@ func IsOldSlotLocked(err error) bool {
 // IsCurrentBinaryLocked reports whether err (or any error in its chain) is ErrCurrentBinaryLocked.
 func IsCurrentBinaryLocked(err error) bool {
 	var e *ErrCurrentBinaryLocked
+	return errors.As(err, &e)
+}
+
+// IsStagedBinaryLocked reports whether err (or any error in its chain) is
+// ErrStagedBinaryLocked.
+func IsStagedBinaryLocked(err error) bool {
+	var e *ErrStagedBinaryLocked
 	return errors.As(err, &e)
 }

@@ -28,7 +28,12 @@ func moveStagedBinaryIntoPlace(currentPath, stagedPath string) error {
 		if rollbackErr := retryMoveFileEx(oldPath, currentPath, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); rollbackErr != nil {
 			return fmt.Errorf("install staged binary: %w; rollback failed: %v", err, rollbackErr)
 		}
-		return fmt.Errorf("install staged binary: %w", err)
+		holders := restartManagerProbe(stagedPath)
+		return &ErrStagedBinaryLocked{
+			StagedPath: stagedPath,
+			Holders:    holders,
+			Cause:      err,
+		}
 	}
 	return nil
 }
