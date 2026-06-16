@@ -372,6 +372,33 @@ func TestRunPostExitInstallRequiresGenerationMarker(t *testing.T) {
 	}
 }
 
+func TestPrepareGenerationForPostExitHelperRelaunchWritesLegacyMissingMarker(t *testing.T) {
+	dir := t.TempDir()
+	currentPath := filepath.Join(dir, "aimux.exe")
+	stagedPath := filepath.Join(dir, "aimux-staged.exe")
+	writeTestFile(t, currentPath, "current")
+	writeTestFile(t, stagedPath, "staged")
+
+	opts := PostExitInstallOptions{
+		CurrentExe:  currentPath,
+		StagedExe:   stagedPath,
+		DaemonFlag:  defaultPostExitDaemonFlag,
+		WaitTimeout: time.Millisecond,
+	}
+	if err := prepareGenerationForPostExitHelperRelaunch(opts); err != nil {
+		t.Fatalf("prepareGenerationForPostExitHelperRelaunch: %v", err)
+	}
+	if err := ensurePostExitGenerationCurrent(opts); err != nil {
+		t.Fatalf("generation marker should point to staged payload: %v", err)
+	}
+	if got := readTestFile(t, currentPath); got != "current" {
+		t.Fatalf("current path = %q, want current", got)
+	}
+	if got := readTestFile(t, stagedPath); got != "staged" {
+		t.Fatalf("staged path = %q, want staged", got)
+	}
+}
+
 func TestRunPostExitInstallRechecksGenerationBeforeEachMoveAttempt(t *testing.T) {
 	dir := t.TempDir()
 	currentPath := filepath.Join(dir, "aimux.exe")

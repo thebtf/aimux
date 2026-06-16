@@ -1,6 +1,7 @@
 package upgrade
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,6 +35,9 @@ func RunPostExitInstall(opts PostExitInstallOptions) error {
 	}
 
 	if runningFromStagedPayload(opts.StagedExe) {
+		if err := prepareGenerationForPostExitHelperRelaunch(opts); err != nil {
+			return err
+		}
 		return relaunchPostExitHelperCopy(opts, timeout)
 	}
 	if err := ensurePostExitGenerationCurrent(opts); err != nil {
@@ -82,6 +86,16 @@ func RunPostExitInstall(opts PostExitInstallOptions) error {
 }
 
 var moveStagedBinary = moveStagedBinaryIntoPlace
+
+func prepareGenerationForPostExitHelperRelaunch(opts PostExitInstallOptions) error {
+	if err := ensurePostExitGenerationCurrent(opts); err == nil {
+		return nil
+	} else if errors.Is(err, os.ErrNotExist) {
+		return writePostExitGeneration(opts)
+	} else {
+		return err
+	}
+}
 
 func runningFromStagedPayload(stagedExe string) bool {
 	runningExe, err := os.Executable()
