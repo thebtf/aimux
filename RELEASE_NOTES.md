@@ -1,44 +1,45 @@
-## v5.16.4 — Native muxcore status and update proof
+## v5.17.0 — muxcore registry descriptors and legacy install recovery
 
-Patch release for the aimux-owned muxcore hot-update contract tracked by
-Engram #283.
+This release ships the muxcore registry descriptor adoption work and closes the
+Windows installed-update compatibility gap exposed by the `mcp-launcher`
+source-side smoke.
 
 ### Added
 
-- `sessions(action="health")` and `aimux://health` now expose native muxcore
-  status evidence: `engine_name`, daemon/owner generation fields, owner restore
-  source, handoff counters, and shim reconnect counters.
-- `upgrade(action="apply")` responses now include `update_method` and
-  `update_topology`, making the update path explicit for graceful restart,
-  fallback shutdown, and Windows post-exit recovery flows.
-- Added a Windows customer-mode e2e smoke that starts an old installed daemon
-  session, applies a local-source update through aimux, proves the already-open
-  MCP session can make a post-update health request, then proves a fresh session
-  reports the replacement version.
+- Aimux now advertises the muxcore registry descriptor contract with product
+  metadata and owner-list capability declarations.
+- Windows post-exit install helpers can write opt-in diagnostic traces through
+  `AIMUX_POST_EXIT_TRACE`, making detached helper failures inspectable during
+  release/debug smokes.
 
-### Documentation
+### Fixed
 
-- Updated the production testing playbook so `mcp-launcher -mode install`
-  remains the fresh reconnect gate, while the same-session old-client proof is
-  covered by the normal MCP-host e2e gate or an equivalent client that keeps the
-  connection open.
+- Upgrades from historical `5.16.1-bin-current` style launchers now work again.
+  Aimux bootstraps the missing `.post-exit-active` generation marker when a
+  legacy helper copy is launched as `<staged>.post-exit-helper.*.exe`.
+- The post-exit installer now treats staged replacement image locks as bounded
+  retryable conditions, matching current-binary and old-slot lock handling.
+- Aimux now consumes muxcore `v0.26.2` for the registry descriptor contract.
 
 ### Verification
 
+- `go test .\pkg\upgrade -count=1`
 - `go build ./...`
-- `go test ./... -count=1 -timeout 300s`
-- `go vet ./...`
-- `go mod verify`
-- `go test ./tests/critical -count=1 -timeout 300s`
-- `go test ./test/e2e -run 'TestE2E_Upgrade_(Fallback_InvalidModeRejectedButDaemonLives|OldSessionRequestThenFreshSessionNewVersion)' -count=1 -timeout 240s`
-- `go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s`
-- `go test ./... -count=1` from `loom`
-- `govulncheck ./...`
+- `go test ./... -count=1`
+- Historical installed-daemon smoke passed with the local patched
+  `mcp-launcher`:
+
+```text
+current: 5.16.1-bin-current
+next:    5.16.4-3-gb950218-dirty
+installed binary changed: cb4ae8081b64 -> 6a0938500fd6
+verified server version: 5.16.4-3-gb950218-dirty
+aimux://health.version: 5.16.4-3-gb950218-dirty
+[install] PASS
+```
 
 ### Notes
 
-- Windows SessionHandler deployments still report deferred/post-exit semantics
-  truthfully. This release makes that topology explicit in the update payload
-  instead of treating a successful deferred path like a silent live handoff.
-- Engram #283 should be closed only after the published artifact passes the
-  released-artifact installed-daemon smoke.
+- The `mcp-launcher` clean-env/install harness fix remains owned by the
+  separate `D:\Dev\mcp-launcher` project/session. This release proves the aimux
+  side of the historical install hop using the local patched launcher.

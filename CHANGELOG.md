@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.17.0] — 2026-06-17 — muxcore registry descriptors and legacy install recovery
+
+### Added
+
+- **Native muxcore registry descriptor adoption.** Aimux now wires the muxcore
+  registry descriptor contract with product metadata and list-owner capability
+  declarations, enabling newer muxcore consumers to discover aimux owners
+  through the registry surface.
+- **Detached post-exit helper tracing.** Added opt-in
+  `AIMUX_POST_EXIT_TRACE` diagnostics for Windows post-exit installs so
+  detached helper failures can be diagnosed from a file instead of inferred
+  from reconnect timeouts.
+
+### Fixed
+
+- **Legacy post-exit helper compatibility.** Upgrades from historical
+  `5.16.1-bin-current` style launchers now bootstrap the missing
+  `.post-exit-active` generation marker when running from a legacy helper copy
+  named `<staged>.post-exit-helper.*.exe`, while ordinary missing-marker runs
+  still fail to preserve supersession safety.
+- **Windows staged-payload lock retries.** The post-exit installer now treats
+  staged replacement image locks as bounded retryable install conditions,
+  matching the existing current-binary and old-slot lock handling.
+- **muxcore dependency alignment.** Bumped muxcore adoption to `v0.26.2` for
+  the registry descriptor contract.
+
+### Verification
+
+- `go test .\pkg\upgrade -count=1`
+- `go build ./...`
+- `go test ./... -count=1`
+- Historical installed-daemon smoke PASS:
+  `5.16.1-bin-current -> 5.16.4-3-gb950218-dirty` with
+  `mcp-launcher -mode install -env-mode clean -cleanup-binary-processes`,
+  verified replacement hash change, server version, `sessions(action=health)`,
+  and `aimux://health.version`.
+
 ## [5.16.4] — 2026-06-15 — Native muxcore status and update proof
 
 ### Added
