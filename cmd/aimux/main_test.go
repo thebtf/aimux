@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +231,79 @@ func TestDetectMode_DirectUpstreamDaemonFlagWins(t *testing.T) {
 	}
 	if got != ModeDaemon {
 		t.Errorf("mode = %d, want ModeDaemon (%d)", got, ModeDaemon)
+	}
+}
+
+func TestMuxcoreRegistryConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := muxcoreRegistryConfig()
+	if cfg == nil {
+		t.Fatal("muxcoreRegistryConfig() = nil")
+	}
+	if cfg.ProductName != "aimux" {
+		t.Fatalf("ProductName = %q, want aimux", cfg.ProductName)
+	}
+	if !cfg.Capabilities.ListOwners {
+		t.Fatal("Capabilities.ListOwners = false, want true")
+	}
+	if cfg.MuxcoreVersion == "" {
+		t.Fatal("MuxcoreVersion is empty")
+	}
+}
+
+func TestMuxcoreDependencyVersionFromDeps(t *testing.T) {
+	t.Parallel()
+
+	const muxcorePath = "github.com/thebtf/mcp-mux/muxcore"
+	tests := []struct {
+		name string
+		deps []*debug.Module
+		want string
+	}{
+		{
+			name: "direct_dependency",
+			deps: []*debug.Module{{Path: muxcorePath, Version: "v0.26.1"}},
+			want: "v0.26.1",
+		},
+		{
+			name: "versioned_replace_wins",
+			deps: []*debug.Module{{
+				Path:    muxcorePath,
+				Version: "v0.26.1",
+				Replace: &debug.Module{
+					Path:    muxcorePath,
+					Version: "v0.26.2",
+				},
+			}},
+			want: "v0.26.2",
+		},
+		{
+			name: "local_replace_keeps_declared_version",
+			deps: []*debug.Module{{
+				Path:    muxcorePath,
+				Version: "v0.26.1",
+				Replace: &debug.Module{
+					Path: "../muxcore",
+				},
+			}},
+			want: "v0.26.1",
+		},
+		{
+			name: "missing_dependency",
+			deps: []*debug.Module{{Path: "example.test/other", Version: "v1.0.0"}},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := muxcoreDependencyVersionFromDeps(tt.deps); got != tt.want {
+				t.Fatalf("muxcoreDependencyVersionFromDeps() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

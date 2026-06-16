@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,9 +182,8 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 func waitForCtlSocket(path string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		conn, err := net.Dial("unix", path)
-		if err == nil {
-			_ = conn.Close()
+		resp, err := control.SendWithTimeout(path, control.Request{Cmd: "ping"}, 500*time.Millisecond)
+		if err == nil && resp != nil && resp.OK {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -228,9 +226,6 @@ func shutdownDaemonViaControl(ctlSock string, timeout time.Duration, drainTimeou
 	}
 	if timeout <= 0 {
 		return fmt.Errorf("non-positive timeout")
-	}
-	if _, err := os.Stat(ctlSock); err != nil {
-		return err
 	}
 
 	resp, err := control.SendWithTimeout(ctlSock, control.Request{

@@ -3,13 +3,14 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thebtf/mcp-mux/muxcore/control"
+	"github.com/thebtf/mcp-mux/muxcore/ipc"
 )
 
 // serveFakeControl starts a fake control socket at socketPath, handles one
@@ -17,10 +18,11 @@ import (
 // that is closed once the single connection has been served.
 func serveFakeControl(t *testing.T, socketPath string, resp control.Response) chan struct{} {
 	t.Helper()
-	ln, err := net.Listen("unix", socketPath)
+	ln, err := ipc.Listen(socketPath)
 	if err != nil {
 		t.Fatalf("serveFakeControl: listen: %v", err)
 	}
+	t.Cleanup(func() { _ = ln.Close() })
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -47,6 +49,15 @@ func serveFakeControl(t *testing.T, socketPath string, resp control.Response) ch
 		_ = enc.Encode(resp)
 	}()
 	return done
+}
+
+func waitFakeControl(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveFakeControl did not receive a control request")
+	}
 }
 
 // tempSocket returns a unique Unix socket path short enough for macOS sun_path
@@ -78,7 +89,7 @@ func TestQueryF2MetricsAt_AllCounters(t *testing.T) {
 	done := serveFakeControl(t, sock, control.Response{OK: true, Data: json.RawMessage(data)})
 
 	m, err := queryF2MetricsAt(sock)
-	<-done
+	waitFakeControl(t, done)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -102,7 +113,7 @@ func TestQueryF2MetricsAt_MissingKeys(t *testing.T) {
 	done := serveFakeControl(t, sock, control.Response{OK: true, Data: json.RawMessage(data)})
 
 	m, err := queryF2MetricsAt(sock)
-	<-done
+	waitFakeControl(t, done)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -118,7 +129,7 @@ func TestQueryF2MetricsAt_OKFalse(t *testing.T) {
 	done := serveFakeControl(t, sock, control.Response{OK: false, Message: "daemon shutting down"})
 
 	_, err := queryF2MetricsAt(sock)
-	<-done
+	waitFakeControl(t, done)
 
 	if err == nil {
 		t.Fatal("expected non-nil error for OK=false response")
@@ -157,7 +168,7 @@ func TestQueryF2Metrics_EnvName(t *testing.T) {
 
 	t.Setenv("AIMUX_ENGINE_NAME", "testengine")
 	m, err := queryF2Metrics()
-	<-done
+	waitFakeControl(t, done)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -194,7 +205,7 @@ func TestQueryNativeStatusAt_ExtractsGenerationRestoreAndHandoff(t *testing.T) {
 	done := serveFakeControl(t, sock, control.Response{OK: true, Data: json.RawMessage(data)})
 
 	status, err := queryNativeStatusAt(sock, "testengine")
-	<-done
+	waitFakeControl(t, done)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/thebtf/aimux/pkg/tenant"
 	muxdaemon "github.com/thebtf/mcp-mux/muxcore/daemon"
 	"github.com/thebtf/mcp-mux/muxcore/engine"
+	"github.com/thebtf/mcp-mux/muxcore/registry"
 )
 
 func main() {
@@ -245,6 +247,7 @@ func run() error {
 			Name:           engineName,
 			Persistent:     true,
 			SessionHandler: sessionHandler,
+			Registry:       muxcoreRegistryConfig(),
 			// Handler is a defence-in-depth fallback that muxcore would select
 			// in proxy mode (MCP_MUX_SESSION_ID set) — not reached today because
 			// detectMode() rejects MCP_MUX_SESSION_ID unconditionally per FR-4
@@ -280,6 +283,35 @@ func run() error {
 		}
 		return nil
 	}
+}
+
+func muxcoreRegistryConfig() *registry.Config {
+	return &registry.Config{
+		ProductName:    "aimux",
+		MuxcoreVersion: muxcoreDependencyVersion(),
+		Capabilities:   registry.Capabilities{ListOwners: true},
+	}
+}
+
+func muxcoreDependencyVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	return muxcoreDependencyVersionFromDeps(info.Deps)
+}
+
+func muxcoreDependencyVersionFromDeps(deps []*debug.Module) string {
+	for _, dep := range deps {
+		if dep.Path != "github.com/thebtf/mcp-mux/muxcore" {
+			continue
+		}
+		if dep.Replace != nil && dep.Replace.Version != "" {
+			return dep.Replace.Version
+		}
+		return dep.Version
+	}
+	return ""
 }
 
 // logResolvedSuccessor records the binary muxcore will spawn on graceful
