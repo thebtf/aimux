@@ -14,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/thebtf/aimux/pkg/think"
+	"github.com/thebtf/aimux/pkg/think/patterns"
 )
 
 const (
@@ -198,23 +201,36 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 		return nil, nil, err
 	}
 	files := []*ast.File{file}
-	thinkHarnessPath := filepath.Join(filepath.Dir(serverPath), "think_harness.go")
-	if _, statErr := os.Stat(thinkHarnessPath); statErr == nil {
-		thinkHarnessFile, parseErr := parser.ParseFile(fset, thinkHarnessPath, nil, parser.SkipObjectResolution)
+	serverDir := filepath.Dir(serverPath)
+	for _, name := range []string{"think_harness.go", "task_tool.go", "patterns.go"} {
+		path := filepath.Join(serverDir, name)
+		if _, statErr := os.Stat(path); statErr != nil {
+			continue
+		}
+		parsedFile, parseErr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if parseErr != nil {
 			return nil, nil, parseErr
 		}
-		files = append(files, thinkHarnessFile)
+		files = append(files, parsedFile)
 	}
 
 	registerTools := p26FindFuncDecl(file, "registerTools")
 	if registerTools == nil {
 		return nil, nil, fmt.Errorf("registerTools function not found in %s", serverPath)
 	}
-	thinkHarnessTools := p26FindFuncDeclInFiles(files, "registerThinkHarnessTool")
 
 	tools := make(map[string]struct{})
 	actionsByTool := make(map[string]map[string]struct{})
+	addTool := func(toolName string, actions map[string]struct{}) error {
+		if _, exists := tools[toolName]; exists {
+			return fmt.Errorf("duplicate tool registration for %q", toolName)
+		}
+		tools[toolName] = struct{}{}
+		if len(actions) > 0 {
+			actionsByTool[toolName] = actions
+		}
+		return nil
+	}
 	parseRegistration := func(fn *ast.FuncDecl) error {
 		var parseErr error
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -234,13 +250,9 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 				parseErr = err
 				return false
 			}
-			if _, exists := tools[toolName]; exists {
-				parseErr = fmt.Errorf("duplicate tool registration for %q", toolName)
+			if err := addTool(toolName, actions); err != nil {
+				parseErr = err
 				return false
-			}
-			tools[toolName] = struct{}{}
-			if len(actions) > 0 {
-				actionsByTool[toolName] = actions
 			}
 			return true
 		})
@@ -250,15 +262,73 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 	if err := parseRegistration(registerTools); err != nil {
 		return nil, nil, err
 	}
-	if thinkHarnessTools != nil {
-		if err := parseRegistration(thinkHarnessTools); err != nil {
+
+	for _, delegated := range []string{"registerThinkHarnessTool", "registerTaskTool"} {
+		if !p26FuncContainsReceiverCall(registerTools, delegated) {
+			return nil, nil, fmt.Errorf("registerTools no longer delegates to %s; update P26 coverage extractor", delegated)
+		}
+		fn := p26FindFuncDeclInFiles(files, delegated)
+		if fn == nil {
+			return nil, nil, fmt.Errorf("%s function not found for delegated P26 coverage", delegated)
+		}
+		if err := parseRegistration(fn); err != nil {
 			return nil, nil, err
 		}
+	}
+	if !p26FuncContainsReceiverCall(registerTools, "registerPatternTools") {
+		return nil, nil, fmt.Errorf("registerTools no longer delegates to registerPatternTools; update P26 coverage extractor")
+	}
+	if err := p26AddCognitiveMoveTools(addTool); err != nil {
+		return nil, nil, err
 	}
 	if len(tools) == 0 {
 		return nil, nil, fmt.Errorf("no tools discovered in registerTools; unsupported registration shape")
 	}
 	return tools, actionsByTool, nil
+}
+
+func p26AddCognitiveMoveTools(addTool func(string, map[string]struct{}) error) error {
+	patterns.RegisterAll()
+	count := 0
+	for _, name := range think.GetAllPatterns() {
+		if name == "think" {
+			continue
+		}
+		if think.GetPattern(name) == nil {
+			continue
+		}
+		if err := addTool(name, nil); err != nil {
+			return err
+		}
+		count++
+	}
+	if count == 0 {
+		return fmt.Errorf("no cognitive move tools discovered from think pattern registry")
+	}
+	return nil
+}
+
+func p26FuncContainsReceiverCall(fn *ast.FuncDecl, methodName string) bool {
+	found := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil || sel.Sel.Name != methodName {
+			return true
+		}
+		if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "s" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func p26FindFuncDecl(file *ast.File, name string) *ast.FuncDecl {

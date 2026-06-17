@@ -1,11 +1,62 @@
 {
   "schema_version": "v1",
   "source_of_truth": {
-    "runtime_registration": "pkg/server/server.go",
+    "runtime_registration": "pkg/server/server.go plus delegated registrations in pkg/server/think_harness.go, pkg/server/patterns.go, and pkg/server/task_tool.go",
     "principle": "P26"
   },
   "tools": {
+    "architecture_analysis": {
+      "classification": "sync_ok"
+    },
+    "collaborative_reasoning": {
+      "classification": "sync_ok"
+    },
+    "critical_thinking": {
+      "classification": "sync_ok"
+    },
+    "debugging_approach": {
+      "classification": "sync_ok"
+    },
+    "decision_framework": {
+      "classification": "sync_ok"
+    },
     "deepresearch": {
+      "classification": "async_mandatory"
+    },
+    "domain_modeling": {
+      "classification": "sync_ok"
+    },
+    "experimental_loop": {
+      "classification": "sync_ok"
+    },
+    "literature_review": {
+      "classification": "sync_ok"
+    },
+    "mental_model": {
+      "classification": "sync_ok"
+    },
+    "metacognitive_monitoring": {
+      "classification": "sync_ok"
+    },
+    "peer_review": {
+      "classification": "sync_ok"
+    },
+    "problem_decomposition": {
+      "classification": "sync_ok"
+    },
+    "recursive_thinking": {
+      "classification": "sync_ok"
+    },
+    "replication_analysis": {
+      "classification": "sync_ok"
+    },
+    "research_synthesis": {
+      "classification": "sync_ok"
+    },
+    "scientific_method": {
+      "classification": "sync_ok"
+    },
+    "sequential_thinking": {
       "classification": "sync_ok"
     },
     "sessions": {
@@ -19,7 +70,22 @@
         "refresh-warmup": "sync_ok"
       }
     },
+    "source_comparison": {
+      "classification": "sync_ok"
+    },
     "status": {
+      "classification": "sync_ok"
+    },
+    "stochastic_algorithm": {
+      "classification": "sync_ok"
+    },
+    "structured_argumentation": {
+      "classification": "sync_ok"
+    },
+    "task": {
+      "classification": "async_mandatory"
+    },
+    "temporal_thinking": {
       "classification": "sync_ok"
     },
     "think": {
@@ -34,6 +100,9 @@
         "check": "sync_ok",
         "apply": "sync_ok"
       }
+    },
+    "visual_reasoning": {
+      "classification": "sync_ok"
     }
   }
 }
