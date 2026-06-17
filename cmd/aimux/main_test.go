@@ -263,31 +263,31 @@ func TestMuxcoreDependencyVersionFromDeps(t *testing.T) {
 	}{
 		{
 			name: "direct_dependency",
-			deps: []*debug.Module{{Path: muxcorePath, Version: "v0.26.2"}},
-			want: "v0.26.2",
+			deps: []*debug.Module{{Path: muxcorePath, Version: "v0.26.5"}},
+			want: "v0.26.5",
 		},
 		{
 			name: "versioned_replace_wins",
 			deps: []*debug.Module{{
 				Path:    muxcorePath,
-				Version: "v0.26.2",
+				Version: "v0.26.5",
 				Replace: &debug.Module{
 					Path:    muxcorePath,
-					Version: "v0.26.3",
+					Version: "v0.26.6",
 				},
 			}},
-			want: "v0.26.3",
+			want: "v0.26.6",
 		},
 		{
 			name: "local_replace_keeps_declared_version",
 			deps: []*debug.Module{{
 				Path:    muxcorePath,
-				Version: "v0.26.2",
+				Version: "v0.26.5",
 				Replace: &debug.Module{
 					Path: "../muxcore",
 				},
 			}},
-			want: "v0.26.2",
+			want: "v0.26.5",
 		},
 		{
 			name: "missing_dependency",
