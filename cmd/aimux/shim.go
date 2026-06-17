@@ -30,16 +30,17 @@ const shimErrMsg = "shim mode is not expected to serve MCP requests; this is eit
 // Shim mode bridges stdio<->IPC to an existing daemon without performing
 // any daemon-level initialization (no SQLite, no LoomEngine, no warmup).
 //
-// AIMUX_ENGINE_NAME controls IPC socket discovery via pkg/server.ResolveEngineName,
-// preserving dev/prod daemon isolation (PR #71).
+// AIMUX_ENGINE_NAME overrides the human-readable engine label used by muxcore
+// to derive its internal transport namespace. Normal product operation leaves
+// it empty so the display label remains "aimux".
 //
 // ipc, when non-nil, is wired to engine.Config.OnInject so log entries forwarded
 // through the IPCSink ride the same IPC channel as legitimate CC traffic. The
 // shim's logger is constructed in main.go ModeShim path; ipc is the same instance.
 // Pre-handshake entries route to StderrFallback per FR-4.
 func runShim(ctx context.Context, cfg *config.Config, log *logger.Logger, ipc *logger.IPCSink) error {
-	// Engine name controls IPC socket discovery — different names = isolated daemons.
-	// Shared resolution logic with cmd/aimux/main.go avoids drift in daemon naming.
+	// Engine name is the display label. muxcore derives the transport namespace
+	// internally, so normal operation should not hand-pick socket names.
 	engineName := aimuxServer.ResolveEngineName()
 
 	log.Info("aimux v%s shim ready (name=%s)", build.Version, engineName)

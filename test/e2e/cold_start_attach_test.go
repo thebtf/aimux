@@ -72,8 +72,8 @@ func TestColdStart_ConcurrentShimAttach(t *testing.T) {
 	baseEnv := append(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,
 		"AIMUX_ENGINE_NAME="+engineName,
-		"AIMUX_WARMUP=false",          // skip CLI warmup; Phase B completes near-instantly
-		"AIMUX_SESSION_STORE=memory",  // no SQLite for test isolation
+		"AIMUX_WARMUP=false",         // skip CLI warmup; Phase B completes near-instantly
+		"AIMUX_SESSION_STORE=memory", // no SQLite for test isolation
 		"PATH="+pathEnv,
 		"TMPDIR="+isolatedTmp,
 		tempEnvName+"="+isolatedTmp,
@@ -81,7 +81,7 @@ func TestColdStart_ConcurrentShimAttach(t *testing.T) {
 	)
 
 	// ---- Spawn daemon ----
-	ctlSock := filepath.Join(isolatedTmp, engineName+"-muxd.ctl.sock")
+	var ctlSock string
 	daemonCmd := exec.Command(binary, "--muxcore-daemon")
 	daemonCmd.Env = baseEnv
 	daemonCmd.Stderr = os.Stderr
@@ -92,10 +92,10 @@ func TestColdStart_ConcurrentShimAttach(t *testing.T) {
 		cleanupDaemon(t, ctlSock, daemonCmd, "TestColdStart_ConcurrentShimAttach")
 	})
 
-	// Wait for daemon readiness via control socket (daemon is in Phase A immediately).
-	if err := waitForCtlSocket(ctlSock, 60*time.Second); err != nil {
-		t.Fatalf("daemon did not become ready: %v", err)
-	}
+	// Wait for daemon readiness via muxcore registry descriptor. The display
+	// engine name is not the transport namespace in muxcore v0.26.7+.
+	rec := waitForHealthyRegistryDescriptor(t, isolatedTmp, engineName, 60*time.Second)
+	ctlSock = rec.Descriptor.DaemonControlPath
 	t.Log("daemon ready — spawning shims concurrently")
 
 	// ---- Concurrently spawn numShims shims ----

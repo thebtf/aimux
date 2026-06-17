@@ -763,8 +763,11 @@ the MCP client under different OS user accounts, or (b) using the documented
 This scenario verifies the installed daemon path, not only a source-tree test
 binary. Use `mcp-launcher` or an equivalent MCP client that can call
 `upgrade(action="apply", source=..., force=true)` and then reconnect.
-For release evidence on Windows, prefer unique installed smoke binary names so
-live clients using `bin\aimux-dev.exe` cannot contaminate the reconnect result.
+For release evidence on Windows, unique installed smoke binary names are useful
+only for file/process cleanup. They are not a muxcore namespace strategy. Use an
+isolated smoke environment (`TMPDIR`/`TEMP`/`TMP`, and a smoke-only
+`AIMUX_ENGINE_NAME` when the launcher preserves env) when the smoke must avoid
+live clients using `bin\aimux-dev.exe`.
 
 **Safety note:** do not use `aimux-ctl -cmd graceful-restart` for this
 scenario. The `upgrade` MCP tool and `mcp-launcher -mode install` are the
@@ -782,12 +785,24 @@ customer-supported installed-daemon paths.
    go build -ldflags "-s -w -X github.com/thebtf/aimux/pkg/build.Version=$nextVersion -X github.com/thebtf/aimux/pkg/build.Commit=smoke -X github.com/thebtf/aimux/pkg/build.BuildDate=$buildDate" -o .\bin\postexit-smoke\aimux-postexit-next.exe ./cmd/aimux/
    ```
 2. Install through the isolated current daemon and verify reconnect reaches the
-   next binary:
+   next binary. The smoke label below is a test harness label; normal product
+   operation leaves `AIMUX_ENGINE_NAME` unset so the display engine name is
+   `aimux` and muxcore derives the transport namespace internally.
    ```powershell
+   $oldEngineName = $env:AIMUX_ENGINE_NAME
+   $oldTemp = $env:TEMP
+   $oldTmp = $env:TMP
+   $oldTmpDir = $env:TMPDIR
+   $smokeTemp = (Resolve-Path .\bin\postexit-smoke).Path
+   $env:AIMUX_ENGINE_NAME = "aimux-postexit-smoke"
+   $env:TEMP = $smokeTemp
+   $env:TMP = $smokeTemp
+   $env:TMPDIR = $smokeTemp
+
    D:\Dev\mcp-launcher\mcp-launcher.exe `
      -binary D:\Dev\aimux\bin\postexit-smoke\aimux-postexit-current.exe `
      -cwd D:\Dev\aimux `
-     -env-mode clean `
+     -env-mode full `
      -mode install `
      -source D:\Dev\aimux\bin\postexit-smoke\aimux-postexit-next.exe `
      -force `
@@ -796,6 +811,11 @@ customer-supported installed-daemon paths.
      -timeout 90 `
      -reconnect-delay 15 `
      -cleanup-binary-processes
+
+   $env:AIMUX_ENGINE_NAME = $oldEngineName
+   $env:TEMP = $oldTemp
+   $env:TMP = $oldTmp
+   $env:TMPDIR = $oldTmpDir
    ```
 3. Optional operator-local validation against the shared deployed binary uses
    the same command shape, but only after same-path `bin\aimux-dev.exe` clients

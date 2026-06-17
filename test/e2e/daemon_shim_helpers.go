@@ -8,12 +8,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/thebtf/mcp-mux/muxcore/control"
+	"github.com/thebtf/mcp-mux/muxcore/registry"
 )
 
 // startDaemonAndShim launches a daemon process via `aimux --muxcore-daemon` and
@@ -28,8 +28,9 @@ import (
 // shim inherits env from its parent (this test) and forwards PATH so the
 // daemon finds testcli binaries when it auto-spawns sub-processes.
 //
-// Each test gets a unique AIMUX_ENGINE_NAME derived from t.TempDir() so
-// parallel tests never collide on the control or IPC socket paths.
+// Each test gets a unique AIMUX_ENGINE_NAME so parallel tests have distinct
+// display labels; muxcore derives the transport namespace and publishes the
+// actual control path through its registry descriptor.
 //
 // Known constraint: muxcore/owner/resilient_client.go exits the shim on
 // stdin EOF detection even for persistent MCP sessions (engram mcp-mux#153).
@@ -38,12 +39,9 @@ import (
 func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*exec.Cmd, io.WriteCloser, *bufio.Reader) {
 	t.Helper()
 
-	// Engine name MUST be unique per test to prevent control-socket collisions.
-	// Unix-socket paths have an effective ~107-char ceiling on both Linux
-	// (sockaddr_un.sun_path[108]) and Windows (AF_UNIX path limit), so we
-	// keep the engine name minimal: "aimux-e2e-" + 8 hex chars = 18 bytes.
-	// The random suffix alone gives 2^32 uniqueness — more than enough for
-	// the suite. We log the mapping so failing tests can be correlated.
+	// Engine name is a display label that muxcore includes while deriving its
+	// internal namespace. Keep the test label short and unique so parallel test
+	// daemons remain isolated without manually selecting socket paths.
 	var randSuffix [4]byte
 	if _, err := rand.Read(randSuffix[:]); err != nil {
 		t.Fatalf("rand: %v", err)
@@ -58,11 +56,10 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 		pathEnv = os.Getenv("PATH")
 	}
 
-	// Isolate muxcore's own IPC sockets (mcp-mux-${server_id}.sock) from any
-	// production aimux daemon on the same machine. muxcore derives its socket
-	// paths from os.TempDir(); overriding TMPDIR/TEMP/TMP per test points them
-	// into a test-scoped tempdir, so the fresh daemon never collides with a
-	// user's long-running aimux server.
+	// Isolate muxcore's own IPC sockets from any production aimux daemon on the
+	// same machine. muxcore derives socket paths under os.TempDir(); overriding
+	// TMPDIR/TEMP/TMP per test points them into a test-scoped tempdir, so the
+	// fresh daemon never collides with a user's long-running aimux server.
 	//
 	// t.TempDir() produces deeply-nested paths (TestName1234567890/001/…)
 	// that overflow the Unix-socket path limit (~108 chars on Linux/Windows)
@@ -90,12 +87,7 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 	)
 
 	// --- Spawn daemon ---
-	//
-	// The control socket is created by the engine at
-	// as `<dir>/<engineName>-muxd.ctl.sock`. Once the daemon is listening
-	// there, it is ready to accept IPC connections from shims. Dial with
-	// retries until the socket accepts a connection or the timeout expires.
-	ctlSock := filepath.Join(isolatedTmp, engineName+"-muxd.ctl.sock")
+	var ctlSock string
 	daemonCmd := exec.Command(aimuxBin, "--muxcore-daemon")
 	daemonCmd.Env = baseEnv
 	daemonCmd.Stderr = os.Stderr
@@ -107,13 +99,12 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 		cleanupDaemon(t, ctlSock, daemonCmd, "startDaemonAndShim")
 	})
 
-	// --- Wait for daemon readiness via control socket dial ---
+	// --- Wait for daemon readiness via muxcore registry descriptor ---
 	// Readiness timeout is generous (60s) because the test suite may spawn
-	// many daemons in rapid succession; a cold daemon on a loaded machine
-	// can take several seconds to create its control socket.
-	if err := waitForCtlSocket(ctlSock, 60*time.Second); err != nil {
-		t.Fatalf("daemon readiness: %v (name=%s)", err, engineName)
-	}
+	// many daemons in rapid succession; a cold daemon on a loaded machine can
+	// take several seconds to publish and verify its descriptor.
+	rec := waitForHealthyRegistryDescriptor(t, isolatedTmp, engineName, 60*time.Second)
+	ctlSock = rec.Descriptor.DaemonControlPath
 
 	// --- Spawn shim with os.Pipe for stdin/stdout ---
 	//
@@ -189,6 +180,66 @@ func waitForCtlSocket(path string, timeout time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("control socket did not become ready within %v: %s", timeout, path)
+}
+
+func waitForRegistryDescriptor(t *testing.T, baseDir, engineName string, timeout time.Duration) registry.Record {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		records, err := registry.ListDescriptors(baseDir)
+		if err != nil {
+			lastErr = err
+		} else if rec, err := registry.ResolveEngine(records, engineName); err == nil {
+			return rec
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("registry descriptor for %q not found within %v: %v", engineName, timeout, lastErr)
+	return registry.Record{}
+}
+
+func waitForHealthyRegistryDescriptor(t *testing.T, baseDir, engineName string, timeout time.Duration) registry.Record {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		rec := waitForRegistryDescriptorSoft(baseDir, engineName)
+		if rec.err != nil {
+			lastErr = rec.err
+		} else {
+			verified := registry.VerifyDescriptor(rec.record)
+			if verified.State == registry.StateHealthy && verified.Reachable {
+				return rec.record
+			}
+			lastErr = fmt.Errorf("descriptor not healthy: state=%q reachable=%v reason=%q path=%s",
+				verified.State, verified.Reachable, verified.Reason, rec.record.Descriptor.DaemonControlPath)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("healthy registry descriptor for %q not found within %v: %v", engineName, timeout, lastErr)
+	return registry.Record{}
+}
+
+type registryDescriptorResult struct {
+	record registry.Record
+	err    error
+}
+
+func waitForRegistryDescriptorSoft(baseDir, engineName string) registryDescriptorResult {
+	records, err := registry.ListDescriptors(baseDir)
+	if err != nil {
+		return registryDescriptorResult{err: err}
+	}
+	rec, err := registry.ResolveEngine(records, engineName)
+	if err != nil {
+		return registryDescriptorResult{err: err}
+	}
+	return registryDescriptorResult{record: rec}
 }
 
 func cleanupDaemon(t *testing.T, ctlSock string, daemonCmd *exec.Cmd, prefix string) {
@@ -283,7 +334,7 @@ func startDaemonAndShimWithEnv(t *testing.T, aimuxBin, testcliDir, configDir str
 	)
 	baseEnv = append(baseEnv, extraEnv...)
 
-	ctlSock := filepath.Join(isolatedTmp, engineName+"-muxd.ctl.sock")
+	var ctlSock string
 	daemonCmd := exec.Command(aimuxBin, "--muxcore-daemon")
 	daemonCmd.Env = baseEnv
 	daemonCmd.Stderr = os.Stderr
@@ -294,9 +345,8 @@ func startDaemonAndShimWithEnv(t *testing.T, aimuxBin, testcliDir, configDir str
 	t.Cleanup(func() {
 		cleanupDaemon(t, ctlSock, daemonCmd, "startDaemonAndShimWithEnv")
 	})
-	if err := waitForCtlSocket(ctlSock, 60*time.Second); err != nil {
-		t.Fatalf("daemon readiness: %v (name=%s)", err, engineName)
-	}
+	rec := waitForHealthyRegistryDescriptor(t, isolatedTmp, engineName, 60*time.Second)
+	ctlSock = rec.Descriptor.DaemonControlPath
 
 	shimStdinR, shimStdinW, err := os.Pipe()
 	if err != nil {

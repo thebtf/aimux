@@ -2,34 +2,19 @@ package server
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 )
 
 // ResolveEngineName returns the canonical daemon engine name used to scope
-// task ownership in loom (AIMUX-10). It reads AIMUX_ENGINE_NAME first; if
-// empty or whitespace-only, falls back to the binary basename (os.Args[0])
-// stripped of the .exe/.EXE extension. As a last-resort backstop returns "aimux"
-// — matches the existing default in cmd/aimux/shim.go and main.go.
+// task ownership in loom (AIMUX-10). It reads AIMUX_ENGINE_NAME first; if empty
+// or whitespace-only, returns the stable human-readable product label "aimux".
+// muxcore derives the collision-resistant transport namespace internally, so
+// binary basenames must not become the default display label.
 //
 // Spec: AIMUX-10 FR-7. Resolves CHK016 (unusual env values: trim, no length cap).
 func ResolveEngineName() string {
 	if name := strings.TrimSpace(os.Getenv("AIMUX_ENGINE_NAME")); name != "" {
 		return name
-	}
-	if len(os.Args) > 0 && os.Args[0] != "" {
-		// Normalize both separators so Windows-style paths produce a correct
-		// basename when this binary is invoked under a Unix runtime (e.g.
-		// CI test runners that fake os.Args). filepath.Base on Linux does
-		// NOT treat '\' as a separator, so a path like "C:\\tools\\aimux-dev.exe"
-		// would yield the entire string. Convert to forward slashes first.
-		raw := strings.ReplaceAll(os.Args[0], `\`, `/`)
-		base := filepath.Base(raw)
-		base = strings.TrimSuffix(base, ".exe")
-		base = strings.TrimSuffix(base, ".EXE")
-		if trimmed := strings.TrimSpace(base); trimmed != "" {
-			return trimmed
-		}
 	}
 	return "aimux"
 }
