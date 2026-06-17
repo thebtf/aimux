@@ -90,6 +90,82 @@ func TestCoordinatorApply_AutoUsesPostExitInstallWhenRequired(t *testing.T) {
 	}
 }
 
+func TestCoordinatorApply_ActiveEngineFileSkipsPostExitInstallWhenRequired(t *testing.T) {
+	restore := setPostExitInstallRequiredForTest(func() bool { return true })
+	defer restore()
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux-launcher.exe")
+	sourcePath := filepath.Join(dir, "aimux-engine-next.exe")
+	activeEngineFile := filepath.Join(dir, "active.txt")
+	writeTestFile(t, binaryPath, "launcher")
+	writeTestFile(t, sourcePath, "engine-v2")
+
+	var successorCalled bool
+	var postExitCalled bool
+	coord := &Coordinator{
+		Version:          "5.14.2",
+		BinaryPath:       binaryPath,
+		Source:           sourcePath,
+		EngineMode:       true,
+		ActiveEngineFile: activeEngineFile,
+		SessionHandler:   &testSessionHandler{},
+		RestartWithSuccessor: func(ctx context.Context, opts muxengine.RestartWithSuccessorOptions) (muxengine.UpdateAndRestartResult, error) {
+			successorCalled = true
+			if opts.SuccessorExe == "" {
+				t.Fatal("SuccessorExe is empty")
+			}
+			return muxengine.UpdateAndRestartResult{
+				DaemonWasRunning:   true,
+				GracefulRestarted:  true,
+				ReplacementStarted: true,
+				ReplacementReady:   true,
+			}, nil
+		},
+		PostExitInstall: func(context.Context, PostExitInstallOptions) error {
+			postExitCalled = true
+			return nil
+		},
+	}
+
+	result, err := coord.Apply(context.Background(), ModeAuto, true)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !successorCalled {
+		t.Fatal("expected RestartWithSuccessor to be called")
+	}
+	if postExitCalled {
+		t.Fatal("active-pointer topology must not use post-exit install")
+	}
+	if result.Method != "hot_swap" {
+		t.Fatalf("Method = %q, want hot_swap", result.Method)
+	}
+}
+
+func TestWriteActiveEnginePointerReplacesExistingPointer(t *testing.T) {
+	dir := t.TempDir()
+	pointerPath := filepath.Join(dir, "active.txt")
+	firstSuccessor := filepath.Join(dir, "aimux-engine-v1.exe")
+	nextSuccessor := filepath.Join(dir, "aimux-engine-v2.exe")
+	writeTestFile(t, pointerPath, firstSuccessor+"\n")
+
+	if err := writeActiveEnginePointer(pointerPath, nextSuccessor); err != nil {
+		t.Fatalf("writeActiveEnginePointer: %v", err)
+	}
+	got, err := os.ReadFile(pointerPath)
+	if err != nil {
+		t.Fatalf("ReadFile pointer: %v", err)
+	}
+	want, err := filepath.Abs(nextSuccessor)
+	if err != nil {
+		t.Fatalf("Abs nextSuccessor: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != want {
+		t.Fatalf("pointer = %q, want %q", strings.TrimSpace(string(got)), want)
+	}
+}
+
 func TestCoordinatorApply_PostExitInstallStartsWatchdogAndRegistersDrainFallback(t *testing.T) {
 	restore := setPostExitInstallRequiredForTest(func() bool { return true })
 	defer restore()

@@ -159,10 +159,12 @@ func TestUpgrade_AutoProvidesMuxcoreRestartHelperBeforeEngineRun(t *testing.T) {
 	srv.SetMuxEngine(eng)
 
 	var capturedEngineMode bool
-	var capturedHelperAvailable bool
+	var capturedApplyHelperAvailable bool
+	var capturedSuccessorHelperAvailable bool
 	srv.applyUpgrade = func(ctx context.Context, coord *upgrade.Coordinator, mode upgrade.Mode, force bool) (*upgrade.Result, error) {
 		capturedEngineMode = coord.EngineMode
-		capturedHelperAvailable = coord.ApplyUpdateAndRestart != nil
+		capturedApplyHelperAvailable = coord.ApplyUpdateAndRestart != nil
+		capturedSuccessorHelperAvailable = coord.RestartWithSuccessor != nil
 		return &upgrade.Result{
 			Method:          "hot_swap",
 			PreviousVersion: Version,
@@ -182,8 +184,11 @@ func TestUpgrade_AutoProvidesMuxcoreRestartHelperBeforeEngineRun(t *testing.T) {
 	if !capturedEngineMode {
 		t.Fatal("expected coordinator EngineMode=true in SessionHandler mode")
 	}
-	if !capturedHelperAvailable {
+	if !capturedApplyHelperAvailable {
 		t.Fatal("expected coordinator ApplyUpdateAndRestart helper to be available when mux engine is wired")
+	}
+	if !capturedSuccessorHelperAvailable {
+		t.Fatal("expected coordinator RestartWithSuccessor helper to be available when mux engine is wired")
 	}
 	payload := parseResult(t, result)
 	if payload["status"] != "updated_hot_swap" {

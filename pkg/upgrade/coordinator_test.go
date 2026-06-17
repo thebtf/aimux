@@ -208,6 +208,87 @@ func TestCoordinatorApply_LocalSourceUsesMuxcoreApplyUpdateAndRestart(t *testing
 	}
 }
 
+func TestCoordinatorApply_LocalSourceWithActiveEngineFileUsesRestartWithSuccessor(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "aimux-launcher.exe")
+	sourcePath := filepath.Join(dir, "aimux-engine-next.exe")
+	activeEngineFile := filepath.Join(dir, "active.txt")
+	if err := os.WriteFile(binaryPath, []byte("launcher"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("engine-v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	var called bool
+	var got muxengine.RestartWithSuccessorOptions
+	coord := &upgrade.Coordinator{
+		Version:          "5.14.2",
+		BinaryPath:       binaryPath,
+		Source:           sourcePath,
+		EngineMode:       true,
+		ActiveEngineFile: activeEngineFile,
+		RestartWithSuccessor: func(ctx context.Context, opts muxengine.RestartWithSuccessorOptions) (muxengine.UpdateAndRestartResult, error) {
+			called = true
+			got = opts
+			successorPayload, err := os.ReadFile(opts.SuccessorExe)
+			if err != nil {
+				t.Fatalf("ReadFile SuccessorExe: %v", err)
+			}
+			if string(successorPayload) != "engine-v2" {
+				t.Fatalf("SuccessorExe payload = %q, want engine-v2", successorPayload)
+			}
+			pointerPayload, err := os.ReadFile(activeEngineFile)
+			if err != nil {
+				t.Fatalf("ReadFile active pointer: %v", err)
+			}
+			if strings.TrimSpace(string(pointerPayload)) != opts.SuccessorExe {
+				t.Fatalf("active pointer = %q, want %q", strings.TrimSpace(string(pointerPayload)), opts.SuccessorExe)
+			}
+			return muxengine.UpdateAndRestartResult{
+				DaemonWasRunning:   true,
+				GracefulRestarted:  true,
+				ReplacementStarted: true,
+				ReplacementReady:   true,
+			}, nil
+		},
+		ApplyUpdateAndRestart: func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error) {
+			t.Fatal("versioned active-pointer topology must not use ApplyUpdateAndRestart")
+			return muxengine.UpdateAndRestartResult{}, nil
+		},
+	}
+
+	result, err := coord.Apply(context.Background(), upgrade.ModeAuto, true)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !called {
+		t.Fatal("expected RestartWithSuccessor helper to be called")
+	}
+	resolvedSource, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks source: %v", err)
+	}
+	if got.SuccessorExe == resolvedSource {
+		t.Fatalf("SuccessorExe = %q, want copied staging path distinct from source", got.SuccessorExe)
+	}
+	if filepath.Dir(got.SuccessorExe) != filepath.Dir(binaryPath) {
+		t.Fatalf("SuccessorExe dir = %q, want binary dir %q", filepath.Dir(got.SuccessorExe), filepath.Dir(binaryPath))
+	}
+	if _, err := os.Stat(got.SuccessorExe); err != nil {
+		t.Fatalf("successor path should remain available after pointer update: %v", err)
+	}
+	if got.DrainTimeout != 10*time.Second {
+		t.Fatalf("DrainTimeout = %s, want 10s", got.DrainTimeout)
+	}
+	if result.Method != "hot_swap" {
+		t.Fatalf("Method = %q, want hot_swap", result.Method)
+	}
+	if result.NewVersion != "local-dev" {
+		t.Fatalf("NewVersion = %q, want local-dev", result.NewVersion)
+	}
+}
+
 func TestCoordinatorApply_RemoteDownloadUsesMuxcoreStagedPath(t *testing.T) {
 	dir := t.TempDir()
 	binaryPath := filepath.Join(dir, "aimux.exe")

@@ -30,6 +30,7 @@ const (
 	defaultControlRequestTimeout       = 45 * time.Second
 	postExitInstallWatchdogTimeout     = defaultControlRequestTimeout
 	postExitStopDelay                  = 500 * time.Millisecond
+	activeEngineFileEnv                = "MCPMUX_ACTIVE_ENGINE_FILE"
 	sourceStagingDirEnv                = "AIMUX_UPGRADE_SOURCE_DIR"
 	allowSourceOutsideBinDirEnv        = "AIMUX_ALLOW_UPGRADE_SOURCE_OUTSIDE_BIN_DIR"
 )
@@ -52,6 +53,11 @@ type HandoffStatusFunc func(ctx context.Context) (HandoffStatus, error)
 // ApplyUpdateAndRestartFunc swaps a staged binary into place and restarts the
 // muxcore daemon namespace using the provider-owned restart choreography.
 type ApplyUpdateAndRestartFunc func(ctx context.Context, opts muxengine.UpdateAndRestartOptions) (muxengine.UpdateAndRestartResult, error)
+
+// RestartWithSuccessorFunc restarts the muxcore daemon namespace with an
+// already-staged successor executable. Consumers with stable launcher +
+// versioned engine topology update their active pointer before calling this.
+type RestartWithSuccessorFunc func(ctx context.Context, opts muxengine.RestartWithSuccessorOptions) (muxengine.UpdateAndRestartResult, error)
 
 // PostExitInstallFunc starts an out-of-process installer from the staged binary.
 // The helper waits until the current daemon exits, then replaces CurrentExe and
@@ -133,6 +139,11 @@ type Coordinator struct {
 	// daemon in one provider-owned operation. Nil means the helper is unavailable.
 	ApplyUpdateAndRestart ApplyUpdateAndRestartFunc
 
+	// RestartWithSuccessor restarts the muxcore daemon after the caller has
+	// staged a successor executable and updated the active engine pointer.
+	// Nil means the successor topology helper is unavailable.
+	RestartWithSuccessor RestartWithSuccessorFunc
+
 	// PostExitInstall installs a staged binary after the current process exits.
 	// Used for Windows self-replacement, where swap-before-exit fails because
 	// the running executable is locked.
@@ -145,6 +156,10 @@ type Coordinator struct {
 	// Source is an optional path to a local binary to install.
 	// When set, the coordinator skips GitHub download and uses this file directly.
 	Source string
+
+	// ActiveEngineFile is the stable-launcher pointer file to update before
+	// RestartWithSuccessor. Empty falls back to MCPMUX_ACTIVE_ENGINE_FILE.
+	ActiveEngineFile string
 
 	applyInProgress atomic.Bool
 }
@@ -234,6 +249,9 @@ func (c *Coordinator) Apply(ctx context.Context, mode Mode, force bool) (result 
 
 	if c.shouldUsePostExitInstall(mode) {
 		return c.applyWithPostExitInstall(ctx, normalizeMode(mode), force)
+	}
+	if c.shouldUseRestartWithSuccessor(mode) {
+		return c.applyWithSuccessorRestart(ctx, normalizeMode(mode), force)
 	}
 	if c.shouldUseApplyUpdateAndRestart(mode) {
 		return c.applyWithMuxcoreRestart(ctx, normalizeMode(mode), force)
@@ -394,11 +412,21 @@ func (c *Coordinator) shouldUseApplyUpdateAndRestart(mode Mode) bool {
 		c.ApplyUpdate == nil
 }
 
+func (c *Coordinator) shouldUseRestartWithSuccessor(mode Mode) bool {
+	mode = normalizeMode(mode)
+	return c.EngineMode &&
+		c.RestartWithSuccessor != nil &&
+		c.activeEngineFilePath() != "" &&
+		(mode == ModeAuto || mode == ModeHotSwap) &&
+		c.ApplyUpdate == nil
+}
+
 func (c *Coordinator) shouldUsePostExitInstall(mode Mode) bool {
 	mode = normalizeMode(mode)
 	return c.EngineMode &&
 		c.PostExitInstall != nil &&
 		postExitInstallRequired() &&
+		c.activeEngineFilePath() == "" &&
 		(mode == ModeAuto || mode == ModeHotSwap) &&
 		c.ApplyUpdate == nil
 }
@@ -439,6 +467,74 @@ func (c *Coordinator) afterDeferredInstall(release *updater.Release) *Result {
 			RestartTopology: "session_drain",
 		},
 	}
+}
+
+func (c *Coordinator) applyWithSuccessorRestart(ctx context.Context, mode Mode, force bool) (*Result, error) {
+	release, successorPath, cleanupStaged, err := c.prepareStagedUpdate(ctx, force)
+	if err != nil {
+		return nil, err
+	}
+	if release == nil {
+		return &Result{
+			Method:          "up_to_date",
+			PreviousVersion: c.Version,
+			NewVersion:      c.Version,
+			Message:         "Already up to date.",
+		}, nil
+	}
+
+	activeEngineFile := c.activeEngineFilePath()
+	if err := writeActiveEnginePointer(activeEngineFile, successorPath); err != nil {
+		if cleanupStaged && successorPath != "" {
+			_ = os.Remove(successorPath)
+		}
+		return nil, err
+	}
+
+	restart, err := c.RestartWithSuccessor(ctx, muxengine.RestartWithSuccessorOptions{
+		SuccessorExe: successorPath,
+		DrainTimeout: time.Duration(defaultGracefulRestartDrainTimeout) * time.Millisecond,
+	})
+	if err != nil {
+		if mode == ModeHotSwap {
+			return nil, err
+		}
+		fallback := c.afterDeferredInstall(release)
+		fallback.HandoffError = err.Error()
+		partial := muxengine.UpdateAndRestartResult{}
+		var updateErr *muxengine.UpdateAndRestartError
+		if errors.As(err, &updateErr) {
+			partial = updateErr.Result
+		}
+		fallback.Topology = topologyFromMuxcoreRestart("deferred", partial, updateAndRestartFailurePhase(err))
+		if fallback.Message != "" {
+			fallback.Message += " Hot-swap unavailable: " + err.Error()
+		}
+		return fallback, nil
+	}
+
+	if restart.GracefulRestarted && restart.ReplacementReady && !restart.FallbackShutdown {
+		return &Result{
+			Method:          "hot_swap",
+			PreviousVersion: c.Version,
+			NewVersion:      release.Version,
+			Message:         "Binary updated. Daemon handoff completed successfully.",
+			Topology:        topologyFromMuxcoreRestart("hot_swap", restart, ""),
+		}, nil
+	}
+
+	reason := restartFallbackReason(restart)
+	if mode == ModeHotSwap {
+		return nil, fmt.Errorf("%w: %s", errHotSwapUnsupported, reason)
+	}
+	return &Result{
+		Method:          "deferred",
+		PreviousVersion: c.Version,
+		NewVersion:      release.Version,
+		HandoffError:    reason,
+		Message:         "Binary updated. Daemon restarted without live handoff. Hot-swap unavailable: " + reason,
+		Topology:        topologyFromMuxcoreRestart("deferred", restart, ""),
+	}, nil
 }
 
 func (c *Coordinator) applyWithMuxcoreRestart(ctx context.Context, mode Mode, force bool) (*Result, error) {
@@ -507,6 +603,64 @@ func (c *Coordinator) applyWithMuxcoreRestart(ctx context.Context, mode Mode, fo
 		Message:         "Binary updated. Daemon restarted without live handoff. Hot-swap unavailable: " + reason,
 		Topology:        topologyFromMuxcoreRestart("deferred", restart, ""),
 	}, nil
+}
+
+func (c *Coordinator) activeEngineFilePath() string {
+	if c == nil {
+		return ""
+	}
+	if active := strings.TrimSpace(c.ActiveEngineFile); active != "" {
+		return active
+	}
+	return strings.TrimSpace(os.Getenv(activeEngineFileEnv))
+}
+
+func writeActiveEnginePointer(pointerPath, successorPath string) error {
+	if strings.TrimSpace(pointerPath) == "" {
+		return fmt.Errorf("%s is required for successor restart", activeEngineFileEnv)
+	}
+	if strings.TrimSpace(successorPath) == "" {
+		return fmt.Errorf("successor executable path is required")
+	}
+	pointerAbs, err := filepath.Abs(pointerPath)
+	if err != nil {
+		return fmt.Errorf("resolve active engine pointer: %w", err)
+	}
+	successorAbs, err := filepath.Abs(successorPath)
+	if err != nil {
+		return fmt.Errorf("resolve successor executable: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(pointerAbs), 0o700); err != nil {
+		return fmt.Errorf("prepare active engine pointer directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(pointerAbs), filepath.Base(pointerAbs)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create active engine pointer temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	keepTmp := false
+	defer func() {
+		if !keepTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.WriteString(successorAbs + "\n"); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write active engine pointer: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close active engine pointer temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, pointerAbs); err != nil {
+		if removeErr := os.Remove(pointerAbs); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("replace active engine pointer: %w", removeErr)
+		}
+		if retryErr := os.Rename(tmpPath, pointerAbs); retryErr != nil {
+			return fmt.Errorf("promote active engine pointer: %w", retryErr)
+		}
+	}
+	keepTmp = true
+	return nil
 }
 
 func (c *Coordinator) applyWithPostExitInstall(ctx context.Context, mode Mode, force bool) (*Result, error) {

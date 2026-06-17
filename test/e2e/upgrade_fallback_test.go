@@ -130,6 +130,7 @@ func TestE2E_Upgrade_OldSessionRequestThenFreshSessionNewVersion(t *testing.T) {
 
 	oldHealth := readHealthResource(t, oldStdin, oldReader, 3)
 	requireNativeHealthFields(t, oldHealth)
+	oldDaemonGeneration := requireStringHealthField(t, oldHealth, "daemon_generation")
 
 	_ = oldStdin.Close()
 	waitForBinaryVersion(t, currentBin, nextVersion, 20*time.Second)
@@ -141,6 +142,12 @@ func TestE2E_Upgrade_OldSessionRequestThenFreshSessionNewVersion(t *testing.T) {
 	requireInitializeVersion(t, freshInit, nextVersion)
 	freshHealth := readHealthResource(t, freshStdin, freshReader, 2)
 	requireNativeHealthFields(t, freshHealth)
+	freshDaemonGeneration := requireStringHealthField(t, freshHealth, "daemon_generation")
+	if freshDaemonGeneration == oldDaemonGeneration {
+		t.Fatalf("daemon_generation did not change across update: old=%q fresh=%q; fresh health=%v", oldDaemonGeneration, freshDaemonGeneration, freshHealth)
+	}
+	requireNumericHealthField(t, freshHealth, "shim_reconnect_fallback_spawned", 0)
+	requireNumericHealthField(t, freshHealth, "shim_reconnect_gave_up", 0)
 	if freshHealth["version"] != nextVersion {
 		t.Fatalf("fresh aimux://health.version = %v, want %s; health=%v", freshHealth["version"], nextVersion, freshHealth)
 	}
@@ -263,6 +270,26 @@ func requireNativeHealthFields(t *testing.T, health map[string]any) {
 	}
 	if got, _ := owner["restore_source"].(string); got == "" {
 		t.Fatalf("restore_source missing: %v", owner)
+	}
+}
+
+func requireStringHealthField(t *testing.T, health map[string]any, key string) string {
+	t.Helper()
+	got, ok := health[key].(string)
+	if !ok || got == "" {
+		t.Fatalf("health[%s] = %#v, want non-empty string; health=%v", key, health[key], health)
+	}
+	return got
+}
+
+func requireNumericHealthField(t *testing.T, health map[string]any, key string, want float64) {
+	t.Helper()
+	got, ok := health[key].(float64)
+	if !ok {
+		t.Fatalf("health[%s] = %#v, want numeric; health=%v", key, health[key], health)
+	}
+	if got != want {
+		t.Fatalf("health[%s] = %v, want %v; health=%v", key, got, want, health)
 	}
 }
 

@@ -93,6 +93,13 @@ func (s *Server) applyUpdateAndRestartFunc() upgrade.ApplyUpdateAndRestartFunc {
 	return s.muxEngine.ApplyUpdateAndRestart
 }
 
+func (s *Server) restartWithSuccessorFunc() upgrade.RestartWithSuccessorFunc {
+	if s == nil || s.muxEngine == nil {
+		return nil
+	}
+	return s.muxEngine.RestartWithSuccessor
+}
+
 func (s *Server) liveDaemon() *muxdaemon.Daemon {
 	if s == nil || s.muxEngine == nil {
 		return nil
