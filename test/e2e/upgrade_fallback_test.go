@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -153,6 +154,126 @@ func TestE2E_Upgrade_OldSessionRequestThenFreshSessionNewVersion(t *testing.T) {
 	}
 }
 
+func TestE2E_Upgrade_ActivePointerSuccessorRuntimeAcceptance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("active-pointer upgrade smoke requires real daemon/shim processes")
+	}
+
+	const currentVersion = "debug-302-current"
+	const nextVersion = "debug-302-next"
+	const thirdVersion = "debug-302-third"
+
+	currentBin := buildBinaryVersion(t, currentVersion)
+	nextBin := buildBinaryVersion(t, nextVersion)
+	thirdBin := buildBinaryVersion(t, thirdVersion)
+	nextInstallBin := filepath.Join(filepath.Dir(currentBin), filepath.Base(nextBin))
+	copyFileForTest(t, nextBin, nextInstallBin)
+	thirdInstallBin := filepath.Join(filepath.Dir(currentBin), filepath.Base(thirdBin))
+	copyFileForTest(t, thirdBin, thirdInstallBin)
+	testcliBin := buildTestCLI(t)
+	tmpDir := t.TempDir()
+	configDir, _, _ := shimTestWriteConfig(t, tmpDir)
+	testcliDir := filepath.Dir(testcliBin)
+
+	activeEngineFile := filepath.Join(tmpDir, "active-engine.txt")
+	if err := os.WriteFile(activeEngineFile, []byte(currentBin+"\n"), 0o600); err != nil {
+		t.Fatalf("write initial active engine pointer: %v", err)
+	}
+
+	engineName := fmt.Sprintf("aimux-e2e-active-pointer-%d", time.Now().UnixNano())
+	isolatedTmp := filepath.Join(tmpDir, "runtime-tmp")
+	if err := os.MkdirAll(isolatedTmp, 0o755); err != nil {
+		t.Fatalf("create isolated tmp: %v", err)
+	}
+	pathEnv := testcliDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	baseEnv := append(os.Environ(),
+		"AIMUX_CONFIG_DIR="+configDir,
+		"AIMUX_ENGINE_NAME="+engineName,
+		"AIMUX_WARMUP=false",
+		"AIMUX_SESSION_STORE=sqlite",
+		"PATH="+pathEnv,
+		"TMPDIR="+isolatedTmp,
+		"TEMP="+isolatedTmp,
+		"TMP="+isolatedTmp,
+		"MCPMUX_ACTIVE_ENGINE_FILE="+activeEngineFile,
+	)
+
+	var ctlSock string
+	daemonCmd := exec.Command(currentBin, "--muxcore-daemon")
+	daemonCmd.Env = baseEnv
+	daemonCmd.Stderr = os.Stderr
+	if err := daemonCmd.Start(); err != nil {
+		t.Fatalf("start active-pointer daemon: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupDaemon(t, ctlSock, daemonCmd, "TestE2E_Upgrade_ActivePointerSuccessorRuntimeAcceptance")
+	})
+	rec := waitForHealthyRegistryDescriptor(t, isolatedTmp, engineName, 60*time.Second)
+	ctlSock = rec.Descriptor.DaemonControlPath
+
+	oldStdin, oldReader := startShimWithEnv(t, currentBin, baseEnv)
+	oldInit := initializeMCPWithResponse(t, oldStdin, oldReader)
+	requireInitializeVersion(t, oldInit, currentVersion)
+	requireToolNamed(t, readToolsList(t, oldStdin, oldReader, 2), "upgrade")
+	oldHealth := readHealthResource(t, oldStdin, oldReader, 3)
+	requireNativeHealthFields(t, oldHealth)
+	oldDaemonGeneration := requireStringHealthField(t, oldHealth, "daemon_generation")
+
+	firstSuccessor := applyAndAssertActivePointerUpgrade(t, oldStdin, oldReader, 4, activeEngineFile, nextInstallBin)
+	requireExecutableVersion(t, firstSuccessor, nextVersion)
+
+	oldPostHealth := readHealthResource(t, oldStdin, oldReader, 5)
+	requireNativeHealthFields(t, oldPostHealth)
+	if oldPostHealth["version"] != nextVersion {
+		t.Fatalf("old session health.version after successor restart = %v, want %s; health=%v", oldPostHealth["version"], nextVersion, oldPostHealth)
+	}
+	firstDaemonGeneration := requireStringHealthField(t, oldPostHealth, "daemon_generation")
+	if firstDaemonGeneration == oldDaemonGeneration {
+		t.Fatalf("daemon_generation did not change after first successor restart: old=%q fresh=%q; health=%v", oldDaemonGeneration, firstDaemonGeneration, oldPostHealth)
+	}
+	requireHandoffNumericFieldAtLeast(t, oldPostHealth, "restored_owner_count", 1)
+	requireNumericHealthFieldAtLeast(t, oldPostHealth, "shim_reconnect_refreshed", 1)
+	requireNumericHealthField(t, oldPostHealth, "shim_reconnect_fallback_spawned", 0)
+	requireNumericHealthField(t, oldPostHealth, "shim_reconnect_gave_up", 0)
+	requireToolNamed(t, readToolsList(t, oldStdin, oldReader, 6), "upgrade")
+
+	freshStdin, freshReader := startShimWithEnv(t, currentBin, baseEnv)
+	freshInit := initializeMCPWithResponse(t, freshStdin, freshReader)
+	requireInitializeVersion(t, freshInit, nextVersion)
+	requireToolNamed(t, readToolsList(t, freshStdin, freshReader, 2), "upgrade")
+	freshHealth := readHealthResource(t, freshStdin, freshReader, 3)
+	requireNativeHealthFields(t, freshHealth)
+	if freshHealth["version"] != nextVersion {
+		t.Fatalf("fresh shim health.version = %v, want %s; health=%v", freshHealth["version"], nextVersion, freshHealth)
+	}
+
+	secondSuccessor := applyAndAssertActivePointerUpgrade(t, freshStdin, freshReader, 4, activeEngineFile, thirdInstallBin)
+	if secondSuccessor == firstSuccessor {
+		t.Fatalf("active pointer did not advance on second successor restart: %q", secondSuccessor)
+	}
+	requireExecutableVersion(t, secondSuccessor, thirdVersion)
+
+	secondHealth := readHealthResource(t, freshStdin, freshReader, 5)
+	requireNativeHealthFields(t, secondHealth)
+	if secondHealth["version"] != thirdVersion {
+		t.Fatalf("second-cycle health.version = %v, want %s; health=%v", secondHealth["version"], thirdVersion, secondHealth)
+	}
+	secondDaemonGeneration := requireStringHealthField(t, secondHealth, "daemon_generation")
+	if secondDaemonGeneration == firstDaemonGeneration {
+		t.Fatalf("daemon_generation did not change after second successor restart: first=%q second=%q; health=%v", firstDaemonGeneration, secondDaemonGeneration, secondHealth)
+	}
+	requireHandoffNumericFieldAtLeast(t, secondHealth, "restored_owner_count", 1)
+	requireNumericHealthFieldAtLeast(t, secondHealth, "shim_reconnect_refreshed", 1)
+	requireNumericHealthField(t, secondHealth, "shim_reconnect_fallback_spawned", 0)
+	requireNumericHealthField(t, secondHealth, "shim_reconnect_gave_up", 0)
+	requireToolNamed(t, readToolsList(t, freshStdin, freshReader, 6), "upgrade")
+
+	freshThirdStdin, freshThirdReader := startShimWithEnv(t, currentBin, baseEnv)
+	freshThirdInit := initializeMCPWithResponse(t, freshThirdStdin, freshThirdReader)
+	requireInitializeVersion(t, freshThirdInit, thirdVersion)
+	requireToolNamed(t, readToolsList(t, freshThirdStdin, freshThirdReader, 2), "upgrade")
+}
+
 func initializeMCPWithResponse(t *testing.T, stdin io.Writer, reader *bufio.Reader) map[string]any {
 	t.Helper()
 	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
@@ -207,6 +328,37 @@ func toolJSONPayload(t *testing.T, resp map[string]any) map[string]any {
 	return payload
 }
 
+func readToolsList(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int) []any {
+	t.Helper()
+	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "tools/list", map[string]any{})); err != nil {
+		t.Fatalf("write tools/list: %v", err)
+	}
+	resp := readResponseForID(t, reader, id, 10*time.Second)
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result missing: %+v", resp)
+	}
+	tools, ok := result["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		t.Fatalf("tools/list tools missing: %+v", result)
+	}
+	return tools
+}
+
+func requireToolNamed(t *testing.T, tools []any, want string) {
+	t.Helper()
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if got, _ := tool["name"].(string); got == want {
+			return
+		}
+	}
+	t.Fatalf("tools/list missing %q: %v", want, tools)
+}
+
 func readHealthResource(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int) map[string]any {
 	t.Helper()
 	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "resources/read", map[string]any{
@@ -214,10 +366,7 @@ func readHealthResource(t *testing.T, stdin io.Writer, reader *bufio.Reader, id 
 	})); err != nil {
 		t.Fatalf("write health read: %v", err)
 	}
-	resp, err := readResponse(reader, 10*time.Second)
-	if err != nil {
-		t.Fatalf("health resource response: %v", err)
-	}
+	resp := readResponseForID(t, reader, id, 10*time.Second)
 	result, ok := resp["result"].(map[string]any)
 	if !ok {
 		t.Fatalf("health result missing: %+v", resp)
@@ -282,6 +431,32 @@ func requireStringHealthField(t *testing.T, health map[string]any, key string) s
 	return got
 }
 
+func requireHandoffNumericFieldAtLeast(t *testing.T, health map[string]any, key string, min float64) {
+	t.Helper()
+	handoff, ok := health["handoff"].(map[string]any)
+	if !ok {
+		t.Fatalf("health[handoff] = %#v, want object; health=%v", health["handoff"], health)
+	}
+	got, ok := handoff[key].(float64)
+	if !ok {
+		t.Fatalf("health[handoff][%s] = %#v, want numeric; health=%v", key, handoff[key], health)
+	}
+	if got < min {
+		t.Fatalf("health[handoff][%s] = %v, want >= %v; health=%v", key, got, min, health)
+	}
+}
+
+func requireNumericHealthFieldAtLeast(t *testing.T, health map[string]any, key string, min float64) {
+	t.Helper()
+	got, ok := health[key].(float64)
+	if !ok {
+		t.Fatalf("health[%s] = %#v, want numeric; health=%v", key, health[key], health)
+	}
+	if got < min {
+		t.Fatalf("health[%s] = %v, want >= %v; health=%v", key, got, min, health)
+	}
+}
+
 func requireNumericHealthField(t *testing.T, health map[string]any, key string, want float64) {
 	t.Helper()
 	got, ok := health[key].(float64)
@@ -290,6 +465,112 @@ func requireNumericHealthField(t *testing.T, health map[string]any, key string, 
 	}
 	if got != want {
 		t.Fatalf("health[%s] = %v, want %v; health=%v", key, got, want, health)
+	}
+}
+
+func applyAndAssertActivePointerUpgrade(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, activeEngineFile, source string) string {
+	t.Helper()
+	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "tools/call", map[string]any{
+		"name": "upgrade",
+		"arguments": map[string]any{
+			"action": "apply",
+			"source": source,
+			"force":  true,
+		},
+	})); err != nil {
+		t.Fatalf("write active-pointer upgrade request: %v", err)
+	}
+	upgradeResp := readResponseForID(t, reader, id, 30*time.Second)
+	if rpcErr, ok := upgradeResp["error"].(map[string]any); ok {
+		msg, _ := rpcErr["message"].(string)
+		if !strings.Contains(msg, "upstream restarted, request lost during reconnect") {
+			t.Fatalf("active-pointer upgrade returned unexpected JSON-RPC error: %+v", upgradeResp)
+		}
+		t.Logf("active-pointer upgrade request was lost during reconnect; continuing to verify post-restart runtime state")
+	} else {
+		upgradePayload := toolJSONPayload(t, upgradeResp)
+		if upgradePayload["status"] != "updated_hot_swap" {
+			t.Fatalf("status = %v, want updated_hot_swap; payload=%v", upgradePayload["status"], upgradePayload)
+		}
+		if upgradePayload["update_method"] != "hot_swap" {
+			t.Fatalf("update_method = %v, want hot_swap; payload=%v", upgradePayload["update_method"], upgradePayload)
+		}
+		topology, ok := upgradePayload["update_topology"].(map[string]any)
+		if !ok {
+			t.Fatalf("update_topology = %#v, want object; payload=%v", upgradePayload["update_topology"], upgradePayload)
+		}
+		for key, want := range map[string]any{
+			"restart_topology":    "graceful_restart",
+			"daemon_was_running":  true,
+			"graceful_restarted":  true,
+			"fallback_shutdown":   false,
+			"replacement_started": true,
+			"replacement_ready":   true,
+		} {
+			if topology[key] != want {
+				t.Fatalf("update_topology[%s] = %v, want %v; topology=%v payload=%v", key, topology[key], want, topology, upgradePayload)
+			}
+		}
+	}
+
+	pointerPayload, err := os.ReadFile(activeEngineFile)
+	if err != nil {
+		t.Fatalf("read active engine pointer: %v", err)
+	}
+	successor := strings.TrimSpace(string(pointerPayload))
+	if successor == "" {
+		t.Fatalf("active engine pointer is empty")
+	}
+	if _, err := os.Stat(successor); err != nil {
+		t.Fatalf("active engine successor does not exist: %s: %v", successor, err)
+	}
+	return successor
+}
+
+func readResponseForID(t *testing.T, reader *bufio.Reader, id int, timeout time.Duration) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("timeout waiting for JSON-RPC response id=%d after %v", id, timeout)
+		}
+		resp, err := readResponse(reader, remaining)
+		if err != nil {
+			t.Fatalf("response id=%d: %v", id, err)
+		}
+		if jsonRPCIDMatches(resp["id"], id) {
+			return resp
+		}
+		t.Logf("skipping response id=%v while waiting for id=%d", resp["id"], id)
+	}
+}
+
+func jsonRPCIDMatches(got any, want int) bool {
+	switch v := got.(type) {
+	case float64:
+		return int(v) == want
+	case int:
+		return v == want
+	case json.Number:
+		n, err := v.Int64()
+		return err == nil && int(n) == want
+	case string:
+		return v == fmt.Sprintf("%d", want)
+	default:
+		return false
+	}
+}
+
+func requireExecutableVersion(t *testing.T, bin string, want string) {
+	t.Helper()
+	out, err := exec.Command(bin, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s --version: %v\n%s", bin, err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if !strings.Contains(got, want) {
+		t.Fatalf("%s --version = %q, want substring %q", bin, got, want)
 	}
 }
 
@@ -308,4 +589,60 @@ func waitForBinaryVersion(t *testing.T, bin string, want string, timeout time.Du
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatalf("binary %s did not report version %q within %v; last=%q err=%v", bin, want, timeout, last, lastErr)
+}
+
+func startShimWithEnv(t *testing.T, aimuxBin string, env []string) (io.WriteCloser, *bufio.Reader) {
+	t.Helper()
+
+	shimStdinR, shimStdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("shim stdin pipe: %v", err)
+	}
+	shimStdoutR, shimStdoutW, err := os.Pipe()
+	if err != nil {
+		shimStdinR.Close()
+		shimStdinW.Close()
+		t.Fatalf("shim stdout pipe: %v", err)
+	}
+
+	shimCmd := exec.Command(aimuxBin)
+	shimCmd.Env = env
+	shimCmd.Stdin = shimStdinR
+	shimCmd.Stdout = shimStdoutW
+	shimCmd.Stderr = os.Stderr
+	if err := shimCmd.Start(); err != nil {
+		shimStdinR.Close()
+		shimStdinW.Close()
+		shimStdoutR.Close()
+		shimStdoutW.Close()
+		t.Fatalf("start shim: %v", err)
+	}
+	shimStdinR.Close()
+	shimStdoutW.Close()
+
+	t.Cleanup(func() {
+		shimStdinW.Close()
+		if shimCmd.Process == nil {
+			shimStdoutR.Close()
+			return
+		}
+		done := make(chan struct{})
+		go func() {
+			_ = shimCmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			_ = shimCmd.Process.Kill()
+			select {
+			case <-done:
+			case <-time.After(1 * time.Second):
+				t.Logf("startShimWithEnv cleanup: shim Wait() did not return within 1s after Kill")
+			}
+		}
+		shimStdoutR.Close()
+	})
+
+	return shimStdinW, bufio.NewReader(shimStdoutR)
 }

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,6 +34,8 @@ const (
 	activeEngineFileEnv                = "MCPMUX_ACTIVE_ENGINE_FILE"
 	sourceStagingDirEnv                = "AIMUX_UPGRADE_SOURCE_DIR"
 	allowSourceOutsideBinDirEnv        = "AIMUX_ALLOW_UPGRADE_SOURCE_OUTSIDE_BIN_DIR"
+	stagedExecutablePrefix             = "aimux-stage-"
+	legacyStagedExecutablePrefix       = "aimux-update-"
 )
 
 // ApplyUpdateFunc installs the latest binary release for the current version.
@@ -781,8 +784,9 @@ func (c *Coordinator) newStagedUpdatePath() (string, error) {
 	}
 	dir := filepath.Dir(binaryAbs)
 	cleanupStaleStagedUpdates(dir)
+	ext := stagedExecutableExtension(binaryAbs)
 	for attempt := 0; attempt < 100; attempt++ {
-		name := fmt.Sprintf("aimux-update-%d-%d-%d.bin", os.Getpid(), time.Now().UnixNano(), attempt)
+		name := fmt.Sprintf("%s%d-%d-%d%s", stagedExecutablePrefix, os.Getpid(), time.Now().UnixNano(), attempt, ext)
 		path := filepath.Join(dir, name)
 		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 			return path, nil
@@ -791,6 +795,16 @@ func (c *Coordinator) newStagedUpdatePath() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("allocate staged update path in %s: exhausted unique candidates", dir)
+}
+
+func stagedExecutableExtension(binaryPath string) string {
+	if ext := filepath.Ext(binaryPath); ext != "" {
+		return ext
+	}
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ".bin"
 }
 
 func cleanupStaleStagedUpdates(dir string) {
@@ -804,7 +818,8 @@ func cleanupStaleStagedUpdates(dir string) {
 		}
 		name := entry.Name()
 		candidate := strings.TrimPrefix(name, ".")
-		if strings.HasPrefix(candidate, "aimux-update-") &&
+		if (strings.HasPrefix(candidate, stagedExecutablePrefix) ||
+			strings.HasPrefix(candidate, legacyStagedExecutablePrefix)) &&
 			(strings.HasSuffix(candidate, ".bin") ||
 				strings.Contains(candidate, ".bin.") ||
 				strings.HasSuffix(candidate, ".exe") ||

@@ -269,11 +269,13 @@ func TestPrepareStagedUpdate_LocalSourceCopiesBesideCurrentBinary(t *testing.T) 
 	binaryPath := filepath.Join(binaryDir, "aimux.exe")
 	sourcePath := filepath.Join(sourceDir, "aimux-next.exe")
 	staleStagedPath := filepath.Join(binaryDir, "aimux-update-1-2-0.bin")
+	staleSafeStagedPath := filepath.Join(binaryDir, "aimux-stage-1-2-0.exe")
 	staleLegacyTempPath := filepath.Join(binaryDir, "aimux-update-1-2-0.exe.123.tmp")
 	staleDotLegacyTempPath := filepath.Join(binaryDir, ".aimux-update-1-2-0.exe.456.tmp")
 	writeTestFile(t, binaryPath, "v1")
 	writeTestFile(t, sourcePath, "v2")
 	writeTestFile(t, staleStagedPath, "stale")
+	writeTestFile(t, staleSafeStagedPath, "stale")
 	writeTestFile(t, staleLegacyTempPath, "stale")
 	writeTestFile(t, staleDotLegacyTempPath, "stale")
 	t.Setenv(allowSourceOutsideBinDirEnv, "1")
@@ -311,6 +313,9 @@ func TestPrepareStagedUpdate_LocalSourceCopiesBesideCurrentBinary(t *testing.T) 
 	}
 	if _, err := os.Stat(staleStagedPath); !os.IsNotExist(err) {
 		t.Fatalf("stale staged update should be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(staleSafeStagedPath); !os.IsNotExist(err) {
+		t.Fatalf("stale safe staged update should be removed, stat err=%v", err)
 	}
 	if _, err := os.Stat(staleLegacyTempPath); !os.IsNotExist(err) {
 		t.Fatalf("stale legacy temp update should be removed, stat err=%v", err)

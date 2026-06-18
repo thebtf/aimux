@@ -275,6 +275,16 @@ func TestCoordinatorApply_LocalSourceWithActiveEngineFileUsesRestartWithSuccesso
 	if filepath.Dir(got.SuccessorExe) != filepath.Dir(binaryPath) {
 		t.Fatalf("SuccessorExe dir = %q, want binary dir %q", filepath.Dir(got.SuccessorExe), filepath.Dir(binaryPath))
 	}
+	successorBase := filepath.Base(got.SuccessorExe)
+	if !strings.HasPrefix(successorBase, "aimux-stage-") {
+		t.Fatalf("SuccessorExe basename = %q, want safe aimux-stage-* prefix", successorBase)
+	}
+	if strings.Contains(strings.ToLower(successorBase), "update") {
+		t.Fatalf("SuccessorExe basename = %q, must avoid Windows UAC update/install heuristics", successorBase)
+	}
+	if runtime.GOOS == "windows" && filepath.Ext(got.SuccessorExe) != ".exe" {
+		t.Fatalf("SuccessorExe extension = %q, want .exe for Windows successor execution; path=%q", filepath.Ext(got.SuccessorExe), got.SuccessorExe)
+	}
 	if _, err := os.Stat(got.SuccessorExe); err != nil {
 		t.Fatalf("successor path should remain available after pointer update: %v", err)
 	}
