@@ -63,14 +63,20 @@ type TaskRequest struct {
 	Metadata       map[string]any
 }
 
-// TaskResult is the synchronous result returned by TaskRouter.Dispatch.
+// TaskResult is the result returned by TaskRouter.Dispatch.
 type TaskResult struct {
 	TaskID          string                 `json:"task_id"`
-	Content         string                 `json:"content"`
+	JobID           string                 `json:"job_id,omitempty"`
+	Content         string                 `json:"content,omitempty"`
 	CLI             string                 `json:"cli,omitempty"`
 	TaskClass       string                 `json:"task_class"`
 	WorkerType      loom.WorkerType        `json:"worker_type"`
 	Status          loom.TaskStatus        `json:"status"`
+	StatusCommand   string                 `json:"status_command,omitempty"`
+	CancelCommand   string                 `json:"cancel_command,omitempty"`
+	TaskURI         string                 `json:"task_uri,omitempty"`
+	EventsURI       string                 `json:"events_uri,omitempty"`
+	ProgressURI     string                 `json:"progress_uri,omitempty"`
 	Rounds          int                    `json:"rounds,omitempty"`
 	ConfidenceScore float64                `json:"confidence_score"`
 	Metadata        map[string]any         `json:"metadata,omitempty"`
@@ -124,7 +130,9 @@ func DefaultTaskRoutes() map[string]loom.WorkerType {
 	}
 }
 
-// Dispatch resolves task_class, submits a Loom task, and waits for terminal status.
+// Dispatch resolves task_class, submits a Loom task, and returns an accepted job
+// handle. The submitted task survives caller disconnects; observe it through
+// status(job_id) or aimux://tasks/{task_id}.
 func (r *TaskRouter) Dispatch(ctx context.Context, req TaskRequest) (TaskResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -166,10 +174,12 @@ func (r *TaskRouter) Dispatch(ctx context.Context, req TaskRequest) (TaskResult,
 		return TaskResult{TaskClass: resolvedClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}, ensureCLIError(err)
 	}
 
-	result, err := r.wait(ctx, taskID, resolvedClass, workerType, confidence, candidates, r.waitTimeoutForRequest(req.TimeoutSeconds))
-	if err != nil {
-		return result, err
-	}
+	result := acceptedTaskResult(taskID, resolvedClass, workerType, confidence, candidates)
+	result.Metadata = cloneTaskMetadata(loomReq.Metadata)
+	result.Metadata["accepted"] = true
+	result.Metadata["async_contract"] = "loom"
+	result.Metadata["observe_with"] = "status(job_id)"
+	result.Metadata["caller_disconnect_policy"] = "task continues until terminal status or explicit cancel"
 	return result, nil
 }
 
@@ -337,14 +347,37 @@ func buildTaskResult(task *loom.Task, taskClass string, confidence float64, cand
 	rounds, _ := metadataInt(metadata, "rounds")
 	return TaskResult{
 		TaskID:          task.ID,
+		JobID:           task.ID,
 		Content:         task.Result,
 		CLI:             task.CLI,
 		TaskClass:       taskClass,
 		WorkerType:      task.WorkerType,
 		Status:          task.Status,
+		StatusCommand:   fmt.Sprintf("status(job_id=%q)", task.ID),
+		CancelCommand:   fmt.Sprintf("sessions(action=%q, job_id=%q)", "cancel", task.ID),
+		TaskURI:         "aimux://tasks/" + task.ID,
+		EventsURI:       "aimux://tasks/" + task.ID + "/events",
+		ProgressURI:     "aimux://tasks/" + task.ID + "/progress",
 		Rounds:          rounds,
 		ConfidenceScore: confidence,
 		Metadata:        metadata,
+		Candidates:      cloneCandidates(candidates),
+	}
+}
+
+func acceptedTaskResult(taskID string, taskClass string, workerType loom.WorkerType, confidence float64, candidates []classifier.Candidate) TaskResult {
+	return TaskResult{
+		TaskID:          taskID,
+		JobID:           taskID,
+		TaskClass:       taskClass,
+		WorkerType:      workerType,
+		Status:          loom.TaskStatusDispatched,
+		StatusCommand:   fmt.Sprintf("status(job_id=%q)", taskID),
+		CancelCommand:   fmt.Sprintf("sessions(action=%q, job_id=%q)", "cancel", taskID),
+		TaskURI:         "aimux://tasks/" + taskID,
+		EventsURI:       "aimux://tasks/" + taskID + "/events",
+		ProgressURI:     "aimux://tasks/" + taskID + "/progress",
+		ConfidenceScore: confidence,
 		Candidates:      cloneCandidates(candidates),
 	}
 }

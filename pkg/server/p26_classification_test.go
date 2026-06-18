@@ -36,12 +36,18 @@ type p26ToolClassificationSpec struct {
 	Actions        map[string]string `json:"actions,omitempty"`
 }
 
+type p26RuntimeToolContract struct {
+	Contracted     bool
+	Classification string
+	AdapterKind    string
+}
+
 func TestP26ClassificationCoverage(t *testing.T) {
 	repoRoot := p26RepoRoot(t)
 	serverPath := filepath.Join(repoRoot, "pkg", "server", "server.go")
 	artifactPath := filepath.Join(repoRoot, "config", "p26", "classification.v1.json")
 
-	liveTools, liveActions, err := p26ExtractRuntimeToolCoverage(serverPath)
+	liveTools, liveActions, liveContracts, err := p26ExtractRuntimeToolCoverage(serverPath)
 	if err != nil {
 		t.Fatalf("extract runtime registration coverage: %v", err)
 	}
@@ -100,6 +106,25 @@ func TestP26ClassificationCoverage(t *testing.T) {
 			if _, ok := allowed[v]; !ok {
 				errs = append(errs, fmt.Sprintf("invalid classification value for action %q on tool %q: %q", action, tool, v))
 			}
+		}
+	}
+
+	for _, tool := range p26SortedMapKeys(artifact.Tools) {
+		spec := artifact.Tools[tool]
+		contract := liveContracts[tool]
+		if p26SpecRequiresAsyncContract(spec) {
+			if !contract.Contracted {
+				errs = append(errs, fmt.Sprintf("async_mandatory tool %q must register through registerContractedTool", tool))
+				continue
+			}
+			if contract.Classification != p26AsyncMandatory {
+				errs = append(errs, fmt.Sprintf("async_mandatory tool %q runtime contract classification = %q", tool, contract.Classification))
+			}
+			if strings.TrimSpace(contract.AdapterKind) == "" {
+				errs = append(errs, fmt.Sprintf("async_mandatory tool %q runtime contract adapter_kind is empty", tool))
+			}
+		} else if contract.Contracted && contract.Classification == p26AsyncMandatory {
+			errs = append(errs, fmt.Sprintf("tool %q runtime contract is async_mandatory but artifact is not", tool))
 		}
 	}
 
@@ -167,6 +192,18 @@ func TestP26ClassificationCoverage(t *testing.T) {
 	}
 }
 
+func p26SpecRequiresAsyncContract(spec p26ToolClassificationSpec) bool {
+	if spec.Classification == p26AsyncMandatory {
+		return true
+	}
+	for _, classification := range spec.Actions {
+		if classification == p26AsyncMandatory {
+			return true
+		}
+	}
+	return false
+}
+
 func p26RepoRoot(t *testing.T) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -194,11 +231,11 @@ func p26LoadClassificationArtifact(path string) (*p26ClassificationArtifact, err
 	return &artifact, nil
 }
 
-func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[string]map[string]struct{}, error) {
+func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[string]map[string]struct{}, map[string]p26RuntimeToolContract, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, serverPath, nil, parser.SkipObjectResolution)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	files := []*ast.File{file}
 	serverDir := filepath.Dir(serverPath)
@@ -209,25 +246,29 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 		}
 		parsedFile, parseErr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if parseErr != nil {
-			return nil, nil, parseErr
+			return nil, nil, nil, parseErr
 		}
 		files = append(files, parsedFile)
 	}
 
 	registerTools := p26FindFuncDecl(file, "registerTools")
 	if registerTools == nil {
-		return nil, nil, fmt.Errorf("registerTools function not found in %s", serverPath)
+		return nil, nil, nil, fmt.Errorf("registerTools function not found in %s", serverPath)
 	}
 
 	tools := make(map[string]struct{})
 	actionsByTool := make(map[string]map[string]struct{})
-	addTool := func(toolName string, actions map[string]struct{}) error {
+	contractsByTool := make(map[string]p26RuntimeToolContract)
+	addTool := func(toolName string, actions map[string]struct{}, contract p26RuntimeToolContract) error {
 		if _, exists := tools[toolName]; exists {
 			return fmt.Errorf("duplicate tool registration for %q", toolName)
 		}
 		tools[toolName] = struct{}{}
 		if len(actions) > 0 {
 			actionsByTool[toolName] = actions
+		}
+		if contract.Contracted {
+			contractsByTool[toolName] = contract
 		}
 		return nil
 	}
@@ -241,16 +282,31 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 			if !ok {
 				return true
 			}
-			if !p26IsSelectorCall(call.Fun, "AddTool") {
+			var (
+				toolName string
+				actions  map[string]struct{}
+				contract p26RuntimeToolContract
+				err      error
+				matched  bool
+			)
+			switch {
+			case p26IsSelectorCall(call.Fun, "AddTool"):
+				toolName, actions, err = p26ParseAddToolCall(call, fset)
+				matched = true
+			case p26IsSelectorCall(call.Fun, "registerContractedTool"):
+				toolName, actions, contract, err = p26ParseContractedToolCall(call, fset)
+				matched = true
+			default:
 				return true
 			}
-
-			toolName, actions, err := p26ParseAddToolCall(call, fset)
 			if err != nil {
 				parseErr = err
 				return false
 			}
-			if err := addTool(toolName, actions); err != nil {
+			if !matched {
+				return true
+			}
+			if err := addTool(toolName, actions, contract); err != nil {
 				parseErr = err
 				return false
 			}
@@ -260,34 +316,34 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 	}
 
 	if err := parseRegistration(registerTools); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	for _, delegated := range []string{"registerThinkHarnessTool", "registerTaskTool"} {
 		if !p26FuncContainsReceiverCall(registerTools, delegated) {
-			return nil, nil, fmt.Errorf("registerTools no longer delegates to %s; update P26 coverage extractor", delegated)
+			return nil, nil, nil, fmt.Errorf("registerTools no longer delegates to %s; update P26 coverage extractor", delegated)
 		}
 		fn := p26FindFuncDeclInFiles(files, delegated)
 		if fn == nil {
-			return nil, nil, fmt.Errorf("%s function not found for delegated P26 coverage", delegated)
+			return nil, nil, nil, fmt.Errorf("%s function not found for delegated P26 coverage", delegated)
 		}
 		if err := parseRegistration(fn); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 	if !p26FuncContainsReceiverCall(registerTools, "registerPatternTools") {
-		return nil, nil, fmt.Errorf("registerTools no longer delegates to registerPatternTools; update P26 coverage extractor")
+		return nil, nil, nil, fmt.Errorf("registerTools no longer delegates to registerPatternTools; update P26 coverage extractor")
 	}
 	if err := p26AddCognitiveMoveTools(addTool); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if len(tools) == 0 {
-		return nil, nil, fmt.Errorf("no tools discovered in registerTools; unsupported registration shape")
+		return nil, nil, nil, fmt.Errorf("no tools discovered in registerTools; unsupported registration shape")
 	}
-	return tools, actionsByTool, nil
+	return tools, actionsByTool, contractsByTool, nil
 }
 
-func p26AddCognitiveMoveTools(addTool func(string, map[string]struct{}) error) error {
+func p26AddCognitiveMoveTools(addTool func(string, map[string]struct{}, p26RuntimeToolContract) error) error {
 	patterns.RegisterAll()
 	count := 0
 	for _, name := range think.GetAllPatterns() {
@@ -297,7 +353,7 @@ func p26AddCognitiveMoveTools(addTool func(string, map[string]struct{}) error) e
 		if think.GetPattern(name) == nil {
 			continue
 		}
-		if err := addTool(name, nil); err != nil {
+		if err := addTool(name, nil, p26RuntimeToolContract{}); err != nil {
 			return err
 		}
 		count++
@@ -362,6 +418,98 @@ func p26ParseAddToolCall(addToolCall *ast.CallExpr, fset *token.FileSet) (string
 	if !ok || !p26IsSelectorCall(newToolCall.Fun, "NewTool") {
 		return "", nil, p26UnsupportedCallErr(fset, addToolCall.Pos(), "AddTool first argument must be mcp.NewTool(...) literal")
 	}
+	return p26ParseNewToolCall(newToolCall, fset)
+}
+
+func p26ParseContractedToolCall(call *ast.CallExpr, fset *token.FileSet) (string, map[string]struct{}, p26RuntimeToolContract, error) {
+	if len(call.Args) < 2 {
+		return "", nil, p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, call.Pos(), "registerContractedTool call requires contract and mcp.NewTool arguments")
+	}
+
+	contract, err := p26ParseToolContract(call.Args[0], fset)
+	if err != nil {
+		return "", nil, p26RuntimeToolContract{}, err
+	}
+	newToolCall, ok := call.Args[1].(*ast.CallExpr)
+	if !ok || !p26IsSelectorCall(newToolCall.Fun, "NewTool") {
+		return "", nil, p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, call.Args[1].Pos(), "registerContractedTool second argument must be mcp.NewTool(...) literal")
+	}
+	toolName, actions, err := p26ParseNewToolCall(newToolCall, fset)
+	if err != nil {
+		return "", nil, p26RuntimeToolContract{}, err
+	}
+	if contract.Classification == "" {
+		return "", nil, p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, call.Args[0].Pos(), "toolContract Classification must be set")
+	}
+	if contract.Classification == p26AsyncMandatory && strings.TrimSpace(contract.AdapterKind) == "" {
+		return "", nil, p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, call.Args[0].Pos(), "async_mandatory toolContract AdapterKind must be set")
+	}
+	contract.Contracted = true
+	contractName := strings.TrimSpace(p26ContractToolName(call.Args[0]))
+	if contractName == "" {
+		return "", nil, p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, call.Args[0].Pos(), "toolContract Name must be set")
+	}
+	if contractName != toolName {
+		return "", nil, p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, call.Args[0].Pos(), fmt.Sprintf("toolContract Name %q does not match mcp.NewTool name %q", contractName, toolName))
+	}
+	return toolName, actions, contract, nil
+}
+
+func p26ParseToolContract(expr ast.Expr, fset *token.FileSet) (p26RuntimeToolContract, error) {
+	lit, ok := expr.(*ast.CompositeLit)
+	if !ok || !p26IsIdent(lit.Type, "toolContract") {
+		return p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, expr.Pos(), "first registerContractedTool argument must be toolContract{...}")
+	}
+	var contract p26RuntimeToolContract
+	for _, element := range lit.Elts {
+		kv, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			return p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, element.Pos(), "toolContract must use keyed fields")
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch key.Name {
+		case "Classification":
+			value, ok := p26ContractString(kv.Value)
+			if !ok {
+				return p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, kv.Value.Pos(), "toolContract Classification must be a literal or known constant")
+			}
+			contract.Classification = value
+		case "AdapterKind":
+			value, ok := p26StringLiteral(kv.Value)
+			if !ok {
+				return p26RuntimeToolContract{}, p26UnsupportedCallErr(fset, kv.Value.Pos(), "toolContract AdapterKind must be a string literal")
+			}
+			contract.AdapterKind = value
+		}
+	}
+	return contract, nil
+}
+
+func p26ContractToolName(expr ast.Expr) string {
+	lit, ok := expr.(*ast.CompositeLit)
+	if !ok {
+		return ""
+	}
+	for _, element := range lit.Elts {
+		kv, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Name" {
+			continue
+		}
+		if value, ok := p26StringLiteral(kv.Value); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func p26ParseNewToolCall(newToolCall *ast.CallExpr, fset *token.FileSet) (string, map[string]struct{}, error) {
 	if len(newToolCall.Args) == 0 {
 		return "", nil, p26UnsupportedCallErr(fset, newToolCall.Pos(), "mcp.NewTool call has no arguments")
 	}
@@ -407,6 +555,29 @@ func p26ParseAddToolCall(addToolCall *ast.CallExpr, fset *token.FileSet) (string
 	}
 
 	return toolName, actions, nil
+}
+
+func p26ContractString(expr ast.Expr) (string, bool) {
+	if value, ok := p26StringLiteral(expr); ok {
+		return value, true
+	}
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	switch ident.Name {
+	case "toolClassificationAsyncMandatory":
+		return p26AsyncMandatory, true
+	case "toolClassificationSyncOK":
+		return p26SyncOK, true
+	default:
+		return "", false
+	}
+}
+
+func p26IsIdent(expr ast.Expr, name string) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == name
 }
 
 func p26UnsupportedCallErr(fset *token.FileSet, pos token.Pos, detail string) error {

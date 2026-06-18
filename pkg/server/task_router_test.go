@@ -58,8 +58,17 @@ func TestTaskRouterDispatchExplicitTaskClass(t *testing.T) {
 	if result.TaskClass != classifier.TaskClassReview {
 		t.Fatalf("result task_class = %s, want review", result.TaskClass)
 	}
-	if result.TaskID == "" || result.Content == "" {
-		t.Fatalf("result missing task_id/content: %#v", result)
+	if result.TaskID == "" || result.JobID != result.TaskID {
+		t.Fatalf("result missing task/job id alias: %#v", result)
+	}
+	if result.Content != "" {
+		t.Fatalf("accepted result content = %q, want empty until status(include_content=true)", result.Content)
+	}
+	if result.Status != loom.TaskStatusDispatched {
+		t.Fatalf("accepted status = %s, want dispatched", result.Status)
+	}
+	if result.StatusCommand == "" || result.CancelCommand == "" || result.TaskURI == "" || result.ProgressURI == "" {
+		t.Fatalf("accepted result missing observation fields: %#v", result)
 	}
 }
 
@@ -195,7 +204,7 @@ func TestTaskRouterDispatchAmbiguousPromptReturnsError(t *testing.T) {
 	}
 }
 
-func TestTaskRouterDispatchCallerCancellationCancelsTask(t *testing.T) {
+func TestTaskRouterDispatchCallerCancellationAfterSubmitDoesNotCancelTask(t *testing.T) {
 	t.Parallel()
 
 	fake := newFakeTaskRouterLoom()
@@ -203,57 +212,48 @@ func TestTaskRouterDispatchCallerCancellationCancelsTask(t *testing.T) {
 	router := mustTaskRouter(t, fake, time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	fake.onGet = func(context.Context) error {
+	fake.onSubmit = func() {
 		cancel()
-		return nil
 	}
 
-	_, err := router.Dispatch(ctx, TaskRequest{
+	result, err := router.Dispatch(ctx, TaskRequest{
 		Prompt:    "Implement pkg/server/task_router.go cancellation handling.",
 		TaskClass: classifier.TaskClassCode,
 	})
-	if err == nil {
-		t.Fatal("Dispatch() error = nil, want canceled")
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v, want accepted task", err)
 	}
-	var cliErr *extypes.CLIError
-	if !errors.As(err, &cliErr) {
-		t.Fatalf("error type = %T, want *types.CLIError", err)
+	if result.Status != loom.TaskStatusDispatched {
+		t.Fatalf("status = %s, want dispatched", result.Status)
 	}
-	if cliErr.Code != extypes.CLIErrorCodeCanceled {
-		t.Fatalf("code = %s, want %s", cliErr.Code, extypes.CLIErrorCodeCanceled)
-	}
-	if fake.cancelCount() != 1 {
-		t.Fatalf("cancel count = %d, want 1", fake.cancelCount())
+	if fake.cancelCount() != 0 {
+		t.Fatalf("cancel count = %d, want 0 after accepted submit", fake.cancelCount())
 	}
 }
 
-func TestTaskRouterDispatchTimeoutCancelsTask(t *testing.T) {
+func TestTaskRouterDispatchTimeoutDoesNotWaitAfterSubmit(t *testing.T) {
 	t.Parallel()
 
 	fake := newFakeTaskRouterLoom()
 	fake.completeOnSubmit = false
 	router := mustTaskRouter(t, fake, 2*time.Millisecond)
 
-	_, err := router.Dispatch(context.Background(), TaskRequest{
+	result, err := router.Dispatch(context.Background(), TaskRequest{
 		Prompt:    "Implement pkg/server/task_router.go timeout handling.",
 		TaskClass: classifier.TaskClassCode,
 	})
-	if err == nil {
-		t.Fatal("Dispatch() error = nil, want timeout")
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v, want accepted task", err)
 	}
-	var cliErr *extypes.CLIError
-	if !errors.As(err, &cliErr) {
-		t.Fatalf("error type = %T, want *types.CLIError", err)
+	if result.TaskID == "" {
+		t.Fatalf("TaskID empty in accepted result: %#v", result)
 	}
-	if cliErr.Code != extypes.CLIErrorCodeTimeout {
-		t.Fatalf("code = %s, want %s", cliErr.Code, extypes.CLIErrorCodeTimeout)
-	}
-	if fake.cancelCount() != 1 {
-		t.Fatalf("cancel count = %d, want 1", fake.cancelCount())
+	if fake.cancelCount() != 0 {
+		t.Fatalf("cancel count = %d, want 0", fake.cancelCount())
 	}
 }
 
-func TestTaskRouterDispatchTimeoutCancelsBlockingGet(t *testing.T) {
+func TestTaskRouterLegacyWaitTimeoutCancelsBlockingGet(t *testing.T) {
 	t.Parallel()
 
 	fake := newFakeTaskRouterLoom()
@@ -264,12 +264,17 @@ func TestTaskRouterDispatchTimeoutCancelsBlockingGet(t *testing.T) {
 	}
 	router := mustTaskRouter(t, fake, 2*time.Millisecond)
 
-	_, err := router.Dispatch(context.Background(), TaskRequest{
-		Prompt:    "Implement pkg/server/task_router.go blocking lookup cancellation.",
-		TaskClass: classifier.TaskClassCode,
+	taskID, submitErr := fake.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: code.WorkerTypeCode,
+		Prompt:     "legacy waiter",
 	})
+	if submitErr != nil {
+		t.Fatalf("fake Submit() error = %v", submitErr)
+	}
+
+	_, err := router.wait(context.Background(), taskID, classifier.TaskClassCode, code.WorkerTypeCode, 1, nil, 2*time.Millisecond)
 	if err == nil {
-		t.Fatal("Dispatch() error = nil, want timeout")
+		t.Fatal("wait() error = nil, want timeout")
 	}
 	var cliErr *extypes.CLIError
 	if !errors.As(err, &cliErr) {
@@ -367,6 +372,7 @@ type fakeTaskRouterLoom struct {
 	tasks            map[string]*loom.Task
 	cancels          []string
 	onGet            func(context.Context) error
+	onSubmit         func()
 }
 
 func newFakeTaskRouterLoom() *fakeTaskRouterLoom {
@@ -398,6 +404,9 @@ func (f *fakeTaskRouterLoom) Submit(_ context.Context, req loom.TaskRequest) (st
 		CLI:        req.CLI,
 		Metadata:   cloneTaskMetadata(req.Metadata),
 		Result:     result,
+	}
+	if f.onSubmit != nil {
+		f.onSubmit()
 	}
 	return taskID, nil
 }

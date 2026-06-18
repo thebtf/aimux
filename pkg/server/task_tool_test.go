@@ -41,8 +41,18 @@ func TestHandleTaskValidCallRoutesThroughRouter(t *testing.T) {
 	if payload["task_class"] != classifier.TaskClassCode {
 		t.Fatalf("task_class = %v, want code; payload=%v", payload["task_class"], payload)
 	}
-	if payload["content"] != "handled code" {
-		t.Fatalf("content = %v, want handled code", payload["content"])
+	if payload["content"] != nil {
+		t.Fatalf("content = %v, want omitted from accepted response", payload["content"])
+	}
+	taskID, _ := payload["task_id"].(string)
+	if taskID == "" || payload["job_id"] != taskID {
+		t.Fatalf("task/job id missing or mismatched: %v", payload)
+	}
+	if payload["status"] != string(loom.TaskStatusDispatched) {
+		t.Fatalf("status = %v, want dispatched; payload=%v", payload["status"], payload)
+	}
+	if payload["status_command"] == "" || payload["cancel_command"] == "" || payload["task_uri"] == "" || payload["progress_uri"] == "" {
+		t.Fatalf("accepted payload missing observation fields: %v", payload)
 	}
 
 	task := codeWorker.onlyTask(t)
@@ -229,6 +239,7 @@ func TestHandleTaskRecipeReplayCacheHitReusesCompletedTask(t *testing.T) {
 	if firstTaskID == "" {
 		t.Fatalf("first task_id missing: %v", firstPayload)
 	}
+	waitTaskToolStatus(t, srv, firstTaskID, loom.TaskStatusCompleted)
 	firstMetadata := taskToolPayloadMetadata(t, firstPayload)
 	assertMetadataBool(t, firstMetadata, "recipe_replay_cache_hit", false)
 	assertMetadataString(t, firstMetadata, "recipe_replay_key_version", "v1")
@@ -273,6 +284,7 @@ func TestHandleTaskRecipeReplayChangedTargetMissesCache(t *testing.T) {
 		t.Fatalf("first call unexpected error: %s", taskToolResultText(t, first))
 	}
 	firstPayload := decodeTaskToolResult(t, first)
+	waitTaskToolStatus(t, srv, firstPayload["task_id"].(string), loom.TaskStatusCompleted)
 	firstFingerprint := metadataStringValue(t, taskToolPayloadMetadata(t, firstPayload), "recipe_replay_fingerprint")
 
 	second := callTaskTool(t, srv, map[string]any{
@@ -292,7 +304,7 @@ func TestHandleTaskRecipeReplayChangedTargetMissesCache(t *testing.T) {
 	if firstFingerprint == secondFingerprint {
 		t.Fatalf("fingerprint did not change for changed target: %s", firstFingerprint)
 	}
-	if got := reviewWorker.taskCount(); got != 2 {
+	if got := waitTaskCount(t, reviewWorker, 2); got != 2 {
 		t.Fatalf("review task count = %d, want cache miss and fresh submit", got)
 	}
 	assertMetadataBool(t, taskToolPayloadMetadata(t, secondPayload), "recipe_replay_cache_hit", false)
@@ -336,14 +348,16 @@ func TestHandleTaskRecipeReplayDoesNotReuseFailedTask(t *testing.T) {
 		"project_id": "proj-replay-failed",
 	}
 	first := callTaskTool(t, srv, args)
-	if !first.IsError {
-		t.Fatalf("first call expected worker failure, got %s", taskToolResultText(t, first))
+	if first.IsError {
+		t.Fatalf("first call unexpected immediate error: %s", taskToolResultText(t, first))
 	}
+	firstPayload := decodeTaskToolResult(t, first)
+	waitTaskToolStatus(t, srv, firstPayload["task_id"].(string), loom.TaskStatusFailed)
 	second := callTaskTool(t, srv, args)
 	if second.IsError {
 		t.Fatalf("second call unexpected error: %s", taskToolResultText(t, second))
 	}
-	if got := reviewWorker.taskCount(); got != 2 {
+	if got := waitTaskCount(t, reviewWorker, 2); got != 2 {
 		t.Fatalf("review task count = %d, want failed task ignored and fresh submit", got)
 	}
 	assertMetadataBool(t, taskToolPayloadMetadata(t, decodeTaskToolResult(t, second)), "recipe_replay_cache_hit", false)
@@ -363,6 +377,9 @@ func TestHandleTaskRecipePolicyMismatchCannotReplayCompletedTask(t *testing.T) {
 	if first.IsError {
 		t.Fatalf("first call unexpected error: %s", taskToolResultText(t, first))
 	}
+	firstPayload := decodeTaskToolResult(t, first)
+	waitTaskToolStatus(t, srv, firstPayload["task_id"].(string), loom.TaskStatusCompleted)
+	waitTaskCount(t, reviewWorker, 1)
 	limited := driver.NewRegistry(map[string]*config.CLIProfile{"codex": limitedRecipeProfile()})
 	limited.SetAvailable("codex", true)
 	srv.registry = limited
@@ -464,7 +481,7 @@ func TestHandleTaskDirectReviewSkipsRecipeCapabilityPreflight(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
 	}
-	if got := reviewWorker.taskCount(); got != 1 {
+	if got := waitTaskCount(t, reviewWorker, 1); got != 1 {
 		t.Fatalf("review task count = %d, want 1", got)
 	}
 }
@@ -532,6 +549,69 @@ func TestHandleTaskRejectsUnregisteredClassBeforeSubmit(t *testing.T) {
 	}
 	if got := reviewWorker.taskCount(); got != 0 {
 		t.Fatalf("review task count = %d, want 0", got)
+	}
+}
+
+func TestHandleDeepresearchReturnsAcceptedLoomJob(t *testing.T) {
+	t.Parallel()
+
+	engine := newTaskToolEngine(t)
+	worker := &recordingTaskWorker{workerType: deepResearchWorkerType}
+	engine.RegisterWorker(deepResearchWorkerType, worker)
+	srv := &Server{loom: engine}
+
+	result, err := srv.handleDeepresearch(context.Background(), makeRequest("deepresearch", map[string]any{
+		"topic":           "P26 async contract",
+		"output_format":   "summary",
+		"model":           "gemini-test",
+		"force":           true,
+		"timeout_seconds": float64(7),
+		"project_id":      "proj-deepresearch",
+	}))
+	if err != nil {
+		t.Fatalf("handleDeepresearch returned Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	payload := decodeTaskToolResult(t, result)
+	taskID, _ := payload["task_id"].(string)
+	if taskID == "" || payload["job_id"] != taskID {
+		t.Fatalf("task/job id missing or mismatched: %v", payload)
+	}
+	if payload["task_class"] != "deepresearch" {
+		t.Fatalf("task_class = %v, want deepresearch; payload=%v", payload["task_class"], payload)
+	}
+	if payload["content"] != nil {
+		t.Fatalf("content = %v, want omitted from accepted response", payload["content"])
+	}
+	if payload["status"] != string(loom.TaskStatusDispatched) {
+		t.Fatalf("status = %v, want dispatched; payload=%v", payload["status"], payload)
+	}
+	metadata := taskToolPayloadMetadata(t, payload)
+	assertMetadataString(t, metadata, "async_contract", "loom")
+	assertMetadataBool(t, metadata, "accepted", true)
+
+	task := worker.onlyTask(t)
+	if task.WorkerType != deepResearchWorkerType {
+		t.Fatalf("worker_type = %s, want %s", task.WorkerType, deepResearchWorkerType)
+	}
+	if task.ProjectID != "proj-deepresearch" {
+		t.Fatalf("project_id = %q, want proj-deepresearch", task.ProjectID)
+	}
+	if task.Prompt != "P26 async contract" {
+		t.Fatalf("prompt = %q, want topic", task.Prompt)
+	}
+	if task.Timeout != 7 {
+		t.Fatalf("timeout = %d, want 7", task.Timeout)
+	}
+	assertMetadataString(t, task.Metadata, "topic", "P26 async contract")
+	assertMetadataString(t, task.Metadata, "output_format", "summary")
+	assertMetadataString(t, task.Metadata, "model", "gemini-test")
+	assertMetadataBool(t, task.Metadata, "force", true)
+	if _, ok := task.Metadata["accepted"]; ok {
+		t.Fatalf("task metadata contains response-only accepted field: %v", task.Metadata)
 	}
 }
 
@@ -632,20 +712,47 @@ func (w *recordingTaskWorker) Execute(_ context.Context, task *loom.Task) (*loom
 
 func (w *recordingTaskWorker) onlyTask(t *testing.T) *loom.Task {
 	t.Helper()
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if len(w.tasks) != 1 {
-		t.Fatalf("task count = %d, want 1", len(w.tasks))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		w.mu.Lock()
+		if len(w.tasks) == 1 {
+			cp := *w.tasks[0]
+			cp.Metadata = cloneTaskMetadata(w.tasks[0].Metadata)
+			w.mu.Unlock()
+			return &cp
+		}
+		count := len(w.tasks)
+		w.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatalf("task count = %d, want 1", count)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	cp := *w.tasks[0]
-	cp.Metadata = cloneTaskMetadata(w.tasks[0].Metadata)
-	return &cp
 }
 
 func (w *recordingTaskWorker) taskCount() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.tasks)
+}
+
+type taskCounter interface {
+	taskCount() int
+}
+
+func waitTaskCount(t *testing.T, counter taskCounter, want int) int {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := counter.taskCount()
+		if got == want {
+			return got
+		}
+		if time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 type flakyTaskWorker struct {
@@ -688,6 +795,27 @@ func taskToolPayloadMetadata(t *testing.T, payload map[string]any) map[string]an
 		t.Fatalf("metadata type = %T, want map; payload=%v", payload["metadata"], payload)
 	}
 	return metadata
+}
+
+func waitTaskToolStatus(t *testing.T, srv *Server, taskID string, want loom.TaskStatus) *loom.Task {
+	t.Helper()
+	if taskID == "" {
+		t.Fatal("task_id is empty")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		task, err := srv.loom.Get(taskID)
+		if err == nil && task.Status == want {
+			return task
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("task %s did not reach %s: last error %v", taskID, want, err)
+			}
+			t.Fatalf("task %s status = %s, want %s", taskID, task.Status, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func metadataStringValue(t *testing.T, metadata map[string]any, key string) string {

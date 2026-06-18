@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,7 +40,6 @@ import (
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/harness"
 	"github.com/thebtf/aimux/pkg/think/patterns"
-	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/aimux/pkg/updater"
 	"github.com/thebtf/aimux/pkg/upgrade"
@@ -750,13 +750,12 @@ func (s *Server) registerTools() {
 	s.registerPatternTools()
 
 	// deepresearch tool
-	s.mcp.AddTool(
+	s.registerContractedTool(
+		toolContract{Name: "deepresearch", Classification: "async_mandatory", AdapterKind: "loom"},
 		mcp.NewTool("deepresearch",
 			mcp.WithDescription("[delegate — external CLI, free for you] Deep research via Google Gemini API with file attachments and caching. "+
-				"Returns full synthesized report; not subject to the 4k default budget. "+
-				"This tool is synchronous — it blocks until research is complete and returns content directly (no job_id). "+
-				"Results are cached by topic; use force=true to bypass the cache and trigger a fresh Gemini call. "+
-				"Cache-miss calls can be slow (30s–120s depending on topic complexity) — plan accordingly."),
+				"Starts a Loom-backed async research job and returns job_id immediately; poll status(job_id) for progress and include_content=true for the final report. "+
+				"Results are cached by topic inside the worker; use force=true to bypass the cache and trigger a fresh Gemini call."),
 			mcp.WithString("topic",
 				mcp.Required(),
 				mcp.Description("Research topic"),
@@ -769,6 +768,12 @@ func (s *Server) registerTools() {
 			),
 			mcp.WithBoolean("force",
 				mcp.Description("Bypass cache"),
+			),
+			mcp.WithString("cwd",
+				mcp.Description("Working directory used for persisted .agent/deepresearch cache entries"),
+			),
+			mcp.WithNumber("timeout_seconds",
+				mcp.Description("Worker timeout in seconds. Default provider timeout is used when omitted."),
 			),
 			mcp.WithToolAnnotation(mcp.ToolAnnotation{
 				ReadOnlyHint:    mcp.ToBoolPtr(false),
@@ -1374,41 +1379,48 @@ func (s *Server) handleMetricsResource(ctx context.Context, request mcp.ReadReso
 
 func (s *Server) handleDeepresearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	topic, err := request.RequireString("topic")
-	if err != nil {
+	if err != nil || strings.TrimSpace(topic) == "" {
 		return mcp.NewToolResultError("topic is required"), nil
 	}
 
 	outputFormat := request.GetString("output_format", "")
 	model := request.GetString("model", "")
 	force := request.GetBool("force", false)
-
-	// Try to create GenAI client
-	client, clientErr := deepresearch.NewClient(model, 0)
-	if clientErr != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch unavailable: %v. Set GOOGLE_API_KEY or GEMINI_API_KEY.", clientErr)), nil
+	timeoutSeconds := request.GetInt("timeout_seconds", 0)
+	if timeoutSeconds < 0 {
+		return mcp.NewToolResultError("timeout_seconds must be >= 0"), nil
 	}
 
-	defer client.Close()
-
-	content, cacheHit, researchErr := client.Research(ctx, topic, outputFormat, nil, force)
-	if researchErr != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch failed: %v", researchErr)), nil
+	loomClient, loomErr := s.taskRouterLoom(ctx)
+	if loomClient == nil {
+		return mcp.NewToolResultError(formatLoomUnavailableError(loomErr)), nil
 	}
-
-	// Persist result to disk so investigate recall can cross-search it.
-	if !cacheHit {
-		cwd := request.GetString("cwd", "")
-		if cwd == "" {
-			cwd, _ = os.Getwd()
-		}
-		_ = deepresearch.SaveEntryToDisk(cwd, topic, outputFormat, model, nil, content)
+	metadata := map[string]any{
+		"tool":           "deepresearch",
+		"topic":          strings.TrimSpace(topic),
+		"output_format":  outputFormat,
+		"model":          model,
+		"force":          force,
+		"async_contract": "loom",
 	}
-
-	return marshalToolResult(map[string]any{
-		"topic":   topic,
-		"content": content,
-		"cached":  cacheHit,
+	cwd := cwdFromRequestOrContext(request, ctx)
+	taskID, submitErr := loomClient.Submit(ctx, loom.TaskRequest{
+		WorkerType: deepResearchWorkerType,
+		ProjectID:  request.GetString("project_id", projectIDFromContext(ctx)),
+		RequestID:  request.GetString("request_id", ""),
+		Prompt:     strings.TrimSpace(topic),
+		CWD:        cwd,
+		Timeout:    timeoutSeconds,
+		Metadata:   metadata,
 	})
+	if submitErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("DeepResearch submit failed: %v", submitErr)), nil
+	}
+	result := acceptedTaskResult(taskID, "deepresearch", deepResearchWorkerType, 1, nil)
+	result.Metadata = cloneTaskMetadata(metadata)
+	result.Metadata["accepted"] = true
+	result.Metadata["observe_with"] = "status(job_id)"
+	return marshalToolResult(result)
 }
 
 func (s *Server) handleUpgrade(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

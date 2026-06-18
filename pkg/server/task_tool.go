@@ -70,13 +70,15 @@ func buildFallbackPicker(s *Server) *fallback.FallbackPicker {
 
 // registerTaskTool registers the generic `task` MCP tool (AIMUX-4 FR-10).
 func (s *Server) registerTaskTool() {
-	s.mcp.AddTool(
+	s.registerContractedTool(
+		toolContract{Name: "task", Classification: "async_mandatory", AdapterKind: "loom"},
 		mcp.NewTool("task",
-			mcp.WithDescription("[delegate — Loom routed, sync] Submit a task through the v5.12 task meta-router. "+
+			mcp.WithDescription("[delegate — Loom routed, async] Submit a task through the v5.12 task meta-router. "+
 				"Provide task_class to route directly to code or review. "+
 				"Omit task_class or pass task to use the deterministic classifier. "+
 				"Review mode accepts target and gate; code mode accepts sandbox and cli driver override. "+
-				"Returns a JSON TaskResult with task_id, content, task_class, rounds, and confidence_score."),
+				"Returns an accepted JSON TaskResult with task_id/job_id, status polling command, cancel command, and task resource URIs. "+
+				"Poll status(job_id) for progress and include_content=true for terminal content."),
 			mcp.WithString("prompt",
 				mcp.Required(),
 				mcp.Description("Task prompt routed through TaskRouter."),

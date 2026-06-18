@@ -198,6 +198,8 @@ func (s *Server) registerTaskWorkers() {
 	if s == nil || s.loom == nil {
 		return
 	}
+	s.loom.RegisterWorker(deepResearchWorkerType, deepResearchWorker{progress: s.loom})
+
 	subtaskLoom := tenantAwareSubtaskLoom{engine: s.loom}
 	var pairSelector code.PairSelector
 	if s.fallbackPicker != nil {
