@@ -263,8 +263,8 @@ func TestMuxcoreDependencyVersionFromDeps(t *testing.T) {
 	}{
 		{
 			name: "direct_dependency",
-			deps: []*debug.Module{{Path: muxcorePath, Version: "v0.26.8"}},
-			want: "v0.26.8",
+			deps: []*debug.Module{{Path: muxcorePath, Version: "v0.26.13"}},
+			want: "v0.26.13",
 		},
 		{
 			name: "versioned_replace_wins",
