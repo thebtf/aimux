@@ -13,7 +13,7 @@ Go rewrite of mcp-aimux (TypeScript v2). Single binary, zero external runtime de
 - **MCP SDK:** github.com/mark3labs/mcp-go v0.47.0
 - **Database:** modernc.org/sqlite v1.48.1 (pure Go SQLite, no CGO)
 - **Deep Research:** google.golang.org/genai v1.52.1 (Gemini API)
-- **Engine:** github.com/thebtf/mcp-mux/muxcore v0.24.0 (daemon lifecycle, SessionHandler, OnInject IPC injection, multi-tenant extensions: ConnInfo, SessionMeta, AuthorizeSession, OnFrameReceived)
+- **Engine:** github.com/thebtf/mcp-mux/muxcore v0.26.13 (daemon lifecycle, SessionHandler, OnInject IPC injection, stable launcher / degraded-reconnect contract, multi-tenant extensions: ConnInfo, SessionMeta, AuthorizeSession, OnFrameReceived)
 - **Build:** `go build ./cmd/aimux/`
 - **Test:** `go test ./... -timeout 300s`
 
@@ -21,7 +21,7 @@ Go rewrite of mcp-aimux (TypeScript v2). Single binary, zero external runtime de
 
 ```bash
 go build ./...                    # build all
-go test ./... -timeout 300s       # all tests (857 tests, 27 packages)
+go test ./... -timeout 300s       # all tests (~1959 test funcs, 57 packages with tests)
 go test ./test/e2e/ -v            # e2e tests only (31 tests)
 go test ./pkg/... -cover          # unit tests with coverage
 go vet ./...                      # static analysis

@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.18.0] — 2026-06-23 — P26 async-only contract, muxcore v0.26.13, upgrade hardening
+
+### Added
+
+- **P26 async-only contract for delegating tools.** `task` and `deepresearch`
+  now return an accepted async job handle instead of blocking until terminal:
+  the response carries `task_id`/`job_id`, `status_command`, `cancel_command`,
+  and `aimux://tasks/{id}` task/events/progress URIs, and the submitted work
+  survives caller disconnects. Observe with `status(job_id=...)`, cancel with
+  `sessions(action="cancel", job_id=...)`. The accepted response is additive —
+  `content` is now `omitempty` and is delivered through the terminal job state.
+- **Registration-time async tool contract.** `registerContractedTool` /
+  `applyToolContract` enforce that any `async_mandatory` tool declares an
+  adapter kind and sets `mcp.TaskSupportRequired`; the adapter kind is surfaced
+  on tool `_meta` (`aimux/adapter_kind`) for client introspection.
+- **Loom-backed deepresearch worker.** Deep research now runs as a Loom job
+  (`deepResearchWorker`) with progress events, preserving best-effort disk-cache
+  semantics.
+- **P26 classification artifact** expanded to the full live 28-tool surface
+  (`config/p26/classification.v1.json`); `task` and `deepresearch` are
+  `async_mandatory`, the 22 think-pattern tools are `sync_ok`.
+
+### Changed
+
+- **muxcore adoption v0.26.2 → v0.26.13** (Engram #320, CRITICAL): stable
+  launcher / degraded-reconnect contract. muxcore now owns host-facing
+  shim/stdio continuity through recoverable daemon/owner outages, zero-session
+  cleanup, and stable-launcher/versioned-engine update behavior. Workaround
+  audit confirmed aimux carries none of the duplicated local behaviors the
+  contract supersedes.
+
+### Fixed
+
+- **Active-pointer successor upgrade runtime (#302/#305).** Staged successor
+  executables use the safe `aimux-stage-` prefix and preserve the current
+  executable extension (`.exe` on Windows), fixing a non-executable `.bin`
+  successor and a Windows UAC elevation heuristic on `aimux-update-*` names.
+- **Non-destructive active-engine pointer replacement (PRC F1/F5).**
+  `writeActiveEnginePointer` no longer risks leaving the launcher's active
+  pointer permanently missing on a Windows double rename failure: it backs up
+  and restores the prior pointer, and aborts before `os.Remove` when the prior
+  pointer exists but is unreadable. Both rename and remove/restore errors are
+  wrapped for diagnosability.
+- **deepresearch disk-cache path safety (PRC F2).** `SaveEntryToDisk` /
+  `LoadDiskEntries` reject a non-empty, non-absolute caller `cwd`
+  (`ErrUnsafeCacheCWD`) so a caller-supplied traversal path cannot drive a write
+  outside an absolute root; an empty `cwd` keeps the safe silent skip (no
+  `os.Getwd()` fallback — that would reintroduce the engram #243 daemon-CWD
+  leak).
+
+### Verification
+
+- `go vet ./...`, `go build ./...`, `go mod verify`
+- `go test ./... -count=1 -timeout 300s` (incl. `test/e2e`, `tests/critical`)
+- `loom/` nested module tests
+- Customer-mode install smoke `[install] PASS` — open session survived the
+  update, reported the new version, no `Transport closed`,
+  `shim_reconnect_fallback_spawned=0`, `shim_reconnect_gave_up=0`.
+- Active-pointer upgrade e2e
+  (`TestE2E_Upgrade_ActivePointerSuccessorRuntimeAcceptance`,
+  `TestE2E_Upgrade_OldSessionRequestThenFreshSessionNewVersion`).
+- F1 fix adversarially verified (3 independent refuters + judge); MUST-FIX
+  applied and re-verified.
+
 ## [5.17.0] — 2026-06-17 — muxcore registry descriptors and legacy install recovery
 
 ### Added
