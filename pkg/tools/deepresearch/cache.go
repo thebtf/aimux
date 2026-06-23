@@ -3,6 +3,7 @@ package deepresearch
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,13 +115,42 @@ func (c *Cache) Cleanup() int {
 // DiskCacheSubdir is the subdirectory under cwd used for persisted cache entries.
 const DiskCacheSubdir = ".agent/deepresearch"
 
+// ErrUnsafeCacheCWD is returned when a non-empty cwd is not an absolute path.
+// Empty cwd is treated as "no workspace" and silently skipped, never an error.
+var ErrUnsafeCacheCWD = errors.New("deepresearch cache cwd must be an absolute path")
+
+// resolveCacheCWD validates a caller-supplied working directory before it is
+// used to build a filesystem path. An empty cwd means "no workspace to persist
+// to" (direct-stdio mode without a ProjectContext) and is signalled by ok=false
+// with a nil error — callers skip persistence. A non-empty cwd MUST be absolute:
+// a relative or traversal-shaped cwd (e.g. "../../etc") is rejected with
+// ErrUnsafeCacheCWD so a caller cannot drive a write outside an absolute project
+// root (PRC 2026-06-23 F2). Restoring an os.Getwd() fallback here is deliberately
+// avoided: in daemon mode that leaks the daemon's own cwd into every session's
+// cache path (engram #243, guarded by server.TestBuildSkillData_*).
+func resolveCacheCWD(cwd string) (string, bool, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return "", false, nil
+	}
+	cleaned := filepath.Clean(cwd)
+	if !filepath.IsAbs(cleaned) {
+		return "", false, fmt.Errorf("%w: %q", ErrUnsafeCacheCWD, cwd)
+	}
+	return cleaned, true, nil
+}
+
 // SaveEntryToDisk writes a cache entry to cwd/.agent/deepresearch/{key}.json.
-// Silently skips if cwd is empty. Safe to call concurrently.
+// Silently skips if cwd is empty; rejects a non-absolute cwd. Safe to call
+// concurrently.
 func SaveEntryToDisk(cwd, topic, outputFormat, model string, files []string, content string) error {
-	if cwd == "" {
+	root, ok, err := resolveCacheCWD(cwd)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	dir := filepath.Join(cwd, DiskCacheSubdir)
+	dir := filepath.Join(root, DiskCacheSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create deepresearch cache dir: %w", err)
 	}
@@ -145,12 +175,17 @@ func SaveEntryToDisk(cwd, topic, outputFormat, model string, files []string, con
 }
 
 // LoadDiskEntries reads all non-expired cache entries from cwd/.agent/deepresearch/.
-// Ignores malformed files. TTL is 30 days.
+// Ignores malformed files. TTL is 30 days. Empty cwd yields no entries; a
+// non-absolute cwd is rejected with ErrUnsafeCacheCWD (PRC 2026-06-23 F2).
 func LoadDiskEntries(cwd string) ([]*CacheEntry, error) {
-	if cwd == "" {
+	root, ok, err := resolveCacheCWD(cwd)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, nil
 	}
-	dir := filepath.Join(cwd, DiskCacheSubdir)
+	dir := filepath.Join(root, DiskCacheSubdir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -25,6 +25,13 @@ func TestApplyToolContractAsyncMandatorySetsTaskSupportRequired(t *testing.T) {
 	if tool.Execution.TaskSupport != mcp.TaskSupportRequired {
 		t.Fatalf("TaskSupport = %v, want %v", tool.Execution.TaskSupport, mcp.TaskSupportRequired)
 	}
+	// F3: the adapter kind must be surfaced on tool _meta, not silently discarded.
+	if tool.Meta == nil || tool.Meta.AdditionalFields == nil {
+		t.Fatal("tool.Meta.AdditionalFields = nil, want adapter kind surfaced")
+	}
+	if got := tool.Meta.AdditionalFields[adapterKindMetaKey]; got != "loom" {
+		t.Fatalf("meta[%q] = %v, want %q", adapterKindMetaKey, got, "loom")
+	}
 }
 
 func TestApplyToolContractAsyncMandatoryRequiresAdapterKind(t *testing.T) {

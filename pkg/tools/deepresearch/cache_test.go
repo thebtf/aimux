@@ -2,6 +2,7 @@ package deepresearch_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,42 @@ import (
 
 	"github.com/thebtf/aimux/pkg/tools/deepresearch"
 )
+
+// TestSaveEntryToDisk_RejectsNonAbsoluteCWD proves the PRC 2026-06-23 F2
+// hardening: a non-empty but non-absolute (relative / traversal-shaped) cwd is
+// rejected before any filesystem write, while empty cwd silently skips and an
+// absolute cwd still persists.
+func TestSaveEntryToDisk_RejectsNonAbsoluteCWD(t *testing.T) {
+	for _, bad := range []string{"relative/dir", "../../etc", "./x"} {
+		err := deepresearch.SaveEntryToDisk(bad, "topic", "summary", "m", nil, "content")
+		if !errors.Is(err, deepresearch.ErrUnsafeCacheCWD) {
+			t.Fatalf("SaveEntryToDisk(%q) err = %v, want ErrUnsafeCacheCWD", bad, err)
+		}
+	}
+
+	// Empty cwd: safe silent skip (direct-stdio mode), no error, no write.
+	if err := deepresearch.SaveEntryToDisk("", "topic", "summary", "m", nil, "content"); err != nil {
+		t.Fatalf("SaveEntryToDisk(\"\") err = %v, want nil silent-skip", err)
+	}
+
+	// Absolute cwd: still writes.
+	dir := t.TempDir()
+	if err := deepresearch.SaveEntryToDisk(dir, "topic", "summary", "m", nil, "content"); err != nil {
+		t.Fatalf("SaveEntryToDisk(abs) err = %v, want nil", err)
+	}
+	entries, err := deepresearch.LoadDiskEntries(dir)
+	if err != nil {
+		t.Fatalf("LoadDiskEntries(abs) err = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("LoadDiskEntries = %d entries, want 1", len(entries))
+	}
+
+	// LoadDiskEntries also rejects a non-absolute cwd.
+	if _, err := deepresearch.LoadDiskEntries("relative/dir"); !errors.Is(err, deepresearch.ErrUnsafeCacheCWD) {
+		t.Fatalf("LoadDiskEntries(relative) err = %v, want ErrUnsafeCacheCWD", err)
+	}
+}
 
 // ----------------------------------------------------------------------------
 // Cache in-memory tests

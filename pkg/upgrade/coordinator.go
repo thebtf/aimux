@@ -654,17 +654,61 @@ func writeActiveEnginePointer(pointerPath, successorPath string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close active engine pointer temp file: %w", err)
 	}
-	if err := os.Rename(tmpPath, pointerAbs); err != nil {
-		if removeErr := os.Remove(pointerAbs); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return fmt.Errorf("replace active engine pointer: %w", removeErr)
+	renameErr := renameActiveEnginePointer(tmpPath, pointerAbs)
+	if renameErr == nil {
+		keepTmp = true
+		return nil
+	}
+
+	// Windows: os.Rename refuses to overwrite an existing destination, so the
+	// retry path below removes pointerAbs first. That remove must never leave the
+	// live pointer missing — back up the existing content and restore it if the
+	// retry rename also fails (e.g. a third process re-locked the path between the
+	// remove and the retry). Without this, a double failure permanently destroys
+	// the only active-engine pointer and the launcher cannot locate the engine on
+	// next boot (PRC 2026-06-23 F1).
+	backup, backupErr := readActiveEnginePointer(pointerAbs)
+	// Distinguish "pointer absent" (ErrNotExist — nothing to preserve) from
+	// "pointer exists but unreadable" (ACL/EACCES/transient I/O). On POSIX,
+	// os.Remove below would still succeed on an unreadable-but-present file
+	// (Remove needs write on the parent dir, not read on the file), so a
+	// non-ErrNotExist read failure must abort BEFORE the remove — otherwise the
+	// live pointer is deleted with no backup to restore (adversarial-verify
+	// 2026-06-23: backupErr==nil conflated unreadable with absent).
+	if backupErr != nil && !errors.Is(backupErr, os.ErrNotExist) {
+		return fmt.Errorf("read active engine pointer before replace (rename: %v): %w", renameErr, backupErr)
+	}
+	haveBackup := backupErr == nil
+
+	if removeErr := os.Remove(pointerAbs); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return fmt.Errorf("replace active engine pointer (rename: %v): %w", renameErr, removeErr)
+	}
+
+	if retryErr := renameActiveEnginePointer(tmpPath, pointerAbs); retryErr != nil {
+		if haveBackup {
+			if restoreErr := os.WriteFile(pointerAbs, backup, 0o600); restoreErr != nil {
+				return fmt.Errorf("promote active engine pointer (rename: %v) and restore prior pointer failed: %w", retryErr, restoreErr)
+			}
+			return fmt.Errorf("promote active engine pointer (prior pointer restored): %w", retryErr)
 		}
-		if retryErr := os.Rename(tmpPath, pointerAbs); retryErr != nil {
-			return fmt.Errorf("promote active engine pointer: %w", retryErr)
-		}
+		return fmt.Errorf("promote active engine pointer: %w", retryErr)
 	}
 	keepTmp = true
 	return nil
 }
+
+// renameActiveEnginePointer and readActiveEnginePointer are the os seams for
+// writeActiveEnginePointer. Overridable in tests to exercise the
+// non-destructive double-failure and unreadable-pointer paths.
+//
+// writeActiveEnginePointer is only reached through Coordinator.Apply, which
+// serializes concurrent invocations via the applyInProgress CAS guard
+// (errAlreadyInProgress). The backup-read → remove → retry-rename window below
+// therefore runs single-flight per Coordinator; no additional lock is required.
+var (
+	renameActiveEnginePointer = os.Rename
+	readActiveEnginePointer   = os.ReadFile
+)
 
 func (c *Coordinator) applyWithPostExitInstall(ctx context.Context, mode Mode, force bool) (*Result, error) {
 	if mode == ModeHotSwap {

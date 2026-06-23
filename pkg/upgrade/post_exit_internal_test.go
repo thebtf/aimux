@@ -2,6 +2,8 @@ package upgrade
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -163,6 +165,96 @@ func TestWriteActiveEnginePointerReplacesExistingPointer(t *testing.T) {
 	}
 	if strings.TrimSpace(string(got)) != want {
 		t.Fatalf("pointer = %q, want %q", strings.TrimSpace(string(got)), want)
+	}
+}
+
+// TestWriteActiveEnginePointer_RestoresPriorPointerOnDoubleRenameFailure proves
+// the PRC 2026-06-23 F1 fix: when the initial rename fails AND the post-remove
+// retry rename also fails, the prior active-engine pointer content is restored
+// rather than left permanently missing.
+func TestWriteActiveEnginePointer_RestoresPriorPointerOnDoubleRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	pointerPath := filepath.Join(dir, "active.txt")
+	priorSuccessor := filepath.Join(dir, "aimux-engine-prior.exe")
+	nextSuccessor := filepath.Join(dir, "aimux-engine-next.exe")
+	priorAbs, err := filepath.Abs(priorSuccessor)
+	if err != nil {
+		t.Fatalf("Abs prior: %v", err)
+	}
+	writeTestFile(t, pointerPath, priorAbs+"\n")
+
+	// Force every rename attempt to fail, reproducing the Windows
+	// rename-then-remove-then-retry double-failure window.
+	origRename := renameActiveEnginePointer
+	renameActiveEnginePointer = func(_, _ string) error {
+		return errors.New("simulated rename failure")
+	}
+	defer func() { renameActiveEnginePointer = origRename }()
+
+	wErr := writeActiveEnginePointer(pointerPath, nextSuccessor)
+	if wErr == nil {
+		t.Fatalf("writeActiveEnginePointer = nil, want error on double rename failure")
+	}
+
+	// The live pointer must still exist and still hold the PRIOR content.
+	got, readErr := os.ReadFile(pointerPath)
+	if readErr != nil {
+		t.Fatalf("prior pointer was destroyed (ReadFile: %v) — F1 regression", readErr)
+	}
+	if strings.TrimSpace(string(got)) != priorAbs {
+		t.Fatalf("pointer = %q, want prior %q restored", strings.TrimSpace(string(got)), priorAbs)
+	}
+	// The error must wrap the rename failure for diagnosability (F5).
+	if !strings.Contains(wErr.Error(), "rename") && !strings.Contains(wErr.Error(), "promote") {
+		t.Fatalf("error = %q, want it to mention the rename/promote failure", wErr.Error())
+	}
+}
+
+// TestWriteActiveEnginePointer_AbortsBeforeRemoveWhenPriorPointerUnreadable
+// proves the adversarial-verify 2026-06-23 MUST-FIX: when the existing pointer
+// exists but cannot be read (non-ErrNotExist error), the function aborts BEFORE
+// os.Remove rather than deleting an unrecoverable pointer. The live file must
+// survive untouched and the read error must be surfaced.
+func TestWriteActiveEnginePointer_AbortsBeforeRemoveWhenPriorPointerUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	pointerPath := filepath.Join(dir, "active.txt")
+	priorSuccessor := filepath.Join(dir, "aimux-engine-prior.exe")
+	nextSuccessor := filepath.Join(dir, "aimux-engine-next.exe")
+	priorAbs, err := filepath.Abs(priorSuccessor)
+	if err != nil {
+		t.Fatalf("Abs prior: %v", err)
+	}
+	writeTestFile(t, pointerPath, priorAbs+"\n")
+
+	// First rename always fails -> enters the recovery path.
+	origRename := renameActiveEnginePointer
+	renameActiveEnginePointer = func(_, _ string) error {
+		return errors.New("simulated rename failure")
+	}
+	defer func() { renameActiveEnginePointer = origRename }()
+
+	// The prior pointer exists but is unreadable (EACCES-like), NOT absent.
+	origRead := readActiveEnginePointer
+	readActiveEnginePointer = func(_ string) ([]byte, error) {
+		return nil, fmt.Errorf("simulated unreadable pointer: %w", os.ErrPermission)
+	}
+	defer func() { readActiveEnginePointer = origRead }()
+
+	wErr := writeActiveEnginePointer(pointerPath, nextSuccessor)
+	if wErr == nil {
+		t.Fatalf("writeActiveEnginePointer = nil, want abort error on unreadable prior pointer")
+	}
+
+	// The live pointer must be untouched — abort happened BEFORE os.Remove.
+	got, readErr := os.ReadFile(pointerPath)
+	if readErr != nil {
+		t.Fatalf("prior pointer was destroyed (ReadFile: %v) — MUST-FIX regression", readErr)
+	}
+	if strings.TrimSpace(string(got)) != priorAbs {
+		t.Fatalf("pointer = %q, want prior %q untouched", strings.TrimSpace(string(got)), priorAbs)
+	}
+	if !errors.Is(wErr, os.ErrPermission) {
+		t.Fatalf("error = %q, want it to wrap the read permission error", wErr.Error())
 	}
 }
 
