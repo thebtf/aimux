@@ -258,6 +258,48 @@ func TestWriteActiveEnginePointer_AbortsBeforeRemoveWhenPriorPointerUnreadable(t
 	}
 }
 
+// TestWriteActiveEnginePointer_JoinsBothErrorsOnRestoreFailure proves the PRC2
+// LOW fix: when retry rename fails AND restore WriteFile also fails, both causes
+// are reachable via errors.Is (joined), not just the secondary restore failure.
+func TestWriteActiveEnginePointer_JoinsBothErrorsOnRestoreFailure(t *testing.T) {
+	dir := t.TempDir()
+	pointerPath := filepath.Join(dir, "active.txt")
+	priorAbs, err := filepath.Abs(filepath.Join(dir, "prior.exe"))
+	if err != nil {
+		t.Fatalf("Abs prior: %v", err)
+	}
+	writeTestFile(t, pointerPath, priorAbs+"\n")
+
+	sentinelRename := errors.New("sentinel rename failure")
+	origRename := renameActiveEnginePointer
+	renameActiveEnginePointer = func(_, _ string) error { return sentinelRename }
+	defer func() { renameActiveEnginePointer = origRename }()
+
+	// Backup read succeeds (haveBackup=true), so the restore branch runs; make
+	// the restore destination a directory so os.WriteFile fails too.
+	if err := os.MkdirAll(pointerPath+"-block", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Point the pointer at a path that os.WriteFile cannot write (a directory).
+	dirPointer := filepath.Join(dir, "as-dir")
+	if err := os.MkdirAll(dirPointer, 0o755); err != nil {
+		t.Fatalf("mkdir dirPointer: %v", err)
+	}
+	origRead := readActiveEnginePointer
+	readActiveEnginePointer = func(string) ([]byte, error) { return []byte(priorAbs + "\n"), nil }
+	defer func() { readActiveEnginePointer = origRead }()
+
+	wErr := writeActiveEnginePointer(dirPointer, filepath.Join(dir, "next.exe"))
+	if wErr == nil {
+		t.Fatalf("want error when both rename and restore fail")
+	}
+	// The primary rename sentinel must be reachable via errors.Is (joined chain),
+	// not text-only.
+	if !errors.Is(wErr, sentinelRename) {
+		t.Fatalf("errors.Is(wErr, sentinelRename) = false; want primary rename failure in the joined chain: %v", wErr)
+	}
+}
+
 func TestCoordinatorApply_PostExitInstallStartsWatchdogAndRegistersDrainFallback(t *testing.T) {
 	restore := setPostExitInstallRequiredForTest(func() bool { return true })
 	defer restore()

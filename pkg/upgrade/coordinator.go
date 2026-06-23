@@ -687,7 +687,11 @@ func writeActiveEnginePointer(pointerPath, successorPath string) error {
 	if retryErr := renameActiveEnginePointer(tmpPath, pointerAbs); retryErr != nil {
 		if haveBackup {
 			if restoreErr := os.WriteFile(pointerAbs, backup, 0o600); restoreErr != nil {
-				return fmt.Errorf("promote active engine pointer (rename: %v) and restore prior pointer failed: %w", retryErr, restoreErr)
+				// Both failures are actionable, so join them — the primary
+				// rename failure and the secondary restore failure are each
+				// reachable via errors.Is rather than one being text-only.
+				return fmt.Errorf("promote active engine pointer and restore prior pointer failed: %w",
+					errors.Join(retryErr, restoreErr))
 			}
 			return fmt.Errorf("promote active engine pointer (prior pointer restored): %w", retryErr)
 		}
@@ -702,9 +706,13 @@ func writeActiveEnginePointer(pointerPath, successorPath string) error {
 // non-destructive double-failure and unreadable-pointer paths.
 //
 // writeActiveEnginePointer is only reached through Coordinator.Apply, which
-// serializes concurrent invocations via the applyInProgress CAS guard
-// (errAlreadyInProgress). The backup-read → remove → retry-rename window below
-// therefore runs single-flight per Coordinator; no additional lock is required.
+// serializes concurrent invocations on the SAME Coordinator via the
+// applyInProgress CAS guard (errAlreadyInProgress — a per-instance atomic.Bool,
+// not a process-global lock). The daemon constructs exactly one Coordinator, so
+// the backup-read → remove → retry-rename window below runs single-flight in
+// practice. If a second Coordinator instance is ever introduced in the same
+// process, that one-instance assumption must be revisited (the seam vars are
+// mutated only in tests, never at runtime).
 var (
 	renameActiveEnginePointer = os.Rename
 	readActiveEnginePointer   = os.ReadFile

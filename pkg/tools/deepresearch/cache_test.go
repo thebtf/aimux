@@ -16,10 +16,14 @@ import (
 // rejected before any filesystem write, while empty cwd silently skips and an
 // absolute cwd still persists.
 func TestSaveEntryToDisk_RejectsNonAbsoluteCWD(t *testing.T) {
-	for _, bad := range []string{"relative/dir", "../../etc", "./x"} {
-		err := deepresearch.SaveEntryToDisk(bad, "topic", "summary", "m", nil, "content")
+	// Relative / traversal forms, plus both UNC spellings: //host/share and
+	// \\host\share both satisfy filepath.IsAbs on Windows, so they must be
+	// rejected by the VolumeName guard, not allowed through (PRC2 UNC gap).
+	bad := []string{"relative/dir", "../../etc", "./x", `//host/share`, `\\host\share`, `//host/share/../../x`}
+	for _, b := range bad {
+		err := deepresearch.SaveEntryToDisk(b, "topic", "summary", "m", nil, "content")
 		if !errors.Is(err, deepresearch.ErrUnsafeCacheCWD) {
-			t.Fatalf("SaveEntryToDisk(%q) err = %v, want ErrUnsafeCacheCWD", bad, err)
+			t.Fatalf("SaveEntryToDisk(%q) err = %v, want ErrUnsafeCacheCWD", b, err)
 		}
 	}
 

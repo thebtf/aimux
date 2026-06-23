@@ -122,12 +122,17 @@ var ErrUnsafeCacheCWD = errors.New("deepresearch cache cwd must be an absolute p
 // resolveCacheCWD validates a caller-supplied working directory before it is
 // used to build a filesystem path. An empty cwd means "no workspace to persist
 // to" (direct-stdio mode without a ProjectContext) and is signalled by ok=false
-// with a nil error — callers skip persistence. A non-empty cwd MUST be absolute:
-// a relative or traversal-shaped cwd (e.g. "../../etc") is rejected with
-// ErrUnsafeCacheCWD so a caller cannot drive a write outside an absolute project
-// root (PRC 2026-06-23 F2). Restoring an os.Getwd() fallback here is deliberately
-// avoided: in daemon mode that leaks the daemon's own cwd into every session's
-// cache path (engram #243, guarded by server.TestBuildSkillData_*).
+// with a nil error — callers skip persistence. A non-empty cwd MUST be a local
+// absolute path: a relative or traversal-shaped cwd (e.g. "../../etc") is
+// rejected, and a UNC network path is rejected too so a caller cannot drive a
+// write onto an attacker-controlled SMB share (PRC 2026-06-23 F2 + PRC2 UNC gap).
+// Both UNC spellings reach here as a "\\host\share" volume after filepath.Clean
+// — "//host/share" and "\\host\share" BOTH satisfy filepath.IsAbs on Windows, so
+// IsAbs alone is insufficient; the VolumeName "\\" prefix is the reliable
+// discriminator (verified on Go 1.25 Windows). Restoring an os.Getwd() fallback
+// here is deliberately avoided: in daemon mode that leaks the daemon's own cwd
+// into every session's cache path (engram #243, guarded by
+// server.TestBuildSkillData_*).
 func resolveCacheCWD(cwd string) (string, bool, error) {
 	if strings.TrimSpace(cwd) == "" {
 		return "", false, nil
@@ -135,6 +140,9 @@ func resolveCacheCWD(cwd string) (string, bool, error) {
 	cleaned := filepath.Clean(cwd)
 	if !filepath.IsAbs(cleaned) {
 		return "", false, fmt.Errorf("%w: %q", ErrUnsafeCacheCWD, cwd)
+	}
+	if vol := filepath.VolumeName(cleaned); strings.HasPrefix(vol, `\\`) || strings.HasPrefix(vol, "//") {
+		return "", false, fmt.Errorf("%w: UNC network paths are not permitted: %q", ErrUnsafeCacheCWD, cwd)
 	}
 	return cleaned, true, nil
 }
