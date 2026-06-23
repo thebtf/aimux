@@ -50,12 +50,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and restores the prior pointer, and aborts before `os.Remove` when the prior
   pointer exists but is unreadable. Both rename and remove/restore errors are
   wrapped for diagnosability.
-- **deepresearch disk-cache path safety (PRC F2).** `SaveEntryToDisk` /
-  `LoadDiskEntries` reject a non-empty, non-absolute caller `cwd`
-  (`ErrUnsafeCacheCWD`) so a caller-supplied traversal path cannot drive a write
-  outside an absolute root; an empty `cwd` keeps the safe silent skip (no
+- **deepresearch disk-cache path safety (PRC F2 + PRC2 UNC gap).**
+  `SaveEntryToDisk` / `LoadDiskEntries` reject a non-empty, non-absolute caller
+  `cwd` (`ErrUnsafeCacheCWD`) so a caller-supplied traversal path cannot drive a
+  write outside an absolute root; an empty `cwd` keeps the safe silent skip (no
   `os.Getwd()` fallback — that would reintroduce the engram #243 daemon-CWD
-  leak).
+  leak). A second review pass found both UNC spellings (`//host/share` and
+  `\\host\share`) satisfy `filepath.IsAbs` on Windows, so a
+  `filepath.VolumeName` `\\`-prefix guard now rejects UNC network paths too.
+- **Active-pointer error chain (PRC2).** When the active-pointer retry rename and
+  the prior-pointer restore both fail, `writeActiveEnginePointer` now joins both
+  errors (`errors.Join`) so the primary rename failure is reachable via
+  `errors.Is`, not just the secondary restore failure.
 
 ### Verification
 
