@@ -115,6 +115,15 @@ func (r *Registry) Get(name string) (*config.CLIProfile, error) {
 	return profile, nil
 }
 
+// IsAvailable reports the registry's current runtime availability bit for a CLI.
+// The second return value is false when the CLI has no recorded availability state.
+func (r *Registry) IsAvailable(name string) (bool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	available, ok := r.available[name]
+	return available, ok
+}
+
 // SetAvailable marks a CLI as available or unavailable in the registry.
 // Intended for testing and programmatic warmup updates; normal availability
 // is set by Probe() and RunWarmup().

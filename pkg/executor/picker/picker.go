@@ -35,6 +35,10 @@ type TaskSpec struct {
 
 	// SessionResume requests resume-mode command rendering for the CLI.
 	SessionResume bool
+
+	// TimeoutSeconds optionally overrides the selected CLI profile timeout for
+	// this task dispatch.
+	TimeoutSeconds int
 }
 
 // Picker selects the optimal CLI for a TaskSpec when the caller does not

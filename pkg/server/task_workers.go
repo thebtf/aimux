@@ -99,15 +99,16 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 	}
 
 	spec := picker.TaskSpec{
-		TaskClass:     w.taskClass,
-		Prompt:        task.Prompt,
-		CWD:           task.CWD,
-		Env:           cloneEnv(task.Env),
-		Model:         task.Model,
-		Effort:        task.Effort,
-		Sandbox:       sandboxFromTaskMetadata(task.Metadata),
-		SessionID:     sessionIDFromTaskMetadata(task.Metadata),
-		SessionResume: sessionResumeFromTaskMetadata(task.Metadata),
+		TaskClass:      w.taskClass,
+		Prompt:         task.Prompt,
+		CWD:            task.CWD,
+		Env:            cloneEnv(task.Env),
+		Model:          task.Model,
+		Effort:         task.Effort,
+		Sandbox:        sandboxFromTaskMetadata(task.Metadata),
+		SessionID:      sessionIDFromTaskMetadata(task.Metadata),
+		SessionResume:  sessionResumeFromTaskMetadata(task.Metadata),
+		TimeoutSeconds: task.Timeout,
 	}
 	raw, selectedCLI, failedAttempts, err := w.dispatch(ctx, cli, task.Metadata, spec)
 	if err != nil {

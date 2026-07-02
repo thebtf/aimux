@@ -469,6 +469,12 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 	if profile == nil {
 		return "", extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile is nil", cli), nil)
 	}
+	if available, ok := s.registry.IsAvailable(cli); ok && !available {
+		return "", extypes.NewCapabilityMismatch(
+			fmt.Sprintf("CLI %q is runtime-unavailable (warmup failed or still unavailable); fail-fast instead of spawning", cli),
+			nil,
+		)
+	}
 
 	binaryPath := profile.ResolvedPath
 	if binaryPath == "" {
@@ -509,13 +515,17 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 }
 
 func taskDispatchSpawnArgs(cli string, binaryPath string, profile *config.CLIProfile, spec picker.TaskSpec) types.SpawnArgs {
+	timeoutSeconds := profile.TimeoutSeconds
+	if spec.TimeoutSeconds > 0 {
+		timeoutSeconds = spec.TimeoutSeconds
+	}
 	return types.SpawnArgs{
 		CLI:               cli,
 		Command:           binaryPath,
 		Args:              buildTaskArgs(profile, spec),
 		CWD:               taskDispatchCWD(spec.CWD),
 		Env:               cloneEnv(spec.Env),
-		TimeoutSeconds:    profile.TimeoutSeconds,
+		TimeoutSeconds:    timeoutSeconds,
 		CompletionPattern: profile.CompletionPattern,
 	}
 }

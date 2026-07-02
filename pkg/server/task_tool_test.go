@@ -469,6 +469,27 @@ func TestHandleTaskRecipeCapabilityMismatchFailsBeforeSubmit(t *testing.T) {
 	}
 }
 
+func TestTaskDispatchFailFastWhenCLIUnavailable(t *testing.T) {
+	t.Parallel()
+
+	srv, _, _ := newTaskToolServer(t)
+	srv.registry.SetAvailable("codex", false)
+	_, err := srv.taskDispatch(context.Background(), "codex", picker.TaskSpec{Prompt: "Implement timeout propagation."})
+	if err == nil {
+		t.Fatal("taskDispatch error = nil, want CapabilityMismatch")
+	}
+	var cliErr *extypes.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("taskDispatch error = %T, want *CLIError", err)
+	}
+	if cliErr.Code != extypes.CLIErrorCodeCapabilityMismatch {
+		t.Fatalf("CLIError code = %s, want %s", cliErr.Code, extypes.CLIErrorCodeCapabilityMismatch)
+	}
+	if !strings.Contains(cliErr.Message, "runtime-unavailable") {
+		t.Fatalf("message = %q, want runtime-unavailable clue", cliErr.Message)
+	}
+}
+
 func TestHandleTaskDirectReviewSkipsRecipeCapabilityPreflight(t *testing.T) {
 	t.Parallel()
 
@@ -1117,6 +1138,27 @@ func TestTaskDispatchSpawnArgsCarriesTaskEnv(t *testing.T) {
 	env["OPENAI_API_KEY"] = "mutated"
 	if args.Env["OPENAI_API_KEY"] != "session-key" {
 		t.Fatalf("Env was not cloned: %#v", args.Env)
+	}
+}
+
+func TestTaskDispatchSpawnArgsUsesRequestTimeoutOverride(t *testing.T) {
+	profile := &config.CLIProfile{
+		TimeoutSeconds:    7,
+		CompletionPattern: "done",
+		Command:           config.CommandConfig{Base: "codex exec"},
+		PromptFlagType:    "positional",
+	}
+	args := taskDispatchSpawnArgs("codex", "codex.exe", profile, picker.TaskSpec{
+		Prompt:         "hello",
+		TimeoutSeconds: 42,
+	})
+	if args.TimeoutSeconds != 42 {
+		t.Fatalf("TimeoutSeconds = %d, want 42", args.TimeoutSeconds)
+	}
+
+	fallback := taskDispatchSpawnArgs("codex", "codex.exe", profile, picker.TaskSpec{Prompt: "hello"})
+	if fallback.TimeoutSeconds != 7 {
+		t.Fatalf("TimeoutSeconds without override = %d, want profile timeout 7", fallback.TimeoutSeconds)
 	}
 }
 

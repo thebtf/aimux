@@ -56,6 +56,27 @@ func TestRegistry_EnabledCLIs(t *testing.T) {
 	}
 }
 
+func TestRegistry_IsAvailable(t *testing.T) {
+	profiles := map[string]*config.CLIProfile{
+		"codex": {Name: "codex", Binary: "codex"},
+	}
+
+	reg := driver.NewRegistry(profiles)
+	if available, ok := reg.IsAvailable("codex"); ok || available {
+		t.Fatalf("IsAvailable(codex) before SetAvailable = (%v, %v), want (false, false)", available, ok)
+	}
+
+	reg.SetAvailable("codex", false)
+	if available, ok := reg.IsAvailable("codex"); !ok || available {
+		t.Fatalf("IsAvailable(codex) after SetAvailable(false) = (%v, %v), want (false, true)", available, ok)
+	}
+
+	reg.SetAvailable("codex", true)
+	if available, ok := reg.IsAvailable("codex"); !ok || !available {
+		t.Fatalf("IsAvailable(codex) after SetAvailable(true) = (%v, %v), want (true, true)", available, ok)
+	}
+}
+
 func TestResolveCommand_Basic(t *testing.T) {
 	profile := &config.CLIProfile{
 		Name:       "codex",
