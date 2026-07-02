@@ -636,6 +636,75 @@ func TestHandleDeepresearchReturnsAcceptedLoomJob(t *testing.T) {
 	}
 }
 
+func TestProfileTaskWorkerProgressSinkForwardsLinesToLoom(t *testing.T) {
+	t.Parallel()
+
+	srv, _, _ := newTaskToolServer(t)
+	worker := profileTaskWorker{
+		server:     srv,
+		workerType: code.WorkerTypeCodeDriver,
+		taskClass:  "code",
+		defaultCLI: "codex",
+	}
+
+	now := time.Now().UTC()
+	taskID := "task-progress-sink"
+	if err := srv.loom.Import(&loom.Task{
+		ID:         taskID,
+		Status:     loom.TaskStatusRunning,
+		WorkerType: code.WorkerTypeCodeDriver,
+		ProjectID:  "progress-sink-proj",
+		Prompt:     "drive",
+		CLI:        "codex",
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("import running task: %v", err)
+	}
+
+	sink := worker.progressSink(taskID)
+	if sink == nil {
+		t.Fatal("progressSink returned nil for a live engine + task")
+	}
+
+	sink("first line")
+	sink("   ") // whitespace-only: must be skipped (no signal)
+	sink("second line")
+
+	task, err := srv.loom.Get(taskID)
+	if err != nil {
+		t.Fatalf("get task after progress: %v", err)
+	}
+	if task.LastOutputLine != "second line" {
+		t.Fatalf("LastOutputLine = %q, want %q", task.LastOutputLine, "second line")
+	}
+	if task.ProgressLines != 2 {
+		t.Fatalf("ProgressLines = %d, want 2 (whitespace line skipped)", task.ProgressLines)
+	}
+	if task.ProgressUpdatedAt == nil {
+		t.Fatal("ProgressUpdatedAt is nil after progress — stall detector would still measure from dispatch time")
+	}
+}
+
+func TestProfileTaskWorkerProgressSinkNilWhenNoSignalPossible(t *testing.T) {
+	t.Parallel()
+
+	srv, _, _ := newTaskToolServer(t)
+	live := profileTaskWorker{server: srv, workerType: code.WorkerTypeCodeDriver, defaultCLI: "codex"}
+	if live.progressSink("") != nil {
+		t.Fatal("progressSink(empty taskID) = non-nil, want nil")
+	}
+
+	noEngine := profileTaskWorker{server: &Server{}, workerType: code.WorkerTypeCodeDriver}
+	if noEngine.progressSink("task-x") != nil {
+		t.Fatal("progressSink with nil loom = non-nil, want nil")
+	}
+
+	noServer := profileTaskWorker{workerType: code.WorkerTypeCodeDriver}
+	if noServer.progressSink("task-x") != nil {
+		t.Fatal("progressSink with nil server = non-nil, want nil")
+	}
+}
+
 func newTaskToolServer(t *testing.T) (*Server, *recordingTaskWorker, *recordingTaskWorker) {
 	return newTaskToolServerWithProfile(t, defaultRecipeProfile())
 }

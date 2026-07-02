@@ -109,6 +109,7 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		SessionID:      sessionIDFromTaskMetadata(task.Metadata),
 		SessionResume:  sessionResumeFromTaskMetadata(task.Metadata),
 		TimeoutSeconds: task.Timeout,
+		OnOutput:       w.progressSink(task.ID),
 	}
 	raw, selectedCLI, failedAttempts, err := w.dispatch(ctx, cli, task.Metadata, spec)
 	if err != nil {
@@ -150,6 +151,30 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		Content:  content,
 		Metadata: metadata,
 	}, nil
+}
+
+// progressSink returns an OnOutput callback that forwards each leaf-CLI stdout
+// line into loom.AppendProgress for the running task, so the stall detector's
+// ProgressUpdatedAt reflects genuine last-output time instead of staying nil
+// (which would make legitimate long-running work look like a stall — the exact
+// false positive #359 surfaced). Returns nil when no engine is available so the
+// dispatch path skips the SpawnArgs.OnOutput wiring entirely.
+//
+// The callback is best-effort: empty lines are skipped (no signal), and
+// AppendProgress errors are swallowed — progress recording must never break the
+// streaming loop or fail the task. AppendProgress is safe for concurrent use and
+// no-ops for unknown/cancelled task IDs.
+func (w profileTaskWorker) progressSink(taskID string) func(string) {
+	if w.server == nil || w.server.loom == nil || taskID == "" {
+		return nil
+	}
+	engine := w.server.loom
+	return func(line string) {
+		if strings.TrimSpace(line) == "" {
+			return
+		}
+		_ = engine.AppendProgress(taskID, line)
+	}
 }
 
 func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, metadata map[string]any, spec picker.TaskSpec) (string, string, []fallback.FailedAttempt, error) {

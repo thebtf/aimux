@@ -527,6 +527,7 @@ func taskDispatchSpawnArgs(cli string, binaryPath string, profile *config.CLIPro
 		Env:               cloneEnv(spec.Env),
 		TimeoutSeconds:    timeoutSeconds,
 		CompletionPattern: profile.CompletionPattern,
+		OnOutput:          spec.OnOutput,
 	}
 }
 

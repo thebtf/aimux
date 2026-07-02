@@ -39,6 +39,15 @@ type TaskSpec struct {
 	// TimeoutSeconds optionally overrides the selected CLI profile timeout for
 	// this task dispatch.
 	TimeoutSeconds int
+
+	// OnOutput, when non-nil, is invoked once per stdout line as the leaf CLI
+	// produces it (live progress). The task dispatch path wires this into
+	// SpawnArgs.OnOutput so the IOManager delivers each line in real time —
+	// used to forward progress into loom.AppendProgress so the stall detector's
+	// ProgressUpdatedAt reflects genuine last-output time rather than staying nil.
+	// It must be safe for concurrent use and should return quickly; a slow sink
+	// blocks the streaming loop.
+	OnOutput func(line string)
 }
 
 // Picker selects the optimal CLI for a TaskSpec when the caller does not
