@@ -7,21 +7,43 @@ import (
 	"time"
 )
 
-// runSlowCodex emulates a codex-like process that emits three progress lines
-// with deliberate pauses between them, then exits. Designed for progress_tail
-// e2e polling tests: the caller polls status between lines and observes
-// progress_tail changing.
+// runSlowCodex emulates a codex-like process with three output-timing modes,
+// selected by the -mode flag. All modes print plain-text lines to stdout
+// (unbuffered for subprocess pipes) so the pipe executor's IOManager delivers
+// each line to SpawnArgs.OnOutput as it arrives.
 //
-// Output format: plain text lines to stdout (no JSONL).
-// Each line is printed immediately (no buffering) so the pipe executor picks
-// it up before the next sleep.
+// Modes:
+//
+//	burst      (default) — three lines with 200ms pauses, then exit. The original
+//	                        progress_tail polling behavior.
+//	long-legit — emit one line every -interval for -duration, then exit. Simulates
+//	             legitimate long-running work that keeps producing output: the
+//	             stall detector must NEVER flag this as a hang because silence
+//	             never exceeds the soft-warning threshold between lines.
+//	hang       — emit an initial line (or nothing if -silent-start), then go
+//	             silent for -duration WITHOUT exiting. Simulates a wedged process:
+//	             the stall detector MUST flag this once silence crosses the
+//	             configured tiers.
+//
+// This split is the emulator half of the #359 "hang != long-legit-work"
+// invariant: a working CLI always keeps producing content; a hung one goes
+// silent. The stall-detection playbook drives both modes through the real
+// task/leaf-CLI dispatch path and asserts the detector distinguishes them.
 //
 // Flags:
 //
-//	-p <prompt>  prompt text (ignored, just for flag compatibility)
+//	-p <prompt>       prompt text (ignored; flag compatibility)
+//	-mode <mode>      burst | long-legit | hang (default burst)
+//	-interval <dur>   inter-line pause for long-legit (default 200ms)
+//	-duration <dur>   total emit window (long-legit) or silence window (hang)
+//	-silent-start     hang mode: emit no initial line (silent from dispatch)
 func runSlowCodex() int {
 	fs := flag.NewFlagSet("slow-codex", flag.ContinueOnError)
 	prompt := fs.String("p", "", "prompt (ignored)")
+	mode := fs.String("mode", "burst", "output timing mode: burst | long-legit | hang")
+	interval := fs.Duration("interval", 200*time.Millisecond, "inter-line pause (long-legit)")
+	duration := fs.Duration("duration", 2*time.Second, "emit window (long-legit) or silence window (hang)")
+	silentStart := fs.Bool("silent-start", false, "hang mode: emit no initial line")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "slow-codex: %v\n", err)
@@ -29,12 +51,51 @@ func runSlowCodex() int {
 	}
 	_ = prompt
 
-	lines := []string{"line 1", "line 2", "line 3"}
-	for _, l := range lines {
+	switch *mode {
+	case "long-legit":
+		return runSlowCodexLongLegit(*interval, *duration)
+	case "hang":
+		return runSlowCodexHang(*duration, *silentStart)
+	default: // burst
+		return runSlowCodexBurst()
+	}
+}
+
+// runSlowCodexBurst prints three lines with 200ms pauses, then exits.
+func runSlowCodexBurst() int {
+	for _, l := range []string{"line 1", "line 2", "line 3"} {
 		fmt.Println(l)
-		// Flush is implicit: fmt.Println writes to os.Stdout which is unbuffered
-		// for subprocess pipes. Sleep gives the polling test time to call status().
 		time.Sleep(200 * time.Millisecond)
 	}
+	return 0
+}
+
+// runSlowCodexLongLegit emits a progress line every interval until duration
+// elapses, then exits 0. Silence between lines never exceeds interval, so a
+// correctly-configured stall detector (soft-warning > interval) must not flag it.
+func runSlowCodexLongLegit(interval, duration time.Duration) int {
+	if interval <= 0 {
+		interval = 200 * time.Millisecond
+	}
+	deadline := time.Now().Add(duration)
+	n := 0
+	for time.Now().Before(deadline) {
+		n++
+		fmt.Printf("working: step %d\n", n)
+		time.Sleep(interval)
+	}
+	fmt.Println("working: done")
+	return 0
+}
+
+// runSlowCodexHang emits an initial line (unless silentStart) then blocks
+// silently for duration WITHOUT producing further output. It exits 0 after the
+// silence window so the test process never leaks, but during the window the
+// stall detector must observe growing silence and cross its tiers.
+func runSlowCodexHang(duration time.Duration, silentStart bool) int {
+	if !silentStart {
+		fmt.Println("starting up")
+	}
+	time.Sleep(duration)
 	return 0
 }

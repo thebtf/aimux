@@ -31,6 +31,18 @@ jobs:
       - name: Critical suite
         run: go test ./tests/critical -count=1 -timeout 300s
 
+      # issue #359 — stall-detection invariant gate: a hung leaf CLI is flagged,
+      # legitimate long-running work is not. Lives in pkg/server (needs unexported
+      # evaluateInactivityTier / loomTaskActivityBaseline / profileTaskWorker), so
+      # it is run by name as a named release blocker rather than from ./tests/critical.
+      - name: Stall-detection playbook (issue #359)
+        run: |
+          set -euo pipefail
+          matched_tests="$(go test ./pkg/server -list 'TestCritical_StallDetection_.*')"
+          printf '%s\n' "$matched_tests"
+          grep -q '^TestCritical_StallDetection_' <<< "$matched_tests"
+          go test ./pkg/server -run 'TestCritical_StallDetection_' -count=1 -timeout 120s
+
       # CodeEntry is intentionally excluded: it requires real vendor CLIs and stays outside the deterministic tag gate.
       - name: AIMUX-21 deterministic product gate
         env:
