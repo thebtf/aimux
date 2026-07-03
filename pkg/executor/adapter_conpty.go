@@ -153,3 +153,12 @@ func (a *CLIConPTYAdapter) Close() error {
 func (a *CLIConPTYAdapter) Legacy() types.LegacyExecutor {
 	return a.legacy
 }
+
+// WithSession implements types.SessionBinder. It returns a new CLIConPTYAdapter
+// bound to the given session — the receiver is not mutated (AIMUX-14 FR-2).
+func (a *CLIConPTYAdapter) WithSession(sess types.Session) types.ExecutorV2 {
+	return NewCLIConPTYAdapterWithSession(a.legacy, sess)
+}
+
+// Compile-time assertion: CLIConPTYAdapter must implement SessionBinder.
+var _ types.SessionBinder = (*CLIConPTYAdapter)(nil)

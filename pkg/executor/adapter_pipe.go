@@ -172,3 +172,12 @@ func (a *CLIPipeAdapter) Close() error {
 func (a *CLIPipeAdapter) Legacy() types.LegacyExecutor {
 	return a.legacy
 }
+
+// WithSession implements types.SessionBinder. It returns a new CLIPipeAdapter
+// bound to the given session — the receiver is not mutated (AIMUX-14 FR-2).
+func (a *CLIPipeAdapter) WithSession(sess types.Session) types.ExecutorV2 {
+	return NewCLIPipeAdapterWithSession(a.legacy, sess)
+}
+
+// Compile-time assertion: CLIPipeAdapter must implement SessionBinder.
+var _ types.SessionBinder = (*CLIPipeAdapter)(nil)

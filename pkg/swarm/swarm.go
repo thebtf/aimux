@@ -32,7 +32,8 @@ var ErrNotSupported = errors.New("swarm: backend does not support persistent ses
 type GetOption func(*getOpts)
 
 type getOpts struct {
-	scope string
+	scope       string
+	sessionArgs *types.SpawnArgs
 }
 
 // WithScope binds the returned handle to a session-specific scope so that two
@@ -40,6 +41,14 @@ type getOpts struct {
 // Without WithScope the handle is global (backward-compatible behaviour).
 func WithScope(scope string) GetOption {
 	return func(o *getOpts) { o.scope = scope }
+}
+
+// WithSessionArgs instructs Swarm.Get to start a persistent session on the
+// spawned executor when the executor supports it (Info().Capabilities.
+// PersistentSessions == true && SessionFactory). The session is bound to the
+// adapter via types.SessionBinder. Ignored for Stateless mode (AIMUX-14 FR-2).
+func WithSessionArgs(args types.SpawnArgs) GetOption {
+	return func(o *getOpts) { a := args; o.sessionArgs = &a }
 }
 
 // registryKey returns the composite key used in the Swarm registry.
@@ -146,7 +155,13 @@ type Handle struct {
 	executor   types.ExecutorV2
 	startedAt  time.Time
 	lastUsedAt time.Time
-	mu         sync.Mutex // protects executor and lastUsedAt
+	mu         sync.Mutex // protects executor, lastUsedAt, sessionArgs
+
+	// sessionArgs stores the SpawnArgs used to start the persistent session
+	// bound to this handle. Non-nil only when the handle was spawned with
+	// WithSessionArgs and the executor supported sessions. Used by restart()
+	// to rebind a fresh session after executor replacement (AIMUX-14 FR-2).
+	sessionArgs *types.SpawnArgs
 }
 
 // Swarm manages executor lifecycle: spawn, get, send, health check, restart,
@@ -319,6 +334,16 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 	h, err := s.spawnLocked(ctx, name, mode)
 	if err != nil {
 		return nil, err
+	}
+
+	// Step 2b: bind a persistent session when WithSessionArgs was provided
+	// and the executor supports sessions (AIMUX-14 FR-2). This runs outside
+	// s.mu — MaybeStartSession may block on process startup.
+	if o.sessionArgs != nil && mode != Stateless {
+		if err := s.bindSession(ctx, h, *o.sessionArgs); err != nil {
+			_ = s.closeHandle(h, "session-bind-failed")
+			return nil, fmt.Errorf("swarm: session bind(%s): %w", name, err)
+		}
 	}
 
 	// Step 3: re-acquire write lock only for registry insertion.
@@ -760,6 +785,48 @@ func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode) (*
 	return makeHandle(ctx, id, name, mode, exec), nil
 }
 
+// bindSession starts a persistent session on h's executor via MaybeStartSession
+// and replaces h.executor with a session-bound adapter via SessionBinder.
+// Stores sessionArgs on h so restart() can rebind after executor replacement.
+//
+// Returns nil when the executor does not support sessions (graceful fallback —
+// the adapter remains stateless). Returns an error only when session startup
+// fails (MaybeStartSession propagates the error to the caller).
+//
+// Thread safety: acquires h.mu. Must NOT be called while holding s.mu.
+func (s *Swarm) bindSession(ctx context.Context, h *Handle, args types.SpawnArgs) error {
+	h.mu.Lock()
+	exec := h.executor
+	h.mu.Unlock()
+
+	sess, err := MaybeStartSession(ctx, exec, args)
+	if err != nil {
+		return err
+	}
+	if sess == nil {
+		// Executor does not support sessions — remain stateless (FR-4 fallback).
+		return nil
+	}
+
+	// Bind the session to the adapter via SessionBinder.
+	binder, ok := exec.(types.SessionBinder)
+	if !ok {
+		// Session started but adapter does not implement SessionBinder —
+		// close the session and fall back to stateless.
+		_ = sess.Close()
+		return nil
+	}
+
+	bound := binder.WithSession(sess)
+
+	h.mu.Lock()
+	h.executor = bound
+	h.sessionArgs = &args
+	h.mu.Unlock()
+
+	return nil
+}
+
 // ensureAlive checks h.executor health and restarts once if not alive.
 // Returns an error only if the restart also fails.
 func (s *Swarm) ensureAlive(h *Handle) error {
@@ -778,6 +845,9 @@ func (s *Swarm) ensureAlive(h *Handle) error {
 // restart closes the current executor in h and replaces it with a fresh one
 // from the factory. The handle's ID, TenantID, and registration slot are
 // preserved — TenantID is never mutated (FR-1 immutability invariant).
+//
+// When h.sessionArgs is non-nil (handle was originally session-bound), restart
+// starts a new session and rebinds the adapter via SessionBinder (AIMUX-14 FR-2).
 func (s *Swarm) restart(h *Handle) error {
 	h.mu.Lock()
 
@@ -785,6 +855,13 @@ func (s *Swarm) restart(h *Handle) error {
 	if h.executor != nil {
 		_ = h.executor.Close()
 		h.executor = nil
+	}
+
+	// Snapshot sessionArgs before unlocking — needed for rebind below.
+	var sessArgs *types.SpawnArgs
+	if h.sessionArgs != nil {
+		copy := *h.sessionArgs
+		sessArgs = &copy
 	}
 
 	fresh, err := s.factoryFn(h.Name)
@@ -797,6 +874,16 @@ func (s *Swarm) restart(h *Handle) error {
 	h.startedAt = time.Now()
 	h.lastUsedAt = time.Now()
 	h.mu.Unlock()
+
+	// Rebind session if the original handle was session-bound (AIMUX-14 FR-2).
+	// bindSession acquires h.mu internally — safe to call after the unlock above.
+	if sessArgs != nil {
+		if err := s.bindSession(context.Background(), h, *sessArgs); err != nil {
+			// Session rebind failed — the handle is alive but stateless.
+			// Log but don't fail the restart itself.
+			_ = err // TODO: emit audit event for session rebind failure
+		}
+	}
 
 	// Emit restart event after releasing h.mu (audit.Emit is non-blocking but
 	// emitting outside the lock keeps hot-path lock hold time minimal).

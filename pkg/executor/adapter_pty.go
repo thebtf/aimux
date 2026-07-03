@@ -159,3 +159,12 @@ func (a *CLIPTYAdapter) Close() error {
 func (a *CLIPTYAdapter) Legacy() types.LegacyExecutor {
 	return a.legacy
 }
+
+// WithSession implements types.SessionBinder. It returns a new CLIPTYAdapter
+// bound to the given session — the receiver is not mutated (AIMUX-14 FR-2).
+func (a *CLIPTYAdapter) WithSession(sess types.Session) types.ExecutorV2 {
+	return NewCLIPTYAdapterWithSession(a.legacy, sess)
+}
+
+// Compile-time assertion: CLIPTYAdapter must implement SessionBinder.
+var _ types.SessionBinder = (*CLIPTYAdapter)(nil)

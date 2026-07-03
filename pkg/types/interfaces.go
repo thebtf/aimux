@@ -142,6 +142,17 @@ type LegacyAccessor interface {
 	Legacy() LegacyExecutor
 }
 
+// SessionBinder is an OPTIONAL side-interface for ExecutorV2 adapters that support
+// persistent session binding. WithSession returns a NEW adapter instance bound to
+// the given session — the original adapter is not mutated (immutable-after-construction
+// invariant). Swarm.Get probes returned adapters for this interface when
+// SpawnMode is Stateful or Persistent and session args are provided (AIMUX-14 FR-2).
+//
+// Implementations: CLIPipeAdapter, CLIConPTYAdapter, CLIPTYAdapter.
+type SessionBinder interface {
+	WithSession(sess Session) ExecutorV2
+}
+
 // Strategy defines an orchestration pattern.
 // Implementations: PairCoding, SequentialDialog, ParallelConsensus,
 // StructuredDebate, AuditPipeline.
