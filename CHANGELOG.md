@@ -7,7 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.18.0] — 2026-06-23 — P26 async-only contract, muxcore v0.26.13, upgrade hardening
+## [5.18.1] — 2026-07-03 — issue #359: leaf-CLI MCP isolation, honest stall detection, Linux CI fixes
+
+### Fixed
+
+- **issue #359 root fix — leaf-CLI MCP self-recursion / shared-mux starvation.**
+  A `task`- or warmup-spawned leaf CLI loaded the spawning daemon's MCP table
+  (project `.mcp.json` → aimux) and opened an MCP client back to that daemon,
+  causing reentrancy / startup fan-out / shared-mcp-mux starvation and the
+  observed 36-minute stalls. Config-driven `CLIProfile.MCPSuppressionFlags`
+  (codex `-c mcp_servers={}`, claude `--strict-mcp-config --mcp-config {}`) is now
+  applied in **both** arg-builders — task dispatch (`buildTaskArgs`) and the
+  warmup probe (`resolve.BuildPromptArgs`) — so a task/warmup-spawned CLI opens
+  **zero** MCP clients. The recursion class is closed by construction, not by
+  timeout. CPA/ChatGPT-subscription auth is preserved (inline flags, no
+  CODEX_HOME/config swap). (`413891a`)
+- **issue #359 backstops** — task path now fails fast on runtime CLI
+  availability/warmup state (not just binary presence) and propagates the
+  request `timeout_seconds` to the actual spawn timeout. (`cc52ac3`)
+- **Honest stall detection.** Live per-line progress from the leaf-CLI spawn is
+  threaded into `loom.AppendProgress` so `ProgressUpdatedAt` advances on real
+  output; the inactivity detector measures silence from the last output, not
+  from dispatch. An artifact-aware window (`StreamingActiveSoftWarningSeconds`)
+  tightens the silence threshold once output has started, so legitimate
+  long-running work is never flagged while a true hang still is. Proven by the
+  `@critical` stall-detection playbook wired into the release gate.
+  (`0bdfb85`, `d900609`, `a3cae24`)
+- **Cross-platform e2e socket path overflow fixes** (Linux + macOS CI red,
+  Windows unaffected):
+  (1) Multiple e2e tests bound daemon control sockets under long paths
+  (`t.TempDir()` on Linux, `/var/folders/.../T/` on macOS), exceeding the
+  AF_UNIX `sun_path` limit (108 bytes Linux, 104 bytes macOS) → `bind: invalid
+  argument`. Extracted a shared `newMuxcoreIsolatedTemp` helper that uses `/tmp`
+  on Unix; shortened engine name prefixes across 6 test files; worst-case path
+  now ~56 bytes with 48 bytes of headroom. (`f3c4f2a`, `e725db4`)
+  (2) After a hot-swap the running binary carried the staged `.bin` extension
+  while a freshly built successor was extensionless, and the local-source
+  extension guard rejected the pair on POSIX; `normalizeExecExtension` now maps
+  POSIX `""` → `.bin` before the comparison, keeping a genuine `.exe`/`.bin`
+  mismatch rejected. Also gated a UNC-cwd rejection test to Windows (POSIX
+  treats `//host/share` as a valid absolute path). (`f3c4f2a`, `9991964`)
+
+
 
 ### Added
 
