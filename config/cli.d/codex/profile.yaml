@@ -81,5 +81,14 @@ write_sandbox_flags: ["--dangerously-bypass-approvals-and-sandbox"]
 # Headless mode flags (appended when features.headless is true)
 headless_flags: ["--json"]
 
+# MCP suppression (issue #359): when aimux spawns codex as a task/warmup leaf,
+# codex must NOT load its own MCP servers from ~/.codex/config.toml — that config
+# registers aimux itself (and ~20 servers behind one shared mcp-mux), so the child
+# codex opens MCP clients back toward the spawning daemon on startup, causing
+# reentrancy / startup fan-out / shared-mux starvation stalls. "-c mcp_servers={}"
+# is an inline TOML override of just the MCP table; the rest of config.toml
+# (including ChatGPT-subscription / CPA auth) is untouched.
+mcp_suppression_flags: ["-c", "mcp_servers={}"]
+
 env_passthrough:
   - OPENAI_API_KEY

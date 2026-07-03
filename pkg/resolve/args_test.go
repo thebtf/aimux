@@ -184,6 +184,28 @@ func TestBuildPromptArgs_ReadOnly(t *testing.T) {
 	assertSliceEqual(t, args, []string{"--full-auto", "--sandbox", "read-only", "-p", "hello"})
 }
 
+// TestBuildPromptArgs_MCPSuppression is the warmup-path half of the #359 MCP
+// isolation fix: the warmup probe spawns the CLI via BuildPromptArgs, so the
+// suppression flags must appear here too (a warmup spawn that connects an MCP
+// client back to the daemon is a named #359 stall correlate). Suppression is
+// emitted right after the command-base args, before headless/prompt.
+func TestBuildPromptArgs_MCPSuppression(t *testing.T) {
+	profile := &config.CLIProfile{
+		Name: "codex",
+		Command: config.CommandConfig{
+			Base: "codex exec",
+		},
+		Features:            types.CLIFeatures{Headless: true},
+		HeadlessFlags:       []string{"--json"},
+		MCPSuppressionFlags: []string{"-c", "mcp_servers={}"},
+		PromptFlag:          "-p",
+	}
+
+	args := BuildPromptArgs(profile, "", "", false, "ping")
+
+	assertSliceEqual(t, args, []string{"exec", "-c", "mcp_servers={}", "--json", "-p", "ping"})
+}
+
 func TestBuildPromptArgs_EmptyPrompt(t *testing.T) {
 	profile := &config.CLIProfile{
 		Name: "gemini",

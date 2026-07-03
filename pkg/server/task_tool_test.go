@@ -1176,6 +1176,52 @@ func pickerTaskSpec(prompt string) picker.TaskSpec {
 	return picker.TaskSpec{Prompt: prompt}
 }
 
+// TestBuildTaskArgsInjectsMCPSuppressionTemplateBranch covers the codex path
+// (args_template branch): the #359 MCP suppression flags must land in the
+// spawned argv before the template output, so the child codex never loads MCP.
+func TestBuildTaskArgsInjectsMCPSuppressionTemplateBranch(t *testing.T) {
+	t.Parallel()
+
+	profile := &config.CLIProfile{
+		Binary:              "codex",
+		PromptFlagType:      "stdin",
+		StdinSentinel:       "-",
+		MCPSuppressionFlags: []string{"-c", "mcp_servers={}"},
+		Command: config.CommandConfig{
+			Base:         "codex exec",
+			ArgsTemplate: "--json -",
+		},
+	}
+
+	got := buildTaskArgs(profile, pickerTaskSpec("hello"))
+	want := []string{"exec", "-c", "mcp_servers={}", "--json", "-"}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+// TestBuildTaskArgsInjectsMCPSuppressionDefaultBranch covers the claude path
+// (default flag/positional branch, no args_template): suppression flags land
+// after the command base, before headless/prompt.
+func TestBuildTaskArgsInjectsMCPSuppressionDefaultBranch(t *testing.T) {
+	t.Parallel()
+
+	profile := &config.CLIProfile{
+		Binary:              "claude",
+		PromptFlagType:      "positional",
+		MCPSuppressionFlags: []string{"--strict-mcp-config", "--mcp-config", "{}"},
+		Features:            types.CLIFeatures{Headless: true},
+		HeadlessFlags:       []string{"-p", "--output-format", "json"},
+		Command:             config.CommandConfig{Base: "claude"},
+	}
+
+	got := buildTaskArgs(profile, pickerTaskSpec("review this"))
+	want := []string{"--strict-mcp-config", "--mcp-config", "{}", "-p", "--output-format", "json", "review this"}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
 func TestTaskDispatchCWDUsesTaskCWDBeforeEnvFallback(t *testing.T) {
 	t.Setenv("AIMUX_CWD", "env-cwd")
 

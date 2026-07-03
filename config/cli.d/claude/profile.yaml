@@ -74,6 +74,14 @@ read_only_flags: ["--permission-mode", "plan"]
 # Headless mode: -p/--print enables non-interactive output
 headless_flags: ["-p", "--output-format", "json"]
 
+# MCP suppression (issue #359): when aimux spawns claude as a task/warmup leaf,
+# claude must NOT load MCP servers from the project .mcp.json (which registers
+# aimux itself) or user config — otherwise the child claude opens an MCP client
+# back toward the spawning daemon on startup. "--strict-mcp-config --mcp-config {}"
+# ignores all external MCP configs and loads only the empty inline set (VERIFIED
+# via `claude --help`). Auth is unaffected.
+mcp_suppression_flags: ["--strict-mcp-config", "--mcp-config", "{}"]
+
 env_passthrough:
   - ANTHROPIC_API_KEY
   - CLAUDE_API_KEY

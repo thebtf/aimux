@@ -550,6 +550,13 @@ func buildTaskArgs(profile *config.CLIProfile, spec picker.TaskSpec) []string {
 	}
 	// Work on a copy so callers can safely reuse config-owned slices.
 	args = append([]string{}, args...)
+	// MCP suppression (issue #359): applied before the template/default split so
+	// it covers BOTH arg-building branches (codex uses args_template; claude uses
+	// the default headless branch). Suppressing the child CLI's MCP table stops
+	// it opening MCP clients back toward the spawning daemon on startup.
+	if len(profile.MCPSuppressionFlags) > 0 {
+		args = append(args, profile.MCPSuppressionFlags...)
+	}
 	if templateArgs, ok := commandArgsTemplateArgs(profile, spec); ok {
 		args = appendMissingProfileExecutionFlags(args, profile, spec, templateArgs)
 		return append(args, templateArgs...)

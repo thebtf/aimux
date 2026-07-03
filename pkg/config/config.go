@@ -228,6 +228,22 @@ type CLIProfile struct {
 	HeadlessFlags     []string `yaml:"headless_flags,omitempty"`
 	SearchPaths       []string `yaml:"search_paths,omitempty"`
 
+	// MCPSuppressionFlags are appended to every spawn of this CLI (task dispatch
+	// AND warmup probe) to prevent the spawned CLI from loading its own MCP
+	// servers. When aimux spawns a leaf CLI whose MCP config registers aimux
+	// itself (or routes many servers through a shared multiplexer), the child
+	// can open MCP clients back toward the spawning daemon on startup — causing
+	// reentrancy / startup fan-out / shared-mux starvation stalls (issue #359).
+	// Suppressing the child's MCP table closes that whole class by construction.
+	//
+	// These are inline flags, NOT a config-directory swap, so the CLI's auth
+	// (e.g. codex ChatGPT-subscription / CPA login) is preserved:
+	//   codex  → ["-c", "mcp_servers={}"]        (inline TOML override of the MCP table)
+	//   claude → ["--strict-mcp-config", "--mcp-config", "{}"]  (ignore all external MCP)
+	// Empty (default) = no suppression, so CLIs without a known-safe flag set are
+	// unchanged.
+	MCPSuppressionFlags []string `yaml:"mcp_suppression_flags,omitempty"`
+
 	// Capabilities lists what task types this CLI supports (e.g., coding, review, analysis).
 	// Used by the fallback router to find a capable substitute when the primary CLI fails.
 	Capabilities []string `yaml:"capabilities,omitempty"`

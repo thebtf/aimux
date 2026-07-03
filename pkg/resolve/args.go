@@ -37,6 +37,15 @@ func BuildPromptArgs(profile *config.CLIProfile, model, effort string, readOnly 
 	baseArgs := CommandBaseArgs(profile.Command.Base)
 	args := append([]string{}, baseArgs...)
 
+	// MCP suppression (issue #359): the warmup probe spawns the CLI too, and a
+	// warmup spawn that opens MCP clients back toward the daemon mid-init is a
+	// named #359 stall correlate ("hangs correlate with warmup state"). Apply the
+	// same suppression here as on the task dispatch path so both spawn routes are
+	// covered.
+	if len(profile.MCPSuppressionFlags) > 0 {
+		args = append(args, profile.MCPSuppressionFlags...)
+	}
+
 	if profile.Features.Headless && len(profile.HeadlessFlags) > 0 {
 		args = append(args, profile.HeadlessFlags...)
 	}
