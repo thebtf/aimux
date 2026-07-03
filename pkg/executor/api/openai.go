@@ -31,6 +31,7 @@ func NewOpenAI(apiKey, model string, opts ...Option) (*OpenAIExecutor, error) {
 	if err != nil {
 		return nil, err
 	}
+	base.provider = "openai"
 	client := openai.NewClient(option.WithAPIKey(apiKey))
 	return &OpenAIExecutor{base: base, client: &client}, nil
 }
@@ -144,8 +145,14 @@ func (e *OpenAIExecutor) SendStream(ctx context.Context, msg types.Message, onCh
 }
 
 // IsAlive reports whether the executor is still operational.
+// Returns HealthDegraded if the model is currently rate-limited.
 func (e *OpenAIExecutor) IsAlive() types.HealthStatus {
-	return e.base.isAlive()
+	return e.base.isAliveWithCooldown()
+}
+
+// HealthDetail returns extended health information.
+func (e *OpenAIExecutor) HealthDetail() HealthDetail {
+	return e.base.healthDetail()
 }
 
 // Close permanently shuts down the executor.  Subsequent calls to Send or

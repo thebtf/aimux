@@ -104,13 +104,16 @@ const (
 // It is embedded by value (not pointer) in each concrete executor so that
 // the zero value is valid (alive == false until set).
 type baseExecutor struct {
-	apiKey     string
-	model      string
-	timeout    time.Duration
-	baseURL    string // optional; empty → provider default
-	maxRetries int    // 0 → no retries
-	alive      atomic.Bool
-	cooldown   types.ModelCooldownTracker // optional; nil means no cooldown tracking
+	apiKey      string
+	model       string
+	provider    string // "openai", "anthropic", "google"
+	timeout     time.Duration
+	baseURL     string // optional; empty → provider default
+	maxRetries  int    // 0 → no retries
+	alive       atomic.Bool
+	cooldown    types.ModelCooldownTracker // optional; nil means no cooldown tracking
+	keyInjector func() string             // optional; per-request API key
+	lastErr     lastError                 // most recent error for diagnostics
 }
 
 func newBase(apiKey, model string, opts ...Option) (*baseExecutor, error) {

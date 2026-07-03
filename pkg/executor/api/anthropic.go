@@ -34,6 +34,7 @@ func NewAnthropic(apiKey, model string, opts ...Option) (*AnthropicExecutor, err
 	if err != nil {
 		return nil, err
 	}
+	base.provider = "anthropic"
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &AnthropicExecutor{base: base, client: &client}, nil
 }
@@ -138,8 +139,14 @@ func (e *AnthropicExecutor) SendStream(ctx context.Context, msg types.Message, o
 }
 
 // IsAlive reports whether the executor is still operational.
+// Returns HealthDegraded if the model is currently rate-limited.
 func (e *AnthropicExecutor) IsAlive() types.HealthStatus {
-	return e.base.isAlive()
+	return e.base.isAliveWithCooldown()
+}
+
+// HealthDetail returns extended health information.
+func (e *AnthropicExecutor) HealthDetail() HealthDetail {
+	return e.base.healthDetail()
 }
 
 // Close permanently shuts down the executor.

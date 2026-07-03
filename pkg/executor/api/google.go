@@ -29,6 +29,7 @@ func NewGoogleAI(apiKey, model string, opts ...Option) (*GoogleAIExecutor, error
 	if err != nil {
 		return nil, err
 	}
+	base.provider = "google"
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
@@ -145,8 +146,14 @@ func (e *GoogleAIExecutor) SendStream(ctx context.Context, msg types.Message, on
 }
 
 // IsAlive reports whether the executor is still operational.
+// Returns HealthDegraded if the model is currently rate-limited.
 func (e *GoogleAIExecutor) IsAlive() types.HealthStatus {
-	return e.base.isAlive()
+	return e.base.isAliveWithCooldown()
+}
+
+// HealthDetail returns extended health information.
+func (e *GoogleAIExecutor) HealthDetail() HealthDetail {
+	return e.base.healthDetail()
 }
 
 // Close permanently shuts down the executor.
