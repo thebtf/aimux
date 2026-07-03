@@ -23,7 +23,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -280,16 +279,8 @@ func newMultiProcRuntime(t *testing.T) (engineName, isolatedTmp string) {
 	}
 	engineName = "amp-" + hex.EncodeToString(randSuffix[:])
 
-	tmpRoot := os.TempDir()
-	if runtime.GOOS == "darwin" {
-		tmpRoot = "/tmp"
-	}
-	shortTmp, err := os.MkdirTemp(tmpRoot, "amp")
-	if err != nil {
-		t.Fatalf("create isolated tmp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(shortTmp) })
-	return engineName, shortTmp
+	isolatedTmp = newMuxcoreIsolatedTemp(t, "amp")
+	return engineName, isolatedTmp
 }
 
 func shimWaitError(idx int, err error, stderrPath string) error {

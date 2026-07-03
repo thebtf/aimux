@@ -80,9 +80,9 @@ func TestShim_NoSQLiteWrites(t *testing.T) {
 	testcliBin := buildTestCLI(t)
 	configDir, dbPath, logPath := shimTestWriteConfig(t, tmpDir)
 
-	// Unique engine name prevents collisions with any production aimux daemon
-	// or parallel test runs. Uses the random suffix from t.TempDir().
-	engineName := "aimux-test-nfr3-" + filepath.Base(tmpDir)
+	// Short engine/temp names keep muxcore control sockets within Unix sun_path limits.
+	engineName := fmt.Sprintf("sn-%08x", uint32(time.Now().UnixNano()))
+	isolatedTmp := newMuxcoreIsolatedTemp(t, "sn")
 
 	// Prepend testcli directory to PATH so registry.Probe() finds the "testcli"
 	// binary (which our shimTestWriteConfig registers as the "codex" CLI profile).
@@ -99,6 +99,9 @@ func TestShim_NoSQLiteWrites(t *testing.T) {
 		"AIMUX_ENGINE_NAME="+engineName,
 		"AIMUX_WARMUP=false", // skip CLI warmup to reduce startup time
 		"PATH="+enrichedPath,
+		"TMPDIR="+isolatedTmp,
+		"TEMP="+isolatedTmp,
+		"TMP="+isolatedTmp,
 	)
 
 	daemonCmd := exec.Command(binary, "--muxcore-daemon")
@@ -229,6 +232,9 @@ func TestShim_NoSQLiteWrites(t *testing.T) {
 		// wait-for-disconnect policy can keep the shim alive after stdin EOF,
 		// letting daemon-side SQLite WAL housekeeping create false positives.
 		"AIMUX_STDIN_EOF_POLICY=eager",
+		"TMPDIR="+isolatedTmp,
+		"TEMP="+isolatedTmp,
+		"TMP="+isolatedTmp,
 	)
 
 	shimStdinR, shimStdinW, err := os.Pipe()

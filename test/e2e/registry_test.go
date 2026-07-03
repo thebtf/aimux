@@ -22,13 +22,9 @@ func TestE2E_MuxcoreRegistryDescriptor(t *testing.T) {
 	if _, err := rand.Read(suffix[:]); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	engineName := "aimux-reg-" + hex.EncodeToString(suffix[:])
+	engineName := "ar-" + hex.EncodeToString(suffix[:])
 
-	isolatedTmp, err := os.MkdirTemp(os.TempDir(), "ae-reg")
-	if err != nil {
-		t.Fatalf("create isolated tmp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(isolatedTmp) })
+	isolatedTmp := newMuxcoreIsolatedTemp(t, "rg")
 
 	tempEnvName := strings.Join([]string{"TE", "MP"}, "")
 	pathEnv := filepath.Dir(testcliBin) + string(os.PathListSeparator) + os.Getenv("PATH")
@@ -87,11 +83,7 @@ func TestE2E_DefaultEngineNameIsStableAimux(t *testing.T) {
 	customBin := filepath.Join(t.TempDir(), "aimux-display-label-smoke.exe")
 	copyFileForTest(t, aimuxBin, customBin)
 
-	isolatedTmp, err := os.MkdirTemp(os.TempDir(), "ae-name")
-	if err != nil {
-		t.Fatalf("create isolated tmp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(isolatedTmp) })
+	isolatedTmp := newMuxcoreIsolatedTemp(t, "rn")
 
 	tempEnvName := strings.Join([]string{"TE", "MP"}, "")
 	pathEnv := filepath.Dir(testcliBin) + string(os.PathListSeparator) + os.Getenv("PATH")

@@ -17,6 +17,24 @@ import (
 	"github.com/thebtf/mcp-mux/muxcore/registry"
 )
 
+// newMuxcoreIsolatedTemp returns a per-test temp root that keeps muxcore Unix
+// socket paths under platform sun_path limits. macOS's os.TempDir() resolves to
+// long /var/folders/... paths, so Unix tests need the flat /tmp base.
+func newMuxcoreIsolatedTemp(t *testing.T, pattern string) string {
+	t.Helper()
+
+	tmpRoot := os.TempDir()
+	if runtime.GOOS != "windows" {
+		tmpRoot = "/tmp"
+	}
+	isolatedTmp, err := os.MkdirTemp(tmpRoot, pattern)
+	if err != nil {
+		t.Fatalf("create isolated tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(isolatedTmp) })
+	return isolatedTmp
+}
+
 // startDaemonAndShim launches a daemon process via `aimux --muxcore-daemon` and
 // a shim client process that bridges stdio↔IPC to it. Returns the shim cmd,
 // its stdin write-end, and a bufio.Reader on its stdout — matching the legacy
@@ -68,16 +86,7 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 	// path, so even a short child dir can still overflow once muxcore appends the
 	// engine name + hash + "-muxd.ctl.sock" suffix. Use /tmp as the flat Unix base
 	// and keep the engine name short. On Windows, keep os.TempDir().
-	tmpRoot := os.TempDir()
-	if runtime.GOOS != "windows" {
-		tmpRoot = "/tmp"
-	}
-	shortTmp, tmpErr := os.MkdirTemp(tmpRoot, "ae")
-	if tmpErr != nil {
-		t.Fatalf("create isolated tmp: %v", tmpErr)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(shortTmp) })
-	isolatedTmp := shortTmp
+	isolatedTmp := newMuxcoreIsolatedTemp(t, "ae")
 	tempEnvName := strings.Join([]string{"TE", "MP"}, "")
 	baseEnv := append(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,
@@ -312,7 +321,7 @@ func startDaemonAndShimWithEnv(t *testing.T, aimuxBin, testcliDir, configDir str
 	if _, err := rand.Read(randSuffix[:]); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	engineName := "aimux-e2e-" + hex.EncodeToString(randSuffix[:])
+	engineName := "ae-" + hex.EncodeToString(randSuffix[:])
 	t.Logf("startDaemonAndShimWithEnv: engine=%s test=%s", engineName, t.Name())
 
 	var pathEnv string
@@ -322,12 +331,7 @@ func startDaemonAndShimWithEnv(t *testing.T, aimuxBin, testcliDir, configDir str
 		pathEnv = os.Getenv("PATH")
 	}
 
-	shortTmp, tmpErr := os.MkdirTemp(os.TempDir(), "ae")
-	if tmpErr != nil {
-		t.Fatalf("create isolated tmp: %v", tmpErr)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(shortTmp) })
-	isolatedTmp := shortTmp
+	isolatedTmp := newMuxcoreIsolatedTemp(t, "ae")
 	tempEnvName := strings.Join([]string{"TE", "MP"}, "")
 	baseEnv := append(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,

@@ -290,15 +290,10 @@ func coldStartWriteConfig(t *testing.T) (configDir, engineName, isolatedTmp stri
 		}
 		randSuffix[i] = byte(ch)
 	}
-	engineName = "aimux-cs-" + fmt.Sprintf("%x", randSuffix)
+	engineName = "cs-" + fmt.Sprintf("%x", randSuffix)
 
-	// Use a short-named temp dir to stay within Unix-socket path limits.
-	var mkErr error
-	isolatedTmp, mkErr = os.MkdirTemp(os.TempDir(), "cs")
-	if mkErr != nil {
-		t.Fatalf("create isolated tmp: %v", mkErr)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(isolatedTmp) })
+	// Use the shared short temp root to stay within Unix-socket path limits.
+	isolatedTmp = newMuxcoreIsolatedTemp(t, "cs")
 
 	configDir = filepath.Join(isolatedTmp, "cfg")
 	cliDir := filepath.Join(configDir, "cli.d", "codex")

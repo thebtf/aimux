@@ -180,19 +180,12 @@ func TestE2E_Upgrade_ActivePointerSuccessorRuntimeAcceptance(t *testing.T) {
 		t.Fatalf("write initial active engine pointer: %v", err)
 	}
 
-	engineName := fmt.Sprintf("axap-%d", time.Now().UnixNano())
+	engineName := fmt.Sprintf("ap-%08x", uint32(time.Now().UnixNano()))
 	// The daemon binds its control socket under this TMPDIR as
-	// <isolatedTmp>/<engineName>-<hash>-muxd.ctl.sock. On Linux the AF_UNIX
-	// sun_path limit is 108 bytes; t.TempDir() embeds the full (long) test name,
-	// so nesting runtime-tmp under it pushes the socket path past the limit and
-	// the daemon fails with "bind: invalid argument" (Windows has no such cap,
-	// hence green locally / red on Linux CI). Use a short, flat MkdirTemp base so
-	// the resulting socket path stays well under 108 bytes.
-	isolatedTmp, err := os.MkdirTemp("", "axrt")
-	if err != nil {
-		t.Fatalf("create isolated tmp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(isolatedTmp) })
+	// <isolatedTmp>/<engineName>-<hash>-muxd.ctl.sock. Unix-domain socket limits
+	// are short (Linux ~108 bytes, macOS ~104 bytes), so use the shared short temp
+	// root plus a short engine label rather than t.TempDir() or macOS /var/folders.
+	isolatedTmp := newMuxcoreIsolatedTemp(t, "ax")
 	pathEnv := testcliDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	baseEnv := append(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,
