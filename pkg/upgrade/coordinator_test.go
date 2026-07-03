@@ -1175,6 +1175,51 @@ func TestCoordinator_ApplyFromLocal_RejectsExtensionMismatch(t *testing.T) {
 	}
 }
 
+// TestCoordinator_ApplyFromLocal_POSIXAcceptsBinAgainstExtensionless proves the
+// #359 second-upgrade fix: on POSIX, a running binary that was hot-swapped in
+// from a staged successor carries the ".bin" the stager added, while a freshly
+// built successor is extensionless. Both denote the same POSIX executable
+// class, so the local-source extension guard must accept an extensionless
+// source against a ".bin" running binary. Before the fix, the strict EqualFold
+// guard rejected this pair — green on Windows (both ".exe"), red on Linux CI —
+// which surfaced as the second applyAndAssertActivePointerUpgrade failure in
+// TestE2E_Upgrade_ActivePointerSuccessorRuntimeAcceptance.
+func TestCoordinator_ApplyFromLocal_POSIXAcceptsBinAgainstExtensionless(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("extensionless/.bin equivalence is a POSIX-only staging invariant")
+	}
+	dir := t.TempDir()
+	// Running binary is a staged successor: ".bin", the extension the stager
+	// assigns to an extensionless POSIX executable.
+	binaryPath := filepath.Join(dir, "aimux-stage-1-2-3.bin")
+	// Freshly built successor: extensionless.
+	sourcePath := filepath.Join(dir, "aimux-next")
+	sourceContent := []byte("successor-bytes")
+	if err := os.WriteFile(binaryPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, sourceContent, 0o755); err != nil {
+		t.Fatalf("WriteFile source: %v", err)
+	}
+
+	coord := &upgrade.Coordinator{
+		Version:    "4.3.0",
+		BinaryPath: binaryPath,
+		Source:     sourcePath,
+	}
+
+	if _, err := coord.Apply(context.Background(), upgrade.ModeDeferred, false); err != nil {
+		t.Fatalf("Apply with extensionless source against .bin running binary: %v", err)
+	}
+	got, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("ReadFile binary after apply: %v", err)
+	}
+	if string(got) != string(sourceContent) {
+		t.Fatalf("binary content = %q, want %q", got, sourceContent)
+	}
+}
+
 func runApplyAndReadSingleLogLine(t *testing.T, buildCoordinator func(*logger.Logger) *upgrade.Coordinator, runApply func(*upgrade.Coordinator)) string {
 	t.Helper()
 

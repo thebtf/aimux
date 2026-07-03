@@ -859,6 +859,26 @@ func stagedExecutableExtension(binaryPath string) string {
 	return ".bin"
 }
 
+// normalizeExecExtension maps an extensionless POSIX executable to the same
+// implicit extension that stagedExecutableExtension assigns when it stages a
+// successor (".bin"). A running binary that was itself hot-swapped in from a
+// staged successor carries the ".bin" the stager added, while a freshly built
+// extensionless source carries "". Both denote the same POSIX executable class,
+// so the local-source extension guard must treat them as equal — otherwise a
+// second successive upgrade after a hot-swap wrongly rejects an extensionless
+// source against a ".bin" running binary (green on Windows where both sides are
+// ".exe", red on Linux). On Windows ".exe" stays ".exe", so a genuine
+// ".exe" vs ".bin" mismatch is still rejected.
+func normalizeExecExtension(ext string) string {
+	if runtime.GOOS == "windows" {
+		return ext
+	}
+	if ext == "" {
+		return ".bin"
+	}
+	return ext
+}
+
 func cleanupStaleStagedUpdates(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1039,7 +1059,7 @@ func (c *Coordinator) validateLocalSource(sourcePath string) (string, error) {
 
 	binaryExt := filepath.Ext(binaryResolved)
 	sourceExt := filepath.Ext(sourceResolved)
-	if !strings.EqualFold(sourceExt, binaryExt) {
+	if !strings.EqualFold(normalizeExecExtension(sourceExt), normalizeExecExtension(binaryExt)) {
 		return "", fmt.Errorf("source binary extension %q does not match current binary extension %q", sourceExt, binaryExt)
 	}
 
