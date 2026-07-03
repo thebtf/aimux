@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -40,13 +41,14 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 	t.Helper()
 
 	// Engine name is a display label that muxcore includes while deriving its
-	// internal namespace. Keep the test label short and unique so parallel test
-	// daemons remain isolated without manually selecting socket paths.
+	// internal namespace. Keep the label VERY short: the final control socket is
+	// <tmp>/<engineName>-<hash>-muxd.ctl.sock, so every extra character here eats
+	// into Unix-domain socket limits (Linux ~108 bytes, macOS ~104 bytes).
 	var randSuffix [4]byte
 	if _, err := rand.Read(randSuffix[:]); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	engineName := "aimux-e2e-" + hex.EncodeToString(randSuffix[:])
+	engineName := "ae-" + hex.EncodeToString(randSuffix[:])
 	t.Logf("startDaemonAndShim: engine=%s test=%s", engineName, t.Name())
 
 	var pathEnv string
@@ -61,11 +63,16 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 	// TMPDIR/TEMP/TMP per test points them into a test-scoped tempdir, so the
 	// fresh daemon never collides with a user's long-running aimux server.
 	//
-	// t.TempDir() produces deeply-nested paths (TestName1234567890/001/…)
-	// that overflow the Unix-socket path limit (~108 chars on Linux/Windows)
-	// once the engine name + "-muxd.ctl.sock" suffix is appended. Use a
-	// short-named sibling directory under os.TempDir() instead.
-	shortTmp, tmpErr := os.MkdirTemp(os.TempDir(), "ae")
+	// Unix-domain socket limits are short and platform-specific (Linux ~108B,
+	// macOS ~104B). macOS's default os.TempDir() is the long /var/folders/.../T
+	// path, so even a short child dir can still overflow once muxcore appends the
+	// engine name + hash + "-muxd.ctl.sock" suffix. Use /tmp as the flat Unix base
+	// and keep the engine name short. On Windows, keep os.TempDir().
+	tmpRoot := os.TempDir()
+	if runtime.GOOS != "windows" {
+		tmpRoot = "/tmp"
+	}
+	shortTmp, tmpErr := os.MkdirTemp(tmpRoot, "ae")
 	if tmpErr != nil {
 		t.Fatalf("create isolated tmp: %v", tmpErr)
 	}
