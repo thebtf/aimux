@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -16,10 +17,19 @@ import (
 // rejected before any filesystem write, while empty cwd silently skips and an
 // absolute cwd still persists.
 func TestSaveEntryToDisk_RejectsNonAbsoluteCWD(t *testing.T) {
-	// Relative / traversal forms, plus both UNC spellings: //host/share and
-	// \\host\share both satisfy filepath.IsAbs on Windows, so they must be
-	// rejected by the VolumeName guard, not allowed through (PRC2 UNC gap).
-	bad := []string{"relative/dir", "../../etc", "./x", `//host/share`, `\\host\share`, `//host/share/../../x`}
+	// Relative / traversal forms are non-absolute on every OS and must be
+	// rejected before any filesystem write.
+	bad := []string{"relative/dir", "../../etc", "./x"}
+	// UNC spellings (//host/share, \\host\share) satisfy filepath.IsAbs on
+	// Windows but carry an empty VolumeName-guard target, so they are the PRC2
+	// UNC gap the guard closes — on WINDOWS ONLY. On POSIX, "//host/share" is a
+	// perfectly ordinary absolute path (leading double slash is
+	// implementation-defined but IsAbs-true, VolumeName ""), so the guard must
+	// NOT reject it there. Gate the UNC cases to Windows to keep the security
+	// intent without a false POSIX failure.
+	if runtime.GOOS == "windows" {
+		bad = append(bad, `//host/share`, `\\host\share`, `//host/share/../../x`)
+	}
 	for _, b := range bad {
 		err := deepresearch.SaveEntryToDisk(b, "topic", "summary", "m", nil, "content")
 		if !errors.Is(err, deepresearch.ErrUnsafeCacheCWD) {
