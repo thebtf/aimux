@@ -57,6 +57,22 @@ const (
 	// EventSwarmRestart records that an executor was restarted after a health failure.
 	// Emitted in both legacy and multi-tenant mode (error condition, always relevant).
 	EventSwarmRestart EventType = "swarm_restart"
+
+	// EventWorkflowStepStart records that a workflow step is about to execute.
+	// Emitted by the workflow Engine at step dispatch time (C1 tenant observability).
+	EventWorkflowStepStart EventType = "workflow_step_start"
+
+	// EventWorkflowStepComplete records that a workflow step has finished execution.
+	// ExtraFields carries "status" (completed/failed/gated) and "duration_ms".
+	EventWorkflowStepComplete EventType = "workflow_step_complete"
+
+	// EventWorkflowGated records that a quality gate blocked further workflow execution.
+	// ExtraFields carries "require" (gate condition) and "mode" (blocking/advisory).
+	EventWorkflowGated EventType = "workflow_gated"
+
+	// EventDialogueTurn records a single dialogue turn for tenant observability.
+	// ExtraFields carries "participant", "role", "turn_number", "mode".
+	EventDialogueTurn EventType = "dialogue_turn"
 )
 
 // AuditEvent is an immutable value type representing a single security-relevant

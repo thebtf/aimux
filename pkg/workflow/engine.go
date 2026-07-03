@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/audit"
 	"github.com/thebtf/aimux/pkg/dialogue"
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -59,6 +61,17 @@ type Engine struct {
 	dialogue    DialogueRunner
 	patternFn   func(name string, input map[string]any) (map[string]any, error)
 	partFactory ParticipantFactory
+	auditLog    audit.AuditLog
+}
+
+// EngineOption configures optional Engine behavior.
+type EngineOption func(*Engine)
+
+// WithAuditLog injects an AuditLog for tenant-scoped workflow observability.
+// When set, the Engine emits audit events for step start/complete, gate decisions,
+// and dialogue turns. When nil, no audit events are emitted (backward-compat).
+func WithAuditLog(a audit.AuditLog) EngineOption {
+	return func(e *Engine) { e.auditLog = a }
 }
 
 // New creates a ready-to-use Engine.
@@ -69,18 +82,24 @@ type Engine struct {
 //     returns the result map or an error.
 //   - partFactory: creates a dialogue.Participant for each CLI name; used by
 //     ActionDialogue steps. May be nil if no dialogue steps are used.
+//   - opts: optional Engine configuration (e.g., WithAuditLog).
 func New(
 	sender ExecutorSender,
 	dlg DialogueRunner,
 	patternFn func(name string, input map[string]any) (map[string]any, error),
 	partFactory ParticipantFactory,
+	opts ...EngineOption,
 ) *Engine {
-	return &Engine{
+	e := &Engine{
 		sender:      sender,
 		dialogue:    dlg,
 		patternFn:   patternFn,
 		partFactory: partFactory,
 	}
+	for _, o := range opts {
+		o(e)
+	}
+	return e
 }
 
 // Execute runs the provided workflow steps sequentially to completion.
@@ -97,6 +116,9 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 
 	results := make([]StepResult, 0, len(steps))
 
+	// Extract tenant context for audit events (may be absent in tests/legacy).
+	tc, _ := tenant.FromContext(ctx)
+
 	// priorSummary accumulates context for format-string injection in subsequent steps.
 	priorSummary := buildInitialSummary(input)
 
@@ -105,6 +127,16 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 		if timeout == 0 {
 			timeout = defaultStepTimeout
 		}
+
+		e.emitAudit(audit.AuditEvent{
+			Timestamp: time.Now(),
+			EventType: audit.EventWorkflowStepStart,
+			TenantID:  tc.TenantID,
+			ResourceID: step.Name,
+			ExtraFields: map[string]string{
+				"action": step.Action.String(),
+			},
+		})
 
 		stepCtx, cancel := context.WithTimeout(ctx, timeout)
 		start := time.Now()
@@ -123,6 +155,7 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 				Duration: dur,
 			}
 			results = append(results, sr)
+			e.emitStepComplete(tc.TenantID, step.Name, "failed", dur)
 			return &WorkflowResult{
 				Status:  "failed",
 				Steps:   results,
@@ -132,7 +165,37 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 
 		status := "completed"
 		if step.Action == ActionGate {
+			gateMode := configString(step.Config, "mode")
+			if gateMode == "" {
+				gateMode = "blocking" // default: gates block by default
+			}
 			if !e.evaluateGate(step.Config, results) {
+				e.emitAudit(audit.AuditEvent{
+					Timestamp:  time.Now(),
+					EventType:  audit.EventWorkflowGated,
+					TenantID:   tc.TenantID,
+					ResourceID: step.Name,
+					ExtraFields: map[string]string{
+						"require": configString(step.Config, "require"),
+						"mode":    gateMode,
+					},
+				})
+
+				if gateMode == "advisory" {
+					// Advisory gate: log but continue execution.
+					sr := StepResult{
+						Name:     step.Name,
+						Action:   step.Action,
+						Status:   "advisory_gated",
+						Content:  "gate condition not satisfied (advisory — continuing)",
+						Duration: dur,
+					}
+					results = append(results, sr)
+					e.emitStepComplete(tc.TenantID, step.Name, "advisory_gated", dur)
+					continue
+				}
+
+				// Blocking gate: stop execution.
 				sr := StepResult{
 					Name:     step.Name,
 					Action:   step.Action,
@@ -141,6 +204,7 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 					Duration: dur,
 				}
 				results = append(results, sr)
+				e.emitStepComplete(tc.TenantID, step.Name, "gated", dur)
 				return &WorkflowResult{
 					Status:  "gated",
 					Steps:   results,
@@ -157,6 +221,7 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 			Duration: dur,
 		}
 		results = append(results, sr)
+		e.emitStepComplete(tc.TenantID, step.Name, status, dur)
 
 		// Extend the running summary for the next step.
 		if content != "" {
@@ -377,8 +442,14 @@ func (e *Engine) runParallel(ctx context.Context, step WorkflowStep, priorSummar
 }
 
 // evaluateGate checks whether the gate condition from step.Config is satisfied.
-// Currently the only built-in condition is "no_critical_issues" which passes
-// if no prior step's Content contains the word "CRITICAL".
+//
+// Built-in conditions:
+//   - "no_critical_issues": passes if no prior step Content contains "CRITICAL"
+//   - "all_steps_completed": passes if every prior step has Status "completed"
+//   - "min_participants": passes if the dialogue step preceding this gate had
+//     at least N participants (config["min_count"] int, default 2)
+//
+// Unknown conditions pass by default (conservative).
 func (e *Engine) evaluateGate(config map[string]any, priorResults []StepResult) bool {
 	require := configString(config, "require")
 
@@ -386,6 +457,13 @@ func (e *Engine) evaluateGate(config map[string]any, priorResults []StepResult) 
 	case "no_critical_issues":
 		for _, sr := range priorResults {
 			if strings.Contains(sr.Content, "CRITICAL") {
+				return false
+			}
+		}
+		return true
+	case "all_steps_completed":
+		for _, sr := range priorResults {
+			if sr.Status != "completed" && sr.Status != "advisory_gated" {
 				return false
 			}
 		}
@@ -532,4 +610,28 @@ func configStringSlice(config map[string]any, key string) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("config[%q] is not a string slice", key)
 	}
+}
+
+// --- audit helpers ---
+
+// emitAudit sends an audit event if an AuditLog is configured.
+// Safe to call when e.auditLog is nil (no-op).
+func (e *Engine) emitAudit(event audit.AuditEvent) {
+	if e.auditLog != nil {
+		e.auditLog.Emit(event)
+	}
+}
+
+// emitStepComplete is a convenience wrapper for step-complete audit events.
+func (e *Engine) emitStepComplete(tenantID, stepName, status string, dur time.Duration) {
+	e.emitAudit(audit.AuditEvent{
+		Timestamp:  time.Now(),
+		EventType:  audit.EventWorkflowStepComplete,
+		TenantID:   tenantID,
+		ResourceID: stepName,
+		ExtraFields: map[string]string{
+			"status":      status,
+			"duration_ms": fmt.Sprintf("%d", dur.Milliseconds()),
+		},
+	})
 }
