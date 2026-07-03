@@ -10,6 +10,16 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
+// Option configures an API executor. Use With* functions to create options.
+type Option func(*baseExecutor)
+
+// WithCooldownTracker sets a cooldown tracker for rate-limit integration.
+func WithCooldownTracker(t types.ModelCooldownTracker) Option {
+	return func(b *baseExecutor) {
+		b.cooldown = t
+	}
+}
+
 const (
 	DefaultOpenAIModel    = "gpt-4o"
 	DefaultAnthropicModel = "claude-sonnet-4-5-20250929"
@@ -23,13 +33,14 @@ const (
 // It is embedded by value (not pointer) in each concrete executor so that
 // the zero value is valid (alive == false until set).
 type baseExecutor struct {
-	apiKey  string
-	model   string
-	timeout time.Duration
-	alive   atomic.Bool
+	apiKey   string
+	model    string
+	timeout  time.Duration
+	alive    atomic.Bool
+	cooldown types.ModelCooldownTracker // optional; nil means no cooldown tracking
 }
 
-func newBase(apiKey, model string) (*baseExecutor, error) {
+func newBase(apiKey, model string, opts ...Option) (*baseExecutor, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("api executor: API key must not be empty")
 	}
@@ -40,6 +51,9 @@ func newBase(apiKey, model string) (*baseExecutor, error) {
 		apiKey:  apiKey,
 		model:   model,
 		timeout: DefaultTimeout,
+	}
+	for _, opt := range opts {
+		opt(b)
 	}
 	b.alive.Store(true)
 	return b, nil

@@ -23,11 +23,11 @@ type OpenAIExecutor struct {
 
 // NewOpenAI creates a new OpenAIExecutor.  apiKey must be non-empty; if model
 // is empty, DefaultOpenAIModel ("gpt-4o") is used.
-func NewOpenAI(apiKey, model string) (*OpenAIExecutor, error) {
+func NewOpenAI(apiKey, model string, opts ...Option) (*OpenAIExecutor, error) {
 	if model == "" {
 		model = DefaultOpenAIModel
 	}
-	base, err := newBase(apiKey, model)
+	base, err := newBase(apiKey, model, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +56,10 @@ func (e *OpenAIExecutor) Send(ctx context.Context, msg types.Message) (*types.Re
 	ctx, cancel := context.WithTimeout(ctx, e.base.timeout)
 	defer cancel()
 
+	if err := checkCooldown(e.base.cooldown, "openai", e.base.model); err != nil {
+		return nil, err
+	}
+
 	messages := buildOpenAIMessages(msg)
 
 	params := openai.ChatCompletionNewParams{
@@ -66,7 +70,7 @@ func (e *OpenAIExecutor) Send(ctx context.Context, msg types.Message) (*types.Re
 	start := time.Now()
 	resp, err := e.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("openai: chat completion failed: %w", err)
+		return nil, handleRateLimitError(e.base.cooldown, "openai", e.base.model, fmt.Errorf("openai: chat completion failed: %w", err))
 	}
 
 	content := ""
@@ -102,6 +106,10 @@ func (e *OpenAIExecutor) SendStream(ctx context.Context, msg types.Message, onCh
 	ctx, cancel := context.WithTimeout(ctx, e.base.timeout)
 	defer cancel()
 
+	if err := checkCooldown(e.base.cooldown, "openai", e.base.model); err != nil {
+		return nil, err
+	}
+
 	messages := buildOpenAIMessages(msg)
 
 	params := openai.ChatCompletionNewParams{
@@ -124,7 +132,7 @@ func (e *OpenAIExecutor) SendStream(ctx context.Context, msg types.Message, onCh
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return nil, fmt.Errorf("openai: streaming failed: %w", err)
+		return nil, handleRateLimitError(e.base.cooldown, "openai", e.base.model, fmt.Errorf("openai: streaming failed: %w", err))
 	}
 	onChunk(types.Chunk{Done: true})
 

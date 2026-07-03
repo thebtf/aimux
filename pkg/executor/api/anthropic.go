@@ -26,11 +26,11 @@ const maxTokensDefault = 8192
 
 // NewAnthropic creates a new AnthropicExecutor.  apiKey must be non-empty; if
 // model is empty, DefaultAnthropicModel is used.
-func NewAnthropic(apiKey, model string) (*AnthropicExecutor, error) {
+func NewAnthropic(apiKey, model string, opts ...Option) (*AnthropicExecutor, error) {
 	if model == "" {
 		model = DefaultAnthropicModel
 	}
-	base, err := newBase(apiKey, model)
+	base, err := newBase(apiKey, model, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -60,12 +60,16 @@ func (e *AnthropicExecutor) Send(ctx context.Context, msg types.Message) (*types
 	ctx, cancel := context.WithTimeout(ctx, e.base.timeout)
 	defer cancel()
 
+	if err := checkCooldown(e.base.cooldown, "anthropic", e.base.model); err != nil {
+		return nil, err
+	}
+
 	params := buildAnthropicParams(e.base.model, msg)
 
 	start := time.Now()
 	resp, err := e.client.Messages.New(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic: message creation failed: %w", err)
+		return nil, handleRateLimitError(e.base.cooldown, "anthropic", e.base.model, fmt.Errorf("anthropic: message creation failed: %w", err))
 	}
 
 	content := extractAnthropicText(resp.Content)
@@ -94,6 +98,10 @@ func (e *AnthropicExecutor) SendStream(ctx context.Context, msg types.Message, o
 	ctx, cancel := context.WithTimeout(ctx, e.base.timeout)
 	defer cancel()
 
+	if err := checkCooldown(e.base.cooldown, "anthropic", e.base.model); err != nil {
+		return nil, err
+	}
+
 	params := buildAnthropicParams(e.base.model, msg)
 
 	start := time.Now()
@@ -113,7 +121,7 @@ func (e *AnthropicExecutor) SendStream(ctx context.Context, msg types.Message, o
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return nil, fmt.Errorf("anthropic: streaming failed: %w", err)
+		return nil, handleRateLimitError(e.base.cooldown, "anthropic", e.base.model, fmt.Errorf("anthropic: streaming failed: %w", err))
 	}
 	onChunk(types.Chunk{Done: true})
 

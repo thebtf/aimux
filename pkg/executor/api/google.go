@@ -21,11 +21,11 @@ type GoogleAIExecutor struct {
 
 // NewGoogleAI creates a new GoogleAIExecutor.  apiKey must be non-empty; if
 // model is empty, DefaultGoogleAIModel ("gemini-2.0-flash") is used.
-func NewGoogleAI(apiKey, model string) (*GoogleAIExecutor, error) {
+func NewGoogleAI(apiKey, model string, opts ...Option) (*GoogleAIExecutor, error) {
 	if model == "" {
 		model = DefaultGoogleAIModel
 	}
-	base, err := newBase(apiKey, model)
+	base, err := newBase(apiKey, model, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -64,12 +64,16 @@ func (e *GoogleAIExecutor) Send(ctx context.Context, msg types.Message) (*types.
 	ctx, cancel := context.WithTimeout(ctx, e.base.timeout)
 	defer cancel()
 
+	if err := checkCooldown(e.base.cooldown, "google", e.base.model); err != nil {
+		return nil, err
+	}
+
 	cfg, contents := buildGoogleAIRequest(msg)
 
 	start := time.Now()
 	result, err := e.client.Models.GenerateContent(ctx, e.base.model, contents, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("google ai: generate content failed: %w", err)
+		return nil, handleRateLimitError(e.base.cooldown, "google", e.base.model, fmt.Errorf("google ai: generate content failed: %w", err))
 	}
 
 	content := result.Text()
@@ -103,6 +107,10 @@ func (e *GoogleAIExecutor) SendStream(ctx context.Context, msg types.Message, on
 	ctx, cancel := context.WithTimeout(ctx, e.base.timeout)
 	defer cancel()
 
+	if err := checkCooldown(e.base.cooldown, "google", e.base.model); err != nil {
+		return nil, err
+	}
+
 	cfg, contents := buildGoogleAIRequest(msg)
 
 	start := time.Now()
@@ -111,7 +119,7 @@ func (e *GoogleAIExecutor) SendStream(ctx context.Context, msg types.Message, on
 
 	for result, err := range e.client.Models.GenerateContentStream(ctx, e.base.model, contents, cfg) {
 		if err != nil {
-			return nil, fmt.Errorf("google ai: streaming failed: %w", err)
+			return nil, handleRateLimitError(e.base.cooldown, "google", e.base.model, fmt.Errorf("google ai: streaming failed: %w", err))
 		}
 		delta := result.Text()
 		if delta != "" {
