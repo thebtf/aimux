@@ -136,9 +136,10 @@ func stallPlaybookServer(t *testing.T, testcliBin string, modeArgs []string) (*S
 	registry.SetAvailable("codex", true)
 
 	cfg := &config.Config{}
-	// Short thresholds: grace 1s, soft 2s, hard 3s, auto-cancel 4s.
+	// Short thresholds: grace 1s, soft 2s, active-soft 2s, hard 3s, auto-cancel 4s.
 	cfg.Server.StreamingGraceSeconds = 1
 	cfg.Server.StreamingSoftWarningSeconds = 2
+	cfg.Server.StreamingActiveSoftWarningSeconds = 2
 	cfg.Server.StreamingHardStallSeconds = 3
 	cfg.Server.StreamingAutoCancelSeconds = 4
 
@@ -193,7 +194,7 @@ func currentTier(t *testing.T, srv *Server, engine *loom.LoomEngine, taskID stri
 		t.Fatalf("get task: %v", err)
 	}
 	baseline := loomTaskActivityBaseline(task)
-	return evaluateInactivityTier(baseline, &srv.cfg.Server), task.Status
+	return evaluateInactivityTier(baseline, &srv.cfg.Server, task.ProgressUpdatedAt != nil), task.Status
 }
 
 // TestCritical_StallDetection_LongLegitWorkNeverFlagged proves that a CLI which
@@ -273,6 +274,56 @@ func TestCritical_StallDetection_HangIsDetected(t *testing.T) {
 
 	if maxTier < TierHardStall {
 		t.Fatalf("hung CLI not detected: max tier reached = %d, want >= TierHardStall (%d)", maxTier, TierHardStall)
+	}
+}
+
+// TestCritical_StallDetection_MidStreamHangUsesArtifactAwareWindow proves the
+// #359 C2 artifact-aware window end to end: a CLI that streams a few lines and
+// then wedges is flagged via the stricter active-soft threshold, because
+// ProgressUpdatedAt is set (output started) so the startup grace no longer
+// applies. This is the profile the plain hang test does not cover — output DID
+// begin before the silence.
+func TestCritical_StallDetection_MidStreamHangUsesArtifactAwareWindow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stall playbook spawns a real emulator subprocess — skipped in -short")
+	}
+	testcliBin := buildStallTestCLI(t)
+
+	// Emit 2 lines (300ms apart), then go silent for 6s. active-soft is 2s, so
+	// ~2s after the last line the tier must reach SoftWarning while the task is
+	// still marked as having produced output.
+	srv, engine := stallPlaybookServer(t, testcliBin, []string{
+		"--mode", "mid-hang", "--lines", "2", "--interval", "300ms", "--duration", "6s",
+	})
+	taskID := submitStallDriverTask(t, engine, "mid-hang-proj")
+	waitForRunning(t, engine, taskID)
+
+	var maxTier InactivityTier
+	sawOutput := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		task, err := engine.Get(taskID)
+		if err == nil && task.ProgressUpdatedAt != nil {
+			sawOutput = true
+		}
+		tier, status := currentTier(t, srv, engine, taskID)
+		if status.IsTerminal() {
+			break
+		}
+		if tier > maxTier {
+			maxTier = tier
+		}
+		if maxTier >= TierSoftWarning && sawOutput {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	if !sawOutput {
+		t.Fatal("no live output observed before the hang — mid-hang emulator or progress wiring is broken")
+	}
+	if maxTier < TierSoftWarning {
+		t.Fatalf("mid-stream hang not flagged via artifact-aware window: max tier = %d, want >= TierSoftWarning (%d)", maxTier, TierSoftWarning)
 	}
 }
 

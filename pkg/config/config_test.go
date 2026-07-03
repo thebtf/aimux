@@ -31,6 +31,9 @@ func TestLoad(t *testing.T) {
 	if cfg.Server.StreamingSoftWarningSeconds != 120 {
 		t.Errorf("expected streaming_soft_warning_seconds=120, got %d", cfg.Server.StreamingSoftWarningSeconds)
 	}
+	if cfg.Server.StreamingActiveSoftWarningSeconds != 60 {
+		t.Errorf("expected streaming_active_soft_warning_seconds=60, got %d", cfg.Server.StreamingActiveSoftWarningSeconds)
+	}
 	if cfg.Server.StreamingHardStallSeconds != 600 {
 		t.Errorf("expected streaming_hard_stall_seconds=600, got %d", cfg.Server.StreamingHardStallSeconds)
 	}
@@ -127,6 +130,9 @@ server:
 	}
 	if cfg.Server.StreamingSoftWarningSeconds != 120 {
 		t.Errorf("expected streaming_soft_warning_seconds=120, got %d", cfg.Server.StreamingSoftWarningSeconds)
+	}
+	if cfg.Server.StreamingActiveSoftWarningSeconds != 60 {
+		t.Errorf("expected streaming_active_soft_warning_seconds=60, got %d", cfg.Server.StreamingActiveSoftWarningSeconds)
 	}
 	if cfg.Server.StreamingHardStallSeconds != 600 {
 		t.Errorf("expected streaming_hard_stall_seconds=600, got %d", cfg.Server.StreamingHardStallSeconds)

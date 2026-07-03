@@ -39,7 +39,7 @@ func TestEvaluateInactivityTier_Boundaries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			lastOutput := time.Now().Add(-tt.elapsed)
-			got := evaluateInactivityTier(lastOutput, cfg)
+			got := evaluateInactivityTier(lastOutput, cfg, false)
 			if got != tt.want {
 				t.Errorf("evaluateInactivityTier(-%v) = %d, want %d", tt.elapsed, got, tt.want)
 			}
@@ -55,7 +55,7 @@ func TestEvaluateInactivityTier_ZeroValueIsNone(t *testing.T) {
 		StreamingAutoCancelSeconds:  900,
 	}
 	// Zero time = job hasn't produced output yet. Should not trigger stall.
-	got := evaluateInactivityTier(time.Time{}, cfg)
+	got := evaluateInactivityTier(time.Time{}, cfg, false)
 	if got != TierNone {
 		t.Errorf("evaluateInactivityTier(zero) = %d, want TierNone", got)
 	}
@@ -70,16 +70,81 @@ func TestEvaluateInactivityTier_ConfigOverride(t *testing.T) {
 	}
 	// 25s with 20s soft warning → should be SoftWarning
 	lastOutput := time.Now().Add(-25 * time.Second)
-	got := evaluateInactivityTier(lastOutput, cfg)
+	got := evaluateInactivityTier(lastOutput, cfg, false)
 	if got != TierSoftWarning {
 		t.Errorf("evaluateInactivityTier(-25s, custom config) = %d, want TierSoftWarning", got)
 	}
 
 	// 35s with 30s hard stall → should be HardStall
 	lastOutput = time.Now().Add(-35 * time.Second)
-	got = evaluateInactivityTier(lastOutput, cfg)
+	got = evaluateInactivityTier(lastOutput, cfg, false)
 	if got != TierHardStall {
 		t.Errorf("evaluateInactivityTier(-35s, custom config) = %d, want TierHardStall", got)
+	}
+}
+
+// TestEvaluateInactivityTier_ArtifactAwareWindow covers #359 C2: once a task has
+// produced live output (hadOutput=true), silence is judged against the stricter
+// StreamingActiveSoftWarningSeconds and the startup grace no longer applies. The
+// same silence duration that is still TierNone during startup becomes
+// TierSoftWarning once output has started.
+func TestEvaluateInactivityTier_ArtifactAwareWindow(t *testing.T) {
+	cfg := &config.ServerConfig{
+		StreamingGraceSeconds:             60,
+		StreamingSoftWarningSeconds:       120,
+		StreamingActiveSoftWarningSeconds: 30,
+		StreamingHardStallSeconds:         600,
+		StreamingAutoCancelSeconds:        900,
+	}
+
+	// 40s of silence:
+	//   startup (hadOutput=false): within the 60s grace → TierNone.
+	//   active  (hadOutput=true):  past the 30s active-soft → TierSoftWarning.
+	silence := time.Now().Add(-40 * time.Second)
+
+	if got := evaluateInactivityTier(silence, cfg, false); got != TierNone {
+		t.Errorf("startup: evaluateInactivityTier(-40s, hadOutput=false) = %d, want TierNone (within 60s grace)", got)
+	}
+	if got := evaluateInactivityTier(silence, cfg, true); got != TierSoftWarning {
+		t.Errorf("active: evaluateInactivityTier(-40s, hadOutput=true) = %d, want TierSoftWarning (past 30s active-soft)", got)
+	}
+
+	// A brief gap (10s) between streamed chunks must NOT flag even in active
+	// mode — active-soft (30s) is comfortably above legitimate inter-chunk gaps.
+	brief := time.Now().Add(-10 * time.Second)
+	if got := evaluateInactivityTier(brief, cfg, true); got != TierNone {
+		t.Errorf("active: evaluateInactivityTier(-10s, hadOutput=true) = %d, want TierNone (under 30s active-soft)", got)
+	}
+
+	// Hard/auto-cancel tiers are shared and unaffected by the artifact-aware
+	// soft window: a 605s silence is HardStall regardless of hadOutput.
+	longSilence := time.Now().Add(-605 * time.Second)
+	if got := evaluateInactivityTier(longSilence, cfg, true); got != TierHardStall {
+		t.Errorf("active: evaluateInactivityTier(-605s, hadOutput=true) = %d, want TierHardStall", got)
+	}
+}
+
+// TestEvaluateInactivityTier_ActiveSoftZeroFallsBackToStartupSoft verifies the
+// feature is disabled cleanly: with StreamingActiveSoftWarningSeconds=0 the
+// active path uses StreamingSoftWarningSeconds (byte-for-byte legacy behavior).
+func TestEvaluateInactivityTier_ActiveSoftZeroFallsBackToStartupSoft(t *testing.T) {
+	cfg := &config.ServerConfig{
+		StreamingGraceSeconds:             60,
+		StreamingSoftWarningSeconds:       120,
+		StreamingActiveSoftWarningSeconds: 0, // feature disabled
+		StreamingHardStallSeconds:         600,
+		StreamingAutoCancelSeconds:        900,
+	}
+	// 90s silence, hadOutput=true: active-soft disabled → uses 120s soft → still
+	// below it → TierNone (same as startup would give past grace).
+	silence := time.Now().Add(-90 * time.Second)
+	if got := evaluateInactivityTier(silence, cfg, true); got != TierNone {
+		t.Errorf("active-soft=0: evaluateInactivityTier(-90s, hadOutput=true) = %d, want TierNone (falls back to 120s soft)", got)
+	}
+	// 125s crosses the 120s fallback soft.
+	crossed := time.Now().Add(-125 * time.Second)
+	if got := evaluateInactivityTier(crossed, cfg, true); got != TierSoftWarning {
+		t.Errorf("active-soft=0: evaluateInactivityTier(-125s, hadOutput=true) = %d, want TierSoftWarning", got)
 	}
 }
 

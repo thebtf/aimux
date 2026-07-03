@@ -27,8 +27,18 @@ type ServerConfig struct {
 	StreamingSoftWarningSeconds int    `yaml:"streaming_soft_warning_seconds"`
 	StreamingHardStallSeconds   int    `yaml:"streaming_hard_stall_seconds"`
 	StreamingAutoCancelSeconds  int    `yaml:"streaming_auto_cancel_seconds"`
-	DefaultAsync                bool   `yaml:"default_async"`
-	DefaultTimeoutSeconds       int    `yaml:"default_timeout_seconds"`
+	// StreamingActiveSoftWarningSeconds is the artifact-aware soft-warning
+	// threshold applied AFTER a task has produced its first live output (issue
+	// #359 C2). Once a CLI has started streaming, the startup grace no longer
+	// applies and silence between chunks is judged more strictly: a process that
+	// began responding and then went quiet is more suspicious than one still
+	// starting up. When 0, the artifact-aware path falls back to
+	// StreamingSoftWarningSeconds (feature disabled). Must stay comfortably
+	// larger than any legitimate inter-chunk gap so live streaming is never
+	// flagged.
+	StreamingActiveSoftWarningSeconds int  `yaml:"streaming_active_soft_warning_seconds"`
+	DefaultAsync                      bool `yaml:"default_async"`
+	DefaultTimeoutSeconds             int  `yaml:"default_timeout_seconds"`
 
 	// CLIPriority is the operator-configured tiebreak order for CLI selection.
 	// When multiple CLIs can serve a role, the first match in this list wins.
@@ -405,6 +415,13 @@ func applyDefaults(cfg *Config) {
 	}
 	if s.StreamingSoftWarningSeconds == 0 {
 		s.StreamingSoftWarningSeconds = 120
+	}
+	if s.StreamingActiveSoftWarningSeconds == 0 {
+		// Artifact-aware soft warning (#359 C2): stricter than the startup
+		// soft-warning because the task has already produced output. 60s is
+		// comfortably above any legitimate inter-chunk gap yet catches a
+		// mid-stream wedge twice as fast as the 120s startup threshold.
+		s.StreamingActiveSoftWarningSeconds = 60
 	}
 	if s.StreamingHardStallSeconds == 0 {
 		s.StreamingHardStallSeconds = 600

@@ -24,6 +24,11 @@ import (
 //	             silent for -duration WITHOUT exiting. Simulates a wedged process:
 //	             the stall detector MUST flag this once silence crosses the
 //	             configured tiers.
+//	mid-hang   — emit -lines lines (one per -interval), then go silent for
+//	             -duration without exiting. Simulates a process that started
+//	             streaming and then wedged mid-turn: the artifact-aware window
+//	             (#359 C2) must flag this once active-soft silence is crossed,
+//	             faster than the startup budget would.
 //
 // This split is the emulator half of the #359 "hang != long-legit-work"
 // invariant: a working CLI always keeps producing content; a hung one goes
@@ -44,6 +49,7 @@ func runSlowCodex() int {
 	interval := fs.Duration("interval", 200*time.Millisecond, "inter-line pause (long-legit)")
 	duration := fs.Duration("duration", 2*time.Second, "emit window (long-legit) or silence window (hang)")
 	silentStart := fs.Bool("silent-start", false, "hang mode: emit no initial line")
+	linesBeforeHang := fs.Int("lines", 3, "mid-hang mode: lines to emit before going silent")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "slow-codex: %v\n", err)
@@ -56,6 +62,8 @@ func runSlowCodex() int {
 		return runSlowCodexLongLegit(*interval, *duration)
 	case "hang":
 		return runSlowCodexHang(*duration, *silentStart)
+	case "mid-hang":
+		return runSlowCodexMidHang(*linesBeforeHang, *interval, *duration)
 	default: // burst
 		return runSlowCodexBurst()
 	}
@@ -95,6 +103,26 @@ func runSlowCodexLongLegit(interval, duration time.Duration) int {
 func runSlowCodexHang(duration time.Duration, silentStart bool) int {
 	if !silentStart {
 		fmt.Println("starting up")
+	}
+	time.Sleep(duration)
+	return 0
+}
+
+// runSlowCodexMidHang emits `lines` lines (one per interval) then goes silent
+// for duration without exiting. It models a process that began streaming and
+// wedged mid-turn: because output DID start, ProgressUpdatedAt is set and the
+// artifact-aware active-soft window (#359 C2) applies, flagging the silence
+// faster than the startup soft-warning would.
+func runSlowCodexMidHang(lines int, interval, duration time.Duration) int {
+	if lines < 1 {
+		lines = 1
+	}
+	if interval <= 0 {
+		interval = 200 * time.Millisecond
+	}
+	for i := 1; i <= lines; i++ {
+		fmt.Printf("progress: %d\n", i)
+		time.Sleep(interval)
 	}
 	time.Sleep(duration)
 	return 0

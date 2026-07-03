@@ -232,7 +232,11 @@ func loomStatusResult(s *Server, task *loom.Task, bp budget.BudgetParams, jobID 
 	}
 
 	if task.Status == loom.TaskStatusRunning {
-		tier := evaluateInactivityTier(loomTaskActivityBaseline(task), &s.cfg.Server)
+		// #359 C2: ProgressUpdatedAt != nil means the task has produced at least
+		// one live output line, so the artifact-aware (stricter) silence window
+		// applies — startup grace is spent once output has started flowing.
+		hadOutput := task.ProgressUpdatedAt != nil
+		tier := evaluateInactivityTier(loomTaskActivityBaseline(task), &s.cfg.Server, hadOutput)
 		applyStallGuidance(result, tier, task.ID)
 	}
 
