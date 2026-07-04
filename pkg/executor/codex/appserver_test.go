@@ -21,11 +21,13 @@ const (
 )
 
 type appServerProfileCapture struct {
-	CWD             string `json:"cwd"`
-	CodexHome       string `json:"codexHome"`
-	ProfileOverride string `json:"profileOverride"`
-	AuthFileExists  bool   `json:"authFileExists"`
-	AuthFileContent string `json:"authFileContent"`
+	CWD               string `json:"cwd"`
+	CodexHome         string `json:"codexHome"`
+	ProfileOverride   string `json:"profileOverride"`
+	AuthFileExists    bool   `json:"authFileExists"`
+	AuthFileContent   string `json:"authFileContent"`
+	ConfigFileExists  bool   `json:"configFileExists"`
+	ConfigFileContent string `json:"configFileContent"`
 }
 
 func init() {
@@ -41,15 +43,21 @@ func runFakeCodexAppServerProfileHelper() {
 	capturePath := os.Getenv(appServerProfileCaptureEnv)
 	if capturePath != "" {
 		authPath := filepath.Join(os.Getenv("CODEX_HOME"), "auth.json")
-		authBytes, err := os.ReadFile(authPath)
+		authBytes, authErr := os.ReadFile(authPath)
+		configPath := filepath.Join(os.Getenv("CODEX_HOME"), "config.toml")
+		configBytes, configErr := os.ReadFile(configPath)
 		capture := appServerProfileCapture{
-			CWD:             cwd,
-			CodexHome:       os.Getenv("CODEX_HOME"),
-			ProfileOverride: os.Getenv("AIMUX_PROFILE_ENV"),
-			AuthFileExists:  err == nil,
+			CWD:              cwd,
+			CodexHome:        os.Getenv("CODEX_HOME"),
+			ProfileOverride:  os.Getenv("AIMUX_PROFILE_ENV"),
+			AuthFileExists:   authErr == nil,
+			ConfigFileExists: configErr == nil,
 		}
-		if err == nil {
+		if authErr == nil {
 			capture.AuthFileContent = string(authBytes)
+		}
+		if configErr == nil {
+			capture.ConfigFileContent = string(configBytes)
 		}
 		if b, err := json.Marshal(capture); err == nil {
 			_ = os.WriteFile(capturePath, b, 0o600)
@@ -89,6 +97,16 @@ func writeAuthFixture(t *testing.T, homeDir, content string) {
 	}
 	if err := os.WriteFile(filepath.Join(homeDir, "auth.json"), []byte(content), 0o600); err != nil {
 		t.Fatalf("write auth.json in %q: %v", homeDir, err)
+	}
+}
+
+func writeConfigFixture(t *testing.T, homeDir, content string) {
+	t.Helper()
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		t.Fatalf("mkdir config home %q: %v", homeDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write config.toml in %q: %v", homeDir, err)
 	}
 }
 
@@ -261,9 +279,11 @@ func TestAppServerProcess_ProfileDirectConsumer_AppliesEnvAndWorkDirBeforeStart(
 	capturePath := filepath.Join(t.TempDir(), "profile-capture.json")
 	ambientHome := filepath.Join(t.TempDir(), "ambient-codex-home")
 
+	configFixture := "[mcp_servers.demo]\ncommand = \"demo\"\n"
 	t.Setenv(appServerProfileHelperEnv, "1")
 	t.Setenv(appServerProfileCaptureEnv, capturePath)
 	writeAuthFixture(t, ambientHome, "ambient-auth-json")
+	writeConfigFixture(t, ambientHome, configFixture)
 	t.Setenv("CODEX_HOME", ambientHome)
 	t.Setenv("AIMUX_PROFILE_ENV", "ambient-env-must-lose")
 
@@ -302,6 +322,12 @@ func TestAppServerProcess_ProfileDirectConsumer_AppliesEnvAndWorkDirBeforeStart(
 	}
 	if capture.AuthFileContent != "ambient-auth-json" {
 		t.Fatalf("auth.json content=%q want ambient-auth-json", capture.AuthFileContent)
+	}
+	if !capture.ConfigFileExists {
+		t.Fatalf("config.toml missing under redirected CODEX_HOME %q", capture.CodexHome)
+	}
+	if capture.ConfigFileContent != configFixture {
+		t.Fatalf("config.toml content=%q want %q", capture.ConfigFileContent, configFixture)
 	}
 }
 

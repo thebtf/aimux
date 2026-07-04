@@ -241,6 +241,38 @@ func TestCodexPool_VirtualHomeCopiesAuthFiles(t *testing.T) {
 	}
 }
 
+func TestCodexPool_VirtualHomeCopiesConfigToml(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	ambientHome := filepath.Join(t.TempDir(), "ambient-codex-home")
+	configFixture := "[mcp_servers.demo]\ncommand = \"demo\"\n"
+	writeConfigFixture(t, ambientHome, configFixture)
+	t.Setenv(appServerProfileHelperEnv, "1")
+	t.Setenv("CODEX_HOME", ambientHome)
+	cfg := codexPoolConfigWithRuntimeHomeBase(t, base)
+	pool, err := NewCodexPool(osArgs0(), cfg)
+	if err != nil {
+		t.Fatalf("NewCodexPool(config pass-through): %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	proc, err := pool.Acquire(ctx, "project-config-pass-through", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(config pass-through): %v", err)
+	}
+	configBytes, err := os.ReadFile(filepath.Join(proc.profile.VirtualHomeDir, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml from virtual home %q: %v", proc.profile.VirtualHomeDir, err)
+	}
+	if got, want := string(configBytes), configFixture; got != want {
+		t.Fatalf("config.toml content=%q want %q", got, want)
+	}
+	if proc.profile.VirtualHomeDir == ambientHome {
+		t.Fatalf("VirtualHomeDir %q want project-scoped home distinct from ambient CODEX_HOME", proc.profile.VirtualHomeDir)
+	}
+}
+
 func TestCodexPool_VirtualHomeUnsafeProjectIDCannotEscapeBase(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "runtime-home")
 	pool := newVirtualHomeTestPool(t, base)

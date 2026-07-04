@@ -170,33 +170,58 @@ func resolveProfileSourceHome(profile runtime.CLIRuntimeProfile, baseEnv []strin
 	return ""
 }
 
-func materializePassThroughAuthFiles(profile runtime.CLIRuntimeProfile, baseEnv []string) error {
-	if profile.AuthScope != runtime.AuthScopePassThrough || len(profile.AuthFiles) == 0 || profile.VirtualHomeDir == "" {
+func passThroughHomeFiles(profile runtime.CLIRuntimeProfile) []string {
+	files := make([]string, 0, len(profile.AuthFiles)+1)
+	seen := make(map[string]struct{}, len(profile.AuthFiles)+1)
+	add := func(rel string) {
+		cleaned := filepath.Clean(rel)
+		if cleaned == "" || cleaned == "." {
+			return
+		}
+		if _, ok := seen[cleaned]; ok {
+			return
+		}
+		seen[cleaned] = struct{}{}
+		files = append(files, cleaned)
+	}
+	if profile.AuthScope == runtime.AuthScopePassThrough {
+		for _, rel := range profile.AuthFiles {
+			add(rel)
+		}
+	}
+	if profile.CLIName == "codex" && profile.MCPMode == runtime.MCPModePassThrough {
+		add("config.toml")
+	}
+	return files
+}
+
+func materializePassThroughHomeFiles(profile runtime.CLIRuntimeProfile, baseEnv []string) error {
+	files := passThroughHomeFiles(profile)
+	if len(files) == 0 || profile.VirtualHomeDir == "" {
 		return nil
 	}
 	sourceHome := resolveProfileSourceHome(profile, baseEnv)
 	if sourceHome == "" || filepath.Clean(sourceHome) == filepath.Clean(profile.VirtualHomeDir) {
 		return nil
 	}
-	for _, rel := range profile.AuthFiles {
-		cleaned := filepath.Clean(rel)
-		if cleaned == "." || cleaned == "" || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("codex: invalid auth file %q", rel)
+	for _, rel := range files {
+		if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("codex: invalid pass-through file %q", rel)
 		}
-		sourcePath := filepath.Join(sourceHome, cleaned)
+		sourcePath := filepath.Join(sourceHome, rel)
 		content, err := os.ReadFile(sourcePath)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("codex: read auth file %q: %w", sourcePath, err)
+			return fmt.Errorf("codex: read pass-through file %q: %w", sourcePath, err)
 		}
-		targetPath := filepath.Join(profile.VirtualHomeDir, cleaned)
+		targetPath := filepath.Join(profile.VirtualHomeDir, rel)
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
-			return fmt.Errorf("codex: create auth dir for %q: %w", targetPath, err)
+			return fmt.Errorf("codex: create pass-through dir for %q: %w", targetPath, err)
 		}
 		if err := os.WriteFile(targetPath, content, 0o600); err != nil {
-			return fmt.Errorf("codex: write auth file %q: %w", targetPath, err)
+			return fmt.Errorf("codex: write pass-through file %q: %w", targetPath, err)
 		}
 	}
 	return nil
@@ -222,7 +247,7 @@ func resolveAppServerProfileStart(profile runtime.CLIRuntimeProfile, baseEnv []s
 			if err := os.MkdirAll(profile.VirtualHomeDir, 0o700); err != nil {
 				return nil, "", fmt.Errorf("codex: create virtual home dir %q: %w", profile.VirtualHomeDir, err)
 			}
-			if err := materializePassThroughAuthFiles(profile, baseEnv); err != nil {
+			if err := materializePassThroughHomeFiles(profile, baseEnv); err != nil {
 				return nil, "", err
 			}
 			env = appendOrReplace(env, profile.CLIHomeEnvVar, profile.VirtualHomeDir)
