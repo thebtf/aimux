@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **CI stability.** Closed the Windows CI failure where scheduler variance made the old 130ms timing assertion fail even when the DEF-8 distinct-key concurrency invariant held.
+- **AIMUX-21 task-call release gate.** Enabled the minimal mcp-go task capability surface required for `TaskSupportRequired` tool-call tasks, updated direct JSON-RPC e2e coverage to observe the outer SDK task into the inner Loom job, and preserved the production `task` `async_mandatory` contract.
+- **Detached task submit safety.** Bounded the caller-disconnect-tolerant task submission window with a 30-second timeout and regression coverage, documenting the current mcp-go regular-tool cancellation signal limitation.
 
 
 ## [5.18.1] — 2026-07-03 — issue #359: leaf-CLI MCP isolation, honest stall detection, Linux CI fixes
