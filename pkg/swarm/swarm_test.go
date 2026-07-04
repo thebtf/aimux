@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/thebtf/aimux/pkg/swarm"
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -248,6 +249,64 @@ func TestSwarm_Send_DeadExecutor_Restart(t *testing.T) {
 	}
 	if !dead.isClosed() {
 		t.Error("dead executor should have been closed during restart")
+	}
+}
+
+func TestSwarm_Send_DeadExecutor_RestartPreservesFactoryContext(t *testing.T) {
+	t.Parallel()
+
+	type sessionKey struct{}
+
+	dead := &mockExecutorV2{alive: types.HealthDead}
+	fresh := &mockExecutorV2{
+		alive: types.HealthAlive,
+		sendFn: func(_ context.Context, _ types.Message) (*types.Response, error) {
+			return &types.Response{Content: "restarted"}, nil
+		},
+	}
+
+	var seen []string
+	callCount := 0
+	factory := func(ctx context.Context, _ string) (types.ExecutorV2, error) {
+		tc, _ := tenant.FromContext(ctx)
+		label, _ := ctx.Value(sessionKey{}).(string)
+		seen = append(seen, tc.TenantID+"|"+label)
+		callCount++
+		if callCount == 1 {
+			return dead, nil
+		}
+		return fresh, nil
+	}
+
+	s := swarm.NewWithContextFactory(factory, nil)
+	ctx := tenant.WithContext(
+		context.WithValue(context.Background(), sessionKey{}, "session-a"),
+		tenant.TenantContext{TenantID: "tenant-a"},
+	)
+
+	h, err := s.Get(ctx, "qwen", swarm.Stateful)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	resp, err := s.Send(ctx, h, types.Message{Content: "try"})
+	if err != nil {
+		t.Fatalf("Send after restart: %v", err)
+	}
+	if resp.Content != "restarted" {
+		t.Fatalf("expected response from restarted executor, got %q", resp.Content)
+	}
+	if !dead.isClosed() {
+		t.Fatal("dead executor should have been closed during restart")
+	}
+	if len(seen) != 2 {
+		t.Fatalf("factory calls = %d, want 2", len(seen))
+	}
+	if seen[0] != "tenant-a|session-a" || seen[1] != "tenant-a|session-a" {
+		t.Fatalf("factory context trail = %#v", seen)
+	}
+	if h.TenantID != "tenant-a" {
+		t.Fatalf("handle tenantID = %q, want %q", h.TenantID, "tenant-a")
 	}
 }
 

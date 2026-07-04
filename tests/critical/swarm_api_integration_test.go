@@ -29,11 +29,15 @@ func TestCritical_SwarmAPI_MultiProviderIntegration(t *testing.T) {
 
 	var mu sync.Mutex
 	resolverCalls := map[string]int{}
-	apiFactory := api.NewSwarmFactory(func(provider string) (string, error) {
+	resolvedKeys := map[string][]string{}
+	apiFactory := api.NewSwarmFactory(func(_ context.Context, provider, tenantID string) (string, error) {
+		key := tenantID + "|" + provider
+		resolved := "test-key-" + tenantID + "-" + provider
 		mu.Lock()
-		resolverCalls[provider]++
+		resolverCalls[key]++
+		resolvedKeys[key] = append(resolvedKeys[key], resolved)
 		mu.Unlock()
-		return "test-key-" + provider, nil
+		return resolved, nil
 	}, api.WithTimeout(2*time.Second), api.WithMaxRetries(1))
 
 	cliCalls := 0
@@ -42,7 +46,7 @@ func TestCritical_SwarmAPI_MultiProviderIntegration(t *testing.T) {
 		return &swarmAPICriticalMock{name: name, alive: types.HealthAlive}, nil
 	}
 
-	sw := swarm.New(api.CompositeFactory(cliFactory, apiFactory), rec, swarm.WithStatefulTTL(0))
+	sw := swarm.NewWithContextFactory(api.ContextCompositeFactory(cliFactory, apiFactory), rec, swarm.WithStatefulTTL(0))
 	defer sw.Shutdown(context.Background())
 
 	tenantA := tenantCtxForSwarmAPI("tenantA")
@@ -99,14 +103,26 @@ func TestCritical_SwarmAPI_MultiProviderIntegration(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if resolverCalls["openai"] != 3 {
-		t.Fatalf("openai resolver calls = %d, want 3", resolverCalls["openai"])
+	if resolverCalls["tenantA|openai"] != 2 {
+		t.Fatalf("tenantA openai resolver calls = %d, want 2", resolverCalls["tenantA|openai"])
 	}
-	if resolverCalls["anthropic"] != 1 {
-		t.Fatalf("anthropic resolver calls = %d, want 1", resolverCalls["anthropic"])
+	if resolverCalls["tenantB|openai"] != 1 {
+		t.Fatalf("tenantB openai resolver calls = %d, want 1", resolverCalls["tenantB|openai"])
 	}
-	if resolverCalls["google"] != 1 {
-		t.Fatalf("google resolver calls = %d, want 1", resolverCalls["google"])
+	if resolverCalls["tenantA|anthropic"] != 1 {
+		t.Fatalf("tenantA anthropic resolver calls = %d, want 1", resolverCalls["tenantA|anthropic"])
+	}
+	if resolverCalls["tenantA|google"] != 1 {
+		t.Fatalf("tenantA google resolver calls = %d, want 1", resolverCalls["tenantA|google"])
+	}
+	if got := resolvedKeys["tenantA|openai"]; len(got) != 2 || got[0] != "test-key-tenantA-openai" || got[1] != "test-key-tenantA-openai" {
+		t.Fatalf("tenantA openai resolved keys = %#v", got)
+	}
+	if got := resolvedKeys["tenantB|openai"]; len(got) != 1 || got[0] != "test-key-tenantB-openai" {
+		t.Fatalf("tenantB openai resolved keys = %#v", got)
+	}
+	if resolvedKeys["tenantA|openai"][0] == resolvedKeys["tenantB|openai"][0] {
+		t.Fatal("cross-tenant openai key resolution collapsed to the same key")
 	}
 
 	if !rec.hasEvent(func(ev audit.AuditEvent) bool {

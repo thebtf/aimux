@@ -1,15 +1,17 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-// KeyResolver returns the API key for a provider. It is injected so Swarm
-// wiring can preserve per-tenant/per-session key isolation outside this package.
-type KeyResolver func(provider string) (string, error)
+// KeyResolver returns the API key for a provider within the caller's current
+// request/tenant context.
+type KeyResolver func(ctx context.Context, provider, tenantID string) (string, error)
 
 // SwarmFactory adapts Swarm executor names of the form
 // "api:<provider>:<model>" into API ExecutorV2 instances.
@@ -26,14 +28,24 @@ func NewSwarmFactory(resolveKey KeyResolver, opts ...Option) *SwarmFactory {
 	return &SwarmFactory{resolveKey: resolveKey, opts: copied}
 }
 
-// Create parses an API Swarm executor name, resolves the provider key, and
-// constructs the matching API executor.
+// Create parses an API Swarm executor name and constructs the matching API
+// executor without tenant/session context.
 func (f *SwarmFactory) Create(name string) (types.ExecutorV2, error) {
+	return f.CreateWithContext(context.Background(), name)
+}
+
+// CreateWithContext parses an API Swarm executor name, resolves the provider
+// key for the caller's tenant/session context, and constructs the matching API
+// executor.
+func (f *SwarmFactory) CreateWithContext(ctx context.Context, name string) (types.ExecutorV2, error) {
 	if f == nil {
 		return nil, fmt.Errorf("api swarm factory: factory is nil")
 	}
 	if f.resolveKey == nil {
 		return nil, fmt.Errorf("api swarm factory: key resolver is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	provider, model, err := parseSwarmExecutorName(name)
@@ -41,9 +53,10 @@ func (f *SwarmFactory) Create(name string) (types.ExecutorV2, error) {
 		return nil, err
 	}
 
-	apiKey, err := f.resolveKey(provider)
+	tc, _ := tenant.FromContext(ctx)
+	apiKey, err := f.resolveKey(ctx, provider, tc.TenantID)
 	if err != nil {
-		return nil, fmt.Errorf("api swarm factory: resolve key for %q: %w", provider, err)
+		return nil, fmt.Errorf("api swarm factory: resolve key for %q tenant %q: %w", provider, tc.TenantID, err)
 	}
 
 	cfg := Config{
@@ -70,6 +83,24 @@ func CompositeFactory(cli func(string) (types.ExecutorV2, error), apiFactory *Sw
 				return nil, fmt.Errorf("api swarm factory: api executor requested for %q but api factory is nil", name)
 			}
 			return apiFactory.Create(name)
+		}
+		if cli == nil {
+			return nil, fmt.Errorf("api swarm factory: cli factory is nil")
+		}
+		return cli(name)
+	}
+}
+
+// ContextCompositeFactory routes api:* executor names through the context-aware
+// API factory while preserving the existing CLI factory contract for non-API
+// names.
+func ContextCompositeFactory(cli func(string) (types.ExecutorV2, error), apiFactory *SwarmFactory) func(context.Context, string) (types.ExecutorV2, error) {
+	return func(ctx context.Context, name string) (types.ExecutorV2, error) {
+		if strings.HasPrefix(name, "api:") {
+			if apiFactory == nil {
+				return nil, fmt.Errorf("api swarm factory: api executor requested for %q but api factory is nil", name)
+			}
+			return apiFactory.CreateWithContext(ctx, name)
 		}
 		if cli == nil {
 			return nil, fmt.Errorf("api swarm factory: cli factory is nil")

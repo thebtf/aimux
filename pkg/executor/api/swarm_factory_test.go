@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -64,8 +65,13 @@ func TestSwarmFactoryCreate_ValidProviders(t *testing.T) {
 			t.Parallel()
 
 			var gotProvider string
-			factory := NewSwarmFactory(func(provider string) (string, error) {
+			var gotTenant string
+			factory := NewSwarmFactory(func(ctx context.Context, provider, tenantID string) (string, error) {
+				if ctx == nil {
+					t.Fatal("resolver ctx is nil")
+				}
 				gotProvider = provider
+				gotTenant = tenantID
 				return "test-key", nil
 			}, WithTimeout(2*time.Second), WithMaxRetries(3))
 
@@ -75,6 +81,9 @@ func TestSwarmFactoryCreate_ValidProviders(t *testing.T) {
 			}
 			if gotProvider != tt.provider {
 				t.Fatalf("resolver provider = %q, want %q", gotProvider, tt.provider)
+			}
+			if gotTenant != "" {
+				t.Fatalf("resolver tenantID = %q, want empty for Create without tenant ctx", gotTenant)
 			}
 
 			info := exec.Info()
@@ -94,10 +103,73 @@ func TestSwarmFactoryCreate_ValidProviders(t *testing.T) {
 	}
 }
 
+func TestSwarmFactoryCreateWithContext_UsesTenantSpecificKey(t *testing.T) {
+	t.Parallel()
+
+	type ctxLabelKey struct{}
+	type resolverCall struct {
+		provider string
+		tenantID string
+		label    string
+	}
+
+	ctxA := tenant.WithContext(
+		context.WithValue(context.Background(), ctxLabelKey{}, "session-a"),
+		tenant.TenantContext{TenantID: "tenantA"},
+	)
+	ctxB := tenant.WithContext(
+		context.WithValue(context.Background(), ctxLabelKey{}, "session-b"),
+		tenant.TenantContext{TenantID: "tenantB"},
+	)
+
+	var calls []resolverCall
+	factory := NewSwarmFactory(func(ctx context.Context, provider, tenantID string) (string, error) {
+		label, _ := ctx.Value(ctxLabelKey{}).(string)
+		calls = append(calls, resolverCall{provider: provider, tenantID: tenantID, label: label})
+		return "test-key-" + tenantID + "-" + provider, nil
+	})
+
+	execA, err := factory.CreateWithContext(ctxA, "api:openai:gpt-4o")
+	if err != nil {
+		t.Fatalf("CreateWithContext(ctxA): %v", err)
+	}
+	execB, err := factory.CreateWithContext(ctxB, "api:openai:gpt-4o")
+	if err != nil {
+		t.Fatalf("CreateWithContext(ctxB): %v", err)
+	}
+
+	openA, ok := execA.(*OpenAIExecutor)
+	if !ok {
+		t.Fatalf("execA type = %T, want *OpenAIExecutor", execA)
+	}
+	openB, ok := execB.(*OpenAIExecutor)
+	if !ok {
+		t.Fatalf("execB type = %T, want *OpenAIExecutor", execB)
+	}
+	if openA.base.apiKey != "test-key-tenantA-openai" {
+		t.Fatalf("tenantA apiKey = %q, want %q", openA.base.apiKey, "test-key-tenantA-openai")
+	}
+	if openB.base.apiKey != "test-key-tenantB-openai" {
+		t.Fatalf("tenantB apiKey = %q, want %q", openB.base.apiKey, "test-key-tenantB-openai")
+	}
+	if openA.base.apiKey == openB.base.apiKey {
+		t.Fatal("tenant-specific api keys collapsed to the same value")
+	}
+	if len(calls) != 2 {
+		t.Fatalf("resolver calls = %d, want 2", len(calls))
+	}
+	if calls[0] != (resolverCall{provider: "openai", tenantID: "tenantA", label: "session-a"}) {
+		t.Fatalf("call[0] = %+v", calls[0])
+	}
+	if calls[1] != (resolverCall{provider: "openai", tenantID: "tenantB", label: "session-b"}) {
+		t.Fatalf("call[1] = %+v", calls[1])
+	}
+}
+
 func TestSwarmFactoryCreate_RejectsMalformedName(t *testing.T) {
 	t.Parallel()
 
-	factory := NewSwarmFactory(func(provider string) (string, error) {
+	factory := NewSwarmFactory(func(context.Context, string, string) (string, error) {
 		return "test-key", nil
 	})
 
@@ -110,7 +182,7 @@ func TestSwarmFactoryCreate_RejectsMalformedName(t *testing.T) {
 func TestSwarmFactoryCreate_UnknownProvider(t *testing.T) {
 	t.Parallel()
 
-	factory := NewSwarmFactory(func(provider string) (string, error) {
+	factory := NewSwarmFactory(func(context.Context, string, string) (string, error) {
 		return "test-key", nil
 	})
 
@@ -123,7 +195,7 @@ func TestSwarmFactoryCreate_UnknownProvider(t *testing.T) {
 func TestSwarmFactoryCreate_ResolverErrorPropagates(t *testing.T) {
 	t.Parallel()
 
-	factory := NewSwarmFactory(func(provider string) (string, error) {
+	factory := NewSwarmFactory(func(context.Context, string, string) (string, error) {
 		return "", errors.New("resolver exploded")
 	})
 
@@ -150,10 +222,13 @@ func TestCompositeFactory_RoutesAPIAndCLI(t *testing.T) {
 	}
 
 	apiCalls := 0
-	apiFactory := NewSwarmFactory(func(provider string) (string, error) {
+	apiFactory := NewSwarmFactory(func(_ context.Context, provider, tenantID string) (string, error) {
 		apiCalls++
 		if provider != "openai" {
 			t.Fatalf("resolver provider = %q, want openai", provider)
+		}
+		if tenantID != "" {
+			t.Fatalf("resolver tenantID = %q, want empty", tenantID)
 		}
 		return "test-key", nil
 	})
@@ -183,6 +258,46 @@ func TestCompositeFactory_RoutesAPIAndCLI(t *testing.T) {
 	}
 	if cliCalls != 1 {
 		t.Fatalf("cliCalls after cli route = %d, want 1", cliCalls)
+	}
+}
+
+func TestContextCompositeFactory_RoutesTenantAwareAPI(t *testing.T) {
+	t.Parallel()
+
+	ctx := tenant.WithContext(context.Background(), tenant.TenantContext{TenantID: "tenantA"})
+	cliExec := &stubExecutor{name: "codex", alive: types.HealthAlive}
+	cliFactory := func(name string) (types.ExecutorV2, error) {
+		return cliExec, nil
+	}
+	apiFactory := NewSwarmFactory(func(_ context.Context, provider, tenantID string) (string, error) {
+		if provider != "openai" {
+			t.Fatalf("resolver provider = %q, want openai", provider)
+		}
+		if tenantID != "tenantA" {
+			t.Fatalf("resolver tenantID = %q, want tenantA", tenantID)
+		}
+		return "test-key-" + tenantID, nil
+	})
+
+	composite := ContextCompositeFactory(cliFactory, apiFactory)
+	apiExec, err := composite(ctx, "api:openai:gpt-4o")
+	if err != nil {
+		t.Fatalf("context composite(api): %v", err)
+	}
+	openAI, ok := apiExec.(*OpenAIExecutor)
+	if !ok {
+		t.Fatalf("apiExec type = %T, want *OpenAIExecutor", apiExec)
+	}
+	if openAI.base.apiKey != "test-key-tenantA" {
+		t.Fatalf("api key = %q, want %q", openAI.base.apiKey, "test-key-tenantA")
+	}
+
+	plainExec, err := composite(ctx, "codex")
+	if err != nil {
+		t.Fatalf("context composite(cli): %v", err)
+	}
+	if plainExec.Info().Name != cliExec.name {
+		t.Fatalf("plain Info().Name = %q, want %q", plainExec.Info().Name, cliExec.name)
 	}
 }
 
