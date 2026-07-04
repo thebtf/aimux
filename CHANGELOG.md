@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.19.0] — 2026-07-04 — API executor hardening, workflow gates, persistent sessions
+
+### Added
+
+- **AIMUX-25 API executor groundwork.** Updated OpenAI, Anthropic, and Google SDK dependencies and expanded API executor configuration with typed Config plus With* option coverage for safer factory construction.
+- **API executor resilience.** Added provider health enrichment and rate-limit/cooldown tracking so API-backed executors can report richer health and avoid immediate retry storms after throttling.
+- **Persistent CLI session binding (AIMUX-14 B2).** Swarm handles can now bind persistent session startup arguments through executor adapters while preserving the existing handle lifecycle and health checks.
+- **Workflow audit and gating coverage.** Added workflow audit observability tests, advisory/blocking gate-mode coverage, domain workflow hardening, and YAML workflow loader support.
+- **Deferred verification tests (D1).** Added focused tests for FR-8, FR-9, FR-11, and timezone handling in logger/deferred-verification behavior.
+- **Project release protocol.** Documented the aimux release protocol for tag-triggered GoReleaser releases, required local gates, release autonomy, version alignment, and artifact verification.
+
+### Changed
+
+- **Swarm factory concurrency test.** Replaced the Windows-sensitive wall-clock threshold in TestSwarm_ParallelKeysFactoryNonBlocking with a deterministic barrier proof that distinct-key Swarm.Get calls enter factoryFn concurrently, plus a bounded cleanup wait to avoid hangs on regressions.
+- **Workflow engine internals.** Extended workflow execution and YAML loading paths with stronger test coverage for domain workflows and gate decisions.
+
+### Fixed
+
+- **CI stability.** Closed the Windows CI failure where scheduler variance made the old 130ms timing assertion fail even when the DEF-8 distinct-key concurrency invariant held.
+
+
 ## [5.18.1] — 2026-07-03 — issue #359: leaf-CLI MCP isolation, honest stall detection, Linux CI fixes
 
 ### Fixed
@@ -2596,3 +2617,4 @@ Complete rewrite from TypeScript (v2) to Go. Single binary, zero external runtim
 - Config-driven flags only (no hardcoded CLI names in server code)
 
 [3.0.0]: https://github.com/thebtf/aimux/releases/tag/v3.0.0
+

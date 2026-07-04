@@ -1,45 +1,26 @@
-## v5.17.0 — muxcore registry descriptors and legacy install recovery
+## v5.19.0 — API executor hardening, workflow gates, persistent sessions
 
-This release ships the muxcore registry descriptor adoption work and closes the
-Windows installed-update compatibility gap exposed by the `mcp-launcher`
-source-side smoke.
+This release ships the next aimux roadmap batch after `v5.18.1`: API executor resilience, persistent CLI session binding, workflow gate hardening, and the CI-stability fix that unblocked the release train.
 
-### Added
+### Highlights
 
-- Aimux now advertises the muxcore registry descriptor contract with product
-  metadata and owner-list capability declarations.
-- Windows post-exit install helpers can write opt-in diagnostic traces through
-  `AIMUX_POST_EXIT_TRACE`, making detached helper failures inspectable during
-  release/debug smokes.
+- API executor groundwork now covers the OpenAI, Anthropic, and Google SDK refresh, typed API executor configuration, provider health enrichment, and rate-limit/cooldown tracking.
+- Persistent CLI session binding is wired through Swarm and executor adapters so stateful/persistent handles can carry session startup arguments without weakening handle lifecycle checks.
+- Workflow coverage now exercises audit observability, advisory/blocking gate modes, domain workflows, and YAML workflow loading.
+- Deferred-verification coverage now protects FR-8, FR-9, FR-11, and timezone behavior.
+- The Windows CI blocker in `TestSwarm_ParallelKeysFactoryNonBlocking` is fixed by replacing a brittle wall-clock threshold with a deterministic distinct-key concurrency barrier proof.
+- The repository now has a project-local release protocol documenting aimux tag-triggered GoReleaser releases and required gates.
 
-### Fixed
+### Compatibility
 
-- Upgrades from historical `5.16.1-bin-current` style launchers now work again.
-  Aimux bootstraps the missing `.post-exit-active` generation marker when a
-  legacy helper copy is launched as `<staged>.post-exit-helper.*.exe`.
-- The post-exit installer now treats staged replacement image locks as bounded
-  retryable conditions, matching current-binary and old-slot lock handling.
-- Aimux now consumes muxcore `v0.26.2` for the registry descriptor contract.
+No breaking API or CLI migration is required for this release. The release is a minor version because it includes new executor/workflow capabilities after `v5.18.1`.
 
 ### Verification
 
-- `go test .\pkg\upgrade -count=1`
-- `go build ./...`
-- `go test ./... -count=1`
-- Historical installed-daemon smoke passed with the local patched
-  `mcp-launcher`:
-
-```text
-current: 5.16.1-bin-current
-next:    5.16.4-3-gb950218-dirty
-installed binary changed: cb4ae8081b64 -> 6a0938500fd6
-verified server version: 5.16.4-3-gb950218-dirty
-aimux://health.version: 5.16.4-3-gb950218-dirty
-[install] PASS
-```
+- PR #183 merged after CI run `28690293149` and Security run `28690293163` completed successfully.
+- Post-merge focused regression passed: `go test ./pkg/swarm -run TestSwarm_ParallelKeysFactoryNonBlocking -count=20 -timeout 60s`.
+- Release preflight requires the gates documented in `docs/RELEASE-PROTOCOL.md` before tagging and publishing `v5.19.0`.
 
 ### Notes
 
-- The `mcp-launcher` clean-env/install harness fix remains owned by the
-  separate `D:\Dev\mcp-launcher` project/session. This release proves the aimux
-  side of the historical install hop using the local patched launcher.
+AIMUX-25 CR-004 remains open for a later implementation slice; this release covers CR-000 through CR-003 plus B2/C1/C2/D1 work and the merged CI fix.
