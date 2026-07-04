@@ -92,6 +92,140 @@ func readResponse(reader *bufio.Reader, timeout time.Duration) (map[string]any, 
 	}
 }
 
+const e2eTaskTTLMillis int64 = 60000
+
+func toolCallParams(name string, args map[string]any) map[string]any {
+	params := map[string]any{
+		"name":      name,
+		"arguments": args,
+	}
+	if name == "task" {
+		params["task"] = map[string]any{"ttl": e2eTaskTTLMillis}
+	}
+	return params
+}
+
+func callToolRaw(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, name string, args map[string]any, timeout time.Duration) map[string]any {
+	t.Helper()
+	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "tools/call", toolCallParams(name, args))); err != nil {
+		t.Fatalf("%s request write: %v", name, err)
+	}
+	resp, err := readResponse(reader, timeout)
+	if err != nil {
+		t.Fatalf("%s response: %v", name, err)
+	}
+	return resp
+}
+
+func callToolJSON(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, name string, args map[string]any, timeout time.Duration) map[string]any {
+	t.Helper()
+	return extractToolJSON(t, callToolRaw(t, stdin, reader, id, name, args, timeout))
+}
+
+func acceptedTaskIDFromResponse(t *testing.T, resp map[string]any) string {
+	t.Helper()
+	result, _ := resp["result"].(map[string]any)
+	if result == nil {
+		t.Fatalf("task acceptance missing result: %#v", resp)
+	}
+	task, _ := result["task"].(map[string]any)
+	if task == nil {
+		t.Fatalf("task acceptance missing task payload: %#v", result)
+	}
+	taskID, _ := task["taskId"].(string)
+	if taskID == "" {
+		t.Fatalf("task acceptance missing taskId: %#v", task)
+	}
+	return taskID
+}
+
+func callTaskResultJSON(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, taskID string, timeout time.Duration) map[string]any {
+	t.Helper()
+	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "tasks/result", map[string]any{"taskId": taskID})); err != nil {
+		t.Fatalf("tasks/result request write: %v", err)
+	}
+	resp, err := readResponse(reader, timeout)
+	if err != nil {
+		t.Fatalf("tasks/result response: %v", err)
+	}
+	return extractToolJSON(t, resp)
+}
+
+func waitTaskToolTerminalStatusPayload(t *testing.T, stdin io.Writer, reader *bufio.Reader, firstID int, taskID string, timeout time.Duration) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for requestID := firstID; time.Now().Before(deadline); requestID++ {
+		statusPayload := callToolJSON(t, stdin, reader, requestID, "status", map[string]any{
+			"job_id":          taskID,
+			"include_content": true,
+		}, 10*time.Second)
+		status, _ := statusPayload["status"].(string)
+		if !isTerminalTaskStatus(status) {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		content, _ := statusPayload["content"].(string)
+		if strings.TrimSpace(content) == "" {
+			t.Fatalf("status(%s) terminal payload missing content: %#v", taskID, statusPayload)
+		}
+		return statusPayload
+	}
+	t.Fatalf("task %s did not reach terminal status within %v", taskID, timeout)
+	return nil
+}
+
+func waitTaskToolTerminalJSON(t *testing.T, stdin io.Writer, reader *bufio.Reader, firstID int, taskID string, timeout time.Duration) map[string]any {
+	t.Helper()
+	statusPayload := waitTaskToolTerminalStatusPayload(t, stdin, reader, firstID, taskID, timeout)
+	content, _ := statusPayload["content"].(string)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		t.Fatalf("status(%s) terminal content is not JSON: %v raw=%s", taskID, err, content)
+	}
+	return payload
+}
+
+func readTaskResourceJSON(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, uri string) map[string]any {
+	t.Helper()
+	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "resources/read", map[string]any{"uri": uri})); err != nil {
+		t.Fatalf("resource read request write: %v", err)
+	}
+	resp, err := readResponse(reader, 10*time.Second)
+	if err != nil {
+		t.Fatalf("resource read response: %v", err)
+	}
+	if resp["error"] != nil {
+		t.Fatalf("resource read JSON-RPC error: %v", resp["error"])
+	}
+	result, _ := resp["result"].(map[string]any)
+	if result == nil {
+		t.Fatalf("resource read missing result: %#v", resp)
+	}
+	contents, _ := result["contents"].([]any)
+	if len(contents) == 0 {
+		t.Fatalf("resource read empty contents: %#v", result)
+	}
+	first, _ := contents[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if text == "" {
+		t.Fatalf("resource read missing text: %#v", first)
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		t.Fatalf("resource read text is not JSON: %v text=%s", err, text)
+	}
+	return data
+}
+
+func isTerminalTaskStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "failed_crash", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
 var (
 	e2eAimuxBuildMu    sync.Mutex
 	e2eAimuxBuildCache = make(map[string]string)

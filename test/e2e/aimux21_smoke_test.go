@@ -57,17 +57,41 @@ func TestE2E_AIMUX21IndependentSmoke(t *testing.T) {
 
 func callAIMUX21ToolJSON(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, name string, args map[string]any, timeout time.Duration) map[string]any {
 	t.Helper()
-	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "tools/call", map[string]any{
-		"name":      name,
-		"arguments": args,
-	})); err != nil {
-		t.Fatalf("%s request write: %v", name, err)
+	if name != "task" {
+		return callToolJSON(t, stdin, reader, id, name, args, timeout)
 	}
-	resp, err := readResponse(reader, timeout)
-	if err != nil {
-		t.Fatalf("%s response: %v", name, err)
+	accepted := callToolRaw(t, stdin, reader, id, name, args, timeout)
+	outerTaskID := acceptedTaskIDFromResponse(t, accepted)
+	acceptedPayload := callTaskResultJSON(t, stdin, reader, id+1000, outerTaskID, timeout)
+	innerTaskID, _ := acceptedPayload["task_id"].(string)
+	if innerTaskID == "" {
+		t.Fatalf("%s accepted payload missing task_id: %v", name, acceptedPayload)
 	}
-	return extractToolJSON(t, resp)
+	terminalStatus := waitTaskToolTerminalStatusPayload(t, stdin, reader, id+2000, innerTaskID, timeout)
+	snapshot := readTaskResourceJSON(t, stdin, reader, id+3000, "aimux://tasks/"+innerTaskID)
+	merged := map[string]any{}
+	for key, value := range acceptedPayload {
+		merged[key] = value
+	}
+	if status, _ := terminalStatus["status"].(string); status != "" {
+		merged["status"] = status
+	}
+	if content, _ := terminalStatus["content"].(string); content != "" {
+		merged["content"] = content
+	}
+	if workerType, ok := snapshot["worker_type"]; ok {
+		merged["worker_type"] = workerType
+	}
+	if metadata, ok := snapshot["metadata"].(map[string]any); ok {
+		merged["metadata"] = metadata
+		if rounds, ok := metadata["rounds"]; ok {
+			merged["rounds"] = rounds
+		}
+		if confidence, ok := metadata["confidence_score"]; ok {
+			merged["confidence_score"] = confidence
+		}
+	}
+	return merged
 }
 
 func assertAIMUX21TaskResult(t *testing.T, result map[string]any) {

@@ -137,14 +137,22 @@ func (s *Server) registerTaskTool() {
 
 // handleTask is the MCP handler for the `task` tool.
 func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	taskReq, parseErr := parseTaskToolRequest(ctx, req)
+	dispatchCtx := ctx
+	if dispatchCtx == nil {
+		dispatchCtx = context.Background()
+	}
+	// Task submissions must survive caller disconnects. Preserve request-scoped
+	// values (project/session/tenant/worktree metadata) while detaching Loom
+	// dispatch from the caller cancellation chain.
+	dispatchCtx = context.WithoutCancel(dispatchCtx)
+	taskReq, parseErr := parseTaskToolRequest(dispatchCtx, req)
 	if parseErr != nil {
 		return taskToolError(TaskResult{}, parseErr)
 	}
 	if policyErr := s.validateRecipeProviderPolicy(taskReq); policyErr != nil {
 		return taskToolError(TaskResult{}, policyErr)
 	}
-	loomClient, loomErr := s.taskRouterLoom(ctx)
+	loomClient, loomErr := s.taskRouterLoom(dispatchCtx)
 	if loomClient == nil {
 		return taskToolError(TaskResult{}, taskRouterLoomUnavailableError(loomErr))
 	}
@@ -155,7 +163,7 @@ func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if err != nil {
 		return taskToolError(TaskResult{}, extypes.NewCapabilityMismatch(err.Error(), err))
 	}
-	result, err := router.Dispatch(ctx, taskReq)
+	result, err := router.Dispatch(dispatchCtx, taskReq)
 	if err != nil {
 		return taskToolError(result, err)
 	}

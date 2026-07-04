@@ -155,18 +155,12 @@ func runTaskInspectabilitySmoke(t *testing.T) map[string]any {
 
 func callTaskInspectabilityToolJSON(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, toolName string, args map[string]any, timeout time.Duration) map[string]any {
 	t.Helper()
-
-	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "tools/call", map[string]any{
-		"name":      toolName,
-		"arguments": args,
-	})); err != nil {
-		t.Fatalf("%s request write: %v", toolName, err)
+	if toolName != "task" {
+		return callToolJSON(t, stdin, reader, id, toolName, args, timeout)
 	}
-	resp, err := readResponse(reader, timeout)
-	if err != nil {
-		t.Fatalf("%s response: %v", toolName, err)
-	}
-	return extractToolJSON(t, resp)
+	accepted := callToolRaw(t, stdin, reader, id, toolName, args, timeout)
+	outerTaskID := acceptedTaskIDFromResponse(t, accepted)
+	return callTaskResultJSON(t, stdin, reader, id+1000, outerTaskID, timeout)
 }
 
 func waitTaskInspectabilityTerminal(t *testing.T, stdin io.Writer, reader *bufio.Reader, firstID int, taskID string, timeout time.Duration) map[string]any {

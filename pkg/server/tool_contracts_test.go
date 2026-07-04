@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -31,6 +32,37 @@ func TestApplyToolContractAsyncMandatorySetsTaskSupportRequired(t *testing.T) {
 	}
 	if got := tool.Meta.AdditionalFields[adapterKindMetaKey]; got != "loom" {
 		t.Fatalf("meta[%q] = %v, want %q", adapterKindMetaKey, got, "loom")
+	}
+}
+
+func TestNewServerInitializeAdvertisesToolCallTaskSupport(t *testing.T) {
+	t.Parallel()
+
+	srv := testServer(t)
+	response := srv.mcp.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`))
+
+	resp, ok := response.(mcp.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("initialize response = %T, want JSONRPCResponse", response)
+	}
+	result, ok := resp.Result.(mcp.InitializeResult)
+	if !ok {
+		t.Fatalf("initialize result = %T, want InitializeResult", resp.Result)
+	}
+	if result.Capabilities.Tasks == nil {
+		t.Fatal("initialize tasks capability = nil, want tool-call task support advertised")
+	}
+	if result.Capabilities.Tasks.List != nil {
+		t.Fatalf("tasks.list = %#v, want nil for minimal task capability surface", result.Capabilities.Tasks.List)
+	}
+	if result.Capabilities.Tasks.Cancel != nil {
+		t.Fatalf("tasks.cancel = %#v, want nil for minimal task capability surface", result.Capabilities.Tasks.Cancel)
+	}
+	if result.Capabilities.Tasks.Requests == nil || result.Capabilities.Tasks.Requests.Tools == nil || result.Capabilities.Tasks.Requests.Tools.Call == nil {
+		t.Fatalf("tasks.requests.tools.call missing from initialize response: %#v", result.Capabilities.Tasks)
+	}
+	if result.Capabilities.Tools == nil {
+		t.Fatal("initialize tools capability = nil, want tool listing still advertised")
 	}
 }
 

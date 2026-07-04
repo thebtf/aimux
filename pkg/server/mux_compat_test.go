@@ -22,6 +22,13 @@ func TestMuxCompatibility_InitializeResponse(t *testing.T) {
 				"listChanged": true,
 			},
 			"tools": map[string]any{"listChanged": true},
+			"tasks": map[string]any{
+				"requests": map[string]any{
+					"tools": map[string]any{
+						"call": map[string]any{},
+					},
+				},
+			},
 		},
 		"serverInfo": map[string]any{
 			"name":    "aimux",
@@ -52,6 +59,21 @@ func TestMuxCompatibility_InitializeResponse(t *testing.T) {
 
 	if _, ok := caps["tools"]; !ok {
 		t.Error("tools capability missing")
+	}
+	tasks, ok := caps["tasks"].(map[string]any)
+	if !ok {
+		t.Fatal("tasks capability missing")
+	}
+	requests, ok := tasks["requests"].(map[string]any)
+	if !ok {
+		t.Fatal("tasks.requests missing")
+	}
+	tools, ok := requests["tools"].(map[string]any)
+	if !ok {
+		t.Fatal("tasks.requests.tools missing")
+	}
+	if _, ok := tools["call"]; !ok {
+		t.Error("tasks.requests.tools.call missing")
 	}
 
 	info, ok := parsed["serverInfo"].(map[string]any)

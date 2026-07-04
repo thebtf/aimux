@@ -62,6 +62,38 @@ func TestHandleTaskValidCallRoutesThroughRouter(t *testing.T) {
 	assertMetadataString(t, task.Metadata, "task_class", classifier.TaskClassCode)
 }
 
+func TestHandleTaskCanceledCallerStillSubmitsTask(t *testing.T) {
+	t.Parallel()
+
+	srv, codeWorker, _ := newTaskToolServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := srv.handleTask(ctx, makeRequest("task", map[string]any{
+		"prompt":     "Implement pkg/server/task_tool.go router delegation.",
+		"task_class": "code",
+	}))
+	if err != nil {
+		t.Fatalf("handleTask returned Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	payload := decodeTaskToolResult(t, result)
+	taskID, _ := payload["task_id"].(string)
+	if taskID == "" || payload["job_id"] != taskID {
+		t.Fatalf("task/job id missing or mismatched: %v", payload)
+	}
+	if payload["status"] != string(loom.TaskStatusDispatched) {
+		t.Fatalf("status = %v, want dispatched; payload=%v", payload["status"], payload)
+	}
+	task := codeWorker.onlyTask(t)
+	if task.WorkerType != code.WorkerTypeCode {
+		t.Fatalf("worker_type = %s, want %s", task.WorkerType, code.WorkerTypeCode)
+	}
+}
+
 func TestHandleTaskMissingPromptReturnsUserInputError(t *testing.T) {
 	t.Parallel()
 
