@@ -711,20 +711,37 @@ func TestSwarm_ParallelKeysFactoryNonBlocking(t *testing.T) {
 		}(name)
 	}
 
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
+
 	started := make(map[string]struct{}, 2)
 	for range 2 {
 		select {
 		case name := <-entered:
 			started[name] = struct{}{}
-		case <-time.After(waitTimeout):
+		case <-timer.C:
 			close(release)
-			wg.Wait()
+			select {
+			case <-done:
+			case <-time.After(waitTimeout):
+				t.Fatalf("DEF-8: distinct-key Gets serialised and workers did not exit within %v after release", waitTimeout)
+			}
 			t.Fatalf("DEF-8: distinct-key Gets serialised — second factory call did not start within %v while the first was blocked", waitTimeout)
 		}
 	}
 
 	close(release)
-	wg.Wait()
+	select {
+	case <-done:
+	case <-time.After(waitTimeout):
+		t.Fatalf("test invariant: expected factory calls to finish within %v after release", waitTimeout)
+	}
 
 	if got := spawnCount.Load(); got != 2 {
 		t.Errorf("DEF-8 regression: expected exactly 2 factory calls for two distinct keys, got %d", got)
