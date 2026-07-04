@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,57 @@ func (p *AppServerProcess) cleanupAfterStartFailure() {
 	_ = p.kill()
 }
 
+func resolveProfileSourceHome(profile runtime.CLIRuntimeProfile, baseEnv []string) string {
+	if profile.CLIHomeEnvVar != "" {
+		for _, kv := range baseEnv {
+			key, value, ok := strings.Cut(kv, "=")
+			if ok && key == profile.CLIHomeEnvVar && value != "" {
+				return value
+			}
+		}
+	}
+	switch profile.CLIName {
+	case "codex":
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			return filepath.Join(home, ".codex")
+		}
+	}
+	return ""
+}
+
+func materializePassThroughAuthFiles(profile runtime.CLIRuntimeProfile, baseEnv []string) error {
+	if profile.AuthScope != runtime.AuthScopePassThrough || len(profile.AuthFiles) == 0 || profile.VirtualHomeDir == "" {
+		return nil
+	}
+	sourceHome := resolveProfileSourceHome(profile, baseEnv)
+	if sourceHome == "" || filepath.Clean(sourceHome) == filepath.Clean(profile.VirtualHomeDir) {
+		return nil
+	}
+	for _, rel := range profile.AuthFiles {
+		cleaned := filepath.Clean(rel)
+		if cleaned == "." || cleaned == "" || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("codex: invalid auth file %q", rel)
+		}
+		sourcePath := filepath.Join(sourceHome, cleaned)
+		content, err := os.ReadFile(sourcePath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("codex: read auth file %q: %w", sourcePath, err)
+		}
+		targetPath := filepath.Join(profile.VirtualHomeDir, cleaned)
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+			return fmt.Errorf("codex: create auth dir for %q: %w", targetPath, err)
+		}
+		if err := os.WriteFile(targetPath, content, 0o600); err != nil {
+			return fmt.Errorf("codex: write auth file %q: %w", targetPath, err)
+		}
+	}
+	return nil
+}
+
 // resolveAppServerProfileStart applies the subset of CLIRuntimeProfile startup
 // state that codex app-server consumes directly before process start.
 //
@@ -159,19 +211,22 @@ func (p *AppServerProcess) cleanupAfterStartFailure() {
 // contract for workdir, CLI-specific home redirection, and env overrides.
 func resolveAppServerProfileStart(profile runtime.CLIRuntimeProfile, baseEnv []string) ([]string, string, error) {
 	env := append([]string(nil), baseEnv...)
-	if profile.VirtualHomeDir != "" {
-		if err := os.MkdirAll(profile.VirtualHomeDir, 0o700); err != nil {
-			return nil, "", fmt.Errorf("codex: create virtual home dir %q: %w", profile.VirtualHomeDir, err)
-		}
-	}
 	for k, v := range profile.EnvOverrides {
 		env = appendOrReplace(env, k, v)
 	}
-	if profile.CLIHomeEnvVar != "" {
-		if profile.VirtualHomeDir == "" {
-			return nil, "", fmt.Errorf("codex: app-server profile requires VirtualHomeDir when %s is set", profile.CLIHomeEnvVar)
+	if profile.HomeOverride == runtime.HomeOverrideVirtual || profile.HomeOverride == runtime.HomeOverrideSymlink {
+		if profile.CLIHomeEnvVar != "" {
+			if profile.VirtualHomeDir == "" {
+				return nil, "", fmt.Errorf("codex: app-server profile requires VirtualHomeDir when %s is set", profile.CLIHomeEnvVar)
+			}
+			if err := os.MkdirAll(profile.VirtualHomeDir, 0o700); err != nil {
+				return nil, "", fmt.Errorf("codex: create virtual home dir %q: %w", profile.VirtualHomeDir, err)
+			}
+			if err := materializePassThroughAuthFiles(profile, baseEnv); err != nil {
+				return nil, "", err
+			}
+			env = appendOrReplace(env, profile.CLIHomeEnvVar, profile.VirtualHomeDir)
 		}
-		env = appendOrReplace(env, profile.CLIHomeEnvVar, profile.VirtualHomeDir)
 	}
 	return env, profile.WorkDir, nil
 }

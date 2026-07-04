@@ -66,7 +66,7 @@ func deriveProjectVirtualHome(base, projectID string) (string, error) {
 }
 
 func applyProjectScopedVirtualHome(profile runtime.CLIRuntimeProfile, runtimeHomeBase, projectID string) (runtime.CLIRuntimeProfile, error) {
-	if profile.CLIName != "codex" || profile.VirtualHomeDir != "" || profile.CLIHomeEnvVar == "" {
+	if profile.CLIName != "codex" || profile.VirtualHomeDir != "" || profile.CLIHomeEnvVar == "" || (profile.HomeOverride != runtime.HomeOverrideVirtual && profile.HomeOverride != runtime.HomeOverrideSymlink) {
 		return profile, nil
 	}
 	virtualHome, err := deriveProjectVirtualHome(runtimeHomeBase, projectID)

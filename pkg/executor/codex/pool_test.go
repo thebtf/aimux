@@ -43,6 +43,9 @@ func newVirtualHomeTestPool(t *testing.T, base string) *CodexPool {
 }
 
 func osArgs0() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return filepath.Clean(exe)
+	}
 	return filepath.Clean(os.Args[0])
 }
 
@@ -183,6 +186,61 @@ func TestCodexPool_VirtualHomeStableAndProjectScoped(t *testing.T) {
 	}
 }
 
+func TestCodexPool_HomeOverrideNone_DoesNotDeriveVirtualHome(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	t.Setenv(appServerProfileHelperEnv, "1")
+	cfg := codexPoolConfigWithRuntimeHomeBase(t, base)
+	cfg.DefaultProfile = func(workDir string) runtime.CLIRuntimeProfile {
+		return runtime.New("codex", workDir).
+			WithHomeOverride(runtime.HomeOverrideNone).
+			WithCLIHomeEnvVar("CODEX_HOME").
+			Build()
+	}
+	pool, err := NewCodexPool(osArgs0(), cfg)
+	if err != nil {
+		t.Fatalf("NewCodexPool(HomeOverrideNone): %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	proc, err := pool.Acquire(ctx, "project-no-home-override", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(HomeOverrideNone): %v", err)
+	}
+	if proc.profile.VirtualHomeDir != "" {
+		t.Fatalf("VirtualHomeDir=%q want empty when HomeOverrideNone opts out", proc.profile.VirtualHomeDir)
+	}
+}
+
+func TestCodexPool_VirtualHomeCopiesAuthFiles(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	ambientHome := filepath.Join(t.TempDir(), "ambient-codex-home")
+	writeAuthFixture(t, ambientHome, "ambient-auth-json")
+	t.Setenv(appServerProfileHelperEnv, "1")
+	t.Setenv("CODEX_HOME", ambientHome)
+	cfg := codexPoolConfigWithRuntimeHomeBase(t, base)
+	pool, err := NewCodexPool(osArgs0(), cfg)
+	if err != nil {
+		t.Fatalf("NewCodexPool(auth pass-through): %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	proc, err := pool.Acquire(ctx, "project-auth-pass-through", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(auth pass-through): %v", err)
+	}
+	authBytes, err := os.ReadFile(filepath.Join(proc.profile.VirtualHomeDir, "auth.json"))
+	if err != nil {
+		t.Fatalf("read auth.json from virtual home %q: %v", proc.profile.VirtualHomeDir, err)
+	}
+	if got, want := string(authBytes), "ambient-auth-json"; got != want {
+		t.Fatalf("auth.json content=%q want %q", got, want)
+	}
+}
+
 func TestCodexPool_VirtualHomeUnsafeProjectIDCannotEscapeBase(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "runtime-home")
 	pool := newVirtualHomeTestPool(t, base)
@@ -198,6 +256,7 @@ func TestCodexPool_VirtualHomeUnsafeProjectIDCannotEscapeBase(t *testing.T) {
 		t.Fatalf("VirtualHomeDir %q preserves unsafe traversal marker", proc.profile.VirtualHomeDir)
 	}
 }
+
 func TestCodexPool_Acquire_SameProjectID_ReturnsSameProcess(t *testing.T) {
 	var spawnCount int
 	tp := newTestPool(t, func(_, _ string) *AppServerProcess {
