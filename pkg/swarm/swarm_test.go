@@ -15,11 +15,11 @@ import (
 // --- mock executor ---
 
 type mockExecutorV2 struct {
-	mu      sync.Mutex
-	info    types.ExecutorInfo
-	sendFn  func(ctx context.Context, msg types.Message) (*types.Response, error)
-	alive   types.HealthStatus
-	closed  bool
+	mu     sync.Mutex
+	info   types.ExecutorInfo
+	sendFn func(ctx context.Context, msg types.Message) (*types.Response, error)
+	alive  types.HealthStatus
+	closed bool
 }
 
 func (m *mockExecutorV2) Info() types.ExecutorInfo { return m.info }
@@ -667,19 +667,33 @@ func TestSwarm_Get_DeadPersistent_Respawns(t *testing.T) {
 // registry keys runs factoryFn in parallel — the per-key sync.Map mutex
 // added in T001 must not serialise unrelated keys (DEF-8 latency-bomb fix).
 //
-// Anti-stub: replacing factoryFn with an instant return would NOT exercise
-// the parallelism guarantee — the sleep is load-bearing.
+// Anti-stub: the factory blocks until BOTH distinct-key calls have entered it.
+// If a broader lock serialises unrelated keys, the second call never reaches
+// factoryFn while the first is blocked and the test fails without relying on a
+// brittle wall-clock margin.
 func TestSwarm_ParallelKeysFactoryNonBlocking(t *testing.T) {
 	t.Parallel()
 
-	const factoryDelay = 100 * time.Millisecond
-	// Parallel-execution budget: both factories run concurrently → ~factoryDelay
-	// wall-clock plus scheduler/lock overhead. Serial execution would yield
-	// ≥ 2 × factoryDelay (200ms). Threshold from tasks.md AC: ≤ 130ms.
-	const parallelBudget = 130 * time.Millisecond
+	const waitTimeout = 2 * time.Second
+
+	release := make(chan struct{})
+	entered := make(chan string, 2)
+	var spawnCount atomic.Int32
+	var active atomic.Int32
+	var maxActive atomic.Int32
 
 	factory := func(name string) (types.ExecutorV2, error) {
-		time.Sleep(factoryDelay)
+		spawnCount.Add(1)
+		cur := active.Add(1)
+		for {
+			prev := maxActive.Load()
+			if cur <= prev || maxActive.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		entered <- name
+		<-release
+		active.Add(-1)
 		return &mockExecutorV2{alive: types.HealthAlive}, nil
 	}
 
@@ -687,8 +701,6 @@ func TestSwarm_ParallelKeysFactoryNonBlocking(t *testing.T) {
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
-	start := time.Now()
-
 	for _, name := range []string{"codex", "gemini"} {
 		wg.Add(1)
 		go func(n string) {
@@ -699,13 +711,49 @@ func TestSwarm_ParallelKeysFactoryNonBlocking(t *testing.T) {
 		}(name)
 	}
 
-	wg.Wait()
-	elapsed := time.Since(start)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 
-	if elapsed > parallelBudget {
-		t.Errorf("DEF-8: distinct-key Gets serialised — wall-clock %v exceeds parallel budget %v "+
-			"(factory delay %v, serial would be ≥%v); per-key lock not preventing cross-key "+
-			"factoryFn blocking", elapsed, parallelBudget, factoryDelay, 2*factoryDelay)
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
+
+	started := make(map[string]struct{}, 2)
+	for range 2 {
+		select {
+		case name := <-entered:
+			started[name] = struct{}{}
+		case <-timer.C:
+			close(release)
+			select {
+			case <-done:
+			case <-time.After(waitTimeout):
+				t.Fatalf("DEF-8: distinct-key Gets serialised and workers did not exit within %v after release", waitTimeout)
+			}
+			t.Fatalf("DEF-8: distinct-key Gets serialised — second factory call did not start within %v while the first was blocked", waitTimeout)
+		}
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(waitTimeout):
+		t.Fatalf("test invariant: expected factory calls to finish within %v after release", waitTimeout)
+	}
+
+	if got := spawnCount.Load(); got != 2 {
+		t.Errorf("DEF-8 regression: expected exactly 2 factory calls for two distinct keys, got %d", got)
+	}
+	if len(started) != 2 {
+		t.Errorf("DEF-8 regression: expected both distinct keys to enter factoryFn, got %d unique entries", len(started))
+	}
+	if got := maxActive.Load(); got < 2 {
+		t.Errorf("DEF-8 regression: expected concurrent factoryFn activity for distinct keys, max active = %d", got)
+	}
+	if got := active.Load(); got != 0 {
+		t.Errorf("test invariant: expected all factory calls to finish, active=%d", got)
 	}
 }
 
