@@ -22,7 +22,7 @@ import (
 type AppServerState int
 
 const (
-	AppServerStateIdle        AppServerState = iota
+	AppServerStateIdle AppServerState = iota
 	AppServerStateInitializing
 	AppServerStateReady
 	AppServerStateTurnInFlight
@@ -150,32 +150,45 @@ func (p *AppServerProcess) cleanupAfterStartFailure() {
 	_ = p.kill()
 }
 
+// resolveAppServerProfileStart applies the subset of CLIRuntimeProfile startup
+// state that codex app-server consumes directly before process start.
+//
+// AIMUX-20 keeps codex app-server as a direct-consumer exception instead of
+// routing its JSONL lifecycle through runtime.Spawn. The lifecycle stays local
+// to appserver.go, but this helper preserves the same observable startup-state
+// contract for workdir, CLI-specific home redirection, and env overrides.
+func resolveAppServerProfileStart(profile runtime.CLIRuntimeProfile, baseEnv []string) ([]string, string, error) {
+	env := append([]string(nil), baseEnv...)
+	if profile.VirtualHomeDir != "" {
+		if err := os.MkdirAll(profile.VirtualHomeDir, 0o700); err != nil {
+			return nil, "", fmt.Errorf("codex: create virtual home dir %q: %w", profile.VirtualHomeDir, err)
+		}
+	}
+	for k, v := range profile.EnvOverrides {
+		env = appendOrReplace(env, k, v)
+	}
+	if profile.CLIHomeEnvVar != "" {
+		if profile.VirtualHomeDir == "" {
+			return nil, "", fmt.Errorf("codex: app-server profile requires VirtualHomeDir when %s is set", profile.CLIHomeEnvVar)
+		}
+		env = appendOrReplace(env, profile.CLIHomeEnvVar, profile.VirtualHomeDir)
+	}
+	return env, profile.WorkDir, nil
+}
+
 // spawn forks the `codex app-server` process and wires up the JSONLClient.
 func (p *AppServerProcess) spawn(ctx context.Context) error {
 	args := []string{"app-server"}
 
 	cmd := exec.CommandContext(ctx, p.codexPath, args...)
 
-	// Build environment from profile.
-	if p.profile.VirtualHomeDir != "" {
-		// Ensure VirtualHomeDir exists before setting CODEX_HOME.
-		if err := os.MkdirAll(p.profile.VirtualHomeDir, 0o700); err != nil {
-			return fmt.Errorf("codex: create virtual home dir %q: %w", p.profile.VirtualHomeDir, err)
-		}
-	}
-
-	env := os.Environ()
-	if p.profile.CLIHomeEnvVar != "" && p.profile.VirtualHomeDir != "" {
-		// Inject CLI-specific home redirect (e.g., CODEX_HOME).
-		env = appendOrReplace(env, p.profile.CLIHomeEnvVar, p.profile.VirtualHomeDir)
-	}
-	for k, v := range p.profile.EnvOverrides {
-		env = appendOrReplace(env, k, v)
+	env, workDir, err := resolveAppServerProfileStart(p.profile, os.Environ())
+	if err != nil {
+		return err
 	}
 	cmd.Env = env
-
-	if p.profile.WorkDir != "" {
-		cmd.Dir = p.profile.WorkDir
+	if workDir != "" {
+		cmd.Dir = workDir
 	}
 
 	stdin, err := cmd.StdinPipe()

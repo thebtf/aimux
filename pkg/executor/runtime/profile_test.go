@@ -395,6 +395,86 @@ func TestDegradedGeminiProfile(t *testing.T) {
 	}
 }
 
+func TestCLIProfileStrategyBoundaries_CodexUsesSpecificHomeWithoutBroadHomeRedirect(t *testing.T) {
+	t.Parallel()
+	profile := From(DefaultCodexProfile("/work")).
+		WithVirtualHomeDir("/aimux-state/project/codex-home").
+		Build()
+	baseEnv := map[string]string{
+		"HOME":        "/real/home",
+		"USERPROFILE": `C:\\Users\\real`,
+	}
+	out, err := Spawn(profile, types.SpawnArgs{Command: "codex", Env: baseEnv})
+	if err != nil {
+		t.Fatalf("Spawn(DefaultCodexProfile): %v", err)
+	}
+	if out.Env["CODEX_HOME"] != profile.VirtualHomeDir {
+		t.Fatalf("CODEX_HOME=%q want codex VirtualHomeDir %q", out.Env["CODEX_HOME"], profile.VirtualHomeDir)
+	}
+	if out.Env["HOME"] != baseEnv["HOME"] {
+		t.Fatalf("HOME=%q want inherited value %q", out.Env["HOME"], baseEnv["HOME"])
+	}
+	if out.Env["USERPROFILE"] != baseEnv["USERPROFILE"] {
+		t.Fatalf("USERPROFILE=%q want inherited value %q", out.Env["USERPROFILE"], baseEnv["USERPROFILE"])
+	}
+}
+
+func TestCLIProfileStrategyBoundaries_ClaudeAndGeminiDoNotBroadenHomeRedirects(t *testing.T) {
+	t.Parallel()
+	baseEnv := map[string]string{
+		"HOME":        "/real/home",
+		"USERPROFILE": `C:\\Users\\real`,
+	}
+	cases := []struct {
+		name    string
+		profile CLIRuntimeProfile
+	}{
+		{name: "claude default", profile: DefaultClaudeProfile("/work")},
+		{name: "claude isolated", profile: IsolatedClaudeProfile("/work")},
+		{name: "gemini default", profile: DefaultGeminiProfile("/work")},
+		{name: "gemini degraded", profile: DegradedGeminiProfile("/work")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			profile := From(tc.profile).
+				WithVirtualHomeDir("/aimux-state/project/broad-home-must-not-be-used").
+				Build()
+			out, err := Spawn(profile, types.SpawnArgs{Command: profile.CLIName, Env: baseEnv})
+			if err != nil {
+				t.Fatalf("Spawn(%s): %v", tc.name, err)
+			}
+			if out.Env["HOME"] != baseEnv["HOME"] {
+				t.Fatalf("%s HOME=%q want inherited value %q", tc.name, out.Env["HOME"], baseEnv["HOME"])
+			}
+			if out.Env["USERPROFILE"] != baseEnv["USERPROFILE"] {
+				t.Fatalf("%s USERPROFILE=%q want inherited value %q", tc.name, out.Env["USERPROFILE"], baseEnv["USERPROFILE"])
+			}
+			if _, ok := out.Env["CODEX_HOME"]; ok {
+				t.Fatalf("%s unexpectedly set CODEX_HOME", tc.name)
+			}
+		})
+	}
+}
+
+func TestIsolatedClaudeProfile_StrictMCPFlagsStayTogether(t *testing.T) {
+	t.Parallel()
+	flags := IsolatedClaudeProfile("/work").ExtraFlags
+	want := []string{"--bare", "--strict-mcp-config", "--mcp-config", "{}", "--no-session-persistence"}
+	for i := 0; i <= len(flags)-len(want); i++ {
+		matched := true
+		for j := range want {
+			if flags[i+j] != want[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return
+		}
+	}
+	t.Fatalf("isolated claude ExtraFlags=%v want strict MCP boundary flags %v in order", flags, want)
+}
 // ── EphemeralCleanupHook ─────────────────────────────────────────────────────
 
 func TestEphemeralCleanupHook_RemovesDir(t *testing.T) {

@@ -9,7 +9,14 @@ import (
 )
 
 // Spawn translates a CLIRuntimeProfile and a base SpawnArgs into a new SpawnArgs
-// ready for the executor. The input profile and base args are never mutated.
+// ready for executors that consume the generic types.SpawnArgs contract.
+//
+// Codex app-server is the intentional direct-consumer exception in AIMUX-20:
+// it keeps its JSONL process lifecycle in pkg/executor/codex/appserver.go, but
+// must preserve the same startup-state rules (workdir, env overrides, and
+// codex home redirection) that Spawn enforces for spawn-style executors.
+//
+// The input profile and base args are never mutated.
 //
 // Spawn applies transformations in this order:
 //  1. Copy base SpawnArgs into a new value.

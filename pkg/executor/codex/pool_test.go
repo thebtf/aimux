@@ -3,11 +3,62 @@ package codex
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor/runtime"
 )
+
+func codexPoolConfigWithRuntimeHomeBase(t *testing.T, base string) PoolConfig {
+	t.Helper()
+	cfg := PoolConfig{
+		IdleTimeout:    0,
+		DefaultProfile: runtime.DefaultCodexProfile,
+	}
+	field := reflect.ValueOf(&cfg).Elem().FieldByName("RuntimeHomeBase")
+	if !field.IsValid() {
+		t.Fatalf("PoolConfig must expose RuntimeHomeBase so tests can prove project-scoped CODEX_HOME stays under the configured runtime base")
+	}
+	if field.Kind() != reflect.String || !field.CanSet() {
+		t.Fatalf("PoolConfig.RuntimeHomeBase must be an exported string field")
+	}
+	field.SetString(base)
+	return cfg
+}
+
+func newVirtualHomeTestPool(t *testing.T, base string) *CodexPool {
+	t.Helper()
+	t.Setenv(appServerProfileHelperEnv, "1")
+	cfg := codexPoolConfigWithRuntimeHomeBase(t, base)
+	pool, err := NewCodexPool(osArgs0(), cfg)
+	if err != nil {
+		t.Fatalf("NewCodexPool(test helper): %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+	return pool
+}
+
+func osArgs0() string {
+	return filepath.Clean(os.Args[0])
+}
+
+func requireVirtualHomeUnderBase(t *testing.T, base, home string) {
+	t.Helper()
+	if home == "" {
+		t.Fatal("VirtualHomeDir is empty; want stable project-scoped codex home")
+	}
+	rel, err := filepath.Rel(base, home)
+	if err != nil {
+		t.Fatalf("VirtualHomeDir %q is not relatable to base %q: %v", home, base, err)
+	}
+	if rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("VirtualHomeDir %q escapes runtime base %q", home, base)
+	}
+}
 
 // fakePoolProcess creates a pre-started AppServerProcess wired to an in-process fake,
 // bypassing NewCodexPool's binary check. Used to test pool logic independently of the real binary.
@@ -100,6 +151,53 @@ func TestCodexPool_NewPool_EmptyPath_Fails(t *testing.T) {
 	}
 }
 
+func TestCodexPool_VirtualHomeStableAndProjectScoped(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	pool := newVirtualHomeTestPool(t, base)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	alpha, err := pool.Acquire(ctx, "project-alpha", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(project-alpha): %v", err)
+	}
+	alphaHome := alpha.profile.VirtualHomeDir
+	requireVirtualHomeUnderBase(t, base, alphaHome)
+
+	alphaAgain, err := pool.Acquire(ctx, "project-alpha", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(project-alpha again): %v", err)
+	}
+	if alphaAgain.profile.VirtualHomeDir != alphaHome {
+		t.Fatalf("same project VirtualHomeDir=%q want stable %q", alphaAgain.profile.VirtualHomeDir, alphaHome)
+	}
+
+	beta, err := pool.Acquire(ctx, "project-beta", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(project-beta): %v", err)
+	}
+	betaHome := beta.profile.VirtualHomeDir
+	requireVirtualHomeUnderBase(t, base, betaHome)
+	if betaHome == alphaHome {
+		t.Fatalf("different projects share VirtualHomeDir %q", betaHome)
+	}
+}
+
+func TestCodexPool_VirtualHomeUnsafeProjectIDCannotEscapeBase(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	pool := newVirtualHomeTestPool(t, base)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	proc, err := pool.Acquire(ctx, `..\\..//outside:project?name`, t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(unsafe projectID): %v", err)
+	}
+	requireVirtualHomeUnderBase(t, base, proc.profile.VirtualHomeDir)
+	if strings.Contains(proc.profile.VirtualHomeDir, "..") {
+		t.Fatalf("VirtualHomeDir %q preserves unsafe traversal marker", proc.profile.VirtualHomeDir)
+	}
+}
 func TestCodexPool_Acquire_SameProjectID_ReturnsSameProcess(t *testing.T) {
 	var spawnCount int
 	tp := newTestPool(t, func(_, _ string) *AppServerProcess {
