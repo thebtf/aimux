@@ -896,7 +896,14 @@ func (s *Swarm) restart(h *Handle) error {
 
 	factoryCtx := h.factoryCtx
 	if factoryCtx == nil {
-		factoryCtx = context.Background()
+		tenantID := h.TenantID
+		if tenantID == "" {
+			tenantID = tenant.LegacyDefault
+		}
+		factoryCtx = tenant.WithContext(context.Background(), tenant.TenantContext{
+			TenantID:         tenantID,
+			RequestStartedAt: h.startedAt,
+		})
 	}
 
 	fresh, err := s.factoryFn(factoryCtx, h.Name)

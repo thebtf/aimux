@@ -54,9 +54,13 @@ func (f *SwarmFactory) CreateWithContext(ctx context.Context, name string) (type
 	}
 
 	tc, _ := tenant.FromContext(ctx)
-	apiKey, err := f.resolveKey(ctx, provider, tc.TenantID)
+	tenantID := tc.TenantID
+	if tenantID == tenant.LegacyDefault {
+		tenantID = ""
+	}
+	apiKey, err := f.resolveKey(ctx, provider, tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("api swarm factory: resolve key for %q tenant %q: %w", provider, tc.TenantID, err)
+		return nil, fmt.Errorf("api swarm factory: resolve key for %q tenant %q: %w", provider, tenantID, err)
 	}
 
 	cfg := Config{
@@ -155,6 +159,9 @@ func applyExecutorOptions(exec types.ExecutorV2, opts []Option) {
 	case *GoogleAIExecutor:
 		base = e.base
 	default:
+		return
+	}
+	if base == nil {
 		return
 	}
 
