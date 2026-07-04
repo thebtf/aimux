@@ -162,12 +162,17 @@ type Handle struct {
 	// WithSessionArgs and the executor supported sessions. Used by restart()
 	// to rebind a fresh session after executor replacement (AIMUX-14 FR-2).
 	sessionArgs *types.SpawnArgs
+
+	// factoryCtx stores the detached value-carrying context used to construct
+	// this executor. restart() reuses it so tenant/session-specific factory
+	// resolution stays within the same trust boundary.
+	factoryCtx context.Context
 }
 
 // Swarm manages executor lifecycle: spawn, get, send, health check, restart,
 // and shutdown. All fields after creation are protected by mu.
 type Swarm struct {
-	factoryFn func(name string) (types.ExecutorV2, error)
+	factoryFn func(ctx context.Context, name string) (types.ExecutorV2, error)
 	auditLog  audit.AuditLog // receives spawn/close/restart/cross-tenant events
 
 	mu       sync.RWMutex
@@ -212,18 +217,32 @@ func WithStatefulTTL(d time.Duration) Option {
 // defaultStatefulTTL — 5 minutes per FR-4 spec resolution Q-CLAR-2.
 const defaultStatefulTTL = 5 * time.Minute
 
-// New creates a Swarm. factoryFn is called whenever a new ExecutorV2 is needed
-// for the given name; it must be safe to call concurrently.
-//
-// auditLog receives executor lifecycle events (spawn, close, restart, cross-tenant
-// block). Pass nil to use a no-op discard log — safe for tests and single-tenant
-// deployments that do not need observability.
-//
-// A background reaper goroutine starts automatically and scans every TTL/2
-// interval for Stateful handles idle longer than statefulTTL. Persistent
-// handles are exempt (US3 contract — survive idle reap, killed only by
-// Shutdown/Close/daemon hot-swap).
+// New creates a Swarm with a legacy name-only factory. Existing callers keep
+// the same contract while context-aware callers can opt into
+// NewWithContextFactory.
 func New(factoryFn func(name string) (types.ExecutorV2, error), auditLog audit.AuditLog, opts ...Option) *Swarm {
+	if factoryFn == nil {
+		return NewWithContextFactory(nil, auditLog, opts...)
+	}
+	return NewWithContextFactory(
+		func(_ context.Context, name string) (types.ExecutorV2, error) {
+			return factoryFn(name)
+		},
+		auditLog,
+		opts...,
+	)
+}
+
+// NewWithContextFactory creates a Swarm whose factory receives the caller's
+// detached context so executor construction can inspect tenant/session values
+// without inheriting request cancellation.
+func NewWithContextFactory(factoryFn func(context.Context, string) (types.ExecutorV2, error), auditLog audit.AuditLog, opts ...Option) *Swarm {
+	if factoryFn == nil {
+		factoryFn = func(context.Context, string) (types.ExecutorV2, error) {
+			return nil, errors.New("swarm: factory is nil")
+		}
+	}
+
 	al := auditLog
 	if al == nil {
 		al = audit.DiscardLog{}
@@ -242,6 +261,13 @@ func New(factoryFn func(name string) (types.ExecutorV2, error), auditLog audit.A
 		go s.reapLoop()
 	}
 	return s
+}
+
+func detachFactoryContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
 }
 
 // isMultiTenant reports whether the swarm is operating in multi-tenant mode.
@@ -729,15 +755,17 @@ func (s *Swarm) emitRestart(h *Handle) {
 // TenantID is canonicalized once at construction; FR-1 immutability holds for
 // the lifetime of the returned Handle.
 func makeHandle(ctx context.Context, id, name string, mode SpawnMode, exec types.ExecutorV2) *Handle {
+	factoryCtx := detachFactoryContext(ctx)
 	now := time.Now()
 	return &Handle{
 		ID:         id,
-		TenantID:   tenantIDFromContext(ctx),
+		TenantID:   tenantIDFromContext(factoryCtx),
 		Name:       name,
 		Mode:       mode,
 		executor:   exec,
 		startedAt:  now,
 		lastUsedAt: now,
+		factoryCtx: factoryCtx,
 	}
 }
 
@@ -749,7 +777,8 @@ func makeHandle(ctx context.Context, id, name string, mode SpawnMode, exec types
 // TenantID is extracted from ctx and set once on the returned Handle; no
 // subsequent code path mutates it (FR-1 immutability invariant).
 func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle, error) {
-	exec, err := s.factoryFn(name)
+	factoryCtx := detachFactoryContext(ctx)
+	exec, err := s.factoryFn(factoryCtx, name)
 	if err != nil {
 		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
 	}
@@ -759,7 +788,7 @@ func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
 	s.mu.Unlock()
 
-	return makeHandle(ctx, id, name, mode, exec), nil
+	return makeHandle(factoryCtx, id, name, mode, exec), nil
 }
 
 // spawnLocked creates a new executor via the factory and wraps it in a Handle.
@@ -772,7 +801,8 @@ func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle
 func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode) (*Handle, error) {
 	// factoryFn is called without holding s.mu (DEF-8 fix). The per-key mutex
 	// held by the caller serialises same-key spawns; distinct keys run concurrently.
-	exec, err := s.factoryFn(name)
+	factoryCtx := detachFactoryContext(ctx)
+	exec, err := s.factoryFn(factoryCtx, name)
 	if err != nil {
 		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
 	}
@@ -782,7 +812,7 @@ func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode) (*
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
 	s.mu.Unlock()
 
-	return makeHandle(ctx, id, name, mode, exec), nil
+	return makeHandle(factoryCtx, id, name, mode, exec), nil
 }
 
 // bindSession starts a persistent session on h's executor via MaybeStartSession
@@ -864,7 +894,12 @@ func (s *Swarm) restart(h *Handle) error {
 		sessArgs = &copy
 	}
 
-	fresh, err := s.factoryFn(h.Name)
+	factoryCtx := h.factoryCtx
+	if factoryCtx == nil {
+		factoryCtx = context.Background()
+	}
+
+	fresh, err := s.factoryFn(factoryCtx, h.Name)
 	if err != nil {
 		h.mu.Unlock()
 		return fmt.Errorf("swarm: restart(%s): %w", h.Name, err)
@@ -910,4 +945,3 @@ func (s *Swarm) closeHandle(h *Handle, reason string) error {
 
 	return err
 }
-
