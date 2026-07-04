@@ -313,3 +313,61 @@ func TestCompositeFactory_NilAPIFactoryRejectsAPIName(t *testing.T) {
 		t.Fatal("composite(api) with nil apiFactory: expected error, got nil")
 	}
 }
+
+func TestSwarmFactoryCreateWithContext_CanonicalizesLegacyDefaultTenant(t *testing.T) {
+	t.Parallel()
+
+	type resolverCall struct {
+		provider string
+		tenantID string
+	}
+
+	var calls []resolverCall
+	factory := NewSwarmFactory(func(_ context.Context, provider, tenantID string) (string, error) {
+		calls = append(calls, resolverCall{provider: provider, tenantID: tenantID})
+		return "test-key-" + tenantID + "-" + provider, nil
+	})
+
+	emptyExec, err := factory.CreateWithContext(context.Background(), "api:openai:gpt-4o")
+	if err != nil {
+		t.Fatalf("CreateWithContext(empty): %v", err)
+	}
+	legacyCtx := tenant.WithContext(context.Background(), tenant.NewLegacyDefaultContext("session-legacy"))
+	legacyExec, err := factory.CreateWithContext(legacyCtx, "api:openai:gpt-4o")
+	if err != nil {
+		t.Fatalf("CreateWithContext(legacy): %v", err)
+	}
+
+	emptyOpenAI, ok := emptyExec.(*OpenAIExecutor)
+	if !ok {
+		t.Fatalf("empty exec type = %T, want *OpenAIExecutor", emptyExec)
+	}
+	legacyOpenAI, ok := legacyExec.(*OpenAIExecutor)
+	if !ok {
+		t.Fatalf("legacy exec type = %T, want *OpenAIExecutor", legacyExec)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("resolver calls = %d, want 2", len(calls))
+	}
+	if calls[0] != (resolverCall{provider: "openai", tenantID: ""}) {
+		t.Fatalf("call[0] = %+v", calls[0])
+	}
+	if calls[1] != (resolverCall{provider: "openai", tenantID: ""}) {
+		t.Fatalf("call[1] = %+v", calls[1])
+	}
+	if emptyOpenAI.base.apiKey != legacyOpenAI.base.apiKey {
+		t.Fatalf("legacy canonicalization mismatch: empty apiKey %q != legacy apiKey %q", emptyOpenAI.base.apiKey, legacyOpenAI.base.apiKey)
+	}
+}
+
+func TestApplyExecutorOptions_NilBaseNoop(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("applyExecutorOptions panicked with nil base: %v", r)
+		}
+	}()
+
+	applyExecutorOptions(&OpenAIExecutor{}, []Option{WithTimeout(time.Second), WithBaseURL("https://example.invalid")})
+}
