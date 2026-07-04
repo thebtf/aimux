@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -23,7 +24,10 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-const taskRouterLoomUnavailableMessage = "task router requires Loom; Loom is unavailable in this daemon. Remediation: restart aimux or check SQLite session store initialization."
+const (
+	taskRouterLoomUnavailableMessage = "task router requires Loom; Loom is unavailable in this daemon. Remediation: restart aimux or check SQLite session store initialization."
+	taskToolDetachedSubmitTimeout    = 30 * time.Second
+)
 
 // buildFallbackPicker constructs the FallbackPicker wired into the task tool.
 // Returns nil when no CLIs are available — the task tool surfaces a clear error
@@ -137,14 +141,16 @@ func (s *Server) registerTaskTool() {
 
 // handleTask is the MCP handler for the `task` tool.
 func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	taskReq, parseErr := parseTaskToolRequest(ctx, req)
+	dispatchCtx, cancel := taskSubmitContext(ctx)
+	defer cancel()
+	taskReq, parseErr := parseTaskToolRequest(dispatchCtx, req)
 	if parseErr != nil {
 		return taskToolError(TaskResult{}, parseErr)
 	}
 	if policyErr := s.validateRecipeProviderPolicy(taskReq); policyErr != nil {
 		return taskToolError(TaskResult{}, policyErr)
 	}
-	loomClient, loomErr := s.taskRouterLoom(ctx)
+	loomClient, loomErr := s.taskRouterLoom(dispatchCtx)
 	if loomClient == nil {
 		return taskToolError(TaskResult{}, taskRouterLoomUnavailableError(loomErr))
 	}
@@ -155,11 +161,27 @@ func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if err != nil {
 		return taskToolError(TaskResult{}, extypes.NewCapabilityMismatch(err.Error(), err))
 	}
-	result, err := router.Dispatch(ctx, taskReq)
+	result, err := router.Dispatch(dispatchCtx, taskReq)
 	if err != nil {
 		return taskToolError(result, err)
 	}
 	return marshalToolResult(result)
+}
+
+func taskSubmitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	dispatchCtx := ctx
+	if dispatchCtx == nil {
+		dispatchCtx = context.Background()
+	}
+	// mcp-go executes task-augmented regular tools on a background goroutine that
+	// reuses the original request context. That context may already be canceled as
+	// part of the normal async handoff before this handler begins, so ctx.Err()
+	// cannot be treated as a reliable explicit tasks/cancel signal here. Detach
+	// from the parent to keep the synchronous submit path alive across disconnects,
+	// then bound the detached window so blocked routing or Loom access cannot hang
+	// forever before the inner Loom task exists.
+	detachedCtx := context.WithoutCancel(dispatchCtx)
+	return context.WithTimeout(detachedCtx, taskToolDetachedSubmitTimeout)
 }
 
 func (s *Server) taskRouterLoom(ctx context.Context) (TaskRouterLoom, error) {

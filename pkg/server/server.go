@@ -445,6 +445,7 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		"aimux",
 		Version,
 		server.WithToolCapabilities(true),
+		server.WithTaskCapabilities(false, false, true),
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
 		server.WithLogging(),

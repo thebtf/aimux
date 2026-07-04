@@ -81,11 +81,18 @@ func initializeMCP(t *testing.T, stdin io.Writer, reader *bufio.Reader) {
 	t.Helper()
 	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-testcli", "version": "1.0"},
+		"capabilities": map[string]any{
+			"tasks": map[string]any{
+				"requests": map[string]any{
+					"tools": map[string]any{
+						"call": map[string]any{},
+					},
+				},
+			},
+		},
+		"clientInfo": map[string]any{"name": "e2e-testcli", "version": "1.0"},
 	}))
 	if _, err := readResponse(reader, 5*time.Second); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
 }
-

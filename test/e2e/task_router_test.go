@@ -31,11 +31,11 @@ func TestE2E_TaskRouterMCPRoundTrip(t *testing.T) {
 	})
 	assertTaskRouterResult(t, classified, "review")
 
-	ambiguous := callTaskRouterToolRaw(t, stdin, reader, 4, map[string]any{
+	ambiguousAccepted := callTaskRouterToolRaw(t, stdin, reader, 4, map[string]any{
 		"prompt": "Help me make this better.",
 	})
-	expectError(t, ambiguous)
-	errPayload := extractToolJSON(t, ambiguous)
+	outerTaskID := acceptedTaskIDFromResponse(t, ambiguousAccepted)
+	errPayload := callTaskResultJSON(t, stdin, reader, 4004, outerTaskID, 30*time.Second)
 	if errPayload["code"] != "ClassificationAmbiguous" {
 		t.Fatalf("ambiguous code = %#v, want ClassificationAmbiguous; payload=%v", errPayload["code"], errPayload)
 	}
@@ -128,22 +128,28 @@ func copyTaskRouterDir(t *testing.T, src string, dst string) {
 
 func callTaskRouterToolJSON(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, args map[string]any) map[string]any {
 	t.Helper()
-	return extractToolJSON(t, callTaskRouterToolRaw(t, stdin, reader, id, args))
+	accepted := callToolRaw(t, stdin, reader, id, "task", args, 30*time.Second)
+	outerTaskID := acceptedTaskIDFromResponse(t, accepted)
+	acceptedPayload := callTaskResultJSON(t, stdin, reader, id+1000, outerTaskID, 30*time.Second)
+	innerTaskID, _ := acceptedPayload["task_id"].(string)
+	if innerTaskID == "" {
+		t.Fatalf("task tool accepted payload missing task_id: %v", acceptedPayload)
+	}
+	terminalPayload := waitTaskToolTerminalJSON(t, stdin, reader, id+2000, innerTaskID, 30*time.Second)
+	merged := map[string]any{}
+	for key, value := range acceptedPayload {
+		merged[key] = value
+	}
+	merged["status"] = "completed"
+	for key, value := range terminalPayload {
+		merged[key] = value
+	}
+	return merged
 }
 
 func callTaskRouterToolRaw(t *testing.T, stdin io.Writer, reader *bufio.Reader, id int, args map[string]any) map[string]any {
 	t.Helper()
-	if _, err := fmt.Fprint(stdin, jsonRPCRequest(id, "tools/call", map[string]any{
-		"name":      "task",
-		"arguments": args,
-	})); err != nil {
-		t.Fatalf("task request write: %v", err)
-	}
-	resp, err := readResponse(reader, 30*time.Second)
-	if err != nil {
-		t.Fatalf("task response: %v", err)
-	}
-	return resp
+	return callToolRaw(t, stdin, reader, id, "task", args, 30*time.Second)
 }
 
 func assertTaskRouterResult(t *testing.T, payload map[string]any, wantClass string) {
@@ -161,15 +167,17 @@ func assertTaskRouterResult(t *testing.T, payload map[string]any, wantClass stri
 	if taskID == "" {
 		t.Fatalf("task_id missing: %v", payload)
 	}
-	metadata, ok := payload["metadata"].(map[string]any)
-	if !ok {
-		t.Fatalf("metadata missing: %v", payload)
-	}
-	if metadata["review_sub_mode"] != "aggregate" {
-		t.Fatalf("review_sub_mode = %#v, want aggregate; metadata=%v", metadata["review_sub_mode"], metadata)
-	}
-	passes, ok := metadata["passes_completed"].([]any)
+	passes, ok := payload["passes_completed"].([]any)
 	if !ok || len(passes) != 3 {
-		t.Fatalf("passes_completed = %#v, want 3 passes", metadata["passes_completed"])
+		t.Fatalf("passes_completed = %#v, want 3 passes", payload["passes_completed"])
+	}
+	if summary, _ := payload["summary"].(string); summary == "" {
+		t.Fatalf("summary missing: %v", payload)
+	}
+	if _, ok := payload["findings"].([]any); !ok {
+		t.Fatalf("findings = %#v, want list", payload["findings"])
+	}
+	if blocking, _ := payload["blocking"].(bool); blocking {
+		t.Fatalf("blocking = true, want false; payload=%v", payload)
 	}
 }
