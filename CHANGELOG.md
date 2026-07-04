@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.20.0] — 2026-07-04 — Tenant-aware API Swarm factory
+
+### Added
+
+- **AIMUX-25 CR-004 API Swarm integration.** Added `api.SwarmFactory` and composite factory helpers so Swarm can construct `api:<provider>:<model>` executors alongside CLI executors without real provider calls during wiring tests.
+- **Tenant-aware API key construction.** Added `swarm.NewWithContextFactory` and context-aware API factory creation so tenant/session context reaches API key resolution at executor construction time, including restart/recreate paths.
+- **Critical Swarm/API smoke coverage.** Added critical tests proving OpenAI, Anthropic, and Google API executor handles spawn through Swarm and that tenant A/B resolve distinct provider keys for the same API executor name.
+
+### Changed
+
+- **Swarm factory seam.** Preserved the legacy `swarm.New(func(name string) ...)` constructor by wrapping it through the new context-aware constructor, keeping existing CLI factory behavior intact.
+
+### Fixed
+
+- **CR-004 SEC-001 review blocker.** Closed the earlier provider-only key-resolution gap by making API key resolution receive request context, provider, and tenant ID before API executor construction.
+- **PR-review follow-up hardening.** Canonicalized legacy-default tenant IDs before API key lookup and preserved initialized tenant context during Swarm restart fallback, closing PR #186/#187 review findings.
+
+
 ## [5.19.0] — 2026-07-04 — API executor hardening, workflow gates, persistent sessions
 
 ### Added
