@@ -62,6 +62,34 @@ func TestHandleTaskValidCallRoutesThroughRouter(t *testing.T) {
 	assertMetadataString(t, task.Metadata, "task_class", classifier.TaskClassCode)
 }
 
+func TestTaskSubmitContextDetachesCancellationAndAppliesTimeout(t *testing.T) {
+	t.Parallel()
+
+	type ctxKey string
+	parent, parentCancel := context.WithCancel(context.WithValue(context.Background(), ctxKey("tenant"), "tenant-a"))
+	parentCancel()
+
+	submitCtx, cancel := taskSubmitContext(parent)
+	defer cancel()
+
+	if got := submitCtx.Value(ctxKey("tenant")); got != "tenant-a" {
+		t.Fatalf("submitCtx.Value(tenant) = %v, want tenant-a", got)
+	}
+	deadline, ok := submitCtx.Deadline()
+	if !ok {
+		t.Fatal("submitCtx.Deadline() missing, want bounded detached timeout")
+	}
+	remaining := time.Until(deadline)
+	if remaining < 20*time.Second || remaining > taskToolDetachedSubmitTimeout+time.Second {
+		t.Fatalf("submitCtx deadline = %v from now, want bounded timeout near %v", remaining, taskToolDetachedSubmitTimeout)
+	}
+	select {
+	case <-submitCtx.Done():
+		t.Fatal("submitCtx canceled by parent, want detached submit window")
+	default:
+	}
+}
+
 func TestHandleTaskCanceledCallerStillSubmitsTask(t *testing.T) {
 	t.Parallel()
 
