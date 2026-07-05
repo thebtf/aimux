@@ -2,7 +2,8 @@ package runtime
 
 // DefaultCodexProfile returns a CLIRuntimeProfile for transparent codex execution.
 // The profile uses CODEX_HOME env var (VERIFIED: redirects all config reads) to point
-// codex at a virtual home directory, while inheriting auth and state from the real home.
+// codex at a stable project-scoped virtual home directory, while inheriting auth and
+// MCP config from the real home.
 //
 // CODEX_HOME isolation is the highest-confidence mechanism in the CLI set — fully
 // verified on Windows 11 with codex 0.128.0. The virtual home must NOT be a temp
@@ -15,7 +16,7 @@ func DefaultCodexProfile(workDir string) CLIRuntimeProfile {
 		WithCLIHomeEnvVar("CODEX_HOME"). // VERIFIED: redirects entire config dir
 		WithAuthScope(AuthScopePassThrough).
 		WithAuthFiles([]string{"auth.json"}). // copy real ~/.codex/auth.json into virtual home
-		WithStateScope(StateScopePassThrough).
+		WithStateScope(StateScopePersistent).
 		WithMCPMode(MCPModePassThrough).
 		Build()
 	// DangerIsolated defaults to false — CODEX_HOME covers the isolation need.

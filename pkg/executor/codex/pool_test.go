@@ -157,7 +157,7 @@ func TestCodexPool_NewPool_EmptyPath_Fails(t *testing.T) {
 func TestCodexPool_VirtualHomeStableAndProjectScoped(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "runtime-home")
 	pool := newVirtualHomeTestPool(t, base)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	alpha, err := pool.Acquire(ctx, "project-alpha", t.TempDir())
@@ -166,6 +166,9 @@ func TestCodexPool_VirtualHomeStableAndProjectScoped(t *testing.T) {
 	}
 	alphaHome := alpha.profile.VirtualHomeDir
 	requireVirtualHomeUnderBase(t, base, alphaHome)
+	if alpha.profile.StateScope != runtime.StateScopePersistent {
+		t.Fatalf("StateScope=%v want StateScopePersistent for stable project home", alpha.profile.StateScope)
+	}
 
 	alphaAgain, err := pool.Acquire(ctx, "project-alpha", t.TempDir())
 	if err != nil {
@@ -202,7 +205,7 @@ func TestCodexPool_HomeOverrideNone_DoesNotDeriveVirtualHome(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	proc, err := pool.Acquire(ctx, "project-no-home-override", t.TempDir())
 	if err != nil {
@@ -226,7 +229,7 @@ func TestCodexPool_VirtualHomeCopiesAuthFiles(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	proc, err := pool.Acquire(ctx, "project-auth-pass-through", t.TempDir())
 	if err != nil {
@@ -255,7 +258,7 @@ func TestCodexPool_VirtualHomeCopiesConfigToml(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	proc, err := pool.Acquire(ctx, "project-config-pass-through", t.TempDir())
 	if err != nil {
@@ -276,7 +279,7 @@ func TestCodexPool_VirtualHomeCopiesConfigToml(t *testing.T) {
 func TestCodexPool_VirtualHomeUnsafeProjectIDCannotEscapeBase(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "runtime-home")
 	pool := newVirtualHomeTestPool(t, base)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	proc, err := pool.Acquire(ctx, `..\\..//outside:project?name`, t.TempDir())

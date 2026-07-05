@@ -295,6 +295,9 @@ func TestDefaultCodexProfile(t *testing.T) {
 	if len(p.AuthFiles) == 0 || p.AuthFiles[0] != "auth.json" {
 		t.Errorf("AuthFiles=%v want [auth.json]", p.AuthFiles)
 	}
+	if p.StateScope != StateScopePersistent {
+		t.Errorf("StateScope=%v want StateScopePersistent", p.StateScope)
+	}
 	if p.DangerIsolated {
 		t.Error("DangerIsolated should be false for codex (uses CODEX_HOME, no HOME redirect needed)")
 	}
@@ -475,6 +478,7 @@ func TestIsolatedClaudeProfile_StrictMCPFlagsStayTogether(t *testing.T) {
 	}
 	t.Fatalf("isolated claude ExtraFlags=%v want strict MCP boundary flags %v in order", flags, want)
 }
+
 // ── EphemeralCleanupHook ─────────────────────────────────────────────────────
 
 func TestEphemeralCleanupHook_RemovesDir(t *testing.T) {

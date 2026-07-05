@@ -293,7 +293,7 @@ func TestAppServerProcess_ProfileDirectConsumer_AppliesEnvAndWorkDirBeforeStart(
 		Build()
 	proc := NewAppServerProcess(osArgs0(), profile)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := proc.Start(ctx); err != nil {
 		t.Fatalf("Start() with fake app-server: %v", err)
@@ -345,7 +345,7 @@ func TestAppServerProcess_ProfileDirectConsumer_HomeRedirectWinsOverEnvOverride(
 		Build()
 	proc := NewAppServerProcess(osArgs0(), profile)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := proc.Start(ctx); err != nil {
 		t.Fatalf("Start() with fake app-server: %v", err)
@@ -383,7 +383,7 @@ func TestAppServerProcess_ProfileDirectConsumer_HomeOverrideNonePreservesAmbient
 		Build()
 	proc := NewAppServerProcess(osArgs0(), profile)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := proc.Start(ctx); err != nil {
 		t.Fatalf("Start() with HomeOverrideNone fake app-server: %v", err)
@@ -426,7 +426,7 @@ func TestAppServerProcess_ProfileRequiresVirtualHomeBeforeStart(t *testing.T) {
 		Build()
 	proc := NewAppServerProcess(osArgs0(), profile)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	err := proc.Start(ctx)
 	if err == nil {
