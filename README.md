@@ -2,7 +2,7 @@
 
 # aimux
 
-[![Go](https://img.shields.io/badge/go-1.25.10%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/go-1.25.11%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![MCP Tools](https://img.shields.io/badge/MCP-28%20tools-blueviolet)](https://modelcontextprotocol.io)
 
@@ -31,7 +31,7 @@ Download the latest release binary for your platform:
 **Windows (PowerShell):**
 
 ```powershell
-$version = "5.12.0"
+$version = "5.21.0"
 gh release download "v$version" --repo thebtf/aimux --pattern "aimux_${version}_windows_amd64.zip" --output aimux.zip
 Expand-Archive aimux.zip -DestinationPath "$env:LOCALAPPDATA\aimux" -Force
 Remove-Item aimux.zip
@@ -43,7 +43,7 @@ aimux.exe --version
 **Linux / macOS (bash):**
 
 ```bash
-version="5.12.0"
+version="5.21.0"
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 gh release download "v${version}" --repo thebtf/aimux --pattern "aimux_${version}_${os}_${arch}.tar.gz" --output aimux.tar.gz
@@ -57,12 +57,12 @@ aimux --version
 ### From Source
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.10"
+$env:GOTOOLCHAIN = "go1.25.11"
 go build -o aimux.exe ./cmd/aimux/
 .\aimux.exe --version
 ```
 
-Requires Go 1.25.10 or newer.
+Requires Go 1.25.11 or newer.
 
 ### Configure MCP Client
 
@@ -113,12 +113,12 @@ and 22 cognitive move tools.
 Common development and release checks:
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.10"
+$env:GOTOOLCHAIN = "go1.25.11"
 go build ./...
 go test ./... -count=1 -timeout 300s
 go test ./tests/critical -count=1 -timeout 300s
 $env:AIMUX21_E2E = "1"
-go test ./test/e2e -run 'TestE2E_(AIMUX21|CodeEntry|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
+go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
 go vet ./...
 go mod verify
 govulncheck ./...
@@ -158,6 +158,9 @@ parameter:
 
 Codex CLI always uses `--dangerously-bypass-approvals-and-sandbox
 --skip-git-repo-check --json`. Prompt delivered via stdin controls mode behavior.
+Codex-backed startup now derives a stable project-scoped `CODEX_HOME`, so auth,
+config, and persistent state stay inside the virtual home instead of leaking
+through the caller's ambient global Codex home.
 
 ### Task Inspection Resources
 
@@ -369,7 +372,7 @@ future design work under AIMUX-9 / DEF-1.
 
 Before a release:
 
-1. Build with Go 1.25.10 or newer.
+1. Build with Go 1.25.11 or newer.
 2. Run the full Go test suite.
 3. Run the critical suite under `tests/critical/`.
 4. Run `go vet`, `go mod verify`, and `govulncheck`.

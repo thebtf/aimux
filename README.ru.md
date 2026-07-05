@@ -1,9 +1,9 @@
-<!-- synced: 2026-05-13 source-commit: a667b0e -->
+<!-- synced: 2026-07-06 source-commit: ac7d4b7 -->
 [English](README.md) | [Русский](README.ru.md)
 
 # aimux
 
-[![Go](https://img.shields.io/badge/go-1.25.10%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/go-1.25.11%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![MCP Tools](https://img.shields.io/badge/MCP-28%20tools-blueviolet)](https://modelcontextprotocol.io)
 
@@ -33,7 +33,7 @@ live surface. Их pre-purge архитектура заморожена в ве
 **Windows (PowerShell):**
 
 ```powershell
-$version = "5.12.0"
+$version = "5.21.0"
 gh release download "v$version" --repo thebtf/aimux --pattern "aimux_${version}_windows_amd64.zip" --output aimux.zip
 Expand-Archive aimux.zip -DestinationPath "$env:LOCALAPPDATA\aimux" -Force
 Remove-Item aimux.zip
@@ -44,7 +44,7 @@ aimux.exe --version
 **Linux / macOS (bash):**
 
 ```bash
-version="5.12.0"
+version="5.21.0"
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 gh release download "v${version}" --repo thebtf/aimux --pattern "aimux_${version}_${os}_${arch}.tar.gz" --output aimux.tar.gz
@@ -58,12 +58,12 @@ aimux --version
 ### Из исходников
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.10"
+$env:GOTOOLCHAIN = "go1.25.11"
 go build -o aimux.exe ./cmd/aimux/
 .\aimux.exe --version
 ```
 
-Требуется Go 1.25.10+.
+Требуется Go 1.25.11+.
 
 ### Настройка MCP-клиента
 
@@ -112,12 +112,12 @@ go build -o aimux.exe ./cmd/aimux/
 Обычные development и release checks:
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.10"
+$env:GOTOOLCHAIN = "go1.25.11"
 go build ./...
 go test ./... -count=1 -timeout 300s
 go test ./tests/critical -count=1 -timeout 300s
 $env:AIMUX21_E2E = "1"
-go test ./test/e2e -run 'TestE2E_(AIMUX21|CodeEntry|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
+go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s
 go vet ./...
 go mod verify
 govulncheck ./...
@@ -156,6 +156,9 @@ go test ./... -count=1
 
 Codex CLI всегда использует `--dangerously-bypass-approvals-and-sandbox
 --skip-git-repo-check --json`. Промпт через stdin определяет поведение.
+Запуск через Codex теперь использует стабильный project-scoped `CODEX_HOME`,
+поэтому auth, config и persistent state остаются внутри virtual home, а не
+подтягиваются из глобального Codex home вызывающей среды.
 
 ### Task Inspection Resources
 
@@ -359,7 +362,7 @@ design work в AIMUX-9 / DEF-1.
 
 Перед release:
 
-1. Собрать с Go 1.25.10 или новее.
+1. Собрать с Go 1.25.11 или новее.
 2. Запустить полный Go test suite.
 3. Запустить critical suite в `tests/critical/`.
 4. Запустить `go vet`, `go mod verify` и `govulncheck`.

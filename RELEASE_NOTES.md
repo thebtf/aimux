@@ -1,26 +1,24 @@
-## v5.20.0 — Tenant-aware API Swarm factory
+## v5.21.0 — Codex runtime profile startup isolation
 
-This release ships AIMUX-25 CR-004: API executors can now be constructed through Swarm with tenant/session-aware key resolution while preserving the existing CLI factory path.
+This release ships AIMUX-20: Codex-backed startup now uses a stable project-scoped runtime home, so app-server launches stop inheriting ambient global Codex state while auth, config, and persistent state continue to work inside the virtual home. The same release also carries the AIMUX-20 safety amendment that blocks clear cross-product `mcp-mux` -> `aimux-stage-*` active-pointer writes during upgrade flows.
 
 ### Highlights
 
-- Swarm now has `NewWithContextFactory`, letting executor construction receive a detached value-carrying request context without inheriting cancellation.
-- API executor Swarm names use `api:<provider>:<model>` and route through `api.SwarmFactory` / `api.ContextCompositeFactory`.
-- API key resolution now receives `context.Context`, provider, and tenant ID before executor construction, closing the CR-004 SEC-001 review blocker.
-- Restart/recreate paths preserve tenant/session-specific key resolution after executor replacement, including legacy-default fallback context canonicalization.
-- Critical smoke coverage proves OpenAI, Anthropic, and Google API executor handles spawn through Swarm without real provider calls, including tenant A/B distinct key resolution for the same API executor name.
+- Codex app-server startup now derives and applies a stable project-scoped `CODEX_HOME` instead of relying on the caller's global Codex home.
+- Project virtual homes preserve auth, config, and persistent state, so isolated startup no longer drops those capabilities.
+- Upgrade fallback tests now quarantine inherited `MCPMUX_*` / `MCP_MUX_*` environment values and preserve only explicit test-owned overrides.
+- The active-pointer write path now rejects clear cross-product `mcp-mux` -> `aimux-stage-*` successor writes before touching the live pointer.
 
 ### Compatibility
 
-No CLI migration is required. Existing `swarm.New(func(name string) ...)` callers keep the legacy name-only factory behavior. Live server ProjectContext wiring is intentionally not claimed by this release; this release ships the factory/helper seam and critical Swarm smoke scoped by AIMUX-25 CR-004.
+No MCP-client migration is required. Existing `aimux` server registration stays the same, and the live MCP tool surface remains 28 tools. The release changes Codex startup-state isolation behind the current task/runtime path rather than adding a new public MCP entry point.
 
 ### Verification
 
-- PR #186 and follow-up PR #187 merged after CI, Security, CodeRabbit, and PM review gates completed successfully.
-- PM re-review accepted `origin/master..8fea4f1`, then accepted PR #187 head `389717d` after the PR-review restart fallback thread was patched and resolved.
-- PM reran on the final patch: `git diff --check 160689963b660011e028ce7542a9b997ebb9ca5f..389717d`, `go test ./pkg/swarm/... -count=1`, `go test ./pkg/executor/api/... -count=1`, `go test ./tests/critical/... -count=1 -run SwarmAPI`, `go build ./...`, and `go test ./... -count=1 -timeout 120s`.
-- Release-readiness gates passed on `master@130e95f`: release git readiness preflight, `go build ./...`, `go test ./... -count=1 -timeout 120s`, `go vet ./...`, clean-cache `go mod verify`, critical suite, stall-detection playbook, AIMUX-21 deterministic product gate, Loom module tests, and `govulncheck ./...`.
+- PR #188 merged into `master` at `ac7d4b7930d132b4a2d6bc95467200e71a44c603` after green CI, Security, and CodeRabbit status on the release-bearing diff.
+- Local release-readiness gates passed on clean `master`: `go build ./...`, clean-cache `go test ./... -count=1 -timeout 120s`, `go vet ./...`, clean-cache `go mod verify`, `go test ./tests/critical -count=1 -timeout 300s`, `go test ./pkg/server -run 'TestCritical_StallDetection_' -count=1 -timeout 120s`, `AIMUX21_E2E=1 go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s`, `go test ./... -count=1` from `loom/`, and `govulncheck ./...`.
+- Seq19 safety review confirmed the cross-product pointer guard and muxcore-env quarantine without touching external pointers, user homes, plugin caches, or sibling repositories.
 
 ### Notes
 
-AIMUX-25 CR-004 code landed at `master@130e95f`; the release commit adds only release notes/changelog updates, and the annotated `v5.20.0` tag points at that release commit. AIMUX-9 CR-002 was also reconciled in PM governance artifacts as implemented/release-contained; AIMUX-9 CR-001 remains a post-purge rebaseline lane.
+This release advances from the already-published `v5.20.0` to the next available minor release because the shipped delta contains a new Codex runtime-profile capability (`feat:`) plus follow-up fixes. Manual consumer updates remain out of scope for this release flow.

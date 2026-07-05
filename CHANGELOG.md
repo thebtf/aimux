@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.21.0] — 2026-07-06 — Codex runtime profile startup isolation
+
+### Added
+
+- **AIMUX-20 runtime-profile activation.** Codex app-server startup now derives a stable project-scoped `CODEX_HOME` and applies the runtime-profile path needed to keep task startup state scoped to the current project instead of the caller's ambient global Codex home.
+- **Virtual-home regression coverage.** Added focused Codex app-server, pool, and runtime tests that prove auth, config, and persistent state survive inside project virtual homes.
+
+### Fixed
+
+- **Project virtual-home continuity.** Preserved Codex auth, config, and state persistence when app-server and pool paths move into project-scoped virtual homes.
+- **Cross-product active-pointer safety.** Quarantined inherited `MCPMUX_*` / `MCP_MUX_*` env in aimux e2e child processes and rejected clear `mcp-mux` -> `aimux-stage-*` active-pointer overwrites during upgrade flows.
+
 ## [5.20.0] — 2026-07-04 — Tenant-aware API Swarm factory
 
 ### Added
