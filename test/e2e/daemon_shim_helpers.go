@@ -35,6 +35,23 @@ func newMuxcoreIsolatedTemp(t *testing.T, pattern string) string {
 	return isolatedTmp
 }
 
+func sanitizedAimuxE2EEnv(base []string, overrides ...string) []string {
+	env := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		key, _, _ := strings.Cut(entry, "=")
+		if isMuxcoreEnvKey(key) {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, overrides...)
+}
+
+func isMuxcoreEnvKey(key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	return strings.HasPrefix(key, "MCPMUX_") || strings.HasPrefix(key, "MCP_MUX_")
+}
+
 // startDaemonAndShim launches a daemon process via `aimux --muxcore-daemon` and
 // a shim client process that bridges stdio↔IPC to it. Returns the shim cmd,
 // its stdin write-end, and a bufio.Reader on its stdout — matching the legacy
@@ -88,7 +105,7 @@ func startDaemonAndShim(t *testing.T, aimuxBin, testcliDir, configDir string) (*
 	// and keep the engine name short. On Windows, keep os.TempDir().
 	isolatedTmp := newMuxcoreIsolatedTemp(t, "ae")
 	tempEnvName := strings.Join([]string{"TE", "MP"}, "")
-	baseEnv := append(os.Environ(),
+	baseEnv := sanitizedAimuxE2EEnv(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,
 		"AIMUX_ENGINE_NAME="+engineName,
 		"AIMUX_WARMUP=false",
@@ -333,7 +350,7 @@ func startDaemonAndShimWithEnv(t *testing.T, aimuxBin, testcliDir, configDir str
 
 	isolatedTmp := newMuxcoreIsolatedTemp(t, "ae")
 	tempEnvName := strings.Join([]string{"TE", "MP"}, "")
-	baseEnv := append(os.Environ(),
+	baseEnv := sanitizedAimuxE2EEnv(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,
 		"AIMUX_ENGINE_NAME="+engineName,
 		"AIMUX_WARMUP=false",

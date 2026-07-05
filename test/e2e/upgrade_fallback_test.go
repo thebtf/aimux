@@ -14,6 +14,47 @@ import (
 	"time"
 )
 
+func TestSanitizedAimuxE2EEnvStripsInheritedMuxcoreEnvAndPreservesOverrides(t *testing.T) {
+	fixturePointer := filepath.Join(t.TempDir(), "fixture-active-engine.txt")
+	inheritedPointer := filepath.Join(t.TempDir(), "external-active-engine.txt")
+	env := sanitizedAimuxE2EEnv([]string{
+		"PATH=/test/bin",
+		"AIMUX_CONFIG_DIR=/repo/config",
+		"MCPMUX_ACTIVE_ENGINE_FILE=" + inheritedPointer,
+		"MCPMUX_SUCCESSOR_EXE=/external/aimux-stage-leak.exe",
+		"MCP_MUX_SESSION_ID=operator-session",
+		"MCP_MUX_EXTRA=value",
+	},
+		"MCPMUX_ACTIVE_ENGINE_FILE="+fixturePointer,
+		"MCP_MUX_TEST_OVERRIDE=fixture-owned",
+	)
+
+	if got := testEnvValue(env, "MCPMUX_ACTIVE_ENGINE_FILE"); got != fixturePointer {
+		t.Fatalf("MCPMUX_ACTIVE_ENGINE_FILE = %q, want explicit fixture override %q", got, fixturePointer)
+	}
+	for _, forbidden := range []string{"MCPMUX_SUCCESSOR_EXE", "MCP_MUX_SESSION_ID", "MCP_MUX_EXTRA"} {
+		if got := testEnvValue(env, forbidden); got != "" {
+			t.Fatalf("%s survived quarantine with value %q", forbidden, got)
+		}
+	}
+	if got := testEnvValue(env, "MCP_MUX_TEST_OVERRIDE"); got != "fixture-owned" {
+		t.Fatalf("MCP_MUX_TEST_OVERRIDE = %q, want explicit fixture-owned override", got)
+	}
+	if got := testEnvValue(env, "PATH"); got != "/test/bin" {
+		t.Fatalf("PATH = %q, want non-muxcore env preserved", got)
+	}
+}
+
+func testEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], prefix) {
+			return strings.TrimPrefix(env[i], prefix)
+		}
+	}
+	return ""
+}
+
 func TestE2E_Upgrade_Fallback_InvalidModeRejectedButDaemonLives(t *testing.T) {
 	v1Bin := buildBinaryVersion(t, "1.0.0")
 	testcliBin := buildTestCLI(t)
@@ -187,7 +228,7 @@ func TestE2E_Upgrade_ActivePointerSuccessorRuntimeAcceptance(t *testing.T) {
 	// root plus a short engine label rather than t.TempDir() or macOS /var/folders.
 	isolatedTmp := newMuxcoreIsolatedTemp(t, "ax")
 	pathEnv := testcliDir + string(os.PathListSeparator) + os.Getenv("PATH")
-	baseEnv := append(os.Environ(),
+	baseEnv := sanitizedAimuxE2EEnv(os.Environ(),
 		"AIMUX_CONFIG_DIR="+configDir,
 		"AIMUX_ENGINE_NAME="+engineName,
 		"AIMUX_WARMUP=false",

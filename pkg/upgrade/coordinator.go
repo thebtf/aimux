@@ -618,6 +618,50 @@ func (c *Coordinator) activeEngineFilePath() string {
 	return strings.TrimSpace(os.Getenv(activeEngineFileEnv))
 }
 
+func validateActiveEnginePointerProduct(pointerPath, successorPath string) error {
+	if !isAimuxStagedSuccessor(successorPath) {
+		return nil
+	}
+	if signal := mcpMuxProductSignal(pointerPath); signal != "" {
+		return fmt.Errorf("refusing cross-product active-engine pointer write: pointer path %q identifies %s, successor %q is aimux staged executable", pointerPath, signal, successorPath)
+	}
+	current, err := readActiveEnginePointer(pointerPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read active engine pointer before product guard: %w", err)
+	}
+	currentTarget := strings.TrimSpace(string(current))
+	if signal := mcpMuxProductSignal(currentTarget); signal != "" {
+		return fmt.Errorf("refusing cross-product active-engine pointer write: pointer path %q currently targets %q identifying %s, successor %q is aimux staged executable", pointerPath, currentTarget, signal, successorPath)
+	}
+	return nil
+}
+
+func isAimuxStagedSuccessor(path string) bool {
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(path)))
+	return strings.HasPrefix(base, stagedExecutablePrefix)
+}
+
+func mcpMuxProductSignal(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		segment = strings.ToLower(strings.TrimSpace(segment))
+		if segment == "" {
+			continue
+		}
+		withoutExt := strings.TrimSuffix(segment, filepath.Ext(segment))
+		if withoutExt == "mcp-mux" || strings.HasPrefix(withoutExt, "mcp-mux-") || strings.HasPrefix(withoutExt, "mcp_mux") {
+			return "mcp-mux product signal " + segment
+		}
+	}
+	return ""
+}
+
 func writeActiveEnginePointer(pointerPath, successorPath string) error {
 	if strings.TrimSpace(pointerPath) == "" {
 		return fmt.Errorf("%s is required for successor restart", activeEngineFileEnv)
@@ -632,6 +676,9 @@ func writeActiveEnginePointer(pointerPath, successorPath string) error {
 	successorAbs, err := filepath.Abs(successorPath)
 	if err != nil {
 		return fmt.Errorf("resolve successor executable: %w", err)
+	}
+	if err := validateActiveEnginePointerProduct(pointerAbs, successorAbs); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(pointerAbs), 0o700); err != nil {
 		return fmt.Errorf("prepare active engine pointer directory: %w", err)
