@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +23,7 @@ import (
 type AppServerState int
 
 const (
-	AppServerStateIdle        AppServerState = iota
+	AppServerStateIdle AppServerState = iota
 	AppServerStateInitializing
 	AppServerStateReady
 	AppServerStateTurnInFlight
@@ -150,32 +151,124 @@ func (p *AppServerProcess) cleanupAfterStartFailure() {
 	_ = p.kill()
 }
 
+func resolveProfileSourceHome(profile runtime.CLIRuntimeProfile, baseEnv []string) string {
+	if profile.CLIHomeEnvVar != "" {
+		for _, kv := range baseEnv {
+			key, value, ok := strings.Cut(kv, "=")
+			if ok && key == profile.CLIHomeEnvVar && value != "" {
+				return value
+			}
+		}
+	}
+	switch profile.CLIName {
+	case "codex":
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			return filepath.Join(home, ".codex")
+		}
+	}
+	return ""
+}
+
+func passThroughHomeFiles(profile runtime.CLIRuntimeProfile) []string {
+	files := make([]string, 0, len(profile.AuthFiles)+1)
+	seen := make(map[string]struct{}, len(profile.AuthFiles)+1)
+	add := func(rel string) {
+		cleaned := filepath.Clean(rel)
+		if cleaned == "" || cleaned == "." {
+			return
+		}
+		if _, ok := seen[cleaned]; ok {
+			return
+		}
+		seen[cleaned] = struct{}{}
+		files = append(files, cleaned)
+	}
+	if profile.AuthScope == runtime.AuthScopePassThrough {
+		for _, rel := range profile.AuthFiles {
+			add(rel)
+		}
+	}
+	if profile.CLIName == "codex" && profile.MCPMode == runtime.MCPModePassThrough {
+		add("config.toml")
+	}
+	return files
+}
+
+func materializePassThroughHomeFiles(profile runtime.CLIRuntimeProfile, baseEnv []string) error {
+	files := passThroughHomeFiles(profile)
+	if len(files) == 0 || profile.VirtualHomeDir == "" {
+		return nil
+	}
+	sourceHome := resolveProfileSourceHome(profile, baseEnv)
+	if sourceHome == "" || filepath.Clean(sourceHome) == filepath.Clean(profile.VirtualHomeDir) {
+		return nil
+	}
+	for _, rel := range files {
+		if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("codex: invalid pass-through file %q", rel)
+		}
+		sourcePath := filepath.Join(sourceHome, rel)
+		content, err := os.ReadFile(sourcePath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("codex: read pass-through file %q: %w", sourcePath, err)
+		}
+		targetPath := filepath.Join(profile.VirtualHomeDir, rel)
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+			return fmt.Errorf("codex: create pass-through dir for %q: %w", targetPath, err)
+		}
+		if err := os.WriteFile(targetPath, content, 0o600); err != nil {
+			return fmt.Errorf("codex: write pass-through file %q: %w", targetPath, err)
+		}
+	}
+	return nil
+}
+
+// resolveAppServerProfileStart applies the subset of CLIRuntimeProfile startup
+// state that codex app-server consumes directly before process start.
+//
+// AIMUX-20 keeps codex app-server as a direct-consumer exception instead of
+// routing its JSONL lifecycle through runtime.Spawn. The lifecycle stays local
+// to appserver.go, but this helper preserves the same observable startup-state
+// contract for workdir, CLI-specific home redirection, and env overrides.
+func resolveAppServerProfileStart(profile runtime.CLIRuntimeProfile, baseEnv []string) ([]string, string, error) {
+	env := append([]string(nil), baseEnv...)
+	for k, v := range profile.EnvOverrides {
+		env = appendOrReplace(env, k, v)
+	}
+	if profile.HomeOverride == runtime.HomeOverrideVirtual || profile.HomeOverride == runtime.HomeOverrideSymlink {
+		if profile.CLIHomeEnvVar != "" {
+			if profile.VirtualHomeDir == "" {
+				return nil, "", fmt.Errorf("codex: app-server profile requires VirtualHomeDir when %s is set", profile.CLIHomeEnvVar)
+			}
+			if err := os.MkdirAll(profile.VirtualHomeDir, 0o700); err != nil {
+				return nil, "", fmt.Errorf("codex: create virtual home dir %q: %w", profile.VirtualHomeDir, err)
+			}
+			if err := materializePassThroughHomeFiles(profile, baseEnv); err != nil {
+				return nil, "", err
+			}
+			env = appendOrReplace(env, profile.CLIHomeEnvVar, profile.VirtualHomeDir)
+		}
+	}
+	return env, profile.WorkDir, nil
+}
+
 // spawn forks the `codex app-server` process and wires up the JSONLClient.
 func (p *AppServerProcess) spawn(ctx context.Context) error {
 	args := []string{"app-server"}
 
 	cmd := exec.CommandContext(ctx, p.codexPath, args...)
 
-	// Build environment from profile.
-	if p.profile.VirtualHomeDir != "" {
-		// Ensure VirtualHomeDir exists before setting CODEX_HOME.
-		if err := os.MkdirAll(p.profile.VirtualHomeDir, 0o700); err != nil {
-			return fmt.Errorf("codex: create virtual home dir %q: %w", p.profile.VirtualHomeDir, err)
-		}
-	}
-
-	env := os.Environ()
-	if p.profile.CLIHomeEnvVar != "" && p.profile.VirtualHomeDir != "" {
-		// Inject CLI-specific home redirect (e.g., CODEX_HOME).
-		env = appendOrReplace(env, p.profile.CLIHomeEnvVar, p.profile.VirtualHomeDir)
-	}
-	for k, v := range p.profile.EnvOverrides {
-		env = appendOrReplace(env, k, v)
+	env, workDir, err := resolveAppServerProfileStart(p.profile, os.Environ())
+	if err != nil {
+		return err
 	}
 	cmd.Env = env
-
-	if p.profile.WorkDir != "" {
-		cmd.Dir = p.profile.WorkDir
+	if workDir != "" {
+		cmd.Dir = workDir
 	}
 
 	stdin, err := cmd.StdinPipe()

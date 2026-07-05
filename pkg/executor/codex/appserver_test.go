@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +14,101 @@ import (
 
 	"github.com/thebtf/aimux/pkg/executor/runtime"
 )
+
+const (
+	appServerProfileHelperEnv  = "AIMUX_CODEX_APPSERVER_PROFILE_HELPER"
+	appServerProfileCaptureEnv = "AIMUX_CODEX_APPSERVER_PROFILE_CAPTURE"
+)
+
+type appServerProfileCapture struct {
+	CWD               string `json:"cwd"`
+	CodexHome         string `json:"codexHome"`
+	ProfileOverride   string `json:"profileOverride"`
+	AuthFileExists    bool   `json:"authFileExists"`
+	AuthFileContent   string `json:"authFileContent"`
+	ConfigFileExists  bool   `json:"configFileExists"`
+	ConfigFileContent string `json:"configFileContent"`
+}
+
+func init() {
+	if os.Getenv(appServerProfileHelperEnv) != "1" {
+		return
+	}
+	runFakeCodexAppServerProfileHelper()
+	os.Exit(0)
+}
+
+func runFakeCodexAppServerProfileHelper() {
+	cwd, _ := os.Getwd()
+	capturePath := os.Getenv(appServerProfileCaptureEnv)
+	if capturePath != "" {
+		authPath := filepath.Join(os.Getenv("CODEX_HOME"), "auth.json")
+		authBytes, authErr := os.ReadFile(authPath)
+		configPath := filepath.Join(os.Getenv("CODEX_HOME"), "config.toml")
+		configBytes, configErr := os.ReadFile(configPath)
+		capture := appServerProfileCapture{
+			CWD:              cwd,
+			CodexHome:        os.Getenv("CODEX_HOME"),
+			ProfileOverride:  os.Getenv("AIMUX_PROFILE_ENV"),
+			AuthFileExists:   authErr == nil,
+			ConfigFileExists: configErr == nil,
+		}
+		if authErr == nil {
+			capture.AuthFileContent = string(authBytes)
+		}
+		if configErr == nil {
+			capture.ConfigFileContent = string(configBytes)
+		}
+		if b, err := json.Marshal(capture); err == nil {
+			_ = os.WriteFile(capturePath, b, 0o600)
+		}
+	}
+
+	dec := json.NewDecoder(os.Stdin)
+	enc := json.NewEncoder(os.Stdout)
+	for {
+		var msg inboundMessage
+		if err := dec.Decode(&msg); err != nil {
+			return
+		}
+		if msg.ID == nil || msg.Method != "initialize" {
+			continue
+		}
+		_ = enc.Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      *msg.ID,
+			"result":  map[string]string{"sessionId": "profile-helper"},
+		})
+	}
+}
+
+func comparablePath(p string) string {
+	cleaned := filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return cleaned
+}
+
+func writeAuthFixture(t *testing.T, homeDir, content string) {
+	t.Helper()
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		t.Fatalf("mkdir auth home %q: %v", homeDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, "auth.json"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write auth.json in %q: %v", homeDir, err)
+	}
+}
+
+func writeConfigFixture(t *testing.T, homeDir, content string) {
+	t.Helper()
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		t.Fatalf("mkdir config home %q: %v", homeDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write config.toml in %q: %v", homeDir, err)
+	}
+}
 
 // fakeAppServerDialer wires up a fake codex app-server over in-process pipes.
 // It handles JSON-RPC messages from the JSONLClient side and responds according
@@ -172,6 +269,178 @@ func newTestProcess(t *testing.T, dialer *fakeAppServerDialer) *AppServerProcess
 		clientWrite.Close()
 	})
 	return p
+}
+
+// --- Profile application tests ---
+
+func TestAppServerProcess_ProfileDirectConsumer_AppliesEnvAndWorkDirBeforeStart(t *testing.T) {
+	workDir := t.TempDir()
+	virtualHome := filepath.Join(t.TempDir(), "codex-home")
+	capturePath := filepath.Join(t.TempDir(), "profile-capture.json")
+	ambientHome := filepath.Join(t.TempDir(), "ambient-codex-home")
+
+	configFixture := "[mcp_servers.demo]\ncommand = \"demo\"\n"
+	t.Setenv(appServerProfileHelperEnv, "1")
+	t.Setenv(appServerProfileCaptureEnv, capturePath)
+	writeAuthFixture(t, ambientHome, "ambient-auth-json")
+	writeConfigFixture(t, ambientHome, configFixture)
+	t.Setenv("CODEX_HOME", ambientHome)
+	t.Setenv("AIMUX_PROFILE_ENV", "ambient-env-must-lose")
+
+	profile := runtime.From(runtime.DefaultCodexProfile(workDir)).
+		WithVirtualHomeDir(virtualHome).
+		WithEnvOverrides(map[string]string{"AIMUX_PROFILE_ENV": "profile-env-wins"}).
+		Build()
+	proc := NewAppServerProcess(osArgs0(), profile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := proc.Start(ctx); err != nil {
+		t.Fatalf("Start() with fake app-server: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Shutdown(context.Background()) })
+
+	var capture appServerProfileCapture
+	b, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read profile capture: %v", err)
+	}
+	if err := json.Unmarshal(b, &capture); err != nil {
+		t.Fatalf("decode profile capture: %v", err)
+	}
+	if got, want := comparablePath(capture.CWD), comparablePath(workDir); got != want {
+		t.Errorf("helper cwd=%q want profile WorkDir %q", got, want)
+	}
+	if got, want := comparablePath(capture.CodexHome), comparablePath(virtualHome); got != want {
+		t.Errorf("CODEX_HOME=%q want profile VirtualHomeDir %q", got, want)
+	}
+	if capture.ProfileOverride != "profile-env-wins" {
+		t.Errorf("AIMUX_PROFILE_ENV=%q want profile env override", capture.ProfileOverride)
+	}
+	if !capture.AuthFileExists {
+		t.Fatalf("auth.json missing under redirected CODEX_HOME %q", capture.CodexHome)
+	}
+	if capture.AuthFileContent != "ambient-auth-json" {
+		t.Fatalf("auth.json content=%q want ambient-auth-json", capture.AuthFileContent)
+	}
+	if !capture.ConfigFileExists {
+		t.Fatalf("config.toml missing under redirected CODEX_HOME %q", capture.CodexHome)
+	}
+	if capture.ConfigFileContent != configFixture {
+		t.Fatalf("config.toml content=%q want %q", capture.ConfigFileContent, configFixture)
+	}
+}
+
+func TestAppServerProcess_ProfileDirectConsumer_HomeRedirectWinsOverEnvOverride(t *testing.T) {
+	virtualHome := filepath.Join(t.TempDir(), "codex-home")
+	capturePath := filepath.Join(t.TempDir(), "profile-capture.json")
+
+	t.Setenv(appServerProfileHelperEnv, "1")
+	t.Setenv(appServerProfileCaptureEnv, capturePath)
+	t.Setenv("CODEX_HOME", "ambient-codex-home-must-lose")
+
+	profile := runtime.From(runtime.DefaultCodexProfile(t.TempDir())).
+		WithVirtualHomeDir(virtualHome).
+		WithEnvOverrides(map[string]string{"CODEX_HOME": "override-must-lose"}).
+		Build()
+	proc := NewAppServerProcess(osArgs0(), profile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := proc.Start(ctx); err != nil {
+		t.Fatalf("Start() with fake app-server: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Shutdown(context.Background()) })
+
+	var capture appServerProfileCapture
+	b, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read profile capture: %v", err)
+	}
+	if err := json.Unmarshal(b, &capture); err != nil {
+		t.Fatalf("decode profile capture: %v", err)
+	}
+	if got, want := comparablePath(capture.CodexHome), comparablePath(virtualHome); got != want {
+		t.Fatalf("CODEX_HOME=%q want profile VirtualHomeDir %q even when EnvOverrides sets CODEX_HOME", got, want)
+	}
+}
+
+func TestAppServerProcess_ProfileDirectConsumer_HomeOverrideNonePreservesAmbientCodexHome(t *testing.T) {
+	workDir := t.TempDir()
+	capturePath := filepath.Join(t.TempDir(), "profile-capture.json")
+	ambientHome := filepath.Join(t.TempDir(), "ambient-codex-home")
+
+	t.Setenv(appServerProfileHelperEnv, "1")
+	t.Setenv(appServerProfileCaptureEnv, capturePath)
+	writeAuthFixture(t, ambientHome, "ambient-auth-json")
+	t.Setenv("CODEX_HOME", ambientHome)
+	t.Setenv("AIMUX_PROFILE_ENV", "ambient-env-must-lose")
+
+	profile := runtime.New("codex", workDir).
+		WithHomeOverride(runtime.HomeOverrideNone).
+		WithCLIHomeEnvVar("CODEX_HOME").
+		WithEnvOverrides(map[string]string{"AIMUX_PROFILE_ENV": "profile-env-wins"}).
+		Build()
+	proc := NewAppServerProcess(osArgs0(), profile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := proc.Start(ctx); err != nil {
+		t.Fatalf("Start() with HomeOverrideNone fake app-server: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Shutdown(context.Background()) })
+
+	var capture appServerProfileCapture
+	b, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read profile capture: %v", err)
+	}
+	if err := json.Unmarshal(b, &capture); err != nil {
+		t.Fatalf("decode profile capture: %v", err)
+	}
+	if got, want := comparablePath(capture.CWD), comparablePath(workDir); got != want {
+		t.Errorf("helper cwd=%q want profile WorkDir %q", got, want)
+	}
+	if got, want := comparablePath(capture.CodexHome), comparablePath(ambientHome); got != want {
+		t.Errorf("CODEX_HOME=%q want ambient value %q when HomeOverrideNone opts out", got, want)
+	}
+	if capture.ProfileOverride != "profile-env-wins" {
+		t.Errorf("AIMUX_PROFILE_ENV=%q want profile env override", capture.ProfileOverride)
+	}
+	if !capture.AuthFileExists {
+		t.Fatalf("auth.json missing under ambient CODEX_HOME %q", capture.CodexHome)
+	}
+	if capture.AuthFileContent != "ambient-auth-json" {
+		t.Fatalf("auth.json content=%q want ambient-auth-json", capture.AuthFileContent)
+	}
+}
+
+func TestAppServerProcess_ProfileRequiresVirtualHomeBeforeStart(t *testing.T) {
+	capturePath := filepath.Join(t.TempDir(), "profile-capture.json")
+	t.Setenv(appServerProfileHelperEnv, "1")
+	t.Setenv(appServerProfileCaptureEnv, capturePath)
+
+	profile := runtime.New("codex", t.TempDir()).
+		WithHomeOverride(runtime.HomeOverrideVirtual).
+		WithCLIHomeEnvVar("CODEX_HOME").
+		Build()
+	proc := NewAppServerProcess(osArgs0(), profile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := proc.Start(ctx)
+	if err == nil {
+		_ = proc.Shutdown(context.Background())
+		t.Fatal("Start() succeeded with CODEX_HOME profile but empty VirtualHomeDir; want error before process start")
+	}
+	if !strings.Contains(err.Error(), "VirtualHomeDir") {
+		t.Fatalf("Start() error=%q, want VirtualHomeDir validation", err)
+	}
+	if _, statErr := os.Stat(capturePath); statErr == nil {
+		t.Fatal("fake app-server was spawned before rejecting empty VirtualHomeDir")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("stat profile capture: %v", statErr)
+	}
 }
 
 // --- State machine tests ---

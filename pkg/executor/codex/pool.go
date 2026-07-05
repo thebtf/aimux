@@ -2,9 +2,13 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -20,6 +24,11 @@ type PoolConfig struct {
 
 	// DefaultProfile is used when no per-project profile is provided.
 	DefaultProfile func(workDir string) runtime.CLIRuntimeProfile
+
+	// RuntimeHomeBase is the stable base directory under which project-scoped
+	// codex virtual homes are derived when the selected codex profile leaves
+	// VirtualHomeDir empty. When blank, Acquire falls back to os.UserCacheDir().
+	RuntimeHomeBase string
 }
 
 // DefaultPoolConfig returns a production-ready PoolConfig.
@@ -28,6 +37,43 @@ func DefaultPoolConfig() PoolConfig {
 		IdleTimeout:    5 * time.Minute,
 		DefaultProfile: runtime.DefaultCodexProfile,
 	}
+}
+
+func resolveRuntimeHomeBase(base string) (string, error) {
+	if base != "" {
+		return filepath.Clean(base), nil
+	}
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("codex: determine runtime home base: %w", err)
+	}
+	if cacheDir == "" {
+		return "", errors.New("codex: determine runtime home base: user cache dir is empty")
+	}
+	return filepath.Join(cacheDir, "aimux", "codex-home"), nil
+}
+
+func deriveProjectVirtualHome(base, projectID string) (string, error) {
+	if projectID == "" {
+		return "", errors.New("codex: derive project virtual home: projectID must not be empty")
+	}
+	resolvedBase, err := resolveRuntimeHomeBase(base)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(projectID))
+	return filepath.Join(resolvedBase, hex.EncodeToString(sum[:])), nil
+}
+
+func applyProjectScopedVirtualHome(profile runtime.CLIRuntimeProfile, runtimeHomeBase, projectID string) (runtime.CLIRuntimeProfile, error) {
+	if profile.CLIName != "codex" || profile.VirtualHomeDir != "" || profile.CLIHomeEnvVar == "" || (profile.HomeOverride != runtime.HomeOverrideVirtual && profile.HomeOverride != runtime.HomeOverrideSymlink) {
+		return profile, nil
+	}
+	virtualHome, err := deriveProjectVirtualHome(runtimeHomeBase, projectID)
+	if err != nil {
+		return profile, err
+	}
+	return runtime.From(profile).WithVirtualHomeDir(virtualHome).Build(), nil
 }
 
 // poolEntry wraps an AppServerProcess with idle tracking and startup synchronization.
@@ -148,6 +194,11 @@ func (p *CodexPool) Acquire(ctx context.Context, projectID, workDir string) (*Ap
 
 	// Build profile and create process while lock is held to prevent double-spawn.
 	profile := p.cfg.DefaultProfile(workDir)
+	profile, err := applyProjectScopedVirtualHome(profile, p.cfg.RuntimeHomeBase, projectID)
+	if err != nil {
+		p.mu.Unlock()
+		return nil, mapToCliError(fmt.Errorf("codex: CodexPool.Acquire: derive virtual home for project %q: %w", projectID, err))
+	}
 	proc := NewAppServerProcess(p.codexPath, profile)
 	readyCh := make(chan struct{})
 	e := &poolEntry{

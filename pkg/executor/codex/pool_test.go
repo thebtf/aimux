@@ -3,11 +3,65 @@ package codex
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor/runtime"
 )
+
+func codexPoolConfigWithRuntimeHomeBase(t *testing.T, base string) PoolConfig {
+	t.Helper()
+	cfg := PoolConfig{
+		IdleTimeout:    0,
+		DefaultProfile: runtime.DefaultCodexProfile,
+	}
+	field := reflect.ValueOf(&cfg).Elem().FieldByName("RuntimeHomeBase")
+	if !field.IsValid() {
+		t.Fatalf("PoolConfig must expose RuntimeHomeBase so tests can prove project-scoped CODEX_HOME stays under the configured runtime base")
+	}
+	if field.Kind() != reflect.String || !field.CanSet() {
+		t.Fatalf("PoolConfig.RuntimeHomeBase must be an exported string field")
+	}
+	field.SetString(base)
+	return cfg
+}
+
+func newVirtualHomeTestPool(t *testing.T, base string) *CodexPool {
+	t.Helper()
+	t.Setenv(appServerProfileHelperEnv, "1")
+	cfg := codexPoolConfigWithRuntimeHomeBase(t, base)
+	pool, err := NewCodexPool(osArgs0(), cfg)
+	if err != nil {
+		t.Fatalf("NewCodexPool(test helper): %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+	return pool
+}
+
+func osArgs0() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return filepath.Clean(exe)
+	}
+	return filepath.Clean(os.Args[0])
+}
+
+func requireVirtualHomeUnderBase(t *testing.T, base, home string) {
+	t.Helper()
+	if home == "" {
+		t.Fatal("VirtualHomeDir is empty; want stable project-scoped codex home")
+	}
+	rel, err := filepath.Rel(base, home)
+	if err != nil {
+		t.Fatalf("VirtualHomeDir %q is not relatable to base %q: %v", home, base, err)
+	}
+	if rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("VirtualHomeDir %q escapes runtime base %q", home, base)
+	}
+}
 
 // fakePoolProcess creates a pre-started AppServerProcess wired to an in-process fake,
 // bypassing NewCodexPool's binary check. Used to test pool logic independently of the real binary.
@@ -97,6 +151,144 @@ func TestCodexPool_NewPool_EmptyPath_Fails(t *testing.T) {
 	_, err := NewCodexPool("", DefaultPoolConfig())
 	if err == nil {
 		t.Fatal("expected error for empty codexPath")
+	}
+}
+
+func TestCodexPool_VirtualHomeStableAndProjectScoped(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	pool := newVirtualHomeTestPool(t, base)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	alpha, err := pool.Acquire(ctx, "project-alpha", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(project-alpha): %v", err)
+	}
+	alphaHome := alpha.profile.VirtualHomeDir
+	requireVirtualHomeUnderBase(t, base, alphaHome)
+	if alpha.profile.StateScope != runtime.StateScopePersistent {
+		t.Fatalf("StateScope=%v want StateScopePersistent for stable project home", alpha.profile.StateScope)
+	}
+
+	alphaAgain, err := pool.Acquire(ctx, "project-alpha", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(project-alpha again): %v", err)
+	}
+	if alphaAgain.profile.VirtualHomeDir != alphaHome {
+		t.Fatalf("same project VirtualHomeDir=%q want stable %q", alphaAgain.profile.VirtualHomeDir, alphaHome)
+	}
+
+	beta, err := pool.Acquire(ctx, "project-beta", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(project-beta): %v", err)
+	}
+	betaHome := beta.profile.VirtualHomeDir
+	requireVirtualHomeUnderBase(t, base, betaHome)
+	if betaHome == alphaHome {
+		t.Fatalf("different projects share VirtualHomeDir %q", betaHome)
+	}
+}
+
+func TestCodexPool_HomeOverrideNone_DoesNotDeriveVirtualHome(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	t.Setenv(appServerProfileHelperEnv, "1")
+	cfg := codexPoolConfigWithRuntimeHomeBase(t, base)
+	cfg.DefaultProfile = func(workDir string) runtime.CLIRuntimeProfile {
+		return runtime.New("codex", workDir).
+			WithHomeOverride(runtime.HomeOverrideNone).
+			WithCLIHomeEnvVar("CODEX_HOME").
+			Build()
+	}
+	pool, err := NewCodexPool(osArgs0(), cfg)
+	if err != nil {
+		t.Fatalf("NewCodexPool(HomeOverrideNone): %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	proc, err := pool.Acquire(ctx, "project-no-home-override", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(HomeOverrideNone): %v", err)
+	}
+	if proc.profile.VirtualHomeDir != "" {
+		t.Fatalf("VirtualHomeDir=%q want empty when HomeOverrideNone opts out", proc.profile.VirtualHomeDir)
+	}
+}
+
+func TestCodexPool_VirtualHomeCopiesAuthFiles(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	ambientHome := filepath.Join(t.TempDir(), "ambient-codex-home")
+	writeAuthFixture(t, ambientHome, "ambient-auth-json")
+	t.Setenv(appServerProfileHelperEnv, "1")
+	t.Setenv("CODEX_HOME", ambientHome)
+	cfg := codexPoolConfigWithRuntimeHomeBase(t, base)
+	pool, err := NewCodexPool(osArgs0(), cfg)
+	if err != nil {
+		t.Fatalf("NewCodexPool(auth pass-through): %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	proc, err := pool.Acquire(ctx, "project-auth-pass-through", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(auth pass-through): %v", err)
+	}
+	authBytes, err := os.ReadFile(filepath.Join(proc.profile.VirtualHomeDir, "auth.json"))
+	if err != nil {
+		t.Fatalf("read auth.json from virtual home %q: %v", proc.profile.VirtualHomeDir, err)
+	}
+	if got, want := string(authBytes), "ambient-auth-json"; got != want {
+		t.Fatalf("auth.json content=%q want %q", got, want)
+	}
+}
+
+func TestCodexPool_VirtualHomeCopiesConfigToml(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	ambientHome := filepath.Join(t.TempDir(), "ambient-codex-home")
+	configFixture := "[mcp_servers.demo]\ncommand = \"demo\"\n"
+	writeConfigFixture(t, ambientHome, configFixture)
+	t.Setenv(appServerProfileHelperEnv, "1")
+	t.Setenv("CODEX_HOME", ambientHome)
+	cfg := codexPoolConfigWithRuntimeHomeBase(t, base)
+	pool, err := NewCodexPool(osArgs0(), cfg)
+	if err != nil {
+		t.Fatalf("NewCodexPool(config pass-through): %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Shutdown(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	proc, err := pool.Acquire(ctx, "project-config-pass-through", t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(config pass-through): %v", err)
+	}
+	configBytes, err := os.ReadFile(filepath.Join(proc.profile.VirtualHomeDir, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml from virtual home %q: %v", proc.profile.VirtualHomeDir, err)
+	}
+	if got, want := string(configBytes), configFixture; got != want {
+		t.Fatalf("config.toml content=%q want %q", got, want)
+	}
+	if proc.profile.VirtualHomeDir == ambientHome {
+		t.Fatalf("VirtualHomeDir %q want project-scoped home distinct from ambient CODEX_HOME", proc.profile.VirtualHomeDir)
+	}
+}
+
+func TestCodexPool_VirtualHomeUnsafeProjectIDCannotEscapeBase(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-home")
+	pool := newVirtualHomeTestPool(t, base)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	proc, err := pool.Acquire(ctx, `..\\..//outside:project?name`, t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire(unsafe projectID): %v", err)
+	}
+	requireVirtualHomeUnderBase(t, base, proc.profile.VirtualHomeDir)
+	if strings.Contains(proc.profile.VirtualHomeDir, "..") {
+		t.Fatalf("VirtualHomeDir %q preserves unsafe traversal marker", proc.profile.VirtualHomeDir)
 	}
 }
 

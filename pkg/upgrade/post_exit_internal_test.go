@@ -168,6 +168,34 @@ func TestWriteActiveEnginePointerReplacesExistingPointer(t *testing.T) {
 	}
 }
 
+func TestWriteActiveEnginePointerRejectsMCPMuxTargetForAimuxStageSuccessor(t *testing.T) {
+	dir := t.TempDir()
+	pointerPath := filepath.Join(dir, "active.txt")
+	mcpMuxTarget := filepath.Join(dir, "mcp-mux", "mcp-mux.exe")
+	if err := os.MkdirAll(filepath.Dir(mcpMuxTarget), 0o755); err != nil {
+		t.Fatalf("MkdirAll mcp-mux target dir: %v", err)
+	}
+	mcpMuxAbs, err := filepath.Abs(mcpMuxTarget)
+	if err != nil {
+		t.Fatalf("Abs mcp-mux target: %v", err)
+	}
+	writeTestFile(t, pointerPath, mcpMuxAbs+"\n")
+	aimuxSuccessor := filepath.Join(dir, "aimux-stage-123.exe")
+
+	wErr := writeActiveEnginePointer(pointerPath, aimuxSuccessor)
+	if wErr == nil {
+		t.Fatal("writeActiveEnginePointer = nil, want cross-product rejection")
+	}
+	if !strings.Contains(wErr.Error(), "cross-product active-engine pointer") {
+		t.Fatalf("error = %q, want actionable cross-product active-engine pointer rejection", wErr.Error())
+	}
+
+	got := readTestFile(t, pointerPath)
+	if strings.TrimSpace(got) != mcpMuxAbs {
+		t.Fatalf("pointer = %q, want existing mcp-mux target %q untouched", strings.TrimSpace(got), mcpMuxAbs)
+	}
+}
+
 // TestWriteActiveEnginePointer_RestoresPriorPointerOnDoubleRenameFailure proves
 // the PRC 2026-06-23 F1 fix: when the initial rename fails AND the post-remove
 // retry rename also fails, the prior active-engine pointer content is restored
