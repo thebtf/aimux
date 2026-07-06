@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +21,7 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor/code"
+	"github.com/thebtf/aimux/pkg/executor/fallback"
 	"github.com/thebtf/aimux/pkg/executor/picker"
 	"github.com/thebtf/aimux/pkg/executor/review"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
@@ -763,6 +767,81 @@ func TestProfileTaskWorkerProgressSinkNilWhenNoSignalPossible(t *testing.T) {
 	if noServer.progressSink("task-x") != nil {
 		t.Fatal("progressSink with nil server = non-nil, want nil")
 	}
+}
+
+func TestBuildFallbackPickerWarmsHealthCachesAtConstruction(t *testing.T) {
+	cliNames := []string{"codex", "claude", "gemini"}
+	profiles := make(map[string]*config.CLIProfile, len(cliNames))
+	for _, cli := range cliNames {
+		bin := fakeExecutable(t, t.TempDir(), cli)
+		profiles[cli] = &config.CLIProfile{
+			Name:         cli,
+			Binary:       bin,
+			ResolvedPath: bin,
+			Capabilities: []string{"code", "task", "review"},
+		}
+	}
+
+	registry := driver.NewRegistry(profiles)
+	for _, cli := range cliNames {
+		registry.SetAvailable(cli, true)
+	}
+	pickerCfg := picker.DefaultPickerConfig()
+	srv := &Server{
+		cfg: &config.Config{
+			Executor: config.ExecutorConfig{Picker: pickerCfg},
+		},
+		registry: registry,
+	}
+
+	fp := buildFallbackPicker(srv)
+	if fp == nil {
+		t.Fatal("buildFallbackPicker returned nil")
+	}
+
+	for _, profile := range profiles {
+		if err := os.Remove(profile.ResolvedPath); err != nil {
+			t.Fatalf("remove fake binary %s: %v", profile.ResolvedPath, err)
+		}
+	}
+
+	if _, _, err := fp.PickPair(context.Background(), classifier.TaskClassCode); err != nil {
+		t.Fatalf("PickPair after binary removal = %v, want warmed picker health cache", err)
+	}
+
+	result, err := fp.RunPrimary(
+		context.Background(),
+		"codex",
+		picker.TaskSpec{TaskClass: classifier.TaskClassCode},
+		fallback.RunOptions{},
+		func(_ context.Context, cli string, _ picker.TaskSpec) (string, error) {
+			if cli == "codex" {
+				return "", extypes.NewRateLimit("codex temporarily rate limited", nil)
+			}
+			return "fallback via " + cli, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("RunPrimary after binary removal = %v, want warmed fallback health cache", err)
+	}
+	if result.SelectedCLI == "codex" || result.Content == "" {
+		t.Fatalf("RunPrimary result = %#v, want successful fallback attempt", result)
+	}
+}
+
+func fakeExecutable(t *testing.T, dir, name string) string {
+	t.Helper()
+	filename := name
+	contents := []byte("#!/bin/sh\nexit 0\n")
+	if runtime.GOOS == "windows" {
+		filename += ".cmd"
+		contents = []byte("@echo off\r\nexit /b 0\r\n")
+	}
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, contents, 0o755); err != nil {
+		t.Fatalf("write fake binary %s: %v", path, err)
+	}
+	return path
 }
 
 func newTaskToolServer(t *testing.T) (*Server, *recordingTaskWorker, *recordingTaskWorker) {
