@@ -1,24 +1,23 @@
-## v5.21.0 — Codex runtime profile startup isolation
+## v5.21.1 — Warm fallback picker health caches
 
-This release ships AIMUX-20: Codex-backed startup now uses a stable project-scoped runtime home, so app-server launches stop inheriting ambient global Codex state while auth, config, and persistent state continue to work inside the virtual home. The same release also carries the AIMUX-20 safety amendment that blocks clear cross-product `mcp-mux` -> `aimux-stage-*` active-pointer writes during upgrade flows.
+This patch release ships the AIMUX-3 CR-003 startup-prewarm closeout: the task fallback picker now warms its health caches at construction time, so the first fallback decision no longer depends on a cold binary probe path. The change stays scoped to the existing fallback picker wiring and does not alter the public MCP surface.
 
 ### Highlights
 
-- Codex app-server startup now derives and applies a stable project-scoped `CODEX_HOME` instead of relying on the caller's global Codex home.
-- Project virtual homes preserve auth, config, and persistent state, so isolated startup no longer drops those capabilities.
-- Upgrade fallback tests now quarantine inherited `MCPMUX_*` / `MCP_MUX_*` environment values and preserve only explicit test-owned overrides.
-- The active-pointer write path now rejects clear cross-product `mcp-mux` -> `aimux-stage-*` successor writes before touching the live pointer.
+- `buildFallbackPicker` now warms both the primary picker and fallback orderer health caches immediately after constructing their health checkers.
+- Added a focused regression test that removes fake CLI binaries after construction and proves warmed cache behavior through both `PickPair` and `RunPrimary`.
+- The shipped diff stays limited to the two reviewed files from AIMUX-3 CR-003: `pkg/server/task_tool.go` and `pkg/server/task_tool_test.go`.
 
 ### Compatibility
 
-No MCP-client migration is required. Existing `aimux` server registration stays the same, and the live MCP tool surface remains 28 tools. The release changes Codex startup-state isolation behind the current task/runtime path rather than adding a new public MCP entry point.
+No migration is required. The live MCP tool surface remains unchanged, and the release tightens fallback startup behavior behind the current task/runtime path rather than introducing new public tools or config.
 
 ### Verification
 
-- PR #188 merged into `master` at `ac7d4b7930d132b4a2d6bc95467200e71a44c603` after green CI, Security, and CodeRabbit status on the release-bearing diff.
-- Local release-readiness gates passed on clean `master`: `go build ./...`, clean-cache `go test ./... -count=1 -timeout 120s`, `go vet ./...`, clean-cache `go mod verify`, `go test ./tests/critical -count=1 -timeout 300s`, `go test ./pkg/server -run 'TestCritical_StallDetection_' -count=1 -timeout 120s`, `AIMUX21_E2E=1 go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s`, `go test ./... -count=1` from `loom/`, and `govulncheck ./...`.
-- Seq19 safety review confirmed the cross-product pointer guard and muxcore-env quarantine without touching external pointers, user homes, plugin caches, or sibling repositories.
+- PR #189 merged into `master` as `b1b4b204d99c6babcf4a9fc36ea1010761fb3493` after approved review evidence plus green CI and Security checks on the reviewed diff.
+- Local release gates are being run from clean `master` for the `v5.21.1` tag candidate before publication.
+- The pre-release housekeeping pass removed the clean, already-absorbed AIMUX-3 linked worktree so release git readiness now evaluates the default branch from one active checkout.
 
 ### Notes
 
-This release advances from the already-published `v5.20.0` to the next available minor release because the shipped delta contains a new Codex runtime-profile capability (`feat:`) plus follow-up fixes. Manual consumer updates remain out of scope for this release flow.
+This is a PATCH release from `v5.21.0` because the shipped delta is a scoped fallback-startup fix plus regression coverage, not a new public capability. Manual consumer updates remain out of scope for this release flow.

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.21.1] — 2026-07-06 — Warm fallback picker health caches
+
+### Fixed
+
+- **AIMUX-3 startup prewarm closeout.** `buildFallbackPicker` now warms both the primary picker and fallback orderer health caches during construction, so the first fallback decision does not depend on cold binary probes.
+- **Fallback cache regression coverage.** Added focused server coverage that removes the fake CLI binaries after construction and proves both `PickPair` and `RunPrimary` still succeed from the warmed caches.
+
 ## [5.21.0] — 2026-07-06 — Codex runtime profile startup isolation
 
 ### Added
