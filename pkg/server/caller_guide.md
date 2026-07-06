@@ -82,12 +82,19 @@ Use recipe resources to discover compiled recipes:
 | `aimux://recipes` | Compact compiled recipe catalog. |
 | `aimux://recipes/{recipe_id}` | Detail for one recipe. |
 
-Initial recipe IDs:
+Supported recipe IDs:
 
 | Recipe ID | Purpose |
 | --- | --- |
 | `code-review` | Read-only review worker in gate mode. |
 | `second-opinion` | Read-only independent review worker in aggregate mode. |
+| `security-audit` | Read-only workflow-backed security audit using compiled `pkg/workflow/secaudit.go` steps. |
+| `debug-investigation` | Read-only workflow-backed debugging investigation using compiled `pkg/workflow/debug.go` steps. |
+
+Workflow-backed recipes surface `recipe_workflow_id`,
+`recipe_workflow_source`, and `recipe_workflow_steps` in recipe detail and task
+metadata. They still run through `task(recipe_id=...)`; no public `workflow`,
+`dialog`, `audit`, `consensus`, or `debate` tool is restored.
 
 Recipe policy is fail-closed before worker spawn. If the selected provider
 cannot enforce the recipe policy, `task` returns `CapabilityMismatch` with

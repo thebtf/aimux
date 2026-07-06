@@ -59,18 +59,23 @@ type PassResult struct {
 
 // Criteria carries dispatch context and execution bounds for review passes.
 type Criteria struct {
-	ParentTaskID string
-	ProjectID    string
-	RequestID    string
-	TenantID     string
-	CWD          string
-	Env          map[string]string
-	CLI          types.CLIName
-	Model        string
-	Effort       string
-	WorkerTypes  map[PassName]loom.WorkerType
-	TaskTimeout  time.Duration
-	PollInterval time.Duration
+	ParentTaskID         string
+	ProjectID            string
+	RequestID            string
+	TenantID             string
+	CWD                  string
+	Env                  map[string]string
+	CLI                  types.CLIName
+	Model                string
+	Effort               string
+	RecipeID             string
+	RecipeWorkflowID     string
+	RecipeWorkflowSource string
+	RecipeWorkflowSteps  []string
+	RecipeWorkflowPrompt string
+	WorkerTypes          map[PassName]loom.WorkerType
+	TaskTimeout          time.Duration
+	PollInterval         time.Duration
 }
 
 // LoomClient is the subset of Loom used by review pass orchestration.
@@ -139,7 +144,7 @@ func (p *Passes) runOne(ctx context.Context, pass PassName, target string, crite
 		RequestID:    criteria.RequestID,
 		ParentTaskID: criteria.ParentTaskID,
 		TenantID:     criteria.TenantID,
-		Prompt:       buildPassPrompt(pass, target),
+		Prompt:       buildPassPrompt(pass, target, criteria),
 		CWD:          criteria.CWD,
 		Env:          cloneEnv(criteria.Env),
 		CLI:          defaultReviewCLI(criteria),
@@ -286,12 +291,34 @@ func defaultReviewCLI(criteria Criteria) string {
 }
 
 func passMetadata(pass PassName, workerType loom.WorkerType, criteria Criteria) map[string]any {
-	return map[string]any{
+	metadata := map[string]any{
 		"worker_type":    string(workerType),
 		"review_pass":    string(pass),
 		"parent_task_id": criteria.ParentTaskID,
 		"sandbox":        "read-only",
 	}
+	if criteria.RecipeID != "" {
+		metadata["recipe_id"] = criteria.RecipeID
+	}
+	if criteria.RecipeWorkflowID != "" {
+		metadata["recipe_workflow_id"] = criteria.RecipeWorkflowID
+		if criteria.RecipeWorkflowSource != "" {
+			metadata["recipe_workflow_source"] = criteria.RecipeWorkflowSource
+		}
+		if len(criteria.RecipeWorkflowSteps) > 0 {
+			metadata["recipe_workflow_steps"] = cloneStrings(criteria.RecipeWorkflowSteps)
+		}
+	}
+	return metadata
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
 }
 
 func cloneEnv(env map[string]string) map[string]string {
@@ -305,18 +332,56 @@ func cloneEnv(env map[string]string) map[string]string {
 	return out
 }
 
-func buildPassPrompt(pass PassName, target string) string {
-	return fmt.Sprintf(`Run the %s review pass for this target.
+func buildPassPrompt(pass PassName, target string, criteria Criteria) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `Run the %s review pass for this target.
 
 Focus:
-%s
+%s`, pass, passFocus(pass))
+	if guidance := workflowReviewGuidance(criteria); guidance != "" {
+		b.WriteString("\n\nWorkflow-backed recipe guidance:\n")
+		b.WriteString(guidance)
+	}
+	fmt.Fprintf(&b, `
 
 Target:
 %s
 
 Return raw JSON only:
-{"findings":[{"severity":"error|warning|info","file":"path","line":null,"body":"description"}],"summary":"one-line summary"}`,
-		pass, passFocus(pass), target)
+{"findings":[{"severity":"error|warning|info","file":"path","line":null,"body":"description"}],"summary":"one-line summary"}`, target)
+	return b.String()
+}
+
+func workflowReviewGuidance(criteria Criteria) string {
+	workflowID := strings.TrimSpace(criteria.RecipeWorkflowID)
+	if workflowID == "" {
+		return ""
+	}
+	var b strings.Builder
+	if recipeID := strings.TrimSpace(criteria.RecipeID); recipeID != "" {
+		b.WriteString("Recipe: ")
+		b.WriteString(recipeID)
+		b.WriteString("\n")
+	}
+	b.WriteString("Compiled workflow: ")
+	b.WriteString(workflowID)
+	if source := strings.TrimSpace(criteria.RecipeWorkflowSource); source != "" {
+		b.WriteString(" (")
+		b.WriteString(source)
+		b.WriteString(")")
+	}
+	if len(criteria.RecipeWorkflowSteps) > 0 {
+		b.WriteString("\nSteps:")
+		for i, step := range criteria.RecipeWorkflowSteps {
+			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("%d. %s", i+1, step))
+		}
+	}
+	if prompt := strings.TrimSpace(criteria.RecipeWorkflowPrompt); prompt != "" {
+		b.WriteString("\n\nParent workflow prompt:\n")
+		b.WriteString(prompt)
+	}
+	return b.String()
 }
 
 func passFocus(pass PassName) string {

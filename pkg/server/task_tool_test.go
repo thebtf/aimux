@@ -27,6 +27,7 @@ import (
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/server/classifier"
 	"github.com/thebtf/aimux/pkg/types"
+	"github.com/thebtf/aimux/pkg/workflow"
 )
 
 func TestHandleTaskValidCallRoutesThroughRouter(t *testing.T) {
@@ -284,6 +285,198 @@ func TestHandleTaskRecipeSecondOpinionUsesAggregateReviewMode(t *testing.T) {
 	}
 }
 
+func TestHandleTaskWorkflowBackedRecipesRouteWithWorkflowMetadata(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		id         string
+		title      string
+		workflowID string
+		steps      []workflow.WorkflowStep
+	}{
+		{id: "security-audit", title: "Security Audit", workflowID: "secaudit", steps: workflow.SecurityAuditSteps()},
+		{id: "debug-investigation", title: "Debug Investigation", workflowID: "debug", steps: workflow.DebugSteps()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			t.Parallel()
+			srv, _, reviewWorker := newTaskToolServer(t)
+			result := callTaskTool(t, srv, map[string]any{
+				"prompt":    "investigate HEAD with a workflow-backed recipe",
+				"recipe_id": tt.id,
+				"target":    "HEAD",
+			})
+			if result.IsError {
+				t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+			}
+
+			payload := decodeTaskToolResult(t, result)
+			if payload["task_class"] != classifier.TaskClassReview {
+				t.Fatalf("task_class = %v, want review; payload=%v", payload["task_class"], payload)
+			}
+			taskID, _ := payload["task_id"].(string)
+			task := waitTaskToolStatus(t, srv, taskID, loom.TaskStatusCompleted)
+			if got := reviewWorker.taskCount(); got != 0 {
+				t.Fatalf("review task count = %d, want workflow worker route without review worker", got)
+			}
+			if task.WorkerType != workflowRecipeWorkerType {
+				t.Fatalf("worker_type = %s, want %s", task.WorkerType, workflowRecipeWorkerType)
+			}
+			assertMetadataString(t, task.Metadata, "target", "HEAD")
+			assertMetadataString(t, task.Metadata, "recipe_id", tt.id)
+			assertMetadataString(t, task.Metadata, "recipe_title", tt.title)
+			assertMetadataBool(t, task.Metadata, "recipe_read_only", true)
+			assertMetadataStringSlice(t, task.Metadata, "recipe_output_resources", []string{"task_snapshot", "task_events", "task_progress"})
+			assertMetadataString(t, task.Metadata, "recipe_workflow_id", tt.workflowID)
+			if source := metadataStringValue(t, task.Metadata, "recipe_workflow_source"); !strings.Contains(source, "pkg/workflow/") {
+				t.Fatalf("recipe_workflow_source = %q, want pkg/workflow source", source)
+			}
+			assertMetadataStringSlice(t, task.Metadata, "recipe_workflow_steps", recipeWorkflowStepNames(tt.steps))
+			assertMetadataString(t, task.Metadata, "workflow_result_status", "completed")
+			assertMetadataInt(t, task.Metadata, "workflow_step_count", len(tt.steps))
+			assertMetadataStringSlice(t, task.Metadata, "workflow_step_statuses", workflowStepStatusesFromSteps(tt.steps))
+			if !strings.Contains(task.Result, "Workflow status: completed") {
+				t.Fatalf("workflow result missing completed status: %s", task.Result)
+			}
+			if !strings.Contains(task.Result, "workflow step complete") {
+				t.Fatalf("workflow result missing executed step output: %s", task.Result)
+			}
+		})
+	}
+}
+
+func TestWorkflowPatternFnExposesDataAsResultText(t *testing.T) {
+	t.Parallel()
+
+	result, err := workflowPatternFn("debugging_approach", map[string]any{
+		"issue": "cache replay loses the workflow hypothesis chain",
+	})
+	if err != nil {
+		t.Fatalf("workflowPatternFn: %v", err)
+	}
+	text, ok := result["result"].(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		t.Fatalf("result text = %#v, want non-empty string", result["result"])
+	}
+	if text == "success" || text == "debugging_approach" {
+		t.Fatalf("result text collapsed to status/pattern only: %q", text)
+	}
+	for _, want := range []string{"hypothesisCount", "cache replay loses the workflow hypothesis chain"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("result text missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestHandleTaskWorkflowBackedRecipePropagatesThinkPatternDataToNextStep(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	prompts := []string{}
+	dispatch := func(_ context.Context, cli string, spec picker.TaskSpec, _ map[string]any) (string, string, error) {
+		mu.Lock()
+		prompts = append(prompts, spec.Prompt)
+		mu.Unlock()
+		if strings.TrimSpace(spec.Prompt) == "" {
+			return "", cli, errors.New("empty workflow step prompt")
+		}
+		return `{"type":"agent_message","content":"workflow step complete"}` + "\n", cli, nil
+	}
+	srv, _, reviewWorker := newTaskToolServerWithWorkflowHooks(t, defaultRecipeProfile(), dispatch, workflowPatternFn)
+	issue := "debug flaky workflow cache propagation"
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":    issue,
+		"recipe_id": "debug-investigation",
+		"target":    "HEAD",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolResult(t, result)
+	waitTaskToolStatus(t, srv, payload["task_id"].(string), loom.TaskStatusCompleted)
+	if got := reviewWorker.taskCount(); got != 0 {
+		t.Fatalf("review task count = %d, want workflow worker route without review worker", got)
+	}
+
+	mu.Lock()
+	captured := append([]string(nil), prompts...)
+	mu.Unlock()
+	for _, prompt := range captured {
+		if !strings.Contains(prompt, "Gather evidence for and against each debugging hypothesis") {
+			continue
+		}
+		for _, want := range []string{"hypothesisCount", issue} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("evidence-gather prompt missing %q: %s", want, prompt)
+			}
+		}
+		return
+	}
+	t.Fatalf("did not capture evidence-gather prompt; prompts=%#v", captured)
+}
+
+func TestHandleTaskWorkflowBackedRecipeFailureMarksTaskFailedAndMissesReplay(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	calls := 0
+	dispatch := func(_ context.Context, cli string, _ picker.TaskSpec, _ map[string]any) (string, string, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		return "", cli, errors.New("forced workflow step failure")
+	}
+	srv, _, _ := newTaskToolServerWithWorkflowHooks(t, defaultRecipeProfile(), dispatch, workflowPatternFn)
+	args := map[string]any{
+		"prompt":     "debug a recipe workflow failure",
+		"recipe_id":  "debug-investigation",
+		"target":     "HEAD",
+		"project_id": "proj-workflow-failed-replay",
+	}
+
+	first := callTaskTool(t, srv, args)
+	if first.IsError {
+		t.Fatalf("first call unexpected error: %s", taskToolResultText(t, first))
+	}
+	firstPayload := decodeTaskToolResult(t, first)
+	firstTaskID := firstPayload["task_id"].(string)
+	firstTask := waitTaskToolStatus(t, srv, firstTaskID, loom.TaskStatusFailed)
+	if !strings.Contains(firstTask.Error, "workflow recipe ended with status \"failed\"") {
+		t.Fatalf("failed task error = %q, want workflow status failure", firstTask.Error)
+	}
+
+	second := callTaskTool(t, srv, args)
+	if second.IsError {
+		t.Fatalf("second call unexpected error: %s", taskToolResultText(t, second))
+	}
+	secondPayload := decodeTaskToolResult(t, second)
+	secondTaskID := secondPayload["task_id"].(string)
+	if secondTaskID == firstTaskID {
+		t.Fatalf("failed workflow task replayed as cache hit: %s", secondTaskID)
+	}
+	waitTaskToolStatus(t, srv, secondTaskID, loom.TaskStatusFailed)
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 2 {
+		t.Fatalf("workflow dispatch calls = %d, want 2 fresh failed executions", gotCalls)
+	}
+}
+
+func TestRecipeReplayRejectsCompletedWorkflowWithFailedStatus(t *testing.T) {
+	t.Parallel()
+
+	if recipeReplayWorkflowResultSuccessful(map[string]any{"workflow_result_status": "failed"}) {
+		t.Fatal("failed workflow_result_status must not be replay eligible")
+	}
+	if !recipeReplayWorkflowResultSuccessful(map[string]any{"workflow_result_status": "completed"}) {
+		t.Fatal("completed workflow_result_status should remain replay eligible")
+	}
+	if !recipeReplayWorkflowResultSuccessful(map[string]any{}) {
+		t.Fatal("non-workflow task without workflow_result_status should remain replay eligible")
+	}
+}
+
 func TestHandleTaskRecipeReplayCacheHitReusesCompletedTask(t *testing.T) {
 	t.Parallel()
 
@@ -467,7 +660,7 @@ func TestHandleTaskUnsupportedRecipeFailsBeforeSubmit(t *testing.T) {
 	srv, codeWorker, reviewWorker := newTaskToolServer(t)
 	result := callTaskTool(t, srv, map[string]any{
 		"prompt":    "review HEAD",
-		"recipe_id": "missing",
+		"recipe_id": "secaudit",
 		"target":    "HEAD",
 	})
 	if !result.IsError {
@@ -480,8 +673,8 @@ func TestHandleTaskUnsupportedRecipeFailsBeforeSubmit(t *testing.T) {
 	if !strings.Contains(payload.Message, "unsupported recipe_id") {
 		t.Fatalf("message = %q, want unsupported recipe_id", payload.Message)
 	}
-	if !stringSlicesEqual(payload.AvailableRecipes, []string{"code-review", "second-opinion"}) {
-		t.Fatalf("available_recipes = %#v, want deterministic recipe IDs", payload.AvailableRecipes)
+	if !stringSlicesEqual(payload.AvailableRecipes, []string{"code-review", "second-opinion", "security-audit", "debug-investigation"}) {
+		t.Fatalf("available_recipes = %#v, want deterministic public recipe IDs", payload.AvailableRecipes)
 	}
 	if got := codeWorker.taskCount(); got != 0 {
 		t.Fatalf("code task count = %d, want 0", got)
@@ -849,15 +1042,37 @@ func newTaskToolServer(t *testing.T) (*Server, *recordingTaskWorker, *recordingT
 }
 
 func newTaskToolServerWithProfile(t *testing.T, profile *config.CLIProfile) (*Server, *recordingTaskWorker, *recordingTaskWorker) {
+	return newTaskToolServerWithWorkflowHooks(t, profile, defaultWorkflowRecipeDispatch, defaultWorkflowRecipePattern)
+}
+
+func newTaskToolServerWithWorkflowHooks(t *testing.T, profile *config.CLIProfile, dispatch workflowRecipeDispatchFunc, patternFn func(string, map[string]any) (map[string]any, error)) (*Server, *recordingTaskWorker, *recordingTaskWorker) {
 	t.Helper()
 	engine := newTaskToolEngine(t)
+	registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": profile})
+	registry.SetAvailable("codex", true)
+	srv := &Server{loom: engine, registry: registry}
 	codeWorker := &recordingTaskWorker{workerType: code.WorkerTypeCode}
 	reviewWorker := &recordingTaskWorker{workerType: review.WorkerTypeReview}
 	engine.RegisterWorker(code.WorkerTypeCode, codeWorker)
 	engine.RegisterWorker(review.WorkerTypeReview, reviewWorker)
-	registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": profile})
-	registry.SetAvailable("codex", true)
-	return &Server{loom: engine, registry: registry}, codeWorker, reviewWorker
+	engine.RegisterWorker(workflowRecipeWorkerType, workflowRecipeWorker{
+		server:     srv,
+		defaultCLI: "codex",
+		dispatch:   dispatch,
+		patternFn:  patternFn,
+	})
+	return srv, codeWorker, reviewWorker
+}
+
+func defaultWorkflowRecipeDispatch(_ context.Context, cli string, spec picker.TaskSpec, _ map[string]any) (string, string, error) {
+	if strings.TrimSpace(spec.Prompt) == "" {
+		return "", cli, errors.New("empty workflow step prompt")
+	}
+	return `{"type":"agent_message","content":"workflow step complete"}` + "\n", cli, nil
+}
+
+func defaultWorkflowRecipePattern(name string, input map[string]any) (map[string]any, error) {
+	return map[string]any{"pattern": name, "summary": fmt.Sprint(input)}, nil
 }
 
 func defaultRecipeProfile() *config.CLIProfile {
@@ -1413,6 +1628,38 @@ func TestTaskDispatchSpawnArgsUsesRequestTimeoutOverride(t *testing.T) {
 	fallback := taskDispatchSpawnArgs("codex", "codex.exe", profile, picker.TaskSpec{Prompt: "hello"})
 	if fallback.TimeoutSeconds != 7 {
 		t.Fatalf("TimeoutSeconds without override = %d, want profile timeout 7", fallback.TimeoutSeconds)
+	}
+}
+
+func workflowStepStatusesFromSteps(steps []workflow.WorkflowStep) []string {
+	out := make([]string, len(steps))
+	for i, step := range steps {
+		out[i] = step.Name + "=completed"
+	}
+	return out
+}
+
+func assertMetadataInt(t *testing.T, metadata map[string]any, key string, want int) {
+	t.Helper()
+	value, ok := metadata[key]
+	if !ok {
+		t.Fatalf("metadata[%q] missing", key)
+	}
+	switch typed := value.(type) {
+	case int:
+		if typed != want {
+			t.Fatalf("metadata[%q] = %d, want %d", key, typed, want)
+		}
+	case int64:
+		if typed != int64(want) {
+			t.Fatalf("metadata[%q] = %d, want %d", key, typed, want)
+		}
+	case float64:
+		if typed != float64(want) {
+			t.Fatalf("metadata[%q] = %v, want %d", key, typed, want)
+		}
+	default:
+		t.Fatalf("metadata[%q] = %#v, want int %d", key, value, want)
 	}
 }
 

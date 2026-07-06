@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,59 @@ func TestPassesRunDispatchesAllPassesWithMetadata(t *testing.T) {
 	assertSubmission(t, client.submissions[0], WorkerTypeReviewStructural, PassStructural)
 	assertSubmission(t, client.submissions[1], WorkerTypeReviewBehavioural, PassBehavioural)
 	assertSubmission(t, client.submissions[2], WorkerTypeReviewAdversarial, PassAdversarial)
+}
+
+func TestPassesRunPropagatesWorkflowRecipeGuidanceToLeafTasks(t *testing.T) {
+	client := newMockLoom(map[loom.WorkerType]string{
+		WorkerTypeReviewStructural:  passJSON("structural ok", nil),
+		WorkerTypeReviewBehavioural: passJSON("behavioural ok", nil),
+		WorkerTypeReviewAdversarial: passJSON("adversarial ok", nil),
+	})
+	passes, err := NewPasses(client)
+	if err != nil {
+		t.Fatalf("NewPasses returned error: %v", err)
+	}
+	criteria := testCriteria()
+	criteria.RecipeID = "security-audit"
+	criteria.RecipeWorkflowID = "secaudit"
+	criteria.RecipeWorkflowSource = "pkg/workflow/secaudit.go"
+	criteria.RecipeWorkflowSteps = []string{"attack_surface", "auth_analysis", "remediation"}
+	criteria.RecipeWorkflowPrompt = "Workflow-backed curated recipe: security-audit\nCompiled workflow: secaudit\nSteps:\n1. attack_surface\n2. auth_analysis\n3. remediation"
+
+	_, err = passes.Run(context.Background(), "HEAD", criteria)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(client.submissions) != 3 {
+		t.Fatalf("submission count = %d, want 3", len(client.submissions))
+	}
+	for _, req := range client.submissions {
+		for _, want := range []string{
+			"Workflow-backed recipe guidance:",
+			"Recipe: security-audit",
+			"Compiled workflow: secaudit (pkg/workflow/secaudit.go)",
+			"1. attack_surface",
+			"3. remediation",
+			"Parent workflow prompt:",
+		} {
+			if !strings.Contains(req.Prompt, want) {
+				t.Fatalf("leaf prompt missing %q:\n%s", want, req.Prompt)
+			}
+		}
+		if req.Metadata["recipe_id"] != "security-audit" {
+			t.Fatalf("recipe_id metadata = %#v, want security-audit", req.Metadata["recipe_id"])
+		}
+		if req.Metadata["recipe_workflow_id"] != "secaudit" {
+			t.Fatalf("recipe_workflow_id metadata = %#v, want secaudit", req.Metadata["recipe_workflow_id"])
+		}
+		if req.Metadata["recipe_workflow_source"] != "pkg/workflow/secaudit.go" {
+			t.Fatalf("recipe_workflow_source metadata = %#v, want pkg/workflow/secaudit.go", req.Metadata["recipe_workflow_source"])
+		}
+		steps, ok := req.Metadata["recipe_workflow_steps"].([]string)
+		if !ok || !slices.Equal(steps, criteria.RecipeWorkflowSteps) {
+			t.Fatalf("recipe_workflow_steps metadata = %#v, want %#v", req.Metadata["recipe_workflow_steps"], criteria.RecipeWorkflowSteps)
+		}
+	}
 }
 
 func TestPassesRunContinuesAfterErrorFindings(t *testing.T) {

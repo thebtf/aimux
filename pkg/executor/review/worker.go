@@ -165,6 +165,21 @@ func (w *ReviewWorker) criteriaForTask(task *loom.Task) Criteria {
 	}
 	criteria.Model = task.Model
 	criteria.Effort = task.Effort
+	if value, ok := metadataString(task.Metadata, "recipe_id"); ok {
+		criteria.RecipeID = strings.TrimSpace(value)
+	}
+	if value, ok := metadataString(task.Metadata, "recipe_workflow_id"); ok {
+		criteria.RecipeWorkflowID = strings.TrimSpace(value)
+	}
+	if value, ok := metadataString(task.Metadata, "recipe_workflow_source"); ok {
+		criteria.RecipeWorkflowSource = strings.TrimSpace(value)
+	}
+	if values, ok := metadataStringSlice(task.Metadata, "recipe_workflow_steps"); ok {
+		criteria.RecipeWorkflowSteps = values
+	}
+	if criteria.RecipeWorkflowID != "" {
+		criteria.RecipeWorkflowPrompt = strings.TrimSpace(task.Prompt)
+	}
 	if task.Timeout > 0 {
 		criteria.TaskTimeout = time.Duration(task.Timeout) * time.Second
 	}
@@ -230,6 +245,34 @@ func metadataString(metadata map[string]any, key string) (string, bool) {
 		return "", false
 	}
 	return fmt.Sprint(value), true
+}
+
+func metadataStringSlice(metadata map[string]any, key string) ([]string, bool) {
+	if metadata == nil {
+		return nil, false
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return nil, false
+	}
+	switch items := value.(type) {
+	case []string:
+		return cloneStrings(items), true
+	case []any:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			text := strings.TrimSpace(fmt.Sprint(item))
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 func reviewResumeTaskID(metadata map[string]any) string {

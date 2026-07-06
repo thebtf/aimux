@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/server/classifier"
@@ -136,9 +137,17 @@ func (r *TaskRouter) findRecipeReplayTask(req loom.TaskRequest) (*loom.Task, boo
 		if !ok || keyVersion != recipeReplayKeyVersion {
 			continue
 		}
+		if !recipeReplayWorkflowResultSuccessful(task.Metadata) {
+			continue
+		}
 		return task, true, nil
 	}
 	return nil, false, nil
+}
+
+func recipeReplayWorkflowResultSuccessful(metadata map[string]any) bool {
+	status, ok := metadataString(metadata, "workflow_result_status")
+	return !ok || strings.TrimSpace(status) == "" || strings.TrimSpace(status) == "completed"
 }
 
 func (r *TaskRouter) recipeReplayResult(task *loom.Task, taskClass string, confidence float64, candidates []classifier.Candidate) (TaskResult, error) {

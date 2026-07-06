@@ -375,6 +375,114 @@ func TestEngine_Execute_GatePasses(t *testing.T) {
 	}
 }
 
+func TestEngine_Execute_RootCauseGatePasses(t *testing.T) {
+	e := newTestEngine(
+		map[string]string{"debug": "fix plan generated"},
+		"",
+		map[string]string{"decision_framework": "Root cause: recipe replay reused a failed workflow result."},
+		nil,
+	)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+		{
+			Name:   "fix_plan",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q; want completed", result.Status)
+	}
+	if got := result.Steps[len(result.Steps)-1].Name; got != "fix_plan" {
+		t.Fatalf("last step = %q; want fix_plan", got)
+	}
+}
+
+func TestEngine_Execute_RootCauseGateBlocksMissingRootCause(t *testing.T) {
+	e := newTestEngine(map[string]string{"debug": "fix plan generated"}, "", nil, nil)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+		{
+			Name:   "fix_plan",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "gated" {
+		t.Fatalf("status = %q; want gated", result.Status)
+	}
+	for _, step := range result.Steps {
+		if step.Name == "fix_plan" {
+			t.Fatal("fix_plan should not execute when root cause is missing")
+		}
+	}
+}
+
+func TestEngine_Execute_RootCauseGateBlocksNegativeResult(t *testing.T) {
+	e := newTestEngine(
+		map[string]string{"debug": "fix plan generated"},
+		"",
+		map[string]string{"decision_framework": "Root cause not identified: insufficient evidence."},
+		nil,
+	)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+		{
+			Name:   "fix_plan",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "gated" {
+		t.Fatalf("status = %q; want gated", result.Status)
+	}
+	for _, step := range result.Steps {
+		if step.Name == "fix_plan" {
+			t.Fatal("fix_plan should not execute when root-cause result is negative")
+		}
+	}
+}
+
 func TestEngine_Execute_StepFails(t *testing.T) {
 	e := newTestEngine(
 		map[string]string{"analyze": "ERR:executor crashed"},
@@ -517,6 +625,7 @@ type cancelSender struct{}
 func (c *cancelSender) Get(_ context.Context, name string) (ExecutorHandle, error) {
 	return &mockHandle{name: name}, nil
 }
+
 func (c *cancelSender) Send(ctx context.Context, _ ExecutorHandle, _ types.Message) (*types.Response, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -798,6 +907,7 @@ type errSender struct{ err error }
 func (s *errSender) Get(_ context.Context, name string) (ExecutorHandle, error) {
 	return &mockHandle{name: name}, nil
 }
+
 func (s *errSender) Send(_ context.Context, _ ExecutorHandle, _ types.Message) (*types.Response, error) {
 	return nil, s.err
 }

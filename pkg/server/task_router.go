@@ -45,6 +45,7 @@ type TaskRouterConfig struct {
 type TaskRequest struct {
 	Prompt         string
 	TaskClass      string
+	WorkerType     loom.WorkerType
 	ProjectID      string
 	RequestID      string
 	ParentTaskID   string
@@ -158,6 +159,9 @@ func (r *TaskRouter) Dispatch(ctx context.Context, req TaskRequest) (TaskResult,
 	if !ok || workerType == "" {
 		return TaskResult{TaskClass: resolvedClass, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)},
 			extypes.NewUserInputError(fmt.Sprintf("unsupported task_class %q", resolvedClass), nil)
+	}
+	if req.WorkerType != "" {
+		workerType = req.WorkerType
 	}
 
 	loomReq := canonicalLoomRequest(req, prompt, resolvedClass, workerType, confidence, candidates)

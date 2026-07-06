@@ -226,6 +226,7 @@ func (s *Server) registerTaskWorkers() {
 	}
 	s.loom.RegisterWorker(deepResearchWorkerType, deepResearchWorker{progress: s.loom})
 
+	s.loom.RegisterWorker(workflowRecipeWorkerType, workflowRecipeWorker{server: s, defaultCLI: "codex"})
 	subtaskLoom := tenantAwareSubtaskLoom{engine: s.loom}
 	var pairSelector code.PairSelector
 	if s.fallbackPicker != nil {

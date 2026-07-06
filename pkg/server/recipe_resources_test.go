@@ -3,9 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/thebtf/aimux/pkg/workflow"
 )
 
 func TestRecipeResourceTemplatesRegistered(t *testing.T) {
@@ -55,42 +58,23 @@ func TestRecipeListResourceReturnsCompactDeterministicCatalog(t *testing.T) {
 	srv := testServerWithLoom(t)
 
 	got := readRecipeListResource(t, srv, "aimux://recipes")
-	if got["count"] != float64(2) {
-		t.Fatalf("count = %v, want 2; payload=%v", got["count"], got)
+	wantIDs := []string{"code-review", "second-opinion", "security-audit", "debug-investigation"}
+	if got["count"] != float64(len(wantIDs)) {
+		t.Fatalf("count = %v, want %d; payload=%v", got["count"], len(wantIDs), got)
 	}
 	items, ok := got["recipes"].([]any)
-	if !ok || len(items) != 2 {
-		t.Fatalf("recipes = %#v, want two entries", got["recipes"])
+	if !ok || len(items) != len(wantIDs) {
+		t.Fatalf("recipes = %#v, want %d entries", got["recipes"], len(wantIDs))
 	}
-	first := items[0].(map[string]any)
-	second := items[1].(map[string]any)
-	if first["id"] != "code-review" || second["id"] != "second-opinion" {
-		t.Fatalf("recipe order = [%v %v], want [code-review second-opinion]", first["id"], second["id"])
-	}
-	for _, item := range []map[string]any{first, second} {
-		if item["description"] == "" {
-			t.Fatalf("recipe %v missing description: %v", item["id"], item)
+	for i, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("recipes[%d] type = %T, want map", i, item)
 		}
-		if item["task_class"] != "review" {
-			t.Fatalf("recipe %v task_class = %v, want review", item["id"], item["task_class"])
+		if entry["id"] != wantIDs[i] {
+			t.Fatalf("recipe order[%d] = %v, want %s", i, entry["id"], wantIDs[i])
 		}
-		if item["read_only"] != true {
-			t.Fatalf("recipe %v read_only = %v, want true", item["id"], item["read_only"])
-		}
-		if phases, ok := item["phases"].([]any); !ok || len(phases) == 0 {
-			t.Fatalf("recipe %v phases = %#v, want non-empty list", item["id"], item["phases"])
-		}
-		if policyNeeds, ok := item["policy_needs"].([]any); !ok || len(policyNeeds) == 0 {
-			t.Fatalf("recipe %v policy_needs = %#v, want non-empty list", item["id"], item["policy_needs"])
-		}
-		if outputResources, ok := item["output_resources"].([]any); !ok || len(outputResources) == 0 {
-			t.Fatalf("recipe %v output_resources = %#v, want non-empty list", item["id"], item["output_resources"])
-		}
-		for _, forbidden := range []string{"prompt", "env", "transcript"} {
-			if _, leaked := item[forbidden]; leaked {
-				t.Fatalf("recipe %v exposed %q in compact catalog: %v", item["id"], forbidden, item)
-			}
-		}
+		assertRecipeResourceReadOnlyShape(t, entry)
 	}
 }
 
@@ -101,14 +85,41 @@ func TestRecipeDetailResourceReturnsRecipe(t *testing.T) {
 	if got["id"] != "code-review" {
 		t.Fatalf("id = %v, want code-review; payload=%v", got["id"], got)
 	}
-	if got["title"] == "" || got["description"] == "" {
-		t.Fatalf("detail missing title/description: %v", got)
+	assertRecipeResourceReadOnlyShape(t, got)
+	if got["gate_default"] != true {
+		t.Fatalf("gate_default = %v, want true for code-review", got["gate_default"])
 	}
-	if got["task_class"] != "review" {
-		t.Fatalf("task_class = %v, want review", got["task_class"])
+}
+
+func TestRecipeDetailResourceReturnsWorkflowBackedMetadata(t *testing.T) {
+	srv := testServerWithLoom(t)
+	tests := []struct {
+		uri        string
+		id         string
+		workflowID string
+		steps      []workflow.WorkflowStep
+	}{
+		{uri: "aimux://recipes/security-audit", id: "security-audit", workflowID: "secaudit", steps: workflow.SecurityAuditSteps()},
+		{uri: "aimux://recipes/debug-investigation", id: "debug-investigation", workflowID: "debug", steps: workflow.DebugSteps()},
 	}
-	if got["read_only"] != true {
-		t.Fatalf("read_only = %v, want true", got["read_only"])
+
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			got := readRecipeDetailResource(t, srv, tt.uri)
+			if got["id"] != tt.id {
+				t.Fatalf("id = %v, want %s; payload=%v", got["id"], tt.id, got)
+			}
+			assertRecipeResourceReadOnlyShape(t, got)
+			if got["recipe_workflow_id"] != tt.workflowID {
+				t.Fatalf("recipe_workflow_id = %v, want %s; payload=%v", got["recipe_workflow_id"], tt.workflowID, got)
+			}
+			if source, ok := got["recipe_workflow_source"].(string); !ok || !strings.Contains(source, "pkg/workflow/") {
+				t.Fatalf("recipe_workflow_source = %#v, want pkg/workflow source", got["recipe_workflow_source"])
+			}
+			if gotSteps := resourceStringSlice(t, got["recipe_workflow_steps"]); !stringSlicesEqual(gotSteps, recipeWorkflowStepNames(tt.steps)) {
+				t.Fatalf("recipe_workflow_steps = %#v, want %#v", gotSteps, recipeWorkflowStepNames(tt.steps))
+			}
+		})
 	}
 }
 
@@ -125,12 +136,10 @@ func TestRecipeDetailResourceUnknownReturnsAvailableRecipes(t *testing.T) {
 	if got["recipe_id"] != "missing" {
 		t.Fatalf("recipe_id = %v, want missing", got["recipe_id"])
 	}
-	available, ok := got["available_recipes"].([]any)
-	if !ok || len(available) != 2 {
-		t.Fatalf("available_recipes = %#v, want two recipe IDs", got["available_recipes"])
-	}
-	if available[0] != "code-review" || available[1] != "second-opinion" {
-		t.Fatalf("available_recipes = %#v, want deterministic IDs", available)
+	available := resourceStringSlice(t, got["available_recipes"])
+	want := []string{"code-review", "second-opinion", "security-audit", "debug-investigation"}
+	if !stringSlicesEqual(available, want) {
+		t.Fatalf("available_recipes = %#v, want deterministic IDs %#v", available, want)
 	}
 }
 
@@ -148,4 +157,56 @@ func readRecipeDetailResource(t *testing.T, srv *Server, uri string) map[string]
 		Params: mcp.ReadResourceParams{URI: uri},
 	})
 	return decodeTaskResourceContents(t, contents, err, uri)
+}
+
+func assertRecipeResourceReadOnlyShape(t *testing.T, item map[string]any) {
+	t.Helper()
+	if item["description"] == "" {
+		t.Fatalf("recipe %v missing description: %v", item["id"], item)
+	}
+	if item["task_class"] != "review" {
+		t.Fatalf("recipe %v task_class = %v, want review", item["id"], item["task_class"])
+	}
+	if item["read_only"] != true {
+		t.Fatalf("recipe %v read_only = %v, want true", item["id"], item["read_only"])
+	}
+	if phases, ok := item["phases"].([]any); !ok || len(phases) == 0 {
+		t.Fatalf("recipe %v phases = %#v, want non-empty list", item["id"], item["phases"])
+	}
+	if !stringSliceContains(resourceStringSlice(t, item["policy_needs"]), "read_only") {
+		t.Fatalf("recipe %v policy_needs = %#v, want read_only", item["id"], item["policy_needs"])
+	}
+	if !stringSlicesEqual(resourceStringSlice(t, item["output_resources"]), []string{"task_snapshot", "task_events", "task_progress"}) {
+		t.Fatalf("recipe %v output_resources = %#v, want read-only task resources", item["id"], item["output_resources"])
+	}
+	for _, forbidden := range []string{"prompt", "env", "transcript"} {
+		if _, leaked := item[forbidden]; leaked {
+			t.Fatalf("recipe %v exposed %q in resource payload: %v", item["id"], forbidden, item)
+		}
+	}
+}
+
+func resourceStringSlice(t *testing.T, value any) []string {
+	t.Helper()
+	items, ok := value.([]any)
+	if !ok {
+		t.Fatalf("value = %#v, want JSON string array", value)
+	}
+	out := make([]string, len(items))
+	for i, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			t.Fatalf("value[%d] = %#v, want string", i, item)
+		}
+		out[i] = text
+	}
+	return out
+}
+
+func recipeWorkflowStepNames(steps []workflow.WorkflowStep) []string {
+	out := make([]string, len(steps))
+	for i, step := range steps {
+		out[i] = step.Name
+	}
+	return out
 }

@@ -129,9 +129,9 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 		}
 
 		e.emitAudit(audit.AuditEvent{
-			Timestamp: time.Now(),
-			EventType: audit.EventWorkflowStepStart,
-			TenantID:  tc.TenantID,
+			Timestamp:  time.Now(),
+			EventType:  audit.EventWorkflowStepStart,
+			TenantID:   tc.TenantID,
 			ResourceID: step.Name,
 			ExtraFields: map[string]string{
 				"action": step.Action.String(),
@@ -448,6 +448,8 @@ func (e *Engine) runParallel(ctx context.Context, step WorkflowStep, priorSummar
 //   - "all_steps_completed": passes if every prior step has Status "completed"
 //   - "min_participants": passes if the dialogue step preceding this gate had
 //     at least N participants (config["min_count"] int, default 2)
+//   - "root_cause_identified": passes if the debug workflow's root_cause step
+//     completed with non-empty, affirmative root-cause content.
 //
 // Unknown conditions pass by default (conservative).
 func (e *Engine) evaluateGate(config map[string]any, priorResults []StepResult) bool {
@@ -468,11 +470,50 @@ func (e *Engine) evaluateGate(config map[string]any, priorResults []StepResult) 
 			}
 		}
 		return true
+	case "root_cause_identified":
+		return rootCauseIdentified(priorResults)
 	default:
-		// Unknown condition — pass by default (conservative; prevents hard failures
-		// on unknown gates while we grow the condition vocabulary).
 		return true
 	}
+}
+
+func rootCauseIdentified(priorResults []StepResult) bool {
+	for i := len(priorResults) - 1; i >= 0; i-- {
+		sr := priorResults[i]
+		if sr.Name != "root_cause" {
+			continue
+		}
+		return stepIdentifiesRootCause(sr)
+	}
+	return false
+}
+
+func stepIdentifiesRootCause(sr StepResult) bool {
+	if sr.Status != "completed" && sr.Status != "advisory_gated" {
+		return false
+	}
+	text := strings.TrimSpace(sr.Content)
+	if text == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	negativeMarkers := []string{
+		"root cause not identified",
+		"no root cause identified",
+		"unable to identify",
+		"cannot identify",
+		"could not identify",
+		"unknown root cause",
+		"root cause unknown",
+		"insufficient evidence",
+		"not enough evidence",
+	}
+	for _, marker := range negativeMarkers {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 // --- helpers ---

@@ -190,15 +190,20 @@ non-mutating и не публикуют preservation metadata.
 | `aimux://recipes` | Компактный compiled recipe catalog с IDs, descriptions, phases, policy needs и output resource hints. |
 | `aimux://recipes/{recipe_id}` | Detail view для одного supported recipe. Unknown IDs возвращают `not_found` плюс `available_recipes`. |
 
-Initial recipes read-only и идут через существующий `task` entry point:
+Supported recipes остаются read-only и идут через существующий `task` entry point:
 
 | Recipe ID | Task class | Default mode | Назначение |
 |---|---|---|---|
 | `code-review` | `review` | gate | Запускает существующий review worker как named code-review recipe. |
 | `second-opinion` | `review` | aggregate | Запускает существующий review worker для independent read-only assessment. |
+| `security-audit` | `review` | aggregate | Запускает compiled `pkg/workflow/secaudit.go` security audit workflow как read-only recipe. |
+| `debug-investigation` | `review` | aggregate | Запускает compiled `pkg/workflow/debug.go` debugging workflow как read-only recipe. |
 
-Вызывайте recipe через `task(recipe_id=..., target=...)`; новый workflow или
-recipe tool не добавляется. Recipe policy теперь fail-closed до worker spawn:
+Вызывайте recipe через `task(recipe_id=..., target=...)`; новый workflow,
+dialog, audit, consensus, debate или recipe tool не добавляется.
+Workflow-backed recipes публикуют `recipe_workflow_id`,
+`recipe_workflow_source` и `recipe_workflow_steps` metadata, но остаются за
+`task` contract. Recipe policy теперь fail-closed до worker spawn:
 если выбранный provider/profile не может enforce declared policy needs,
 `task` возвращает non-retryable `CapabilityMismatch`, и Loom task не создаётся.
 
