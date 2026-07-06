@@ -256,6 +256,33 @@ func TestFallbackPicker_RunPrimaryRejectsUnknownPrimary(t *testing.T) {
 	}
 }
 
+func BenchmarkFallbackPicker_DecisionOverhead(b *testing.B) {
+	fp := buildFallbackPickerForTest([]string{"codex", "claude", "gemini"}, nil)
+	spec := testSpec()
+	ctx := context.Background()
+	dispatch := func(_ context.Context, cli string, _ picker.TaskSpec) (string, error) {
+		if cli == "codex" {
+			return "", rateLimitErr("codex rate limited")
+		}
+		return "fallback output", nil
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	var result Result
+	for b.Loop() {
+		var err error
+		result, err = fp.RunPrimary(ctx, "codex", spec, RunOptions{}, dispatch)
+		if err != nil {
+			b.Fatalf("RunPrimary returned error: %v", err)
+		}
+		if result.SelectedCLI != "claude" || len(result.FailedAttempts) != 1 {
+			b.Fatalf("RunPrimary result = %#v, want claude selected after one failed primary", result)
+		}
+	}
+	requireBenchmarkOverheadBelow(b, b.Elapsed())
+}
+
 // --- candidates list ---
 
 func TestFallback_NilCandidatesNotPanics(t *testing.T) {

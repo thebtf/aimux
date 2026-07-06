@@ -37,6 +37,38 @@ func defaultOrdCfg() *FallbackConfig {
 	return &c
 }
 
+const fallbackDecisionOverheadLimit = 10 * time.Millisecond
+
+func requireBenchmarkOverheadBelow(b *testing.B, elapsed time.Duration) {
+	b.Helper()
+	perOp := elapsed / time.Duration(b.N)
+	if perOp >= fallbackDecisionOverheadLimit {
+		b.Fatalf("fallback decision overhead = %s/op, want < %s/op", perOp, fallbackDecisionOverheadLimit)
+	}
+}
+
+func BenchmarkOrderer_RankDecisionOverhead(b *testing.B) {
+	candidates := []string{"codex", "claude", "gemini"}
+	store := NewInMemoryScoreStore()
+	store.RecordFailure("codex", types.CLIErrorCodeRateLimit)
+	store.RecordSuccess("claude", 1)
+	store.RecordSuccess("gemini", 3)
+	orderer := NewOrderer(capScore(), alwaysHealthyChecker(candidates), defaultOrdCfg())
+	attempted := map[string]struct{}{"codex": {}}
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	var ranked []string
+	for b.Loop() {
+		ranked = orderer.Rank(ctx, candidates, "code", attempted, store)
+		if len(ranked) != 2 || ranked[0] != "claude" {
+			b.Fatalf("ranked CLIs = %#v, want claude first with codex excluded", ranked)
+		}
+	}
+	requireBenchmarkOverheadBelow(b, b.Elapsed())
+}
+
 // --- Cold start: capability dominates ---
 
 func TestOrderer_ColdStart_CapabilityDominates(t *testing.T) {
