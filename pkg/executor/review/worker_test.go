@@ -56,6 +56,46 @@ func TestReviewWorkerExecuteRecordsAggregateMetadata(t *testing.T) {
 	}
 }
 
+func TestReviewWorkerPassesWorkflowRecipeMetadataToRunner(t *testing.T) {
+	runner := &recordingPassRunner{results: []PassResult{{Name: PassStructural, Summary: "structure clean"}}}
+	worker, err := NewReviewWorker(ReviewWorkerConfig{PassRunner: runner})
+	if err != nil {
+		t.Fatalf("NewReviewWorker returned error: %v", err)
+	}
+	task := reviewWorkerTask(map[string]any{
+		"target":                 "HEAD",
+		"recipe_id":              "debug-investigation",
+		"recipe_workflow_id":     "debug",
+		"recipe_workflow_source": "pkg/workflow/debug.go",
+		"recipe_workflow_steps":  []any{"symptom_capture", "hypothesis_gen", "fix_plan"},
+	})
+	task.Prompt = "Workflow-backed curated recipe: debug-investigation\nCompiled workflow: debug"
+
+	_, err = worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("pass runner calls = %d, want 1", runner.calls)
+	}
+	criteria := runner.criteria[0]
+	if criteria.RecipeID != "debug-investigation" {
+		t.Fatalf("RecipeID = %q, want debug-investigation", criteria.RecipeID)
+	}
+	if criteria.RecipeWorkflowID != "debug" {
+		t.Fatalf("RecipeWorkflowID = %q, want debug", criteria.RecipeWorkflowID)
+	}
+	if criteria.RecipeWorkflowSource != "pkg/workflow/debug.go" {
+		t.Fatalf("RecipeWorkflowSource = %q, want pkg/workflow/debug.go", criteria.RecipeWorkflowSource)
+	}
+	if got, want := strings.Join(criteria.RecipeWorkflowSteps, ","), "symptom_capture,hypothesis_gen,fix_plan"; got != want {
+		t.Fatalf("RecipeWorkflowSteps = %q, want %q", got, want)
+	}
+	if !strings.Contains(criteria.RecipeWorkflowPrompt, "Workflow-backed curated recipe: debug-investigation") {
+		t.Fatalf("RecipeWorkflowPrompt = %q, want parent workflow prompt", criteria.RecipeWorkflowPrompt)
+	}
+}
+
 func TestReviewWorkerExecuteGateModeRecordsDecision(t *testing.T) {
 	runner := &recordingPassRunner{results: []PassResult{
 		{Name: PassStructural, Summary: "error", Findings: []Finding{

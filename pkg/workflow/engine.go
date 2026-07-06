@@ -129,9 +129,9 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 		}
 
 		e.emitAudit(audit.AuditEvent{
-			Timestamp: time.Now(),
-			EventType: audit.EventWorkflowStepStart,
-			TenantID:  tc.TenantID,
+			Timestamp:  time.Now(),
+			EventType:  audit.EventWorkflowStepStart,
+			TenantID:   tc.TenantID,
 			ResourceID: step.Name,
 			ExtraFields: map[string]string{
 				"action": step.Action.String(),
@@ -141,7 +141,7 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 		stepCtx, cancel := context.WithTimeout(ctx, timeout)
 		start := time.Now()
 
-		content, err := e.executeStep(stepCtx, step, input, priorSummary)
+		content, err := e.executeStep(stepCtx, step, input, priorSummary, results)
 		cancel()
 
 		dur := time.Since(start)
@@ -248,14 +248,14 @@ func (e *Engine) Execute(ctx context.Context, steps []WorkflowStep, input Workfl
 // executeStep dispatches a single step to the appropriate subsystem.
 // It returns the step's textual output or an error.
 // Gate steps return an empty string (evaluation is handled by Execute).
-func (e *Engine) executeStep(ctx context.Context, step WorkflowStep, input WorkflowInput, priorSummary string) (string, error) {
+func (e *Engine) executeStep(ctx context.Context, step WorkflowStep, input WorkflowInput, priorSummary string, priorResults []StepResult) (string, error) {
 	switch step.Action {
 	case ActionSingleExec:
 		return e.runSingleExec(ctx, step, priorSummary)
 	case ActionDialogue:
 		return e.runDialogue(ctx, step, priorSummary)
 	case ActionThinkPattern:
-		return e.runThinkPattern(ctx, step, input, priorSummary)
+		return e.runThinkPattern(ctx, step, input, priorSummary, priorResults)
 	case ActionGate:
 		// Gate evaluation happens in Execute after this call returns.
 		return "", nil
@@ -350,7 +350,7 @@ func (e *Engine) runDialogue(ctx context.Context, step WorkflowStep, priorSummar
 }
 
 // runThinkPattern invokes a registered think pattern and returns the result content.
-func (e *Engine) runThinkPattern(_ context.Context, step WorkflowStep, input WorkflowInput, priorSummary string) (string, error) {
+func (e *Engine) runThinkPattern(_ context.Context, step WorkflowStep, input WorkflowInput, priorSummary string, priorResults []StepResult) (string, error) {
 	if e.patternFn == nil {
 		return "", fmt.Errorf("step %q: pattern function not configured", step.Name)
 	}
@@ -375,6 +375,12 @@ func (e *Engine) runThinkPattern(_ context.Context, step WorkflowStep, input Wor
 	for k, v := range input.Extra {
 		if _, exists := patternInput[k]; !exists {
 			patternInput[k] = v
+		}
+	}
+	if step.Name == "root_cause" && patternName == "decision_framework" {
+		patternInput["workflow_root_cause_gate"] = true
+		if evidence := workflowRootCauseEvidence(priorResults); len(evidence) > 0 {
+			patternInput["workflow_root_cause_evidence"] = evidence
 		}
 	}
 
@@ -448,6 +454,8 @@ func (e *Engine) runParallel(ctx context.Context, step WorkflowStep, priorSummar
 //   - "all_steps_completed": passes if every prior step has Status "completed"
 //   - "min_participants": passes if the dialogue step preceding this gate had
 //     at least N participants (config["min_count"] int, default 2)
+//   - "root_cause_identified": passes if the debug workflow's root_cause step
+//     completed with non-empty, affirmative root-cause content.
 //
 // Unknown conditions pass by default (conservative).
 func (e *Engine) evaluateGate(config map[string]any, priorResults []StepResult) bool {
@@ -468,11 +476,276 @@ func (e *Engine) evaluateGate(config map[string]any, priorResults []StepResult) 
 			}
 		}
 		return true
+	case "root_cause_identified":
+		return rootCauseIdentified(priorResults)
 	default:
-		// Unknown condition — pass by default (conservative; prevents hard failures
-		// on unknown gates while we grow the condition vocabulary).
 		return true
 	}
+}
+
+func rootCauseIdentified(priorResults []StepResult) bool {
+	for i := len(priorResults) - 1; i >= 0; i-- {
+		sr := priorResults[i]
+		if sr.Name != "root_cause" {
+			continue
+		}
+		return stepIdentifiesRootCause(sr)
+	}
+	return false
+}
+
+var workflowRootCauseNegativeMarkers = []string{
+	"root cause not identified",
+	"no root cause identified",
+	"unable to identify",
+	"cannot identify",
+	"could not identify",
+	"unknown root cause",
+	"root cause unknown",
+	"insufficient evidence",
+	"not enough evidence",
+	"no definitive cause",
+	"no definitive root cause",
+	"no conclusive cause",
+	"not definitively identified",
+	"collect more logs",
+	"need more logs",
+	"more logs are needed",
+	"needs more investigation",
+	"requires more investigation",
+	"cannot determine",
+	"could not determine",
+	"not determined",
+	"undetermined",
+	"unclear",
+	"possibly",
+	"possible cause",
+}
+
+var workflowRootCauseAffirmativeMarkers = []string{
+	"root cause:",
+	"root cause is",
+	"root cause was",
+	"root cause =",
+	"root cause -",
+	"root cause —",
+	"root cause identified",
+	"identified root cause",
+	"confirmed root cause",
+	"the cause is",
+	"the cause was",
+	"caused by",
+	"is caused by",
+	"was caused by",
+	"failure stems from",
+	"failure stemmed from",
+	"traced to",
+}
+
+func stepIdentifiesRootCause(sr StepResult) bool {
+	if sr.Status != "completed" && sr.Status != "advisory_gated" {
+		return false
+	}
+	line := firstRootCauseVerdictLine(sr.Content)
+	if line == "" {
+		return false
+	}
+	lower := strings.ToLower(line)
+	for _, marker := range workflowRootCauseNegativeMarkers {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	for _, marker := range workflowRootCauseAffirmativeMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowRootCauseEvidence(priorResults []StepResult) map[string]any {
+	for i := len(priorResults) - 1; i >= 0; i-- {
+		sr := priorResults[i]
+		if sr.Action == ActionGate {
+			continue
+		}
+		evidence := map[string]any{
+			"source_step":   sr.Name,
+			"source_status": sr.Status,
+		}
+		if sr.Status != "completed" && sr.Status != "advisory_gated" {
+			evidence["status"] = "not_identified"
+			evidence["reason"] = "source step did not complete"
+			return evidence
+		}
+		text := strings.TrimSpace(sr.Content)
+		if text == "" {
+			evidence["status"] = "not_identified"
+			evidence["reason"] = "source step content is empty"
+			return evidence
+		}
+		verdict := firstRootCauseVerdictLine(text)
+		if verdict == "" {
+			evidence["status"] = "not_identified"
+			evidence["reason"] = "source step has no explicit root-cause verdict"
+			return evidence
+		}
+		lower := strings.ToLower(verdict)
+		for _, marker := range workflowRootCauseNegativeMarkers {
+			if strings.Contains(lower, marker) {
+				evidence["status"] = "not_identified"
+				evidence["reason"] = marker
+				return evidence
+			}
+		}
+		if cause := extractWorkflowRootCauseAffirmation(verdict, lower); cause != "" {
+			evidence["status"] = "identified"
+			evidence["cause"] = cause
+			return evidence
+		}
+		evidence["status"] = "not_identified"
+		evidence["reason"] = "source step has no explicit root-cause verdict"
+		return evidence
+	}
+	return nil
+}
+
+func firstRootCauseVerdictLine(text string) string {
+	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' }) {
+		line = cleanRootCauseVerdictLine(line)
+		lower := strings.ToLower(line)
+		if isWorkflowRootCauseVerdictLine(lower) {
+			return line
+		}
+	}
+	return ""
+}
+
+func isWorkflowRootCauseVerdictLine(lower string) bool {
+	if strings.HasPrefix(lower, "root cause") {
+		return true
+	}
+	for _, marker := range workflowRootCauseAffirmativeMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanRootCauseVerdictLine(line string) string {
+	line = strings.TrimSpace(line)
+	for {
+		before := line
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "#>")
+		line = strings.TrimSpace(line)
+		line = trimWorkflowListPrefix(line)
+		line = strings.TrimSpace(line)
+		line = trimWorkflowMarkdownEdges(line)
+		line = strings.TrimSpace(line)
+		if line == before {
+			break
+		}
+	}
+	return strings.TrimSpace(line)
+}
+
+func trimWorkflowMarkdownEdges(line string) string {
+	line = strings.TrimSpace(line)
+	for {
+		before := line
+		line = trimPairedWorkflowMarkdown(line, "**")
+		line = trimPairedWorkflowMarkdown(line, "__")
+		line = trimPairedWorkflowMarkdown(line, "`")
+		line = trimPairedWorkflowMarkdown(line, "*")
+		line = trimPairedWorkflowMarkdown(line, "_")
+		line = strings.TrimSpace(line)
+		if line == before {
+			break
+		}
+	}
+	return line
+}
+
+func trimPairedWorkflowMarkdown(line, marker string) string {
+	for strings.HasPrefix(line, marker) && strings.HasSuffix(line, marker) && len(line) >= len(marker)*2 {
+		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, marker), marker))
+	}
+	return line
+}
+
+func trimWorkflowRootCauseText(text string) string {
+	text = strings.TrimSpace(strings.TrimLeft(text, ":= -—"))
+	for {
+		before := text
+		text = strings.TrimSpace(text)
+		for _, marker := range []string{"**", "__", "`", "*", "_"} {
+			text = strings.TrimSpace(strings.TrimPrefix(text, marker))
+			text = strings.TrimSpace(strings.TrimSuffix(text, marker))
+		}
+		text = trimWorkflowMarkdownEdges(text)
+		if text == before {
+			break
+		}
+	}
+	return strings.TrimSpace(text)
+}
+
+func trimWorkflowListPrefix(line string) string {
+	if strings.HasPrefix(line, "- [") {
+		if idx := strings.Index(line, "]"); idx >= 0 && idx+1 < len(line) {
+			return strings.TrimSpace(line[idx+1:])
+		}
+	}
+	for _, prefix := range []string{"- ", "* ", "+ ", "• "} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(line) && (line[i] == '.' || line[i] == ')') {
+		return strings.TrimSpace(line[i+1:])
+	}
+	return line
+}
+
+func extractWorkflowRootCauseAffirmation(text, lower string) string {
+	for _, marker := range workflowRootCauseAffirmativeMarkers {
+		idx := strings.Index(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		start := idx
+		switch marker {
+		case "root cause:", "root cause is", "root cause was", "root cause =", "root cause -", "root cause —", "root cause identified", "identified root cause", "confirmed root cause", "the cause is", "the cause was", "caused by", "is caused by", "was caused by", "failure stems from", "failure stemmed from", "traced to":
+			start = idx + len(marker)
+		}
+		cause := firstWorkflowRootCauseLine(text[start:])
+		return trimWorkflowRootCauseText(cause)
+	}
+	return ""
+}
+
+func firstWorkflowRootCauseLine(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	for _, sep := range []string{"\r\n", "\n", "\r"} {
+		if idx := strings.Index(text, sep); idx >= 0 {
+			text = text[:idx]
+			break
+		}
+	}
+	if idx := strings.Index(text, ". "); idx >= 0 {
+		text = text[:idx+1]
+	}
+	return strings.TrimSpace(text)
 }
 
 // --- helpers ---

@@ -375,6 +375,444 @@ func TestEngine_Execute_GatePasses(t *testing.T) {
 	}
 }
 
+func TestEngine_Execute_RootCauseGatePasses(t *testing.T) {
+	e := newTestEngine(
+		map[string]string{"debug": "fix plan generated"},
+		"",
+		map[string]string{"decision_framework": "Root cause: recipe replay reused a failed workflow result."},
+		nil,
+	)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+		{
+			Name:   "fix_plan",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q; want completed", result.Status)
+	}
+	if got := result.Steps[len(result.Steps)-1].Name; got != "fix_plan" {
+		t.Fatalf("last step = %q; want fix_plan", got)
+	}
+}
+
+func TestEngine_Execute_RootCauseGatePassesMarkdownVerdictOverRejectedHypotheses(t *testing.T) {
+	e := newTestEngine(
+		map[string]string{"debug": "fix plan generated"},
+		"",
+		map[string]string{"decision_framework": strings.Join([]string{
+			"## Root-cause analysis",
+			"- Rejected hypothesis: root cause not identified in the timeout branch.",
+			"- **Root cause:** stale workflow result cache",
+			"_Rejected follow-up:_ no definitive cause was found for the logging-only branch.",
+		}, "\n")},
+		nil,
+	)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+		{
+			Name:   "fix_plan",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q; want completed", result.Status)
+	}
+	if got := result.Steps[len(result.Steps)-1].Name; got != "fix_plan" {
+		t.Fatalf("last step = %q; want fix_plan", got)
+	}
+}
+
+func TestEngine_Execute_RootCauseGatePassesSharedAffirmativeVerdictMarkers(t *testing.T) {
+	tests := []struct {
+		name    string
+		verdict string
+	}{
+		{
+			name:    "was caused by",
+			verdict: "The workflow failure was caused by stale workflow result cache.",
+		},
+		{
+			name:    "traced to",
+			verdict: "The regression traced to stale workflow result cache.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEngine(
+				map[string]string{"debug": "fix plan generated"},
+				"",
+				map[string]string{"decision_framework": tt.verdict},
+				nil,
+			)
+
+			steps := []WorkflowStep{
+				{
+					Name:   "root_cause",
+					Action: ActionThinkPattern,
+					Config: map[string]any{"pattern": "decision_framework"},
+				},
+				{
+					Name:   "gate",
+					Action: ActionGate,
+					Config: map[string]any{"require": "root_cause_identified"},
+				},
+				{
+					Name:   "fix_plan",
+					Action: ActionSingleExec,
+					Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+				},
+			}
+
+			result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Status != "completed" {
+				t.Fatalf("status = %q; want completed", result.Status)
+			}
+			if got := result.Steps[len(result.Steps)-1].Name; got != "fix_plan" {
+				t.Fatalf("last step = %q; want fix_plan", got)
+			}
+		})
+	}
+}
+
+func TestEngine_RunThinkPatternExtractsMarkdownRootCauseEvidenceOverMixedNegativeText(t *testing.T) {
+	patternFn := func(name string, input map[string]any) (map[string]any, error) {
+		if name != "decision_framework" {
+			t.Fatalf("pattern = %q; want decision_framework", name)
+		}
+		if gate, _ := input["workflow_root_cause_gate"].(bool); !gate {
+			t.Fatalf("workflow_root_cause_gate = %v; want true", input["workflow_root_cause_gate"])
+		}
+		evidence, _ := input["workflow_root_cause_evidence"].(map[string]any)
+		if evidence == nil {
+			t.Fatalf("workflow_root_cause_evidence missing from input: %#v", input)
+		}
+		if evidence["source_step"] != "evidence_gather" {
+			t.Fatalf("evidence source_step = %v; want evidence_gather", evidence["source_step"])
+		}
+		if evidence["status"] != "identified" {
+			t.Fatalf("evidence status = %v; want identified", evidence["status"])
+		}
+		cause, _ := evidence["cause"].(string)
+		if cause != "stale workflow result cache" {
+			t.Fatalf("evidence cause = %q; want stale workflow result cache", cause)
+		}
+		return map[string]any{"content": "Root cause: " + cause}, nil
+	}
+	e := New(&mockSender{responses: map[string]string{"debug": strings.Join([]string{
+		"Rejected hypothesis: root cause not identified in the timeout branch.",
+		"- **Root cause:** stale workflow result cache",
+		"Follow-up note: no definitive cause was found for the logging-only branch.",
+	}, "\n")}}, newMockDialogueRunner(""), patternFn, nil)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "evidence_gather",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Gather: %s"},
+		},
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q; want completed", result.Status)
+	}
+}
+
+func TestEngine_RunThinkPatternPreservesLiteralIdentifierCharactersInMarkdownRootCause(t *testing.T) {
+	patternFn := func(name string, input map[string]any) (map[string]any, error) {
+		if name != "decision_framework" {
+			t.Fatalf("pattern = %q; want decision_framework", name)
+		}
+		evidence, _ := input["workflow_root_cause_evidence"].(map[string]any)
+		if evidence == nil {
+			t.Fatalf("workflow_root_cause_evidence missing from input: %#v", input)
+		}
+		cause, _ := evidence["cause"].(string)
+		if cause != "null_pointer in user_service" {
+			t.Fatalf("evidence cause = %q; want null_pointer in user_service", cause)
+		}
+		return map[string]any{"content": "Root cause: " + cause}, nil
+	}
+	e := New(&mockSender{responses: map[string]string{"debug": "- **Root cause:** `null_pointer in user_service`"}}, newMockDialogueRunner(""), patternFn, nil)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "evidence_gather",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Gather: %s"},
+		},
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q; want completed", result.Status)
+	}
+}
+
+func TestEngine_Execute_RootCauseGateBlocksMissingRootCause(t *testing.T) {
+	e := newTestEngine(map[string]string{"debug": "fix plan generated"}, "", nil, nil)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+		{
+			Name:   "fix_plan",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "gated" {
+		t.Fatalf("status = %q; want gated", result.Status)
+	}
+	for _, step := range result.Steps {
+		if step.Name == "fix_plan" {
+			t.Fatal("fix_plan should not execute when root cause is missing")
+		}
+	}
+}
+
+func TestEngine_Execute_RootCauseGateBlocksNegativeResult(t *testing.T) {
+	e := newTestEngine(
+		map[string]string{"debug": "fix plan generated"},
+		"",
+		map[string]string{"decision_framework": "Root cause not identified: insufficient evidence."},
+		nil,
+	)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+		{
+			Name:   "fix_plan",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "gated" {
+		t.Fatalf("status = %q; want gated", result.Status)
+	}
+	for _, step := range result.Steps {
+		if step.Name == "fix_plan" {
+			t.Fatal("fix_plan should not execute when root-cause result is negative")
+		}
+	}
+}
+
+func TestEngine_Execute_RootCauseGateBlocksUncertaintyResult(t *testing.T) {
+	e := newTestEngine(
+		map[string]string{"debug": "fix plan generated"},
+		"",
+		map[string]string{"decision_framework": "No definitive cause yet; collect more logs."},
+		nil,
+	)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+		{
+			Name:   "fix_plan",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "gated" {
+		t.Fatalf("status = %q; want gated", result.Status)
+	}
+	for _, step := range result.Steps {
+		if step.Name == "fix_plan" {
+			t.Fatal("fix_plan should not execute when root-cause result is uncertain")
+		}
+	}
+}
+
+func TestEngine_RunThinkPatternPassesRootCauseEvidence(t *testing.T) {
+	patternFn := func(name string, input map[string]any) (map[string]any, error) {
+		if name != "decision_framework" {
+			t.Fatalf("pattern = %q; want decision_framework", name)
+		}
+		if gate, _ := input["workflow_root_cause_gate"].(bool); !gate {
+			t.Fatalf("workflow_root_cause_gate = %v; want true", input["workflow_root_cause_gate"])
+		}
+		evidence, _ := input["workflow_root_cause_evidence"].(map[string]any)
+		if evidence == nil {
+			t.Fatalf("workflow_root_cause_evidence missing from input: %#v", input)
+		}
+		if evidence["status"] != "identified" {
+			t.Fatalf("evidence status = %v; want identified", evidence["status"])
+		}
+		cause, _ := evidence["cause"].(string)
+		if !strings.Contains(cause, "stale workflow result") {
+			t.Fatalf("evidence cause = %q; want stale workflow result", cause)
+		}
+		return map[string]any{"content": "Root cause: " + cause}, nil
+	}
+	e := New(&mockSender{responses: map[string]string{"debug": "Root cause: stale workflow result cache reused the previous run."}}, newMockDialogueRunner(""), patternFn, nil)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "evidence_gather",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Gather: %s"},
+		},
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q; want completed", result.Status)
+	}
+}
+
+func TestEngine_Execute_RootCauseGateBlocksNonVerdictWrapperSummary(t *testing.T) {
+	e := newTestEngine(
+		map[string]string{"debug": "fix plan generated"},
+		"",
+		map[string]string{"decision_framework": "The wrapper summary mentioned stale upstream context and needs a verdict."},
+		nil,
+	)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+		{
+			Name:   "fix_plan",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "gated" {
+		t.Fatalf("status = %q; want gated", result.Status)
+	}
+	for _, step := range result.Steps {
+		if step.Name == "fix_plan" {
+			t.Fatal("fix_plan should not execute without an explicit root-cause verdict line")
+		}
+	}
+}
+
 func TestEngine_Execute_StepFails(t *testing.T) {
 	e := newTestEngine(
 		map[string]string{"analyze": "ERR:executor crashed"},
@@ -517,6 +955,7 @@ type cancelSender struct{}
 func (c *cancelSender) Get(_ context.Context, name string) (ExecutorHandle, error) {
 	return &mockHandle{name: name}, nil
 }
+
 func (c *cancelSender) Send(ctx context.Context, _ ExecutorHandle, _ types.Message) (*types.Response, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -798,6 +1237,7 @@ type errSender struct{ err error }
 func (s *errSender) Get(_ context.Context, name string) (ExecutorHandle, error) {
 	return &mockHandle{name: name}, nil
 }
+
 func (s *errSender) Send(_ context.Context, _ ExecutorHandle, _ types.Message) (*types.Response, error) {
 	return nil, s.err
 }

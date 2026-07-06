@@ -247,6 +247,15 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 			gate = true
 		}
 	}
+	forcedReadOnlySandbox := false
+	requestedSandbox := sandbox
+	if recipe.WorkflowID != "" && recipe.ReadOnly && sandbox != "" {
+		if err := validateSandbox(sandbox); err != nil {
+			return TaskRequest{}, err
+		}
+		forcedReadOnlySandbox = true
+		sandbox = ""
+	}
 
 	taskClass, classErr := normalizeTaskToolClass(rawTaskClass, target, gate, sandbox)
 	if classErr != nil {
@@ -261,8 +270,18 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 		metadata["recipe_phases"] = cloneRecipeStrings(recipe.Phases)
 		metadata["recipe_output_resources"] = cloneRecipeStrings(recipe.OutputResources)
 	}
+	if recipe.WorkflowID != "" {
+		metadata["recipe_workflow_id"] = recipe.WorkflowID
+		metadata["recipe_workflow_source"] = recipe.WorkflowSource
+		metadata["recipe_workflow_steps"] = cloneRecipeStrings(recipe.WorkflowSteps)
+		prompt = workflowBackedRecipePrompt(recipe, prompt)
+		metadata["recipe_workflow_worker_type"] = string(workflowRecipeWorkerType)
+	}
 	if sandbox != "" {
 		metadata["sandbox"] = sandbox
+	} else if forcedReadOnlySandbox {
+		metadata["sandbox"] = "read-only"
+		metadata["requested_sandbox"] = requestedSandbox
 	}
 	if timeoutSeconds > 0 {
 		metadata["timeout_seconds"] = timeoutSeconds
@@ -287,6 +306,7 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 	return TaskRequest{
 		Prompt:         prompt,
 		TaskClass:      taskClass,
+		WorkerType:     workflowRecipeWorkerTypeFromID(recipe.WorkflowID),
 		ProjectID:      req.GetString("project_id", projectIDFromContext(ctx)),
 		RequestID:      req.GetString("request_id", ""),
 		CWD:            cwdFromRequestOrContext(req, ctx),
@@ -329,6 +349,30 @@ func cloneRecipeStrings(values []string) []string {
 	out := make([]string, len(values))
 	copy(out, values)
 	return out
+}
+
+func workflowBackedRecipePrompt(recipe recipes.Recipe, prompt string) string {
+	if recipe.WorkflowID == "" {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString("Workflow-backed curated recipe: ")
+	b.WriteString(recipe.ID)
+	b.WriteString("\nCompiled workflow: ")
+	b.WriteString(recipe.WorkflowID)
+	if recipe.WorkflowSource != "" {
+		b.WriteString(" (")
+		b.WriteString(recipe.WorkflowSource)
+		b.WriteString(")")
+	}
+	b.WriteString("\nRead-only execution boundary: use the following compiled workflow steps as the methodology; do not mutate source unless the caller opens a separate code task.\nSteps:")
+	for i, step := range recipe.WorkflowSteps {
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("%d. %s", i+1, step))
+	}
+	b.WriteString("\n\nCaller prompt:\n")
+	b.WriteString(prompt)
+	return b.String()
 }
 
 func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string) (string, error) {

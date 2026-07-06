@@ -74,7 +74,7 @@ func recipeResourceNotFoundPayload(recipeID string) map[string]any {
 }
 
 func recipePayload(recipe recipes.Recipe) map[string]any {
-	return map[string]any{
+	payload := map[string]any{
 		"id":               recipe.ID,
 		"title":            recipe.Title,
 		"description":      recipe.Description,
@@ -86,6 +86,12 @@ func recipePayload(recipe recipes.Recipe) map[string]any {
 		"required_args":    recipe.RequiredArgs,
 		"gate_default":     recipe.GateDefault,
 	}
+	if recipe.WorkflowID != "" {
+		payload["recipe_workflow_id"] = recipe.WorkflowID
+		payload["recipe_workflow_source"] = recipe.WorkflowSource
+		payload["recipe_workflow_steps"] = recipe.WorkflowSteps
+	}
+	return payload
 }
 
 func recipeResourceJSON(uri string, payload map[string]any) ([]mcp.ResourceContents, error) {

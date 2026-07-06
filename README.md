@@ -192,15 +192,20 @@ emit preservation metadata.
 | `aimux://recipes` | Compact compiled recipe catalog with IDs, descriptions, phases, policy needs, and output resource hints. |
 | `aimux://recipes/{recipe_id}` | Detail view for one supported recipe. Unknown IDs return `not_found` plus `available_recipes`. |
 
-Initial recipes are read-only and route through the existing `task` entry point:
+Supported recipes are read-only and route through the existing `task` entry point:
 
 | Recipe ID | Task class | Default mode | Purpose |
 |---|---|---|---|
 | `code-review` | `review` | gate | Run the existing review worker as a named code-review recipe. |
 | `second-opinion` | `review` | aggregate | Run the existing review worker for an independent read-only assessment. |
+| `security-audit` | `review` | aggregate | Run the compiled `pkg/workflow/secaudit.go` security audit workflow as a read-only recipe. |
+| `debug-investigation` | `review` | aggregate | Run the compiled `pkg/workflow/debug.go` debugging workflow as a read-only recipe. |
 
-Invoke a recipe through `task(recipe_id=..., target=...)`; no new workflow or
-recipe tool is added. Recipe policy is fail-closed before worker spawn: if the
+Invoke a recipe through `task(recipe_id=..., target=...)`; no new workflow,
+dialog, audit, consensus, debate, or recipe tool is added. Workflow-backed
+recipes expose `recipe_workflow_id`, `recipe_workflow_source`, and
+`recipe_workflow_steps` metadata while staying behind the `task` contract.
+Recipe policy is fail-closed before worker spawn: if the
 selected provider/profile cannot enforce the recipe's declared policy needs,
 `task` returns a non-retryable `CapabilityMismatch` and no Loom task is
 submitted.

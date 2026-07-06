@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/workflow"
 )
 
 func TestTaskSnapshotResourceTemplatesRegistered(t *testing.T) {
@@ -307,6 +308,53 @@ func TestTaskSnapshotResource_IncludesWorktreePreservationMetadata(t *testing.T)
 	assertTaskResourceMetadata(t, metadata, "worktree_branch", "master")
 	assertTaskResourceMetadata(t, metadata, "worktree_base_sha", "2990fd8")
 	assertTaskResourceMetadata(t, metadata, "worktree_preserve_reason", "code task mutates caller worktree")
+	if _, leaked := got["env"]; leaked {
+		t.Fatalf("snapshot exposed raw env: %v", got)
+	}
+}
+
+func TestTaskSnapshotResourceIncludesWorkflowRecipeMetadata(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-workflow-recipe-metadata")
+	steps := recipeWorkflowStepNames(workflow.SecurityAuditSteps())
+	taskID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  projectID,
+		Prompt:     "fail because no worker is registered",
+		Metadata: map[string]any{
+			"recipe_id":               "security-audit",
+			"recipe_title":            "Security Audit",
+			"recipe_read_only":        true,
+			"recipe_output_resources": []string{"task_snapshot", "task_events", "task_progress"},
+			"recipe_workflow_id":      "secaudit",
+			"recipe_workflow_steps":   steps,
+			"recipe_workflow_source":  "pkg/workflow/secaudit.go",
+			"workflow_result_status":  "completed",
+			"workflow_step_count":     len(steps),
+			"workflow_step_statuses":  []string{"discover=completed", "analyze=completed", "report=completed"},
+		},
+		Env: map[string]string{"SECRET_TOKEN": "should-not-leak"},
+	})
+	if err != nil {
+		t.Fatalf("loom.Submit: %v", err)
+	}
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusFailed)
+
+	got := readTaskSnapshotResource(t, srv, ctx, "aimux://tasks/"+taskID)
+	metadata, ok := got["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata type = %T, want map; payload=%v", got["metadata"], got)
+	}
+	assertTaskResourceMetadata(t, metadata, "recipe_id", "security-audit")
+	assertTaskResourceMetadata(t, metadata, "recipe_title", "Security Audit")
+	assertTaskResourceMetadataBool(t, metadata, "recipe_read_only", true)
+	assertMetadataStringSlice(t, metadata, "recipe_output_resources", []string{"task_snapshot", "task_events", "task_progress"})
+	assertTaskResourceMetadata(t, metadata, "recipe_workflow_id", "secaudit")
+	assertMetadataStringSlice(t, metadata, "recipe_workflow_steps", steps)
+	assertTaskResourceMetadata(t, metadata, "recipe_workflow_source", "pkg/workflow/secaudit.go")
+	assertTaskResourceMetadata(t, metadata, "workflow_result_status", "completed")
+	assertMetadataInt(t, metadata, "workflow_step_count", len(steps))
+	assertMetadataStringSlice(t, metadata, "workflow_step_statuses", []string{"discover=completed", "analyze=completed", "report=completed"})
 	if _, leaked := got["env"]; leaked {
 		t.Fatalf("snapshot exposed raw env: %v", got)
 	}

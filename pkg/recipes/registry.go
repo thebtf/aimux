@@ -1,6 +1,11 @@
 package recipes
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/thebtf/aimux/pkg/workflow"
+)
 
 const (
 	TaskClassReview = "review"
@@ -17,6 +22,9 @@ type Recipe struct {
 	OutputResources []string `json:"output_resources"`
 	RequiredArgs    []string `json:"required_args,omitempty"`
 	GateDefault     bool     `json:"gate_default,omitempty"`
+	WorkflowID      string   `json:"recipe_workflow_id,omitempty"`
+	WorkflowSource  string   `json:"recipe_workflow_source,omitempty"`
+	WorkflowSteps   []string `json:"recipe_workflow_steps,omitempty"`
 }
 
 var registry = []Recipe{
@@ -32,9 +40,9 @@ var registry = []Recipe{
 			"adversarial",
 		},
 		PolicyNeeds: []string{
-			"read_only",
-			"structured_review_output",
-			"target_required",
+			PolicyReadOnly,
+			PolicyStructuredReviewOutput,
+			PolicyTargetRequired,
 		},
 		OutputResources: []string{
 			"task_snapshot",
@@ -56,9 +64,9 @@ var registry = []Recipe{
 			"adversarial",
 		},
 		PolicyNeeds: []string{
-			"read_only",
-			"structured_review_output",
-			"target_required",
+			PolicyReadOnly,
+			PolicyStructuredReviewOutput,
+			PolicyTargetRequired,
 		},
 		OutputResources: []string{
 			"task_snapshot",
@@ -67,6 +75,26 @@ var registry = []Recipe{
 		},
 		RequiredArgs: []string{"target"},
 	},
+	workflowRecipe(Recipe{
+		ID:              "security-audit",
+		Title:           "Security Audit",
+		Description:     "Run the compiled security audit workflow as a read-only curated recipe behind the task entry point.",
+		TaskClass:       TaskClassReview,
+		ReadOnly:        true,
+		PolicyNeeds:     readOnlyWorkflowPolicyNeeds(),
+		OutputResources: readOnlyWorkflowOutputResources(),
+		RequiredArgs:    []string{"target"},
+	}, "secaudit", "pkg/workflow/secaudit.go"),
+	workflowRecipe(Recipe{
+		ID:              "debug-investigation",
+		Title:           "Debug Investigation",
+		Description:     "Run the compiled debugging workflow as a read-only curated recipe behind the task entry point.",
+		TaskClass:       TaskClassReview,
+		ReadOnly:        true,
+		PolicyNeeds:     readOnlyWorkflowPolicyNeeds(),
+		OutputResources: readOnlyWorkflowOutputResources(),
+		RequiredArgs:    []string{"target"},
+	}, "debug", "pkg/workflow/debug.go"),
 }
 
 func List() []Recipe {
@@ -103,6 +131,7 @@ func cloneRecipe(recipe Recipe) Recipe {
 	recipe.PolicyNeeds = cloneStrings(recipe.PolicyNeeds)
 	recipe.OutputResources = cloneStrings(recipe.OutputResources)
 	recipe.RequiredArgs = cloneStrings(recipe.RequiredArgs)
+	recipe.WorkflowSteps = cloneStrings(recipe.WorkflowSteps)
 	return recipe
 }
 
@@ -113,4 +142,33 @@ func cloneStrings(values []string) []string {
 	out := make([]string, len(values))
 	copy(out, values)
 	return out
+}
+
+func workflowRecipe(recipe Recipe, workflowID string, source string) Recipe {
+	recipe.WorkflowID = workflowID
+	recipe.WorkflowSource = source
+	recipe.WorkflowSteps = compiledWorkflowStepNames(workflowID)
+	recipe.Phases = cloneStrings(recipe.WorkflowSteps)
+	return recipe
+}
+
+func compiledWorkflowStepNames(workflowID string) []string {
+	stepsFn, ok := workflow.Registry[workflowID]
+	if !ok {
+		panic(fmt.Sprintf("recipe workflow %q is not registered", workflowID))
+	}
+	steps := stepsFn()
+	out := make([]string, 0, len(steps))
+	for _, step := range steps {
+		out = append(out, step.Name)
+	}
+	return out
+}
+
+func readOnlyWorkflowPolicyNeeds() []string {
+	return []string{PolicyReadOnly, PolicyStructuredReviewOutput, PolicyTargetRequired}
+}
+
+func readOnlyWorkflowOutputResources() []string {
+	return []string{"task_snapshot", "task_events", "task_progress"}
 }
