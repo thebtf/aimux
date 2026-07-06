@@ -13,6 +13,7 @@ import (
 	"github.com/thebtf/aimux/pkg/executor/picker"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/parser"
+	"github.com/thebtf/aimux/pkg/recipes"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/aimux/pkg/workflow"
@@ -157,6 +158,11 @@ func (s *workflowRecipeExecutorSender) Get(_ context.Context, name string) (work
 	if strings.TrimSpace(cli) == "" {
 		return nil, extypes.NewCapabilityMismatch("workflow recipe executor has no CLI", nil)
 	}
+	if workflowRecipeForcesReadOnly(s.task.Metadata) {
+		if err := s.requireReadOnlyParticipant(cli); err != nil {
+			return nil, err
+		}
+	}
 	return workflowRecipeExecutorHandle{requested: requested, cli: cli}, nil
 }
 
@@ -180,14 +186,25 @@ func (s *workflowRecipeExecutorSender) Send(ctx context.Context, h workflow.Exec
 		TimeoutSeconds: s.task.Timeout,
 		OnOutput:       s.progressSink(),
 	}
-	if sandbox, ok := metadataString(s.task.Metadata, "sandbox"); ok && strings.TrimSpace(sandbox) != "" {
-		spec.Sandbox = strings.TrimSpace(sandbox)
+	if !workflowRecipeForcesReadOnly(s.task.Metadata) {
+		if sandbox, ok := metadataString(s.task.Metadata, "sandbox"); ok && strings.TrimSpace(sandbox) != "" {
+			spec.Sandbox = strings.TrimSpace(sandbox)
+		}
 	}
 	raw, selectedCLI, err := s.dispatch(ctx, handle.cli, spec, s.task.Metadata)
 	if err != nil {
 		return nil, err
 	}
-	profile, profileErr := s.profile(selectedCLI)
+	actualCLI := strings.TrimSpace(selectedCLI)
+	if actualCLI == "" {
+		actualCLI = handle.cli
+	}
+	if workflowRecipeForcesReadOnly(s.task.Metadata) {
+		if err := s.requireReadOnlyParticipant(actualCLI); err != nil {
+			return nil, err
+		}
+	}
+	profile, profileErr := s.profile(actualCLI)
 	if profileErr != nil || profile == nil {
 		return &types.Response{Content: raw}, nil
 	}
@@ -345,15 +362,59 @@ func workflowFilesFromTarget(target string) []string {
 	return files
 }
 
+func workflowRecipeForcesReadOnly(metadata map[string]any) bool {
+	recipeID, ok := metadataString(metadata, "recipe_id")
+	if !ok || strings.TrimSpace(recipeID) == "" {
+		return false
+	}
+	recipe, ok := recipes.Resolve(recipeID)
+	return ok && recipe.ReadOnly
+}
+
+func (s *workflowRecipeExecutorSender) requireReadOnlyParticipant(cli string) error {
+	profile, err := s.profile(cli)
+	if err != nil || profile == nil {
+		if err == nil {
+			err = fmt.Errorf("profile is nil")
+		}
+		return extypes.NewCapabilityMismatch(fmt.Sprintf("workflow read-only recipe participant %q profile unavailable", cli), err)
+	}
+	recipeID, ok := metadataString(s.task.Metadata, "recipe_id")
+	if !ok || strings.TrimSpace(recipeID) == "" {
+		return extypes.NewCapabilityMismatch("workflow read-only recipe participant policy requires recipe_id metadata", nil)
+	}
+	recipe, ok := recipes.Resolve(recipeID)
+	if !ok {
+		return newUnsupportedRecipeIDError(recipeID)
+	}
+	taskClass, ok := metadataString(s.task.Metadata, "task_class")
+	if !ok || strings.TrimSpace(taskClass) == "" {
+		taskClass = recipe.TaskClass
+	}
+	result := recipes.ValidatePolicy(recipe, providerCapabilitiesFromProfile(cli, taskClass, profile))
+	if !result.OK {
+		return newTaskRecipePolicyError(result, nil)
+	}
+	return nil
+}
+
 func workflowRecipeStatusError(result *workflow.WorkflowResult) error {
 	if result == nil {
-		return extypes.NewUserInputError("workflow recipe execution failed without a result", nil)
+		return extypes.NewUnknown("workflow recipe execution failed without a result", nil)
 	}
 	summary := strings.TrimSpace(result.Summary)
 	if summary == "" {
 		summary = "workflow did not complete"
 	}
-	return extypes.NewUserInputError(fmt.Sprintf("workflow recipe ended with status %q: %s", result.Status, summary), nil)
+	msg := fmt.Sprintf("workflow recipe ended with status %q: %s", result.Status, summary)
+	switch result.Status {
+	case "gated":
+		return extypes.NewUserInputError(msg, nil)
+	case "failed":
+		return extypes.NewUnknown(msg, nil)
+	default:
+		return extypes.NewUnknown(msg, nil)
+	}
 }
 
 func workflowPatternResultText(result *think.ThinkResult, summary string, input map[string]any) string {
@@ -496,13 +557,17 @@ func workflowRootCauseVerdictFromText(text string) string {
 	if text == "" {
 		return ""
 	}
-	lower := strings.ToLower(text)
+	verdict := firstRootCauseVerdictLine(text)
+	if verdict == "" {
+		return ""
+	}
+	lower := strings.ToLower(verdict)
 	for _, marker := range workflowRootCauseNegativeMarkers {
 		if strings.Contains(lower, marker) {
-			return "Root cause not identified: " + firstWorkflowRootCauseLine(text)
+			return "Root cause not identified: " + firstWorkflowRootCauseLine(verdict)
 		}
 	}
-	if cause := extractWorkflowRootCauseAffirmation(text, lower); cause != "" {
+	if cause := extractWorkflowRootCauseAffirmation(verdict, lower); cause != "" {
 		return "Root cause: " + cause
 	}
 	return ""
@@ -516,12 +581,65 @@ func extractWorkflowRootCauseAffirmation(text, lower string) string {
 		}
 		start := idx
 		switch marker {
-		case "root cause:", "root cause is", "root cause was", "root cause =", "root cause -", "root cause —", "the cause is", "the cause was", "caused by", "is caused by", "was caused by", "failure stems from", "failure stemmed from", "traced to":
+		case "root cause:", "root cause is", "root cause was", "root cause =", "root cause -", "root cause —", "root cause identified", "identified root cause", "confirmed root cause", "the cause is", "the cause was", "caused by", "is caused by", "was caused by", "failure stems from", "failure stemmed from", "traced to":
 			start = idx + len(marker)
 		}
-		return firstWorkflowRootCauseLine(text[start:])
+		cause := strings.TrimLeft(firstWorkflowRootCauseLine(text[start:]), ":= -—")
+		return strings.TrimSpace(cause)
 	}
 	return ""
+}
+
+func firstRootCauseVerdictLine(text string) string {
+	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' }) {
+		line = cleanRootCauseVerdictLine(line)
+		if strings.HasPrefix(strings.ToLower(line), "root cause") {
+			return line
+		}
+	}
+	return ""
+}
+
+func cleanRootCauseVerdictLine(line string) string {
+	line = strings.TrimSpace(line)
+	for {
+		before := line
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "#>")
+		line = strings.TrimSpace(line)
+		line = trimWorkflowListPrefix(line)
+		line = strings.TrimSpace(line)
+		line = strings.Trim(line, "`")
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "*_")
+		line = strings.TrimSpace(line)
+		if line == before {
+			break
+		}
+	}
+	line = strings.NewReplacer("**", "", "__", "", "`", "", "*", "", "_", "").Replace(line)
+	return strings.TrimSpace(line)
+}
+
+func trimWorkflowListPrefix(line string) string {
+	if strings.HasPrefix(line, "- [") {
+		if idx := strings.Index(line, "]"); idx >= 0 && idx+1 < len(line) {
+			return strings.TrimSpace(line[idx+1:])
+		}
+	}
+	for _, prefix := range []string{"- ", "* ", "+ ", "• "} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(line) && (line[i] == '.' || line[i] == ')') {
+		return strings.TrimSpace(line[i+1:])
+	}
+	return line
 }
 
 func firstWorkflowRootCauseLine(text string) string {

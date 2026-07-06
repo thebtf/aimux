@@ -247,6 +247,15 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 			gate = true
 		}
 	}
+	forcedReadOnlySandbox := false
+	requestedSandbox := sandbox
+	if recipe.WorkflowID != "" && recipe.ReadOnly && sandbox != "" {
+		if err := validateSandbox(sandbox); err != nil {
+			return TaskRequest{}, err
+		}
+		forcedReadOnlySandbox = true
+		sandbox = ""
+	}
 
 	taskClass, classErr := normalizeTaskToolClass(rawTaskClass, target, gate, sandbox)
 	if classErr != nil {
@@ -270,6 +279,9 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 	}
 	if sandbox != "" {
 		metadata["sandbox"] = sandbox
+	} else if forcedReadOnlySandbox {
+		metadata["sandbox"] = "read-only"
+		metadata["requested_sandbox"] = requestedSandbox
 	}
 	if timeoutSeconds > 0 {
 		metadata["timeout_seconds"] = timeoutSeconds

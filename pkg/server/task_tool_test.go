@@ -347,6 +347,54 @@ func TestHandleTaskWorkflowBackedRecipesRouteWithWorkflowMetadata(t *testing.T) 
 	}
 }
 
+func TestHandleTaskWorkflowBackedReadOnlyRecipeForcesDispatchSandbox(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	sandboxes := []string{}
+	dispatch := func(_ context.Context, cli string, spec picker.TaskSpec, _ map[string]any) (string, string, error) {
+		mu.Lock()
+		sandboxes = append(sandboxes, spec.Sandbox)
+		mu.Unlock()
+		if strings.TrimSpace(spec.Prompt) == "" {
+			return "", cli, errors.New("empty workflow step prompt")
+		}
+		return `{"type":"agent_message","content":"workflow step complete"}` + "\n", cli, nil
+	}
+	srv, _, reviewWorker := newTaskToolServerWithWorkflowHooks(t, defaultRecipeProfile(), dispatch, defaultWorkflowRecipePattern)
+
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":    "audit HEAD with a workflow-backed read-only recipe",
+		"recipe_id": "security-audit",
+		"target":    "HEAD",
+		"sandbox":   "workspace-write",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	payload := decodeTaskToolResult(t, result)
+	task := waitTaskToolStatus(t, srv, payload["task_id"].(string), loom.TaskStatusCompleted)
+	if got := reviewWorker.taskCount(); got != 0 {
+		t.Fatalf("review task count = %d, want workflow worker route without review worker", got)
+	}
+	if task.WorkerType != workflowRecipeWorkerType {
+		t.Fatalf("worker_type = %s, want %s", task.WorkerType, workflowRecipeWorkerType)
+	}
+
+	mu.Lock()
+	captured := append([]string(nil), sandboxes...)
+	mu.Unlock()
+	if len(captured) == 0 {
+		t.Fatal("workflow dispatch was not called")
+	}
+	for i, sandbox := range captured {
+		if sandbox != "read-only" {
+			t.Fatalf("dispatch sandbox[%d] = %q; want read-only for workflow-backed read-only recipe", i, sandbox)
+		}
+	}
+}
+
 func TestWorkflowRecipeExecutorSenderSendFallsBackToRawContentWhenSelectedProfileIsNil(t *testing.T) {
 	t.Parallel()
 
@@ -370,6 +418,48 @@ func TestWorkflowRecipeExecutorSenderSendFallsBackToRawContentWhenSelectedProfil
 	}
 	if response.Content != `{"type":"agent_message","content":"workflow step complete"}`+"\n" {
 		t.Fatalf("content = %q, want raw content when selected CLI profile is nil", response.Content)
+	}
+}
+
+func TestWorkflowRecipeExecutorSenderSendRejectsFallbackSelectedReadOnlyPolicyMismatch(t *testing.T) {
+	t.Parallel()
+
+	registry := driver.NewRegistry(map[string]*config.CLIProfile{
+		"codex":  defaultRecipeProfile(),
+		"claude": limitedRecipeProfile(),
+	})
+	registry.SetAvailable("codex", true)
+	registry.SetAvailable("claude", true)
+	dispatchCalled := false
+	sender := &workflowRecipeExecutorSender{
+		server: &Server{registry: registry},
+		task: &loom.Task{Metadata: map[string]any{
+			"recipe_id":  "security-audit",
+			"task_class": "review",
+		}},
+		defaultCLI: "codex",
+		dispatch: func(_ context.Context, cli string, _ picker.TaskSpec, _ map[string]any) (string, string, error) {
+			dispatchCalled = true
+			if cli != "codex" {
+				t.Fatalf("dispatch CLI = %q, want codex", cli)
+			}
+			return `{"type":"agent_message","content":"workflow step complete"}` + "\n", "claude", nil
+		},
+	}
+
+	handle, err := sender.Get(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	_, err = sender.Send(context.Background(), handle, types.Message{Content: "run workflow step"})
+	if err == nil {
+		t.Fatal("Send returned nil error, want recipe policy rejection for fallback-selected non-read-only CLI")
+	}
+	if !dispatchCalled {
+		t.Fatal("dispatch was not called; test must cover fallback-selected post-dispatch validation")
+	}
+	if !strings.Contains(err.Error(), "recipe policy cannot be enforced by selected provider") {
+		t.Fatalf("Send error = %v, want recipe policy enforcement error", err)
 	}
 }
 
@@ -587,6 +677,31 @@ func TestHandleTaskWorkflowBackedRecipeFailureMarksTaskFailedAndMissesReplay(t *
 	mu.Unlock()
 	if gotCalls != 2 {
 		t.Fatalf("workflow dispatch calls = %d, want 2 fresh failed executions", gotCalls)
+	}
+}
+
+func TestWorkflowRecipeStatusErrorClassifiesGateVsFailure(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		status   string
+		wantCode extypes.CLIErrorCode
+	}{
+		{name: "gated", status: "gated", wantCode: extypes.CLIErrorCodeUserInputError},
+		{name: "failed", status: "failed", wantCode: extypes.CLIErrorCodeUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := workflowRecipeStatusError(&workflow.WorkflowResult{Status: tc.status, Summary: "workflow summary"})
+			var cliErr *extypes.CLIError
+			if !errors.As(err, &cliErr) {
+				t.Fatalf("error %T does not wrap CLIError: %v", err, err)
+			}
+			if cliErr.Code != tc.wantCode {
+				t.Fatalf("CLIError code = %s, want %s", cliErr.Code, tc.wantCode)
+			}
+		})
 	}
 }
 

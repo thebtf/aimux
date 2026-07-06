@@ -585,7 +585,13 @@ func workflowRootCauseEvidence(priorResults []StepResult) map[string]any {
 			evidence["reason"] = "source step content is empty"
 			return evidence
 		}
-		lower := strings.ToLower(text)
+		verdict := firstRootCauseVerdictLine(text)
+		if verdict == "" {
+			evidence["status"] = "not_identified"
+			evidence["reason"] = "source step has no explicit root-cause verdict"
+			return evidence
+		}
+		lower := strings.ToLower(verdict)
 		for _, marker := range workflowRootCauseNegativeMarkers {
 			if strings.Contains(lower, marker) {
 				evidence["status"] = "not_identified"
@@ -593,7 +599,7 @@ func workflowRootCauseEvidence(priorResults []StepResult) map[string]any {
 				return evidence
 			}
 		}
-		if cause := extractWorkflowRootCauseAffirmation(text, lower); cause != "" {
+		if cause := extractWorkflowRootCauseAffirmation(verdict, lower); cause != "" {
 			evidence["status"] = "identified"
 			evidence["cause"] = cause
 			return evidence
@@ -607,13 +613,79 @@ func workflowRootCauseEvidence(priorResults []StepResult) map[string]any {
 
 func firstRootCauseVerdictLine(text string) string {
 	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' }) {
-		line = strings.TrimSpace(line)
+		line = cleanRootCauseVerdictLine(line)
 		lower := strings.ToLower(line)
-		if strings.HasPrefix(lower, "root cause") {
+		if isWorkflowRootCauseVerdictLine(lower) {
 			return line
 		}
 	}
 	return ""
+}
+
+func isWorkflowRootCauseVerdictLine(lower string) bool {
+	if strings.HasPrefix(lower, "root cause") {
+		return true
+	}
+	for _, marker := range []string{
+		"root cause:",
+		"root cause is",
+		"root cause was",
+		"root cause =",
+		"root cause -",
+		"root cause —",
+		"root cause identified",
+		"identified root cause",
+		"confirmed root cause",
+		"the cause is",
+		"the cause was",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanRootCauseVerdictLine(line string) string {
+	line = strings.TrimSpace(line)
+	for {
+		before := line
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "#>")
+		line = strings.TrimSpace(line)
+		line = trimWorkflowListPrefix(line)
+		line = strings.TrimSpace(line)
+		line = strings.Trim(line, "`")
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "*_")
+		line = strings.TrimSpace(line)
+		if line == before {
+			break
+		}
+	}
+	line = strings.NewReplacer("**", "", "__", "", "`", "", "*", "", "_", "").Replace(line)
+	return strings.TrimSpace(line)
+}
+
+func trimWorkflowListPrefix(line string) string {
+	if strings.HasPrefix(line, "- [") {
+		if idx := strings.Index(line, "]"); idx >= 0 && idx+1 < len(line) {
+			return strings.TrimSpace(line[idx+1:])
+		}
+	}
+	for _, prefix := range []string{"- ", "* ", "+ ", "• "} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(line) && (line[i] == '.' || line[i] == ')') {
+		return strings.TrimSpace(line[i+1:])
+	}
+	return line
 }
 
 func extractWorkflowRootCauseAffirmation(text, lower string) string {
@@ -624,10 +696,11 @@ func extractWorkflowRootCauseAffirmation(text, lower string) string {
 		}
 		start := idx
 		switch marker {
-		case "root cause:", "root cause is", "root cause was", "root cause =", "root cause -", "root cause —", "the cause is", "the cause was", "caused by", "is caused by", "was caused by", "failure stems from", "failure stemmed from", "traced to":
+		case "root cause:", "root cause is", "root cause was", "root cause =", "root cause -", "root cause —", "root cause identified", "identified root cause", "confirmed root cause", "the cause is", "the cause was", "caused by", "is caused by", "was caused by", "failure stems from", "failure stemmed from", "traced to":
 			start = idx + len(marker)
 		}
-		return firstWorkflowRootCauseLine(text[start:])
+		cause := strings.TrimLeft(firstWorkflowRootCauseLine(text[start:]), ":= -—")
+		return strings.TrimSpace(cause)
 	}
 	return ""
 }
