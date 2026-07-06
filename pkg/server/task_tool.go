@@ -57,6 +57,7 @@ func buildFallbackPicker(s *Server) *fallback.FallbackPicker {
 
 	capScore := picker.NewCapabilityScore(pickerCfg)
 	health := picker.NewHealthChecker(pickerCfg, binaryResolver, activeCLIs, nil)
+	health.WarmAll(context.Background())
 	p := picker.NewPicker(pickerCfg, capScore, health, activeCLIs)
 
 	fbCfg := fallback.DefaultFallbackConfig()
@@ -64,6 +65,7 @@ func buildFallbackPicker(s *Server) *fallback.FallbackPicker {
 
 	fbCapScore := picker.NewCapabilityScore(pickerCfg)
 	fbHealth := picker.NewHealthChecker(pickerCfg, binaryResolver, activeCLIs, nil)
+	fbHealth.WarmAll(context.Background())
 	orderer := fallback.NewOrderer(fbCapScore, fbHealth, &fbCfg)
 	classifier := fallback.NewFailureClassifier()
 	translator := fallback.NewPassThroughTranslator()
