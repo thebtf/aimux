@@ -614,24 +614,31 @@ func parseTaskListStatuses(query url.Values) ([]loom.TaskStatus, error) {
 }
 
 func parseTaskArtifactKinds(query url.Values, defaults []loom.TaskArtifactKind) ([]loom.TaskArtifactKind, error) {
-	raw := strings.TrimSpace(query.Get("kind"))
-	if raw == "" {
+	copyDefaults := func() []loom.TaskArtifactKind {
 		out := make([]loom.TaskArtifactKind, len(defaults))
 		copy(out, defaults)
-		return out, nil
+		return out
+	}
+
+	raw := strings.TrimSpace(query.Get("kind"))
+	if raw == "" {
+		return copyDefaults(), nil
 	}
 	parts := parseTaskResourceCSV(raw)
 	if len(parts) == 0 {
-		return nil, nil
+		return copyDefaults(), nil
+	}
+	allowed := make(map[loom.TaskArtifactKind]struct{}, len(defaults))
+	for _, kind := range defaults {
+		allowed[kind] = struct{}{}
 	}
 	kinds := make([]loom.TaskArtifactKind, 0, len(parts))
 	for _, part := range parts {
-		switch loom.TaskArtifactKind(part) {
-		case loom.TaskArtifactKindLifecycle, loom.TaskArtifactKindProgress, loom.TaskArtifactKindTerminal, loom.TaskArtifactKindRuntime:
-			kinds = append(kinds, loom.TaskArtifactKind(part))
-		default:
+		kind := loom.TaskArtifactKind(part)
+		if _, ok := allowed[kind]; !ok {
 			return nil, fmt.Errorf("unsupported task artifact kind %q", part)
 		}
+		kinds = append(kinds, kind)
 	}
 	return kinds, nil
 }

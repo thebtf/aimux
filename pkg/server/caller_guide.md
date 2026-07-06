@@ -66,8 +66,11 @@ Use task resources for evidence instead of daemon log spelunking:
 | `aimux://tasks` | Bounded read-only task list with task/resource links. |
 | `aimux://tasks/{task_id}` | Compact snapshot with status, progress summary, metadata, and links. |
 | `aimux://tasks/{task_id}/viewer` | Read-only HTML detail view for humans and browser-capable clients. |
-| `aimux://tasks/{task_id}/events` | Bounded lifecycle, runtime, and terminal artifacts. Add `kind=runtime`, `event_type=<type>`, `channel=<stdout|stderr|tool>`, `cursor=<seq>`, and `limit=<n>` for mid-flight runtime slices. |
-| `aimux://tasks/{task_id}/progress` | Bounded progress artifacts for compact polling consumers. |
+| `aimux://tasks/{task_id}/events` | Bounded lifecycle, runtime, and terminal artifacts. Add `kind=<lifecycle|terminal|runtime>`, `event_type=<type>`, `channel=<stdout|stderr|tool>`, `cursor=<seq>`, and `limit=<n>` for mid-flight runtime slices. |
+| `aimux://tasks/{task_id}/progress` | Bounded progress artifacts for compact polling consumers. Supports `kind=progress`, `cursor=<seq>`, and `limit=<n>`. |
+
+`kind` filters are resource-local: `/events?kind=progress` and
+`/progress?kind=runtime` return `invalid_kind` instead of crossing surfaces.
 
 Runtime events are projection-only evidence. The Loom task row remains the
 canonical source for status, result, and lifecycle transitions. Structured JSONL

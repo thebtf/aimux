@@ -537,6 +537,54 @@ func TestTaskEventsResource_MidFlightRuntimeEventReadObservesAccumulation(t *tes
 	}
 }
 
+func TestTaskArtifactResource_KindFilterIsBoundedByResourceFamily(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-kind-boundary")
+	taskID, _ := submitBlockingLoomTask(t, srv, projectID, "")
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusRunning)
+
+	runtimeEvent, err := srv.loom.AppendRuntimeEvent(taskID, loom.TaskRuntimeEventAppend{
+		EventType: "raw",
+		Channel:   "stdout",
+		Summary:   "runtime line",
+		Payload:   map[string]any{"line": "runtime line"},
+	})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+	if err := srv.loom.AppendProgress(taskID, "progress line"); err != nil {
+		t.Fatalf("AppendProgress: %v", err)
+	}
+
+	eventsAllowed := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?kind=runtime&limit=5")
+	assertTaskResourceRuntimeEvent(t, findTaskResourceEventBySeq(t, eventsAllowed, runtimeEvent.Seq), runtimeEvent.Seq, "raw", "stdout")
+
+	progressAllowed := readTaskProgressResource(t, srv, ctx, "aimux://tasks/"+taskID+"/progress?kind=progress&limit=5")
+	progressItems := taskResourceItems(t, progressAllowed)
+	if len(progressItems) != 1 {
+		t.Fatalf("progress items = %#v, want one progress artifact", progressAllowed["items"])
+	}
+	if item := progressItems[0].(map[string]any); item["kind"] != string(loom.TaskArtifactKindProgress) {
+		t.Fatalf("progress item kind = %v, want progress", item["kind"])
+	}
+
+	progressRejected := readTaskProgressResource(t, srv, ctx, "aimux://tasks/"+taskID+"/progress?kind=runtime&limit=5")
+	if progressRejected["status"] != "invalid_kind" {
+		t.Fatalf("progress runtime status = %v, want invalid_kind; payload=%v", progressRejected["status"], progressRejected)
+	}
+	if _, leaked := progressRejected["items"]; leaked {
+		t.Fatalf("invalid progress kind leaked items: %v", progressRejected)
+	}
+
+	eventsRejected := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?kind=progress&limit=5")
+	if eventsRejected["status"] != "invalid_kind" {
+		t.Fatalf("events progress status = %v, want invalid_kind; payload=%v", eventsRejected["status"], eventsRejected)
+	}
+	if _, leaked := eventsRejected["items"]; leaked {
+		t.Fatalf("invalid events kind leaked items: %v", eventsRejected)
+	}
+}
+
 func TestTaskArtifactResource_InvalidCursorReturnsCompactError(t *testing.T) {
 	srv := testServerWithLoom(t)
 	ctx, projectID := projectCtxAndID("proj-resource-bad-cursor")

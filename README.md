@@ -169,12 +169,14 @@ through the caller's ambient global Codex home.
 | `aimux://tasks` | Bounded read-only task list with snapshot/viewer/events/progress links. |
 | `aimux://tasks/{task_id}` | Compact Loom task snapshot with status, progress summary, and resource links. |
 | `aimux://tasks/{task_id}/viewer` | Self-contained read-only HTML view of snapshot, metadata, events, and progress. |
-| `aimux://tasks/{task_id}/events` | Bounded lifecycle, runtime, and terminal artifact page for one task. Supports `limit`, `cursor`, `kind`, `event_type`, and `channel` query filters; `kind=runtime` exposes mid-flight runtime slices. |
-| `aimux://tasks/{task_id}/progress` | Bounded progress artifact page for compact polling consumers. |
+| `aimux://tasks/{task_id}/events` | Bounded lifecycle, runtime, and terminal artifact page for one task. Supports `limit`, `cursor`, `kind`, `event_type`, and `channel` query filters; `kind` is bounded to `lifecycle`, `terminal`, and `runtime`. |
+| `aimux://tasks/{task_id}/progress` | Bounded progress artifact page for compact polling consumers. Supports `limit`, `cursor`, and resource-local `kind=progress`. |
 
 Use these resources when a caller needs task evidence without reading daemon
-logs. Event and progress pages are cursor/limit paginated; event pages also
-support typed runtime slicing by artifact kind, event type, and channel. Runtime
+logs. Event and progress pages are cursor/limit paginated; `kind` filters are
+resource-local, so cross-family requests return `invalid_kind` instead of data
+from another surface. Event pages also support typed runtime slicing by artifact
+kind, event type, and channel. Runtime
 events are projection-only evidence: Loom task status, result, and lifecycle
 ownership remain canonical in the task row. Less structured harness output is
 preserved as truthful `raw`/`stdout` runtime evidence rather than hidden, while
