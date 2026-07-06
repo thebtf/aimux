@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.22.0] — 2026-07-06 — AIMUX-23 workflow-backed curated recipes
+
+### Added
+
+- **AIMUX-23 CR-010 workflow-backed curated recipes.** Added compiled `security-audit` and `debug-investigation` recipe IDs that execute through the existing `task(recipe_id=...)` surface while reusing internal `pkg/workflow` definitions as code-behind.
+- **Workflow-backed task worker path.** Added a dedicated `task_workflow_worker` bridge that preserves Loom-backed task execution, replay data, task resources, guide discovery, and recipe/resource visibility for workflow-backed recipes without adding a new public workflow MCP tool.
+- **Workflow-backed regression coverage.** Added focused and full-suite coverage for recipe discovery, task routing, replay/resource parity, workflow gate behavior, and review-worker preservation around the new internal workflow path.
+
+### Changed
+
+- **Recipe documentation and caller guidance.** Updated README, Russian README, caller guide, recipe resources, and replay/resource help text to document the supported workflow-backed recipe IDs and their frozen public-surface boundary.
+- **Internal review orchestration seams.** Extended the existing review worker and recipe registry wiring so workflow-backed recipes stay discoverable and inspectable without moving `code-review` or `second-opinion` onto the new workflow worker path.
+
+### Fixed
+
+- **Read-only fallback enforcement.** Read-only workflow-backed recipes now reject fallback-selected CLI profiles that lack read-only support before the leaf CLI executes.
+- **Root-cause gate source truthfulness.** The debug workflow root-cause gate now recognizes the full shared affirmative marker set and preserves literal identifier characters such as `null_pointer in user_service` while stripping Markdown wrappers.
+
 ## [5.21.2] — 2026-07-06 — AIMUX-4 fallback overhead closure
 
 ### Added
