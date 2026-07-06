@@ -184,6 +184,10 @@ func (s *workflowRecipeExecutorSender) Send(ctx context.Context, h workflow.Exec
 	if handle.requested != "" && handle.requested != handle.cli {
 		prompt = fmt.Sprintf("Requested workflow role/executor: %s. Execute this step using the available CLI %s.\n\n%s", handle.requested, handle.cli, prompt)
 	}
+	outputFormat := ""
+	if profile, err := s.profile(handle.cli); err == nil && profile != nil {
+		outputFormat = profile.OutputFormat
+	}
 	spec := picker.TaskSpec{
 		TaskClass:      "review",
 		Prompt:         prompt,
@@ -193,7 +197,7 @@ func (s *workflowRecipeExecutorSender) Send(ctx context.Context, h workflow.Exec
 		Effort:         s.task.Effort,
 		Sandbox:        "read-only",
 		TimeoutSeconds: s.task.Timeout,
-		OnOutput:       s.progressSink(),
+		OnOutput:       s.progressSink(outputFormat),
 	}
 	if !workflowRecipeForcesReadOnly(s.task.Metadata) {
 		if sandbox, ok := metadataString(s.task.Metadata, "sandbox"); ok && strings.TrimSpace(sandbox) != "" {
@@ -244,7 +248,7 @@ func (s *workflowRecipeExecutorSender) profile(cli string) (*config.CLIProfile, 
 	return s.server.registry.Get(cli)
 }
 
-func (s *workflowRecipeExecutorSender) progressSink() func(string) {
+func (s *workflowRecipeExecutorSender) progressSink(outputFormat string) func(string) {
 	if s == nil || s.server == nil || s.server.loom == nil || s.task == nil || s.task.ID == "" {
 		return nil
 	}
@@ -252,7 +256,12 @@ func (s *workflowRecipeExecutorSender) progressSink() func(string) {
 		if strings.TrimSpace(line) == "" {
 			return
 		}
-		_ = s.server.loom.AppendProgress(s.task.ID, line)
+		appendRuntimeEventsForLine(s.server.loom, s.task.ID, outputFormat, line)
+		progressLine := normalizeProgressLine(outputFormat, line)
+		if progressLine == "" {
+			progressLine = line
+		}
+		_ = s.server.loom.AppendProgress(s.task.ID, progressLine)
 	}
 }
 

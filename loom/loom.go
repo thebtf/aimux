@@ -395,7 +395,7 @@ func (l *LoomEngine) validateSubtaskBreadth(rootTaskID string) error {
 }
 
 func (l *LoomEngine) countInflightSubtasks(rootTaskID string) (int, error) {
-	visited := map[string]struct{}{rootTaskID: struct{}{}}
+	visited := map[string]struct{}{rootTaskID: {}}
 	return l.countInflightSubtasksFrom(rootTaskID, visited)
 }
 

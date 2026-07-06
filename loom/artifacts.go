@@ -28,6 +28,7 @@ const (
 	TaskArtifactKindLifecycle TaskArtifactKind = "lifecycle"
 	TaskArtifactKindProgress  TaskArtifactKind = "progress"
 	TaskArtifactKindTerminal  TaskArtifactKind = "terminal"
+	TaskArtifactKindRuntime   TaskArtifactKind = "runtime"
 )
 
 // TaskArtifactProjectionStatus describes whether artifact projection data is
@@ -46,6 +47,7 @@ const (
 type TaskArtifactAppend struct {
 	Kind          TaskArtifactKind
 	EventType     string
+	Channel       string
 	Summary       string
 	Payload       map[string]any
 	ContentLength int64
@@ -59,6 +61,7 @@ type TaskArtifact struct {
 	TaskID        string           `json:"task_id"`
 	Kind          TaskArtifactKind `json:"kind"`
 	EventType     string           `json:"event_type,omitempty"`
+	Channel       string           `json:"channel,omitempty"`
 	Summary       string           `json:"summary"`
 	Payload       map[string]any   `json:"payload,omitempty"`
 	ContentLength int64            `json:"content_length"`
@@ -70,9 +73,11 @@ type TaskArtifact struct {
 // TaskArtifactListOptions controls deterministic artifact pagination. Cursor
 // is intentionally a string so CR-002 can expose it as opaque public API.
 type TaskArtifactListOptions struct {
-	Cursor string
-	Limit  int
-	Kinds  []TaskArtifactKind
+	Cursor     string
+	Limit      int
+	Kinds      []TaskArtifactKind
+	EventTypes []string
+	Channels   []string
 }
 
 // TaskArtifactPage is the stable page shape consumed by task resources.
@@ -112,6 +117,42 @@ func (l *LoomEngine) ListArtifacts(taskID string, opts TaskArtifactListOptions) 
 	return l.store.ListArtifacts(taskID, opts)
 }
 
+// TaskRuntimeEventAppend is the normalized input shape for runtime evidence.
+// Runtime rows are projection-only; canonical task status remains owned by the
+// task table and lifecycle transitions.
+type TaskRuntimeEventAppend struct {
+	EventType     string
+	Channel       string
+	Summary       string
+	Payload       map[string]any
+	ContentLength int64
+	Redacted      bool
+	Truncated     bool
+}
+
+// AppendRuntimeEvent persists one runtime projection row through the Loom
+// engine boundary without mutating canonical task status.
+func (l *LoomEngine) AppendRuntimeEvent(taskID string, input TaskRuntimeEventAppend) (TaskArtifact, error) {
+	if l == nil || l.store == nil {
+		return TaskArtifact{}, fmt.Errorf("loom: append runtime event: engine unavailable")
+	}
+	return l.store.AppendRuntimeEvent(taskID, input)
+}
+
+// AppendRuntimeEvent persists one normalized runtime projection row for taskID.
+func (s *TaskStore) AppendRuntimeEvent(taskID string, input TaskRuntimeEventAppend) (TaskArtifact, error) {
+	return s.AppendArtifact(taskID, TaskArtifactAppend{
+		Kind:          TaskArtifactKindRuntime,
+		EventType:     input.EventType,
+		Channel:       input.Channel,
+		Summary:       input.Summary,
+		Payload:       input.Payload,
+		ContentLength: input.ContentLength,
+		Redacted:      input.Redacted,
+		Truncated:     input.Truncated,
+	})
+}
+
 // AppendArtifact persists one projection row for a Loom task. It validates that
 // the source task exists but never updates canonical task state.
 func (s *TaskStore) AppendArtifact(taskID string, input TaskArtifactAppend) (TaskArtifact, error) {
@@ -129,9 +170,10 @@ func (s *TaskStore) AppendArtifact(taskID string, input TaskArtifactAppend) (Tas
 	}
 
 	summary, redacted, truncated := prepareArtifactSummary(input.Summary)
-	redacted = redacted || input.Redacted
-	truncated = truncated || input.Truncated
-	payloadJSON, err := marshalJSON(input.Payload)
+	payload, payloadRedacted, payloadTruncated := prepareArtifactPayload(input.Payload)
+	redacted = redacted || input.Redacted || payloadRedacted
+	truncated = truncated || input.Truncated || payloadTruncated
+	payloadJSON, err := marshalJSON(payload)
 	if err != nil {
 		return TaskArtifact{}, fmt.Errorf("loom store: append artifact marshal payload: %w", err)
 	}
@@ -150,12 +192,13 @@ func (s *TaskStore) AppendArtifact(taskID string, input TaskArtifactAppend) (Tas
 	var payloadRaw string
 	err = s.db.QueryRow(`
 		INSERT INTO task_artifacts
-			(task_id, kind, event_type, summary, payload_json, content_length, redacted, truncated, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		RETURNING seq, task_id, kind, event_type, summary, payload_json, content_length, redacted, truncated, created_at`,
+			(task_id, kind, event_type, channel, summary, payload_json, content_length, redacted, truncated, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING seq, task_id, kind, event_type, channel, summary, payload_json, content_length, redacted, truncated, created_at`,
 		taskID,
 		string(input.Kind),
 		input.EventType,
+		input.Channel,
 		summary,
 		payloadJSON,
 		contentLength,
@@ -167,6 +210,7 @@ func (s *TaskStore) AppendArtifact(taskID string, input TaskArtifactAppend) (Tas
 		&artifact.TaskID,
 		&artifact.Kind,
 		&artifact.EventType,
+		&artifact.Channel,
 		&artifact.Summary,
 		&payloadRaw,
 		&artifact.ContentLength,
@@ -197,7 +241,7 @@ func (s *TaskStore) ListArtifacts(taskID string, opts TaskArtifactListOptions) (
 	limit := normalizeArtifactLimit(opts.Limit)
 
 	query := `
-		SELECT seq, task_id, kind, event_type, summary, payload_json, content_length, redacted, truncated, created_at
+		SELECT seq, task_id, kind, event_type, channel, summary, payload_json, content_length, redacted, truncated, created_at
 		FROM task_artifacts
 		WHERE task_id = ? AND seq > ?`
 	args := []any{taskID, afterSeq}
@@ -211,6 +255,34 @@ func (s *TaskStore) ListArtifacts(taskID string, opts TaskArtifactListOptions) (
 			args = append(args, string(kind))
 		}
 		query += " AND kind IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	if len(opts.EventTypes) > 0 {
+		placeholders := make([]string, 0, len(opts.EventTypes))
+		for _, eventType := range opts.EventTypes {
+			eventType = strings.TrimSpace(eventType)
+			if eventType == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, eventType)
+		}
+		if len(placeholders) > 0 {
+			query += " AND event_type IN (" + strings.Join(placeholders, ",") + ")"
+		}
+	}
+	if len(opts.Channels) > 0 {
+		placeholders := make([]string, 0, len(opts.Channels))
+		for _, channel := range opts.Channels {
+			channel = strings.TrimSpace(channel)
+			if channel == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, channel)
+		}
+		if len(placeholders) > 0 {
+			query += " AND channel IN (" + strings.Join(placeholders, ",") + ")"
+		}
 	}
 	query += " ORDER BY seq ASC LIMIT ?"
 	args = append(args, limit+1)
@@ -258,7 +330,7 @@ func (s *TaskStore) ListArtifacts(taskID string, opts TaskArtifactListOptions) (
 
 func validateTaskArtifactKind(kind TaskArtifactKind) error {
 	switch kind {
-	case TaskArtifactKindLifecycle, TaskArtifactKindProgress, TaskArtifactKindTerminal:
+	case TaskArtifactKindLifecycle, TaskArtifactKindProgress, TaskArtifactKindTerminal, TaskArtifactKindRuntime:
 		return nil
 	default:
 		return fmt.Errorf("loom store: invalid artifact kind %q", kind)
@@ -303,6 +375,44 @@ func prepareArtifactSummary(summary string) (string, bool, bool) {
 	return redactedSummary, redacted, truncated
 }
 
+func prepareArtifactPayload(payload map[string]any) (map[string]any, bool, bool) {
+	if payload == nil {
+		return map[string]any{}, false, false
+	}
+	prepared := make(map[string]any, len(payload))
+	redacted := false
+	truncated := false
+	for key, value := range payload {
+		preparedValue, valueRedacted, valueTruncated := prepareArtifactPayloadValue(value)
+		prepared[key] = preparedValue
+		redacted = redacted || valueRedacted
+		truncated = truncated || valueTruncated
+	}
+	return prepared, redacted, truncated
+}
+
+func prepareArtifactPayloadValue(value any) (any, bool, bool) {
+	switch typed := value.(type) {
+	case string:
+		return prepareArtifactSummary(typed)
+	case map[string]any:
+		return prepareArtifactPayload(typed)
+	case []any:
+		out := make([]any, 0, len(typed))
+		redacted := false
+		truncated := false
+		for _, item := range typed {
+			prepared, itemRedacted, itemTruncated := prepareArtifactPayloadValue(item)
+			out = append(out, prepared)
+			redacted = redacted || itemRedacted
+			truncated = truncated || itemTruncated
+		}
+		return out, redacted, truncated
+	default:
+		return value, false, false
+	}
+}
+
 func scanTaskArtifact(rows *sql.Rows) (TaskArtifact, error) {
 	var artifact TaskArtifact
 	var payloadRaw string
@@ -312,6 +422,7 @@ func scanTaskArtifact(rows *sql.Rows) (TaskArtifact, error) {
 		&artifact.TaskID,
 		&artifact.Kind,
 		&artifact.EventType,
+		&artifact.Channel,
 		&artifact.Summary,
 		&payloadRaw,
 		&artifact.ContentLength,

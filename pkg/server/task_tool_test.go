@@ -462,6 +462,7 @@ func TestWorkflowRecipeExecutorSenderSendRejectsFallbackSelectedReadOnlyPolicyMi
 		t.Fatalf("Send error = %v, want recipe policy enforcement error", err)
 	}
 }
+
 func TestWorkflowRecipeExecutorSenderSendDoesNotInvokeFallbackSelectedReadOnlyPolicyMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -1223,7 +1224,7 @@ func TestProfileTaskWorkerProgressSinkForwardsLinesToLoom(t *testing.T) {
 		t.Fatalf("import running task: %v", err)
 	}
 
-	sink := worker.progressSink(taskID)
+	sink := worker.progressSink(taskID, "")
 	if sink == nil {
 		t.Fatal("progressSink returned nil for a live engine + task")
 	}
@@ -1245,6 +1246,18 @@ func TestProfileTaskWorkerProgressSinkForwardsLinesToLoom(t *testing.T) {
 	if task.ProgressUpdatedAt == nil {
 		t.Fatal("ProgressUpdatedAt is nil after progress — stall detector would still measure from dispatch time")
 	}
+	runtimePage, err := srv.loom.ListArtifacts(taskID, loom.TaskArtifactListOptions{Kinds: []loom.TaskArtifactKind{loom.TaskArtifactKindRuntime}})
+	if err != nil {
+		t.Fatalf("ListArtifacts runtime: %v", err)
+	}
+	if len(runtimePage.Items) != 2 {
+		t.Fatalf("runtime artifacts = %#v; want two raw stdout progress lines", runtimePage.Items)
+	}
+	for i, item := range runtimePage.Items {
+		if item.EventType != "raw" || item.Channel != "stdout" {
+			t.Fatalf("runtime artifact %d = %#v; want raw/stdout truthful fallback", i, item)
+		}
+	}
 }
 
 func TestProfileTaskWorkerProgressSinkNilWhenNoSignalPossible(t *testing.T) {
@@ -1252,18 +1265,71 @@ func TestProfileTaskWorkerProgressSinkNilWhenNoSignalPossible(t *testing.T) {
 
 	srv, _, _ := newTaskToolServer(t)
 	live := profileTaskWorker{server: srv, workerType: code.WorkerTypeCodeDriver, defaultCLI: "codex"}
-	if live.progressSink("") != nil {
+	if live.progressSink("", "") != nil {
 		t.Fatal("progressSink(empty taskID) = non-nil, want nil")
 	}
 
 	noEngine := profileTaskWorker{server: &Server{}, workerType: code.WorkerTypeCodeDriver}
-	if noEngine.progressSink("task-x") != nil {
+	if noEngine.progressSink("task-x", "") != nil {
 		t.Fatal("progressSink with nil loom = non-nil, want nil")
 	}
 
 	noServer := profileTaskWorker{workerType: code.WorkerTypeCodeDriver}
-	if noServer.progressSink("task-x") != nil {
+	if noServer.progressSink("task-x", "") != nil {
 		t.Fatal("progressSink with nil server = non-nil, want nil")
+	}
+}
+
+func TestProfileTaskWorkerRuntimeEventsFromStructuredEmulator(t *testing.T) {
+	dir := t.TempDir()
+	bin := fakeExecutableWithContents(t, dir, "codex-runtime-jsonl",
+		"#!/bin/sh\nprintf '%s\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hello from emulator\"}}'\nprintf '%s\n' '{\"type\":\"unknown.future\",\"payload\":\"kept\"}'\n",
+		"@echo off\r\necho {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hello from emulator\"}}\r\necho {\"type\":\"unknown.future\",\"payload\":\"kept\"}\r\nexit /b 0\r\n",
+	)
+	profile := &config.CLIProfile{
+		Name:           "codex",
+		Binary:         bin,
+		ResolvedPath:   bin,
+		OutputFormat:   "jsonl",
+		PromptFlagType: "positional",
+		TimeoutSeconds: 5,
+		Features:       types.CLIFeatures{JSONL: true},
+	}
+	registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": profile})
+	registry.SetAvailable("codex", true)
+	engine := newTaskToolEngine(t)
+	srv := &Server{loom: engine, registry: registry}
+	engine.RegisterWorker(code.WorkerTypeCodeDriver, profileTaskWorker{
+		server:     srv,
+		workerType: code.WorkerTypeCodeDriver,
+		taskClass:  "code",
+		defaultCLI: "codex",
+	})
+
+	taskID, err := engine.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: code.WorkerTypeCodeDriver,
+		ProjectID:  "structured-runtime-emulator",
+		Prompt:     "emit structured runtime frames",
+		CLI:        "codex",
+		Timeout:    5,
+	})
+	if err != nil {
+		t.Fatalf("Submit structured runtime emulator: %v", err)
+	}
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusCompleted)
+
+	page, err := engine.ListArtifacts(taskID, loom.TaskArtifactListOptions{Kinds: []loom.TaskArtifactKind{loom.TaskArtifactKindRuntime}})
+	if err != nil {
+		t.Fatalf("ListArtifacts runtime: %v", err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("runtime artifacts = %#v; want text_delta plus raw fallback", page.Items)
+	}
+	if page.Items[0].EventType != "text_delta" || page.Items[0].Channel != "stdout" || page.Items[0].Summary != "hello from emulator" {
+		t.Fatalf("first runtime event = %#v; want text_delta/stdout emulator text", page.Items[0])
+	}
+	if page.Items[1].EventType != "raw" || page.Items[1].Channel != "stdout" {
+		t.Fatalf("second runtime event = %#v; want raw/stdout fallback for unknown frame", page.Items[1])
 	}
 }
 
@@ -1341,6 +1407,7 @@ func fakeExecutable(t *testing.T, dir, name string) string {
 	}
 	return path
 }
+
 func fakeExecutableWithContents(t *testing.T, dir, name, unixContents, windowsContents string) string {
 	t.Helper()
 	filename := name

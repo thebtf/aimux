@@ -64,7 +64,7 @@ func (s *Server) registerTaskResources() {
 		mcp.NewResourceTemplate(
 			"aimux://tasks/{task_id}/events",
 			"Task Events",
-			mcp.WithTemplateDescription("Bounded Loom lifecycle and terminal artifact page for one task"),
+			mcp.WithTemplateDescription("Bounded Loom lifecycle, runtime, and terminal artifact page for one task"),
 			mcp.WithTemplateMIMEType(taskResourceMIMEType),
 		),
 		s.handleTaskEventsResource,
@@ -186,6 +186,7 @@ func (s *Server) handleTaskEventsResource(ctx context.Context, request mcp.ReadR
 	return s.handleTaskArtifactPageResource(ctx, request, taskResourceEvents, []loom.TaskArtifactKind{
 		loom.TaskArtifactKindLifecycle,
 		loom.TaskArtifactKindTerminal,
+		loom.TaskArtifactKindRuntime,
 	})
 }
 
@@ -218,15 +219,26 @@ func (s *Server) handleTaskArtifactPageResource(ctx context.Context, request mcp
 		})
 	}
 	cursor := parsed.query.Get("cursor")
+	artifactKinds, err = parseTaskArtifactKinds(parsed.query, artifactKinds)
+	if err != nil {
+		return taskResourceJSON(request.Params.URI, map[string]any{
+			"status": "invalid_kind",
+			"error":  err.Error(),
+		})
+	}
+	eventTypes := parseTaskResourceCSV(parsed.query.Get("event_type"))
+	channels := parseTaskResourceCSV(parsed.query.Get("channel"))
 
 	loomEngine := s.currentLoom()
 	if loomEngine == nil {
 		return nil, fmt.Errorf("loom unavailable")
 	}
 	page, err := loomEngine.ListArtifacts(task.ID, loom.TaskArtifactListOptions{
-		Cursor: cursor,
-		Limit:  limit,
-		Kinds:  artifactKinds,
+		Cursor:     cursor,
+		Limit:      limit,
+		Kinds:      artifactKinds,
+		EventTypes: eventTypes,
+		Channels:   channels,
 	})
 	if err != nil {
 		if errors.Is(err, loom.ErrInvalidArtifactCursor) {
@@ -601,6 +613,48 @@ func parseTaskListStatuses(query url.Values) ([]loom.TaskStatus, error) {
 	return statuses, nil
 }
 
+func parseTaskArtifactKinds(query url.Values, defaults []loom.TaskArtifactKind) ([]loom.TaskArtifactKind, error) {
+	copyDefaults := func() []loom.TaskArtifactKind {
+		out := make([]loom.TaskArtifactKind, len(defaults))
+		copy(out, defaults)
+		return out
+	}
+
+	raw := strings.TrimSpace(query.Get("kind"))
+	if raw == "" {
+		return copyDefaults(), nil
+	}
+	parts := parseTaskResourceCSV(raw)
+	if len(parts) == 0 {
+		return copyDefaults(), nil
+	}
+	allowed := make(map[loom.TaskArtifactKind]struct{}, len(defaults))
+	for _, kind := range defaults {
+		allowed[kind] = struct{}{}
+	}
+	kinds := make([]loom.TaskArtifactKind, 0, len(parts))
+	for _, part := range parts {
+		kind := loom.TaskArtifactKind(part)
+		if _, ok := allowed[kind]; !ok {
+			return nil, fmt.Errorf("unsupported task artifact kind %q", part)
+		}
+		kinds = append(kinds, kind)
+	}
+	return kinds, nil
+}
+
+func parseTaskResourceCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 func taskArtifactPagePayload(task *loom.Task, page loom.TaskArtifactPage, resource taskResourceKind, uri string) map[string]any {
 	payload := map[string]any{
 		"task_id":           task.ID,
@@ -630,6 +684,7 @@ func taskArtifactItems(items []loom.TaskArtifact) []map[string]any {
 			"seq":            item.Seq,
 			"kind":           string(item.Kind),
 			"event_type":     item.EventType,
+			"channel":        item.Channel,
 			"summary":        item.Summary,
 			"payload":        item.Payload,
 			"content_length": item.ContentLength,
@@ -720,7 +775,7 @@ func taskViewerArtifacts(b *strings.Builder, items []loom.TaskArtifact) {
 		b.WriteString("<p class=\"muted\">No artifacts recorded.</p>")
 		return
 	}
-	b.WriteString("<table><thead><tr><th>Seq</th><th>Kind</th><th>Event</th><th>Summary</th><th>Created</th></tr></thead><tbody>")
+	b.WriteString("<table><thead><tr><th>Seq</th><th>Kind</th><th>Event</th><th>Channel</th><th>Summary</th><th>Created</th></tr></thead><tbody>")
 	for _, item := range items {
 		b.WriteString("<tr><td>")
 		b.WriteString(strconv.FormatInt(item.Seq, 10))
@@ -728,6 +783,8 @@ func taskViewerArtifacts(b *strings.Builder, items []loom.TaskArtifact) {
 		b.WriteString(html.EscapeString(string(item.Kind)))
 		b.WriteString("</td><td>")
 		b.WriteString(html.EscapeString(item.EventType))
+		b.WriteString("</td><td>")
+		b.WriteString(html.EscapeString(item.Channel))
 		b.WriteString("</td><td>")
 		b.WriteString(html.EscapeString(compactTaskResourceText(item.Summary, 256)))
 		b.WriteString("</td><td>")

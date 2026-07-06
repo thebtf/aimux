@@ -36,10 +36,12 @@ func TestTaskSnapshotResourceTemplatesRegistered(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"aimux://tasks":                  false,
-		"aimux://tasks{?limit,status}":   false,
-		"aimux://tasks/{task_id}":        false,
-		"aimux://tasks/{task_id}/viewer": false,
+		"aimux://tasks":                    false,
+		"aimux://tasks{?limit,status}":     false,
+		"aimux://tasks/{task_id}":          false,
+		"aimux://tasks/{task_id}/viewer":   false,
+		"aimux://tasks/{task_id}/events":   false,
+		"aimux://tasks/{task_id}/progress": false,
 	}
 	for _, item := range templates {
 		template, ok := item.(map[string]any)
@@ -402,6 +404,187 @@ func TestTaskArtifactResource_EventsPaginationWithCursorAndLimit(t *testing.T) {
 	}
 }
 
+func TestTaskEventsResource_IncludesRuntimeEventsAndFiltersByKindEventTypeChannel(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-runtime-events")
+	taskID, _ := submitBlockingLoomTask(t, srv, projectID, "")
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusRunning)
+
+	textEvent, err := srv.loom.AppendRuntimeEvent(taskID, loom.TaskRuntimeEventAppend{
+		EventType: "text_delta",
+		Channel:   "stdout",
+		Summary:   "assistant token with sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+		Payload: map[string]any{
+			"text": "hello sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+		},
+	})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvent text_delta: %v", err)
+	}
+	statusEvent, err := srv.loom.AppendRuntimeEvent(taskID, loom.TaskRuntimeEventAppend{
+		EventType: "status",
+		Channel:   "stderr",
+		Summary:   "codex selected model",
+		Payload:   map[string]any{"state": "model_selected"},
+	})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvent status: %v", err)
+	}
+
+	all := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?limit=10")
+	allRuntime := findTaskResourceEventBySeq(t, all, textEvent.Seq)
+	assertTaskResourceRuntimeEvent(t, allRuntime, textEvent.Seq, "text_delta", "stdout")
+
+	textOnly := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?kind=runtime&event_type=text_delta&channel=stdout&limit=10")
+	textItems := taskResourceItems(t, textOnly)
+	if len(textItems) != 1 {
+		t.Fatalf("text_delta stdout filtered items = %#v; want exactly one runtime event", textOnly["items"])
+	}
+	textItem := textItems[0].(map[string]any)
+	assertTaskResourceRuntimeEvent(t, textItem, textEvent.Seq, "text_delta", "stdout")
+	rawTextPayload, err := json.Marshal(textOnly)
+	if err != nil {
+		t.Fatalf("marshal text runtime payload: %v", err)
+	}
+	if strings.Contains(string(rawTextPayload), "sk-proj-") {
+		t.Fatalf("runtime events resource leaked raw secret: %s", rawTextPayload)
+	}
+	if textItem["redacted"] != true {
+		t.Fatalf("text runtime event redacted = %v; want true", textItem["redacted"])
+	}
+
+	statusOnly := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?kind=runtime&event_type=status&channel=stderr&limit=10")
+	statusItems := taskResourceItems(t, statusOnly)
+	if len(statusItems) != 1 {
+		t.Fatalf("status stderr filtered items = %#v; want exactly one runtime event", statusOnly["items"])
+	}
+	assertTaskResourceRuntimeEvent(t, statusItems[0].(map[string]any), statusEvent.Seq, "status", "stderr")
+}
+
+func TestTaskEventsResource_RunningTaskEmptyRuntimeProjectionIsPartial(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-runtime-empty")
+	taskID, _ := submitBlockingLoomTask(t, srv, projectID, "")
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusRunning)
+
+	got := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?kind=runtime&limit=5")
+	if got["task_id"] != taskID {
+		t.Fatalf("task_id = %v, want %s", got["task_id"], taskID)
+	}
+	if got["projection_status"] != string(loom.TaskArtifactProjectionPartial) {
+		t.Fatalf("projection_status = %v, want partial for running task without runtime events", got["projection_status"])
+	}
+	items := taskResourceItems(t, got)
+	if len(items) != 0 {
+		t.Fatalf("runtime event items = %#v; want empty projection for running task", got["items"])
+	}
+	task, err := srv.loom.Get(taskID)
+	if err != nil {
+		t.Fatalf("loom.Get(%s): %v", taskID, err)
+	}
+	if task.Status != loom.TaskStatusRunning {
+		t.Fatalf("canonical task status = %s; want running", task.Status)
+	}
+}
+
+func TestTaskEventsResource_MidFlightRuntimeEventReadObservesAccumulation(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-runtime-accumulation")
+	taskID, _ := submitBlockingLoomTask(t, srv, projectID, "")
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusRunning)
+
+	first, err := srv.loom.AppendRuntimeEvent(taskID, loom.TaskRuntimeEventAppend{
+		EventType: "text_delta",
+		Channel:   "stdout",
+		Summary:   "first live token",
+		Payload:   map[string]any{"text": "first"},
+	})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvent first: %v", err)
+	}
+	firstRead := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?kind=runtime&event_type=text_delta&channel=stdout&limit=10")
+	firstItems := taskResourceItems(t, firstRead)
+	if len(firstItems) != 1 {
+		t.Fatalf("first mid-flight read items = %#v; want one runtime event", firstRead["items"])
+	}
+	assertTaskResourceRuntimeEvent(t, firstItems[0].(map[string]any), first.Seq, "text_delta", "stdout")
+
+	second, err := srv.loom.AppendRuntimeEvent(taskID, loom.TaskRuntimeEventAppend{
+		EventType: "text_delta",
+		Channel:   "stdout",
+		Summary:   "second live token",
+		Payload:   map[string]any{"text": "second"},
+	})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvent second: %v", err)
+	}
+	secondRead := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?kind=runtime&event_type=text_delta&channel=stdout&limit=10")
+	secondItems := taskResourceItems(t, secondRead)
+	if len(secondItems) != 2 {
+		t.Fatalf("second mid-flight read items = %#v; want accumulated runtime events", secondRead["items"])
+	}
+	assertTaskResourceRuntimeEvent(t, secondItems[0].(map[string]any), first.Seq, "text_delta", "stdout")
+	assertTaskResourceRuntimeEvent(t, secondItems[1].(map[string]any), second.Seq, "text_delta", "stdout")
+	if first.Seq >= second.Seq {
+		t.Fatalf("runtime event append order inverted: first seq %d second seq %d", first.Seq, second.Seq)
+	}
+	task, err := srv.loom.Get(taskID)
+	if err != nil {
+		t.Fatalf("loom.Get(%s): %v", taskID, err)
+	}
+	if task.Status != loom.TaskStatusRunning {
+		t.Fatalf("mid-flight read observed terminal task status %s; want running", task.Status)
+	}
+}
+
+func TestTaskArtifactResource_KindFilterIsBoundedByResourceFamily(t *testing.T) {
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-kind-boundary")
+	taskID, _ := submitBlockingLoomTask(t, srv, projectID, "")
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusRunning)
+
+	runtimeEvent, err := srv.loom.AppendRuntimeEvent(taskID, loom.TaskRuntimeEventAppend{
+		EventType: "raw",
+		Channel:   "stdout",
+		Summary:   "runtime line",
+		Payload:   map[string]any{"line": "runtime line"},
+	})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvent: %v", err)
+	}
+	if err := srv.loom.AppendProgress(taskID, "progress line"); err != nil {
+		t.Fatalf("AppendProgress: %v", err)
+	}
+
+	eventsAllowed := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?kind=runtime&limit=5")
+	assertTaskResourceRuntimeEvent(t, findTaskResourceEventBySeq(t, eventsAllowed, runtimeEvent.Seq), runtimeEvent.Seq, "raw", "stdout")
+
+	progressAllowed := readTaskProgressResource(t, srv, ctx, "aimux://tasks/"+taskID+"/progress?kind=progress&limit=5")
+	progressItems := taskResourceItems(t, progressAllowed)
+	if len(progressItems) != 1 {
+		t.Fatalf("progress items = %#v, want one progress artifact", progressAllowed["items"])
+	}
+	if item := progressItems[0].(map[string]any); item["kind"] != string(loom.TaskArtifactKindProgress) {
+		t.Fatalf("progress item kind = %v, want progress", item["kind"])
+	}
+
+	progressRejected := readTaskProgressResource(t, srv, ctx, "aimux://tasks/"+taskID+"/progress?kind=runtime&limit=5")
+	if progressRejected["status"] != "invalid_kind" {
+		t.Fatalf("progress runtime status = %v, want invalid_kind; payload=%v", progressRejected["status"], progressRejected)
+	}
+	if _, leaked := progressRejected["items"]; leaked {
+		t.Fatalf("invalid progress kind leaked items: %v", progressRejected)
+	}
+
+	eventsRejected := readTaskEventsResource(t, srv, ctx, "aimux://tasks/"+taskID+"/events?kind=progress&limit=5")
+	if eventsRejected["status"] != "invalid_kind" {
+		t.Fatalf("events progress status = %v, want invalid_kind; payload=%v", eventsRejected["status"], eventsRejected)
+	}
+	if _, leaked := eventsRejected["items"]; leaked {
+		t.Fatalf("invalid events kind leaked items: %v", eventsRejected)
+	}
+}
+
 func TestTaskArtifactResource_InvalidCursorReturnsCompactError(t *testing.T) {
 	srv := testServerWithLoom(t)
 	ctx, projectID := projectCtxAndID("proj-resource-bad-cursor")
@@ -551,6 +734,46 @@ func TestTaskProgressResource_DoesNotRegisterJobsAliasWithoutActiveConsumers(t *
 		if !found {
 			t.Fatalf("resource template %q not registered; templates=%v", uri, templates)
 		}
+	}
+}
+
+func taskResourceItems(t *testing.T, got map[string]any) []any {
+	t.Helper()
+	items, ok := got["items"].([]any)
+	if !ok {
+		t.Fatalf("items type = %T, want []any; payload=%v", got["items"], got)
+	}
+	return items
+}
+
+func findTaskResourceEventBySeq(t *testing.T, got map[string]any, seq int64) map[string]any {
+	t.Helper()
+	for _, item := range taskResourceItems(t, got) {
+		event, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("event item type = %T, want map", item)
+		}
+		if event["seq"] == float64(seq) {
+			return event
+		}
+	}
+	t.Fatalf("runtime event seq %d not found in items %#v", seq, got["items"])
+	return nil
+}
+
+func assertTaskResourceRuntimeEvent(t *testing.T, item map[string]any, seq int64, eventType, channel string) {
+	t.Helper()
+	if item["seq"] != float64(seq) {
+		t.Fatalf("event seq = %v, want %d; item=%v", item["seq"], seq, item)
+	}
+	if item["kind"] != string(loom.TaskArtifactKindRuntime) {
+		t.Fatalf("event kind = %v, want runtime; item=%v", item["kind"], item)
+	}
+	if item["event_type"] != eventType {
+		t.Fatalf("event_type = %v, want %s; item=%v", item["event_type"], eventType, item)
+	}
+	if item["channel"] != channel {
+		t.Fatalf("channel = %v, want %s; item=%v", item["channel"], channel, item)
 	}
 }
 
