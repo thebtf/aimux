@@ -319,7 +319,7 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 		return nil, nil, nil, err
 	}
 
-	for _, delegated := range []string{"registerThinkHarnessTool", "registerTaskTool"} {
+	for _, delegated := range []string{"registerThinkHarnessTool", "registerTaskTool", "registerReviewTool"} {
 		if !p26FuncContainsReceiverCall(registerTools, delegated) {
 			return nil, nil, nil, fmt.Errorf("registerTools no longer delegates to %s; update P26 coverage extractor", delegated)
 		}

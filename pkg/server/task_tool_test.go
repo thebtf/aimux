@@ -232,6 +232,225 @@ func TestHandleTaskReviewGateMetadata(t *testing.T) {
 	}
 }
 
+func TestHandleReviewStandardRoutesThroughReviewBackbone(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	result := callReviewTool(t, srv, map[string]any{
+		"prompt": "review HEAD for regressions",
+		"target": "HEAD",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	payload := decodeTaskToolResult(t, result)
+	if payload["task_class"] != classifier.TaskClassReview {
+		t.Fatalf("task_class = %v, want review; payload=%v", payload["task_class"], payload)
+	}
+	task := reviewWorker.onlyTask(t)
+	if task.WorkerType != review.WorkerTypeReview {
+		t.Fatalf("worker_type = %s, want %s", task.WorkerType, review.WorkerTypeReview)
+	}
+	assertMetadataString(t, task.Metadata, "target", "HEAD")
+	assertMetadataString(t, task.Metadata, "review_target", "HEAD")
+	if _, ok := task.Metadata["gate"]; ok {
+		t.Fatalf("standard review set gate metadata; want non-gate review: %v", task.Metadata)
+	}
+}
+
+func TestHandleReviewGateRoutesThroughReviewBackbone(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	result := callReviewTool(t, srv, map[string]any{
+		"prompt":          "review HEAD for release readiness",
+		"target":          "HEAD",
+		"gate":            true,
+		"timeout_seconds": 23,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	task := reviewWorker.onlyTask(t)
+	assertMetadataString(t, task.Metadata, "target", "HEAD")
+	assertMetadataString(t, task.Metadata, "review_target", "HEAD")
+	assertMetadataBool(t, task.Metadata, "gate", true)
+	assertMetadataBool(t, task.Metadata, "review_gate", true)
+	if task.Timeout != 23 {
+		t.Fatalf("timeout_seconds = %d, want 23", task.Timeout)
+	}
+}
+
+func TestHandleReviewCodeReviewRecipeUsesReviewBackbone(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	result := callReviewTool(t, srv, map[string]any{
+		"prompt":    "review HEAD for regressions",
+		"target":    "HEAD",
+		"recipe_id": "code-review",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	task := reviewWorker.onlyTask(t)
+	assertMetadataString(t, task.Metadata, "recipe_id", "code-review")
+	assertMetadataBool(t, task.Metadata, "recipe_read_only", true)
+	assertMetadataBool(t, task.Metadata, "gate", true)
+	assertMetadataBool(t, task.Metadata, "review_gate", true)
+}
+
+func TestHandleReviewRejectsWorkflowBackedRecipeFamily(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	result := callReviewTool(t, srv, map[string]any{
+		"prompt":    "run a security audit",
+		"target":    "HEAD",
+		"recipe_id": "security-audit",
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+	}
+	if !strings.Contains(payload.Message, "use task(recipe_id=...)") {
+		t.Fatalf("message = %q, want task(recipe_id=...) guidance", payload.Message)
+	}
+	if !stringSlicesEqual(payload.AvailableRecipes, []string{"code-review"}) {
+		t.Fatalf("available_recipes = %#v, want only public review recipe", payload.AvailableRecipes)
+	}
+	if stringSliceContains(payload.AvailableRecipes, "security-audit") {
+		t.Fatalf("available_recipes = %v, want review-only recipes", payload.AvailableRecipes)
+	}
+	if got := reviewWorker.taskCount(); got != 0 {
+		t.Fatalf("review task count = %d, want 0", got)
+	}
+}
+
+func TestHandleReviewRejectsSecondOpinionRecipeUntilSurfaceWidens(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	result := callReviewTool(t, srv, map[string]any{
+		"prompt":    "give an independent assessment",
+		"target":    "HEAD",
+		"recipe_id": "second-opinion",
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+	}
+	if !strings.Contains(payload.Message, "use task(recipe_id=...)") {
+		t.Fatalf("message = %q, want task(recipe_id=...) guidance", payload.Message)
+	}
+	if !stringSlicesEqual(payload.AvailableRecipes, []string{"code-review"}) {
+		t.Fatalf("available_recipes = %#v, want only public review recipe", payload.AvailableRecipes)
+	}
+	if got := reviewWorker.taskCount(); got != 0 {
+		t.Fatalf("review task count = %d, want 0", got)
+	}
+}
+
+func TestHandleReviewRejectsCLIOverrideUntilSupported(t *testing.T) {
+	t.Parallel()
+
+	srv, _, reviewWorker := newTaskToolServer(t)
+	result := callReviewTool(t, srv, map[string]any{
+		"prompt": "review HEAD",
+		"target": "HEAD",
+		"cli":    "gemini",
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+	}
+	if !strings.Contains(payload.Message, "cli override is not supported") {
+		t.Fatalf("message = %q, want unsupported cli guidance", payload.Message)
+	}
+	if got := reviewWorker.taskCount(); got != 0 {
+		t.Fatalf("review task count = %d, want 0", got)
+	}
+}
+
+func TestHandleReviewNilLoomMatchesTaskCapabilityError(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{}
+	result := callReviewTool(t, srv, map[string]any{
+		"prompt": "review HEAD",
+		"target": "HEAD",
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeCapabilityMismatch.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeCapabilityMismatch)
+	}
+	if payload.Retryable {
+		t.Fatal("retryable = true, want false for missing Loom")
+	}
+	if !strings.Contains(payload.Message, "restart aimux") {
+		t.Fatalf("message = %q, want restart remediation hint", payload.Message)
+	}
+}
+
+func TestReviewToolRegisteredAsDedicatedSurface(t *testing.T) {
+	t.Parallel()
+
+	srv := testServerWithLoom(t)
+	response := srv.mcp.HandleMessage(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal response %s: %v", raw, err)
+	}
+	result, ok := decoded["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result missing or wrong type: %s", raw)
+	}
+	tools, ok := result["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools missing or wrong type: %s", raw)
+	}
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("tool item type = %T, want map", item)
+		}
+		if tool["name"] == "review" {
+			description, _ := tool["description"].(string)
+			if !strings.Contains(description, "task/review backbone") {
+				t.Fatalf("review description = %q, want task/review backbone guidance", description)
+			}
+			reviewToolRaw, err := json.Marshal(tool)
+			if err != nil {
+				t.Fatalf("marshal review tool: %v", err)
+			}
+			if strings.Contains(string(reviewToolRaw), "second-opinion") {
+				t.Fatalf("review tool schema must not expose second-opinion: %s", reviewToolRaw)
+			}
+			return
+		}
+	}
+	t.Fatalf("review tool not registered; tools=%v", tools)
+}
+
 func TestHandleTaskRecipeCodeReviewRoutesAsReviewWithMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -1520,6 +1739,15 @@ func callTaskTool(t *testing.T, srv *Server, args map[string]any) *mcp.CallToolR
 	result, err := srv.handleTask(context.Background(), makeRequest("task", args))
 	if err != nil {
 		t.Fatalf("handleTask returned Go error: %v", err)
+	}
+	return result
+}
+
+func callReviewTool(t *testing.T, srv *Server, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	result, err := srv.handleReview(context.Background(), makeRequest("review", args))
+	if err != nil {
+		t.Fatalf("handleReview returned Go error: %v", err)
 	}
 	return result
 }

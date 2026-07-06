@@ -388,7 +388,7 @@ responses.
      -mode call `
      -method prompts/list `
      -params '{}' `
-     -expect-tools 28 `
+     -expect-tools 29 `
      -expect-version 5.14.0
    ```
 
@@ -398,16 +398,16 @@ responses.
    `docs`.
 3. Call `prompts/get` for each new prompt:
    ```powershell
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"developer","arguments":{"task":"smoke"}}' -expect-tools 28 -expect-version 5.14.0
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"pm","arguments":{"intent":"smoke"}}' -expect-tools 28 -expect-version 5.14.0
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"codereviewer","arguments":{"target":"HEAD"}}' -expect-tools 28 -expect-version 5.14.0
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"docs","arguments":{"change":"smoke","audience":"operator"}}' -expect-tools 28 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"developer","arguments":{"task":"smoke"}}' -expect-tools 29 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"pm","arguments":{"intent":"smoke"}}' -expect-tools 29 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"codereviewer","arguments":{"target":"HEAD"}}' -expect-tools 29 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"docs","arguments":{"change":"smoke","audience":"operator"}}' -expect-tools 29 -expect-version 5.14.0
    ```
 4. Inspect each `prompts/get` response body from the MCP client.
 
 **Expected:**
 - Server initialization reports MCP server version `5.14.0`.
-- `tools/list` count remains `28`.
+- `tools/list` count remains `29`.
 - `prompts/list` includes exactly the new delegation playbooks:
   `developer`, `pm`, `codereviewer`, and `docs`, in addition to legacy prompts.
 - Each `prompts/get` response contains a rendered Markdown prompt with
@@ -457,7 +457,7 @@ manifest and resource read responses.
      -cwd D:\Dev\aimux `
      -mode resource `
      -uri aimux://guides/caller `
-     -expect-tools 28 `
+     -expect-tools 29 `
      -expect-version $mcpVersion
    ```
 
@@ -481,7 +481,7 @@ manifest and resource read responses.
 - `aimux://recipes/code-review` reports a read-only review recipe.
 - `aimux://tasks?limit=5` returns a bounded read-only list payload or an empty
   list; it does not expose raw prompt, environment, or result payloads.
-- `aimux://health` reports the expected version and the normal 28-tool surface.
+- `aimux://health` reports the expected version and the normal 29-tool surface.
 
 **Pass criteria:**
 - All six resource reads exit `0`.
@@ -806,7 +806,7 @@ customer-supported installed-daemon paths.
      -mode install `
      -source D:\Dev\aimux\bin\postexit-smoke\aimux-postexit-next.exe `
      -force `
-     -expect-tools 28 `
+     -expect-tools 29 `
      -expect-version $nextVersion `
      -timeout 90 `
      -reconnect-delay 15 `
@@ -832,7 +832,7 @@ customer-supported installed-daemon paths.
      -mode install `
      -source D:\Dev\aimux\bin\aimux-dev-next.exe `
      -force `
-     -expect-tools 28 `
+     -expect-tools 29 `
      -expect-version $mcpVersion `
      -timeout 90 `
      -reconnect-delay 15 `
@@ -859,7 +859,7 @@ customer-supported installed-daemon paths.
   `update_method: "deferred"`,
   `update_topology.restart_topology: "post_exit"`,
   `update_topology.replacement_started: true`, and reconnect verifies the
-  expected version, 28 tools, `sessions(action="health").init_phase == 2`,
+  expected version, 29 tools, `sessions(action="health").init_phase == 2`,
   `sessions(action="health").loom_status == "ok"`, and
   `aimux://health.version`.
 - On platforms where muxcore can complete live handoff, the install may report
@@ -873,7 +873,7 @@ customer-supported installed-daemon paths.
   post-update `aimux://health` request after the `upgrade(action="apply")`
   response returns.
 - Reconnect verification reaches `sessions(action="health")`, reads
-  `aimux://health`, sees `tools: 28`, reports the expected version, and exposes
+  `aimux://health`, sees `tools: 29`, reports the expected version, and exposes
   `engine_name`, `daemon_generation`, `owner_generation`, `restore_source`,
   `handoff`, and shim reconnect counters.
 - The final installer line is `[install] PASS`.

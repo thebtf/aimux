@@ -4,7 +4,7 @@
 
 [![Go](https://img.shields.io/badge/go-1.25.11%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![MCP Tools](https://img.shields.io/badge/MCP-28%20tools-blueviolet)](https://modelcontextprotocol.io)
+[![MCP Tools](https://img.shields.io/badge/MCP-29%20tools-blueviolet)](https://modelcontextprotocol.io)
 
 aimux is an MCP server for durable task state, session operations, deep
 research, binary upgrades, and caller-centered structured reasoning.
@@ -12,7 +12,7 @@ research, binary upgrades, and caller-centered structured reasoning.
 The current post-purge live surface is intentionally small:
 
 - 4 server tools: `status`, `sessions`, `deepresearch`, `upgrade`
-- 1 methodology-bearing `task` entry point for code and review workflows
+- 2 methodology-bearing entry points: `task` for generic code/review/recipe work and `review` for direct review work
 - 1 caller-centered `think` harness plus 22 cognitive move tools
 
 The former CLI-launching MCP tools (`exec`, `agent`, `agents`, `critique`,
@@ -96,8 +96,8 @@ If the binary is not on PATH, use the full path:
 ### Verify
 
 Run `tools/list` from any MCP-capable client. A current build should expose
-28 tools: the 4 server tools, the `task` entry point, the `think` harness,
-and 22 cognitive move tools.
+29 tools: the 4 server tools, the `task` and `review` entry points, the
+`think` harness, and 22 cognitive move tools.
 
 ```json
 {
@@ -141,11 +141,12 @@ for customer-mode release walkthroughs.
 | `deepresearch` | Run Gemini-backed research with structured output. |
 | `upgrade` | Check or apply aimux binary updates, including local source installs with truthful deferred fallback. |
 
-### Task Entry Point
+### Task and Review Entry Points
 
 | Tool | Purpose |
 |---|---|
-| `task` | Route code and review tasks through the Loom-backed worker with 3 execution modes. |
+| `task` | Route code, review, and curated recipe work through the Loom-backed worker with 3 code execution modes. |
+| `review` | Dedicated review facade over the same task/Loom backbone for standard and gate-oriented code review work. |
 
 The `task` tool supports three code execution modes controlled by the `navigator`
 parameter:
@@ -210,7 +211,9 @@ Supported recipes are read-only and route through the existing `task` entry poin
 | `debug-investigation` | `review` | aggregate | Run the compiled `pkg/workflow/debug.go` debugging workflow as a read-only recipe. |
 
 Invoke a recipe through `task(recipe_id=..., target=...)`; no new workflow,
-dialog, audit, consensus, debate, or recipe tool is added. Workflow-backed
+dialog, audit, consensus, debate, or recipe tool is added. The dedicated
+`review` facade stays bounded to standard/gate-oriented review and the
+`code-review` recipe; invoke every other recipe through `task`. Workflow-backed
 recipes expose `recipe_workflow_id`, `recipe_workflow_source`, and
 `recipe_workflow_steps` metadata while staying behind the `task` contract.
 Recipe policy is fail-closed before worker spawn: if the
@@ -366,6 +369,7 @@ Current production surface:
 - Caller-centered `think` harness and 22 local cognitive move tools.
 - Loom-backed task state and recovery.
 - Task entry point with 3 execution modes: pair (driver+navigator), solo write, solo diff.
+- Dedicated `review` facade over the same task/runtime-events backbone.
 - Task inspection resources under `aimux://tasks/{task_id}`.
 - Compiled read-only recipe discovery under `aimux://recipes` and invocation via `task(recipe_id=...)`.
 - Read-only task list/viewer resources for browser-readable inspection without execution controls.
@@ -375,7 +379,7 @@ Out of current scope:
 
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
-- Pipeline v5 Layer 5 exposure (beyond the task entry point).
+- Pipeline v5 Layer 5 exposure (beyond the task/review entry points).
 - Mutation-heavy recipe expansion beyond the compiled read-only initial recipes.
 
 Those removed surfaces are not runtime defects in the current build. They are
