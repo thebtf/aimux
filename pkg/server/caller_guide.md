@@ -66,12 +66,17 @@ Use task resources for evidence instead of daemon log spelunking:
 | `aimux://tasks` | Bounded read-only task list with task/resource links. |
 | `aimux://tasks/{task_id}` | Compact snapshot with status, progress summary, metadata, and links. |
 | `aimux://tasks/{task_id}/viewer` | Read-only HTML detail view for humans and browser-capable clients. |
-| `aimux://tasks/{task_id}/events` | Bounded lifecycle and terminal artifacts. |
-| `aimux://tasks/{task_id}/progress` | Bounded progress artifacts. |
+| `aimux://tasks/{task_id}/events` | Bounded lifecycle, runtime, and terminal artifacts. Add `kind=runtime`, `event_type=<type>`, `channel=<stdout|stderr|tool>`, `cursor=<seq>`, and `limit=<n>` for mid-flight runtime slices. |
+| `aimux://tasks/{task_id}/progress` | Bounded progress artifacts for compact polling consumers. |
 
-The viewer is read-only. It has no forms, buttons, scripts, task submission
-controls, mutation endpoints, or workflow controls. The task list does not
-expose raw prompt, environment, or result payloads.
+Runtime events are projection-only evidence. The Loom task row remains the
+canonical source for status, result, and lifecycle transitions. Structured JSONL
+harness frames may normalize to `text_delta`, `status`, `tool_call`, or
+`tool_result`; unknown frames and plain line-oriented harness output remain
+visible as truthful `raw`/`stdout` runtime artifacts. Secrets are redacted before
+artifact storage. The viewer is read-only. It has no forms, buttons, scripts,
+task submission controls, mutation endpoints, or workflow controls. The task
+list does not expose raw prompt, environment, or result payloads.
 
 ## Recipe Resources
 

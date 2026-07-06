@@ -128,3 +128,74 @@ func TestAdaptReviewPassOutputRejectsEmptySummary(t *testing.T) {
 		t.Fatalf("error = %q, want non-empty summary detail", err)
 	}
 }
+
+func TestRuntimeEventsFromOutputLine_NormalizesStructuredJSONL(t *testing.T) {
+	textEvents := runtimeEventsFromOutputLine("jsonl", `{"type":"item.completed","item":{"type":"agent_message","text":"hello"}}`)
+	if len(textEvents) != 1 {
+		t.Fatalf("text events len = %d; want 1", len(textEvents))
+	}
+	if textEvents[0].EventType != "text_delta" || textEvents[0].Channel != "stdout" || textEvents[0].Summary != "hello" {
+		t.Fatalf("text event = %#v; want text_delta/stdout hello", textEvents[0])
+	}
+
+	statusEvents := runtimeEventsFromOutputLine("jsonl", `{"type":"turn.started"}`)
+	if len(statusEvents) != 1 || statusEvents[0].EventType != "status" || statusEvents[0].Channel != "stdout" {
+		t.Fatalf("status event = %#v; want status/stdout", statusEvents)
+	}
+
+	rawEvents := runtimeEventsFromOutputLine("jsonl", `{"type":"unknown.future","payload":"kept"}`)
+	if len(rawEvents) != 1 || rawEvents[0].EventType != "raw" || rawEvents[0].Channel != "stdout" {
+		t.Fatalf("raw event = %#v; want raw/stdout fallback", rawEvents)
+	}
+}
+
+func TestRuntimeEventsFromOutputLine_PreservesPlainLinesAsRawStdout(t *testing.T) {
+	events := runtimeEventsFromOutputLine("text", "plain harness line")
+	if len(events) != 1 {
+		t.Fatalf("events len = %d; want 1", len(events))
+	}
+	if events[0].EventType != "raw" || events[0].Channel != "stdout" || events[0].Summary != "plain harness line" {
+		t.Fatalf("plain line event = %#v; want raw/stdout truthful fallback", events[0])
+	}
+}
+
+func TestProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail(t *testing.T) {
+	srv := testServerWithLoom(t)
+	_, projectID := projectCtxAndID("proj-runtime-progress-sink")
+	taskID, _ := submitBlockingLoomTask(t, srv, projectID, "")
+	waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusRunning)
+
+	worker := profileTaskWorker{server: srv}
+	sink := worker.progressSink(taskID, "jsonl")
+	if sink == nil {
+		t.Fatal("progress sink is nil")
+	}
+	sink(`{"type":"item.completed","item":{"type":"agent_message","text":"hello sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"}}`)
+
+	page, err := srv.loom.ListArtifacts(taskID, loom.TaskArtifactListOptions{
+		Kinds:      []loom.TaskArtifactKind{loom.TaskArtifactKindRuntime},
+		EventTypes: []string{"text_delta"},
+		Channels:   []string{"stdout"},
+	})
+	if err != nil {
+		t.Fatalf("ListArtifacts runtime: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("runtime items = %#v; want one text_delta", page.Items)
+	}
+	item := page.Items[0]
+	if item.Kind != loom.TaskArtifactKindRuntime || item.EventType != "text_delta" || item.Channel != "stdout" {
+		t.Fatalf("runtime identity = kind %q event_type %q channel %q", item.Kind, item.EventType, item.Channel)
+	}
+	if strings.Contains(item.Summary, "sk-proj-") || !item.Redacted {
+		t.Fatalf("runtime redaction failed: summary=%q redacted=%v", item.Summary, item.Redacted)
+	}
+
+	task, err := srv.loom.Get(taskID)
+	if err != nil {
+		t.Fatalf("loom.Get(%s): %v", taskID, err)
+	}
+	if task.LastOutputLine == "" || strings.Contains(task.LastOutputLine, "sk-proj-") {
+		t.Fatalf("progress tail = %q; want parsed redacted text", task.LastOutputLine)
+	}
+}

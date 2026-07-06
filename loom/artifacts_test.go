@@ -2,6 +2,7 @@ package loom
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -157,6 +158,131 @@ func TestTaskStore_ListArtifacts_CursorPagesAreTaskScoped(t *testing.T) {
 	}
 	if page2.HasMore {
 		t.Fatalf("page2 HasMore = true; want false")
+	}
+}
+
+func TestTaskStore_AppendRuntimeEvent_FiltersByEventTypeChannelAndKeepsOrderedCursor(t *testing.T) {
+	store := newTestStore(t)
+	createArtifactTask(t, store, "task-runtime-events", "proj-runtime-events", TaskStatusRunning)
+
+	first, err := store.AppendRuntimeEvent("task-runtime-events", TaskRuntimeEventAppend{
+		EventType: "text_delta",
+		Channel:   "stdout",
+		Summary:   "first delta with sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+		Payload: map[string]any{
+			"text": "hello sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+		},
+	})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvent(first): %v", err)
+	}
+	status, err := store.AppendRuntimeEvent("task-runtime-events", TaskRuntimeEventAppend{
+		EventType: "status",
+		Channel:   "stderr",
+		Summary:   "entered model dispatch",
+		Payload:   map[string]any{"state": "dispatching"},
+	})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvent(status): %v", err)
+	}
+	second, err := store.AppendRuntimeEvent("task-runtime-events", TaskRuntimeEventAppend{
+		EventType: "text_delta",
+		Channel:   "stdout",
+		Summary:   "second delta",
+		Payload:   map[string]any{"text": " world"},
+	})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvent(second): %v", err)
+	}
+
+	if first.Kind != TaskArtifactKindRuntime || first.EventType != "text_delta" || first.Channel != "stdout" {
+		t.Fatalf("first runtime identity = kind %q event_type %q channel %q", first.Kind, first.EventType, first.Channel)
+	}
+	if status.Kind != TaskArtifactKindRuntime || status.EventType != "status" || status.Channel != "stderr" {
+		t.Fatalf("status runtime identity = kind %q event_type %q channel %q", status.Kind, status.EventType, status.Channel)
+	}
+	if !(first.Seq < status.Seq && status.Seq < second.Seq) {
+		t.Fatalf("runtime event seq order = first %d status %d second %d; want append order", first.Seq, status.Seq, second.Seq)
+	}
+	if strings.Contains(first.Summary, "sk-proj-") || !first.Redacted {
+		t.Fatalf("runtime summary redaction failed: summary=%q redacted=%v", first.Summary, first.Redacted)
+	}
+	payloadRaw, err := json.Marshal(first.Payload)
+	if err != nil {
+		t.Fatalf("marshal first payload: %v", err)
+	}
+	if strings.Contains(string(payloadRaw), "sk-proj-") {
+		t.Fatalf("runtime payload leaked raw secret: %s", payloadRaw)
+	}
+
+	page1, err := store.ListArtifacts("task-runtime-events", TaskArtifactListOptions{
+		Limit:      1,
+		Kinds:      []TaskArtifactKind{TaskArtifactKindRuntime},
+		EventTypes: []string{"text_delta"},
+		Channels:   []string{"stdout"},
+	})
+	if err != nil {
+		t.Fatalf("ListArtifacts page1: %v", err)
+	}
+	if len(page1.Items) != 1 || page1.Items[0].Seq != first.Seq {
+		t.Fatalf("page1 items = %#v; want first text_delta stdout seq %d", page1.Items, first.Seq)
+	}
+	if !page1.HasMore || page1.NextCursor == "" {
+		t.Fatalf("page1 cursor metadata = has_more %v next_cursor %q; want more text_delta stdout rows", page1.HasMore, page1.NextCursor)
+	}
+
+	page2, err := store.ListArtifacts("task-runtime-events", TaskArtifactListOptions{
+		Cursor:     page1.NextCursor,
+		Limit:      1,
+		Kinds:      []TaskArtifactKind{TaskArtifactKindRuntime},
+		EventTypes: []string{"text_delta"},
+		Channels:   []string{"stdout"},
+	})
+	if err != nil {
+		t.Fatalf("ListArtifacts page2: %v", err)
+	}
+	if len(page2.Items) != 1 || page2.Items[0].Seq != second.Seq {
+		t.Fatalf("page2 items = %#v; want second text_delta stdout seq %d", page2.Items, second.Seq)
+	}
+	if page2.HasMore {
+		t.Fatalf("page2 HasMore = true; want exhausted filtered cursor")
+	}
+
+	stderrPage, err := store.ListArtifacts("task-runtime-events", TaskArtifactListOptions{
+		Kinds:      []TaskArtifactKind{TaskArtifactKindRuntime},
+		EventTypes: []string{"status"},
+		Channels:   []string{"stderr"},
+	})
+	if err != nil {
+		t.Fatalf("ListArtifacts stderr: %v", err)
+	}
+	if len(stderrPage.Items) != 1 || stderrPage.Items[0].Seq != status.Seq {
+		t.Fatalf("stderr filtered items = %#v; want status seq %d", stderrPage.Items, status.Seq)
+	}
+}
+
+func TestTaskArtifactProjectionStatusForTask_RunningTaskWithEmptyRuntimeProjectionIsPartial(t *testing.T) {
+	store := newTestStore(t)
+	createArtifactTask(t, store, "task-empty-runtime-projection", "proj-empty-runtime-projection", TaskStatusRunning)
+
+	task, err := store.Get("task-empty-runtime-projection")
+	if err != nil {
+		t.Fatalf("Get canonical task: %v", err)
+	}
+	page, err := store.ListArtifacts("task-empty-runtime-projection", TaskArtifactListOptions{
+		Kinds: []TaskArtifactKind{TaskArtifactKindRuntime},
+	})
+	if err != nil {
+		t.Fatalf("ListArtifacts runtime: %v", err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("runtime projection precondition failed: got %d artifacts, want 0", len(page.Items))
+	}
+	if got := TaskArtifactProjectionStatusForTask(task, page); got != TaskArtifactProjectionPartial {
+		t.Fatalf("projection status = %q; want %q for running task with no runtime event rows", got, TaskArtifactProjectionPartial)
+	}
+	if task.Status != TaskStatusRunning {
+		t.Fatalf("canonical task status changed: got %q want %q", task.Status, TaskStatusRunning)
 	}
 }
 

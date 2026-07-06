@@ -176,6 +176,7 @@ var migrateV7Statements = []string{
 		task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
 		kind TEXT NOT NULL,
 		event_type TEXT NOT NULL DEFAULT '',
+		channel TEXT NOT NULL DEFAULT '',
 		summary TEXT NOT NULL DEFAULT '',
 		payload_json TEXT NOT NULL DEFAULT '{}',
 		content_length INTEGER NOT NULL DEFAULT 0,
@@ -184,6 +185,13 @@ var migrateV7Statements = []string{
 		created_at DATETIME NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_seq ON task_artifacts(task_id, seq)`,
+}
+
+// migrateV8Statements adds channel to pre-CR-011 artifact tables and indexes
+// runtime slice lookups by task, kind, event type, channel, and cursor seq.
+var migrateV8Statements = []string{
+	`ALTER TABLE task_artifacts ADD COLUMN channel TEXT NOT NULL DEFAULT ''`,
+	`CREATE INDEX IF NOT EXISTS idx_task_artifacts_runtime_slice ON task_artifacts(task_id, kind, event_type, channel, seq)`,
 }
 
 // MigrateV5Down reverts the v5 progress columns. Returns an error on the
@@ -302,6 +310,17 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 				continue
 			}
 			return nil, fmt.Errorf("loom store: migrate v7 artifacts: %w", err)
+		}
+	}
+	// AIMUX-23 CR-011: add runtime-event channel metadata and a bounded slice
+	// lookup index. Existing projection rows keep the empty channel default.
+	for _, stmt := range migrateV8Statements {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") ||
+				strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return nil, fmt.Errorf("loom store: migrate v8 artifact runtime slices: %w", err)
 		}
 	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).

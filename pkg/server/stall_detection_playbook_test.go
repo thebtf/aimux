@@ -236,6 +236,21 @@ func TestCritical_StallDetection_LongLegitWorkNeverFlagged(t *testing.T) {
 	if !sawProgress {
 		t.Fatal("no live progress observed — OnOutput→AppendProgress wiring is broken; the invariant would be vacuous")
 	}
+	runtimePage, err := engine.ListArtifacts(taskID, loom.TaskArtifactListOptions{
+		Kinds:      []loom.TaskArtifactKind{loom.TaskArtifactKindRuntime},
+		EventTypes: []string{"raw"},
+		Channels:   []string{"stdout"},
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatalf("ListArtifacts runtime: %v", err)
+	}
+	if len(runtimePage.Items) == 0 {
+		t.Fatal("line-oriented emulator produced progress but no runtime event slice")
+	}
+	if runtimePage.Items[0].Summary == "" || runtimePage.Items[0].EventType != "raw" || runtimePage.Items[0].Channel != "stdout" {
+		t.Fatalf("runtime event = %#v; want raw/stdout line-oriented evidence", runtimePage.Items[0])
+	}
 }
 
 // TestCritical_StallDetection_HangIsDetected proves that a silent (hung) CLI is

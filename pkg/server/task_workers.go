@@ -109,7 +109,7 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		SessionID:      sessionIDFromTaskMetadata(task.Metadata),
 		SessionResume:  sessionResumeFromTaskMetadata(task.Metadata),
 		TimeoutSeconds: task.Timeout,
-		OnOutput:       w.progressSink(task.ID),
+		OnOutput:       w.progressSink(task.ID, profile.OutputFormat),
 	}
 	raw, selectedCLI, failedAttempts, err := w.dispatch(ctx, cli, task.Metadata, spec)
 	if err != nil {
@@ -154,17 +154,18 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 }
 
 // progressSink returns an OnOutput callback that forwards each leaf-CLI stdout
-// line into loom.AppendProgress for the running task, so the stall detector's
-// ProgressUpdatedAt reflects genuine last-output time instead of staying nil
-// (which would make legitimate long-running work look like a stall — the exact
-// false positive #359 surfaced). Returns nil when no engine is available so the
-// dispatch path skips the SpawnArgs.OnOutput wiring entirely.
+// line into runtime-event artifacts and loom.AppendProgress for the running
+// task, so the stall detector's ProgressUpdatedAt reflects genuine last-output
+// time instead of staying nil (which would make legitimate long-running work
+// look like a stall — the exact false positive #359 surfaced). Returns nil when
+// no engine is available so the dispatch path skips the SpawnArgs.OnOutput
+// wiring entirely.
 //
-// The callback is best-effort: empty lines are skipped (no signal), and
-// AppendProgress errors are swallowed — progress recording must never break the
-// streaming loop or fail the task. AppendProgress is safe for concurrent use and
-// no-ops for unknown/cancelled task IDs.
-func (w profileTaskWorker) progressSink(taskID string) func(string) {
+// The callback is best-effort: empty lines are skipped (no signal), and runtime
+// or progress append errors are swallowed — progress recording must never break
+// the streaming loop or fail the task. AppendProgress is safe for concurrent use
+// and no-ops for unknown/cancelled task IDs.
+func (w profileTaskWorker) progressSink(taskID, outputFormat string) func(string) {
 	if w.server == nil || w.server.loom == nil || taskID == "" {
 		return nil
 	}
@@ -173,7 +174,124 @@ func (w profileTaskWorker) progressSink(taskID string) func(string) {
 		if strings.TrimSpace(line) == "" {
 			return
 		}
-		_ = engine.AppendProgress(taskID, line)
+		appendRuntimeEventsForLine(engine, taskID, outputFormat, line)
+		progressLine := normalizeProgressLine(outputFormat, line)
+		if progressLine == "" {
+			progressLine = line
+		}
+		_ = engine.AppendProgress(taskID, progressLine)
+	}
+}
+
+func appendRuntimeEventsForLine(engine *loom.LoomEngine, taskID, outputFormat, line string) {
+	if engine == nil || strings.TrimSpace(taskID) == "" || strings.TrimSpace(line) == "" {
+		return
+	}
+	for _, event := range runtimeEventsFromOutputLine(outputFormat, line) {
+		_, _ = engine.AppendRuntimeEvent(taskID, event)
+	}
+}
+
+func runtimeEventsFromOutputLine(outputFormat, line string) []loom.TaskRuntimeEventAppend {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil
+	}
+	if outputFormat != "jsonl" || !strings.HasPrefix(line, "{") {
+		return []loom.TaskRuntimeEventAppend{runtimeRawEvent(line, nil)}
+	}
+	var frame map[string]any
+	if err := json.Unmarshal([]byte(line), &frame); err != nil {
+		return []loom.TaskRuntimeEventAppend{runtimeRawEvent(line, nil)}
+	}
+	frameType, _ := frame["type"].(string)
+	switch frameType {
+	case "agent_message":
+		if text := runtimeFrameText(frame["content"]); text != "" {
+			return []loom.TaskRuntimeEventAppend{runtimeTextEvent(text)}
+		}
+	case "item.completed":
+		if item, ok := frame["item"].(map[string]any); ok {
+			itemType, _ := item["type"].(string)
+			switch itemType {
+			case "agent_message", "message":
+				if text := runtimeFrameText(item["text"]); text != "" {
+					return []loom.TaskRuntimeEventAppend{runtimeTextEvent(text)}
+				}
+			case "tool_call", "function_call":
+				return []loom.TaskRuntimeEventAppend{runtimeToolEvent("tool_call", item)}
+			case "tool_result", "tool_output", "function_result":
+				return []loom.TaskRuntimeEventAppend{runtimeToolEvent("tool_result", item)}
+			}
+		}
+	case "thread.started", "turn.started", "turn.completed", "turn.failed":
+		return []loom.TaskRuntimeEventAppend{runtimeStatusEvent(frameType, frame)}
+	}
+	return []loom.TaskRuntimeEventAppend{runtimeRawEvent(line, frame)}
+}
+
+func runtimeFrameText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case map[string]any:
+		if text, _ := typed["text"].(string); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func runtimeTextEvent(text string) loom.TaskRuntimeEventAppend {
+	return loom.TaskRuntimeEventAppend{
+		EventType:     "text_delta",
+		Channel:       "stdout",
+		Summary:       text,
+		Payload:       map[string]any{"text": text},
+		ContentLength: int64(len(text)),
+	}
+}
+
+func runtimeStatusEvent(frameType string, frame map[string]any) loom.TaskRuntimeEventAppend {
+	return loom.TaskRuntimeEventAppend{
+		EventType: "status",
+		Channel:   "stdout",
+		Summary:   frameType,
+		Payload: map[string]any{
+			"frame_type": frameType,
+			"frame":      frame,
+		},
+	}
+}
+
+func runtimeToolEvent(eventType string, item map[string]any) loom.TaskRuntimeEventAppend {
+	summary := eventType
+	if name, _ := item["name"].(string); name != "" {
+		summary = name
+	} else if id, _ := item["id"].(string); id != "" {
+		summary = id
+	}
+	return loom.TaskRuntimeEventAppend{
+		EventType: eventType,
+		Channel:   "tool",
+		Summary:   summary,
+		Payload: map[string]any{
+			"item": item,
+		},
+	}
+}
+
+func runtimeRawEvent(line string, frame map[string]any) loom.TaskRuntimeEventAppend {
+	payload := map[string]any{"line": line}
+	if frame != nil {
+		payload["frame"] = frame
+	}
+	return loom.TaskRuntimeEventAppend{
+		EventType:     "raw",
+		Channel:       "stdout",
+		Summary:       line,
+		Payload:       payload,
+		ContentLength: int64(len(line)),
 	}
 }
 
