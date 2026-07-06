@@ -1,3 +1,55 @@
+## v5.23.0 — AIMUX-23 structured runtime event slices
+
+This MINOR release ships AIMUX-23 CR-011 as a caller-visible expansion of the
+existing task inspectability surface. Aimux now exposes structured runtime-event
+slices through the existing `aimux://tasks/{task_id}/events` resource, plus a
+compact `aimux://tasks/{task_id}/progress` resource for polling progress
+artifacts without reading the full event stream.
+
+### Highlights
+
+- Added bounded runtime-event paging for task inspection, including typed
+  runtime slices via `kind`, `event_type`, and `channel` on
+  `aimux://tasks/{task_id}/events`.
+- Added a compact progress-only task resource on
+  `aimux://tasks/{task_id}/progress` for lightweight polling consumers.
+- Preserved the existing Loom-backed inspectability contract: runtime and
+  progress evidence stays inside the current task resource/viewer surface rather
+  than introducing a new MCP tool or ad hoc side channel.
+- Closed the live PR blocker by enforcing resource-local `kind=` boundaries, so
+  `/events` and `/progress` no longer leak cross-family artifacts.
+
+### Compatibility
+
+No migration is required for existing callers. The public MCP tool inventory is
+unchanged: callers continue to use existing task submission and task-resource
+surfaces. The new capability is additive through richer task inspection
+resources rather than a new top-level tool.
+
+### Verification
+
+- PR #192 merged into `master` as `ce22bbcbd876f886e9bd8010cebcd53159f5cfc0`
+  after the accepted seq37 PM blocker closeout plus green GitHub `CI`,
+  `Security`, `loomlint`, and CodeRabbit status on head
+  `eef69f49289895dedcee9366a180ceb0f41e6eb5`.
+- Local merged-`master` release gates passed: `go build ./...`,
+  `go test ./... -count=1 -timeout 120s`, `go vet ./...`,
+  `go test ./tests/critical -count=1 -timeout 300s`,
+  `go test ./pkg/server -run "TestCritical_StallDetection_" -count=1 -timeout 120s`,
+  `AIMUX21_E2E=1 go test ./test/e2e -run "TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)" -count=1 -timeout 600s`,
+  `go test ./... -count=1` from `loom/`, and `govulncheck ./...`.
+- The `go mod verify` release gate was rechecked in a disposable clean module
+  cache after the default user-level Go module cache proved locally modified
+  outside the repo. With `GOMODCACHE=D:\tmp\aimux-go-mod-cache-cr011-release`
+  and `GOCACHE=D:\tmp\aimux-go-build-cache-cr011-release`, both
+  `go mod download` and `go mod verify` passed.
+
+### Notes
+
+This release is cut as `v5.23.0` rather than a patch because CR-011 adds new
+caller-visible task inspection capabilities inside the existing task resource
+surface. Manual consumer updates remain outside this release flow.
+
 ## v5.22.0 — AIMUX-23 workflow-backed curated recipes
 
 This MINOR release ships AIMUX-23 CR-010 as a bounded expansion of the existing

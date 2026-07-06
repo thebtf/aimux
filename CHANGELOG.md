@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.23.0] — 2026-07-06 — AIMUX-23 structured runtime event slices
+
+### Added
+
+- **AIMUX-23 CR-011 runtime event slices for task inspection.** Added bounded runtime-event paging on `aimux://tasks/{task_id}/events` so callers can inspect lifecycle, terminal, and mid-flight runtime artifacts without falling back to daemon logs.
+- **Compact progress polling resource.** Added `aimux://tasks/{task_id}/progress` as a bounded progress-artifact resource for lightweight polling consumers that only need progress evidence instead of the full event stream.
+- **Resource-boundary regression coverage.** Added focused resource tests proving valid same-family `kind=` filters continue to work while cross-family requests are rejected as `invalid_kind`.
+
+### Changed
+
+- **Task inspection documentation.** Updated README and caller guide documentation to describe the task event/progress resource split, resource-local `kind=` values, and the caller-facing runtime slice contract.
+- **Viewer/resource inspectability path.** Extended the existing task inspection surface around Loom artifacts rather than adding a new public MCP tool or alternate ad hoc event API.
+
+### Fixed
+
+- **Resource-local `kind=` boundary enforcement.** `/events` now accepts only `lifecycle`, `terminal`, and `runtime`, while `/progress` accepts only `progress`; cross-family requests such as `/events?kind=progress` and `/progress?kind=runtime` now fail as `invalid_kind` instead of leaking the wrong artifact family.
+
 ## [5.22.0] — 2026-07-06 — AIMUX-23 workflow-backed curated recipes
 
 ### Added
