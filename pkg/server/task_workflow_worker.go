@@ -73,6 +73,9 @@ func (w workflowRecipeWorker) Execute(ctx context.Context, task *loom.Task) (*lo
 	if err != nil {
 		return nil, err
 	}
+	if result == nil {
+		return nil, workflowRecipeStatusError(nil)
+	}
 	if result.Status != "completed" {
 		return nil, workflowRecipeStatusError(result)
 	}
@@ -185,7 +188,7 @@ func (s *workflowRecipeExecutorSender) Send(ctx context.Context, h workflow.Exec
 		return nil, err
 	}
 	profile, profileErr := s.profile(selectedCLI)
-	if profileErr != nil {
+	if profileErr != nil || profile == nil {
 		return &types.Response{Content: raw}, nil
 	}
 	parsed, _ := parserParseContent(raw, profile)
@@ -358,6 +361,10 @@ func workflowPatternResultText(result *think.ThinkResult, summary string, input 
 		return ""
 	}
 	var b strings.Builder
+	if verdict := workflowRootCauseVerdict(result, input); verdict != "" {
+		b.WriteString(verdict)
+		b.WriteString("\n")
+	}
 	b.WriteString("Think pattern: ")
 	b.WriteString(result.Pattern)
 	if strings.TrimSpace(result.Status) != "" {
@@ -376,6 +383,162 @@ func workflowPatternResultText(result *think.ThinkResult, summary string, input 
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+var workflowRootCauseNegativeMarkers = []string{
+	"root cause not identified",
+	"no root cause identified",
+	"unable to identify",
+	"cannot identify",
+	"could not identify",
+	"unknown root cause",
+	"root cause unknown",
+	"insufficient evidence",
+	"not enough evidence",
+	"no definitive cause",
+	"no definitive root cause",
+	"no conclusive cause",
+	"not definitively identified",
+	"collect more logs",
+	"need more logs",
+	"more logs are needed",
+	"needs more investigation",
+	"requires more investigation",
+	"cannot determine",
+	"could not determine",
+	"not determined",
+	"undetermined",
+	"unclear",
+	"possibly",
+	"possible cause",
+}
+
+var workflowRootCauseAffirmativeMarkers = []string{
+	"root cause:",
+	"root cause is",
+	"root cause was",
+	"root cause =",
+	"root cause -",
+	"root cause —",
+	"root cause identified",
+	"identified root cause",
+	"confirmed root cause",
+	"the cause is",
+	"the cause was",
+	"caused by",
+	"is caused by",
+	"was caused by",
+	"failure stems from",
+	"failure stemmed from",
+	"traced to",
+}
+
+func workflowRootCauseVerdict(result *think.ThinkResult, input map[string]any) string {
+	if result == nil || result.Pattern != "decision_framework" || !workflowBool(input, "workflow_root_cause_gate") {
+		return ""
+	}
+	if verdict := workflowRootCauseVerdictFromText(result.Summary); verdict != "" {
+		return verdict
+	}
+	if verdict := workflowRootCauseVerdictFromData(result.Data); verdict != "" {
+		return verdict
+	}
+	if verdict := workflowRootCauseVerdictFromEvidence(input["workflow_root_cause_evidence"]); verdict != "" {
+		return verdict
+	}
+	return "Root cause not identified: decision_framework output did not identify a root cause."
+}
+
+func workflowBool(input map[string]any, key string) bool {
+	if input == nil {
+		return false
+	}
+	value, _ := input[key].(bool)
+	return value
+}
+
+func workflowRootCauseVerdictFromData(data map[string]any) string {
+	for _, key := range []string{"root_cause", "rootCause", "cause", "conclusion", "recommendation"} {
+		text, _ := data[key].(string)
+		if verdict := workflowRootCauseVerdictFromText(text); verdict != "" {
+			return verdict
+		}
+	}
+	return ""
+}
+
+func workflowRootCauseVerdictFromEvidence(value any) string {
+	evidence, ok := value.(map[string]any)
+	if !ok || len(evidence) == 0 {
+		return ""
+	}
+	status := strings.ToLower(strings.TrimSpace(fmt.Sprint(evidence["status"])))
+	switch status {
+	case "identified", "confirmed":
+		cause := strings.TrimSpace(fmt.Sprint(evidence["cause"]))
+		if cause == "" || cause == "<nil>" {
+			return "Root cause not identified: structured workflow evidence omitted the cause."
+		}
+		return "Root cause: " + cause
+	case "not_identified", "inconclusive", "unknown":
+		reason := strings.TrimSpace(fmt.Sprint(evidence["reason"]))
+		if reason == "" || reason == "<nil>" {
+			reason = "structured workflow evidence did not identify a cause"
+		}
+		return "Root cause not identified: " + reason + "."
+	default:
+		return ""
+	}
+}
+
+func workflowRootCauseVerdictFromText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range workflowRootCauseNegativeMarkers {
+		if strings.Contains(lower, marker) {
+			return "Root cause not identified: " + firstWorkflowRootCauseLine(text)
+		}
+	}
+	if cause := extractWorkflowRootCauseAffirmation(text, lower); cause != "" {
+		return "Root cause: " + cause
+	}
+	return ""
+}
+
+func extractWorkflowRootCauseAffirmation(text, lower string) string {
+	for _, marker := range workflowRootCauseAffirmativeMarkers {
+		idx := strings.Index(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		start := idx
+		switch marker {
+		case "root cause:", "root cause is", "root cause was", "root cause =", "root cause -", "root cause —", "the cause is", "the cause was", "caused by", "is caused by", "was caused by", "failure stems from", "failure stemmed from", "traced to":
+			start = idx + len(marker)
+		}
+		return firstWorkflowRootCauseLine(text[start:])
+	}
+	return ""
+}
+
+func firstWorkflowRootCauseLine(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	for _, sep := range []string{"\r\n", "\n", "\r"} {
+		if idx := strings.Index(text, sep); idx >= 0 {
+			text = text[:idx]
+			break
+		}
+	}
+	if idx := strings.Index(text, ". "); idx >= 0 {
+		text = text[:idx+1]
+	}
+	return strings.TrimSpace(text)
 }
 
 func appendWorkflowPatternContext(b *strings.Builder, input map[string]any) {
@@ -489,6 +652,9 @@ func firstWorkflowString(values map[string]any) string {
 }
 
 func anyWorkflowString(value any) string {
+	if value == nil {
+		return ""
+	}
 	switch typed := value.(type) {
 	case string:
 		return strings.TrimSpace(typed)
@@ -504,5 +670,9 @@ func anyWorkflowString(value any) string {
 }
 
 func parserParseContent(raw string, profile *config.CLIProfile) (string, string) {
-	return parser.ParseContent(raw, profile.OutputFormat)
+	format := ""
+	if profile != nil {
+		format = profile.OutputFormat
+	}
+	return parser.ParseContent(raw, format)
 }

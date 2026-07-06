@@ -26,6 +26,8 @@ import (
 	"github.com/thebtf/aimux/pkg/executor/review"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/server/classifier"
+	"github.com/thebtf/aimux/pkg/think"
+	"github.com/thebtf/aimux/pkg/think/patterns"
 	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/aimux/pkg/workflow"
 )
@@ -345,8 +347,35 @@ func TestHandleTaskWorkflowBackedRecipesRouteWithWorkflowMetadata(t *testing.T) 
 	}
 }
 
+func TestWorkflowRecipeExecutorSenderSendFallsBackToRawContentWhenSelectedProfileIsNil(t *testing.T) {
+	t.Parallel()
+
+	registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": nil})
+	registry.SetAvailable("codex", true)
+	sender := &workflowRecipeExecutorSender{
+		server:     &Server{registry: registry},
+		task:       &loom.Task{Metadata: map[string]any{}},
+		defaultCLI: "codex",
+		dispatch: func(_ context.Context, cli string, _ picker.TaskSpec, _ map[string]any) (string, string, error) {
+			return `{"type":"agent_message","content":"workflow step complete"}` + "\n", cli, nil
+		},
+	}
+	handle, err := sender.Get(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	response, err := sender.Send(context.Background(), handle, types.Message{Content: "run workflow step"})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if response.Content != `{"type":"agent_message","content":"workflow step complete"}`+"\n" {
+		t.Fatalf("content = %q, want raw content when selected CLI profile is nil", response.Content)
+	}
+}
+
 func TestWorkflowPatternFnExposesDataAsResultText(t *testing.T) {
 	t.Parallel()
+	patterns.RegisterAll()
 
 	result, err := workflowPatternFn("debugging_approach", map[string]any{
 		"issue": "cache replay loses the workflow hypothesis chain",
@@ -368,8 +397,47 @@ func TestWorkflowPatternFnExposesDataAsResultText(t *testing.T) {
 	}
 }
 
+func TestWorkflowPatternResultTextPrependsRootCauseVerdictFromStructuredEvidence(t *testing.T) {
+	t.Parallel()
+	result := &think.ThinkResult{
+		Pattern: "decision_framework",
+		Status:  "success",
+		Summary: "Decision matrix selected the highest-scoring candidate.",
+	}
+
+	text := workflowPatternResultText(result, result.Summary, map[string]any{
+		"workflow_root_cause_gate": true,
+		"workflow_root_cause_evidence": map[string]any{
+			"status": "identified",
+			"cause":  "the real workflow step returned an explicit source-truth verdict",
+		},
+	})
+
+	if !strings.HasPrefix(text, "Root cause: the real workflow step returned an explicit source-truth verdict\n") {
+		t.Fatalf("result text did not start with structured root-cause verdict: %s", text)
+	}
+}
+
+func TestWorkflowPatternResultTextDoesNotInferRootCauseFromSyntheticSummary(t *testing.T) {
+	t.Parallel()
+	result := &think.ThinkResult{
+		Pattern: "decision_framework",
+		Status:  "success",
+		Summary: "Decision matrix ranked options; wrapper context says a cause may exist upstream.",
+	}
+
+	text := workflowPatternResultText(result, result.Summary, map[string]any{
+		"workflow_root_cause_gate": true,
+	})
+
+	if !strings.HasPrefix(text, "Root cause not identified: decision_framework output did not identify a root cause.\n") {
+		t.Fatalf("result text inferred a root cause without source-truth verdict: %s", text)
+	}
+}
+
 func TestHandleTaskWorkflowBackedRecipePropagatesThinkPatternDataToNextStep(t *testing.T) {
 	t.Parallel()
+	patterns.RegisterAll()
 
 	var mu sync.Mutex
 	prompts := []string{}
@@ -380,7 +448,16 @@ func TestHandleTaskWorkflowBackedRecipePropagatesThinkPatternDataToNextStep(t *t
 		if strings.TrimSpace(spec.Prompt) == "" {
 			return "", cli, errors.New("empty workflow step prompt")
 		}
-		return `{"type":"agent_message","content":"workflow step complete"}` + "\n", cli, nil
+		content := "workflow step complete"
+		switch {
+		case strings.Contains(spec.Prompt, "Capture and structure the following error symptom"):
+			content = "Observed: workflow cache replay loses the hypothesis chain before root-cause selection. Expected: replay preserves the workflow context for later steps."
+		case strings.Contains(spec.Prompt, "Gather evidence for and against each debugging hypothesis"):
+			content = "Evidence gathered from replay metadata: the root cause is stale workflow step result text; the cache propagation boundary drops the think pattern data before root_cause."
+		case strings.Contains(spec.Prompt, "Generate a concrete fix plan"):
+			content = "Fix plan: preserve think pattern result text through workflow execution and verify replay metadata after the root cause gate passes."
+		}
+		return fmt.Sprintf("{\"type\":\"agent_message\",\"content\":%q}\n", content), cli, nil
 	}
 	srv, _, reviewWorker := newTaskToolServerWithWorkflowHooks(t, defaultRecipeProfile(), dispatch, workflowPatternFn)
 	issue := "debug flaky workflow cache propagation"
@@ -393,9 +470,15 @@ func TestHandleTaskWorkflowBackedRecipePropagatesThinkPatternDataToNextStep(t *t
 		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
 	}
 	payload := decodeTaskToolResult(t, result)
-	waitTaskToolStatus(t, srv, payload["task_id"].(string), loom.TaskStatusCompleted)
+	task := waitTaskToolStatus(t, srv, payload["task_id"].(string), loom.TaskStatusCompleted)
 	if got := reviewWorker.taskCount(); got != 0 {
 		t.Fatalf("review task count = %d, want workflow worker route without review worker", got)
+	}
+	assertMetadataStringSlice(t, task.Metadata, "workflow_step_statuses", workflowStepStatusesFromSteps(workflow.DebugSteps()))
+	for _, want := range []string{"Workflow status: completed", "root_cause [completed]: Root cause:", "fix_plan [completed]"} {
+		if !strings.Contains(task.Result, want) {
+			t.Fatalf("workflow result missing %q: %s", want, task.Result)
+		}
 	}
 
 	mu.Lock()
@@ -413,6 +496,50 @@ func TestHandleTaskWorkflowBackedRecipePropagatesThinkPatternDataToNextStep(t *t
 		return
 	}
 	t.Fatalf("did not capture evidence-gather prompt; prompts=%#v", captured)
+}
+
+func TestHandleTaskWorkflowBackedDebugRecipeGatesUncertainRootCauseBeforeFixPlan(t *testing.T) {
+	t.Parallel()
+	patterns.RegisterAll()
+
+	var mu sync.Mutex
+	prompts := []string{}
+	dispatch := func(_ context.Context, cli string, spec picker.TaskSpec, _ map[string]any) (string, string, error) {
+		mu.Lock()
+		prompts = append(prompts, spec.Prompt)
+		mu.Unlock()
+		if strings.TrimSpace(spec.Prompt) == "" {
+			return "", cli, errors.New("empty workflow step prompt")
+		}
+		content := "workflow step complete"
+		if strings.Contains(spec.Prompt, "Gather evidence for and against each debugging hypothesis") {
+			content = "Evidence gathered from replay metadata is inconclusive: root cause unclear, need more logs before selecting a fix."
+		}
+		return fmt.Sprintf("{\"type\":\"agent_message\",\"content\":%q}\n", content), cli, nil
+	}
+	srv, _, _ := newTaskToolServerWithWorkflowHooks(t, defaultRecipeProfile(), dispatch, workflowPatternFn)
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":    "debug intermittent workflow cache miss without enough logs",
+		"recipe_id": "debug-investigation",
+		"target":    "HEAD",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolResult(t, result)
+	task := waitTaskToolStatus(t, srv, payload["task_id"].(string), loom.TaskStatusFailed)
+	if !strings.Contains(task.Error, "workflow recipe ended with status \"gated\"") {
+		t.Fatalf("failed task error = %q, want gated workflow failure", task.Error)
+	}
+
+	mu.Lock()
+	captured := append([]string(nil), prompts...)
+	mu.Unlock()
+	for _, prompt := range captured {
+		if strings.Contains(prompt, "Generate a concrete fix plan") {
+			t.Fatalf("fix_plan prompt should not execute when root cause is uncertain; prompts=%#v", captured)
+		}
+	}
 }
 
 func TestHandleTaskWorkflowBackedRecipeFailureMarksTaskFailedAndMissesReplay(t *testing.T) {
@@ -1068,11 +1195,21 @@ func defaultWorkflowRecipeDispatch(_ context.Context, cli string, spec picker.Ta
 	if strings.TrimSpace(spec.Prompt) == "" {
 		return "", cli, errors.New("empty workflow step prompt")
 	}
-	return `{"type":"agent_message","content":"workflow step complete"}` + "\n", cli, nil
+	content := "workflow step complete"
+	if strings.Contains(spec.Prompt, "Gather evidence for and against each debugging hypothesis") {
+		content = "Evidence gathered from workflow execution: root cause is deterministic debug evidence from the workflow step."
+	}
+	return fmt.Sprintf("{\"type\":\"agent_message\",\"content\":%q}\n", content), cli, nil
 }
 
 func defaultWorkflowRecipePattern(name string, input map[string]any) (map[string]any, error) {
-	return map[string]any{"pattern": name, "summary": fmt.Sprint(input)}, nil
+	if name != "decision_framework" {
+		return map[string]any{"pattern": name, "summary": fmt.Sprint(input)}, nil
+	}
+	if verdict := workflowRootCauseVerdictFromEvidence(input["workflow_root_cause_evidence"]); verdict != "" {
+		return map[string]any{"pattern": name, "summary": verdict}, nil
+	}
+	return map[string]any{"pattern": name, "summary": "Root cause not identified: structured workflow evidence is required."}, nil
 }
 
 func defaultRecipeProfile() *config.CLIProfile {
