@@ -456,6 +456,62 @@ func TestEngine_Execute_RootCauseGatePassesMarkdownVerdictOverRejectedHypotheses
 	}
 }
 
+func TestEngine_Execute_RootCauseGatePassesSharedAffirmativeVerdictMarkers(t *testing.T) {
+	tests := []struct {
+		name    string
+		verdict string
+	}{
+		{
+			name:    "was caused by",
+			verdict: "The workflow failure was caused by stale workflow result cache.",
+		},
+		{
+			name:    "traced to",
+			verdict: "The regression traced to stale workflow result cache.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEngine(
+				map[string]string{"debug": "fix plan generated"},
+				"",
+				map[string]string{"decision_framework": tt.verdict},
+				nil,
+			)
+
+			steps := []WorkflowStep{
+				{
+					Name:   "root_cause",
+					Action: ActionThinkPattern,
+					Config: map[string]any{"pattern": "decision_framework"},
+				},
+				{
+					Name:   "gate",
+					Action: ActionGate,
+					Config: map[string]any{"require": "root_cause_identified"},
+				},
+				{
+					Name:   "fix_plan",
+					Action: ActionSingleExec,
+					Config: map[string]any{"role": "debug", "prompt": "Fix: %s"},
+				},
+			}
+
+			result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Status != "completed" {
+				t.Fatalf("status = %q; want completed", result.Status)
+			}
+			if got := result.Steps[len(result.Steps)-1].Name; got != "fix_plan" {
+				t.Fatalf("last step = %q; want fix_plan", got)
+			}
+		})
+	}
+}
+
 func TestEngine_RunThinkPatternExtractsMarkdownRootCauseEvidenceOverMixedNegativeText(t *testing.T) {
 	patternFn := func(name string, input map[string]any) (map[string]any, error) {
 		if name != "decision_framework" {
@@ -485,6 +541,50 @@ func TestEngine_RunThinkPatternExtractsMarkdownRootCauseEvidenceOverMixedNegativ
 		"- **Root cause:** stale workflow result cache",
 		"Follow-up note: no definitive cause was found for the logging-only branch.",
 	}, "\n")}}, newMockDialogueRunner(""), patternFn, nil)
+
+	steps := []WorkflowStep{
+		{
+			Name:   "evidence_gather",
+			Action: ActionSingleExec,
+			Config: map[string]any{"role": "debug", "prompt": "Gather: %s"},
+		},
+		{
+			Name:   "root_cause",
+			Action: ActionThinkPattern,
+			Config: map[string]any{"pattern": "decision_framework"},
+		},
+		{
+			Name:   "gate",
+			Action: ActionGate,
+			Config: map[string]any{"require": "root_cause_identified"},
+		},
+	}
+
+	result, err := e.Execute(context.Background(), steps, WorkflowInput{Topic: "workflow failure"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q; want completed", result.Status)
+	}
+}
+
+func TestEngine_RunThinkPatternPreservesLiteralIdentifierCharactersInMarkdownRootCause(t *testing.T) {
+	patternFn := func(name string, input map[string]any) (map[string]any, error) {
+		if name != "decision_framework" {
+			t.Fatalf("pattern = %q; want decision_framework", name)
+		}
+		evidence, _ := input["workflow_root_cause_evidence"].(map[string]any)
+		if evidence == nil {
+			t.Fatalf("workflow_root_cause_evidence missing from input: %#v", input)
+		}
+		cause, _ := evidence["cause"].(string)
+		if cause != "null_pointer in user_service" {
+			t.Fatalf("evidence cause = %q; want null_pointer in user_service", cause)
+		}
+		return map[string]any{"content": "Root cause: " + cause}, nil
+	}
+	e := New(&mockSender{responses: map[string]string{"debug": "- **Root cause:** `null_pointer in user_service`"}}, newMockDialogueRunner(""), patternFn, nil)
 
 	steps := []WorkflowStep{
 		{
@@ -673,11 +773,11 @@ func TestEngine_RunThinkPatternPassesRootCauseEvidence(t *testing.T) {
 	}
 }
 
-func TestEngine_Execute_RootCauseGateBlocksAffirmativePhraseWithoutVerdictLine(t *testing.T) {
+func TestEngine_Execute_RootCauseGateBlocksNonVerdictWrapperSummary(t *testing.T) {
 	e := newTestEngine(
 		map[string]string{"debug": "fix plan generated"},
 		"",
-		map[string]string{"decision_framework": "The wrapper summary was caused by stale upstream context."},
+		map[string]string{"decision_framework": "The wrapper summary mentioned stale upstream context and needs a verdict."},
 		nil,
 	)
 

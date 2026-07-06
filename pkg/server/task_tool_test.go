@@ -462,6 +462,69 @@ func TestWorkflowRecipeExecutorSenderSendRejectsFallbackSelectedReadOnlyPolicyMi
 		t.Fatalf("Send error = %v, want recipe policy enforcement error", err)
 	}
 }
+func TestWorkflowRecipeExecutorSenderSendDoesNotInvokeFallbackSelectedReadOnlyPolicyMismatch(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "fallback-selected-cli-invoked")
+	codexPath := fakeExecutableWithContents(t, dir, "codex-slow",
+		"#!/bin/sh\nsleep 5\n",
+		"@echo off\r\nping -n 6 127.0.0.1 > nul\r\nexit /b 0\r\n",
+	)
+	claudePath := fakeExecutableWithContents(t, dir, "claude-marker",
+		"#!/bin/sh\nprintf invoked > \"$AIMUX_FALLBACK_MARKER\"\nprintf '%s\n' '{\"type\":\"agent_message\",\"content\":\"fallback executed\"}'\n",
+		"@echo off\r\necho invoked> \"%AIMUX_FALLBACK_MARKER%\"\r\necho {\"type\":\"agent_message\",\"content\":\"fallback executed\"}\r\nexit /b 0\r\n",
+	)
+
+	codex := defaultRecipeProfile()
+	codex.Binary = codexPath
+	codex.ResolvedPath = codexPath
+	codex.TimeoutSeconds = 1
+	claude := limitedRecipeProfile()
+	claude.Name = "claude"
+	claude.Binary = claudePath
+	claude.ResolvedPath = claudePath
+	claude.TimeoutSeconds = 5
+	registry := driver.NewRegistry(map[string]*config.CLIProfile{
+		"codex":  codex,
+		"claude": claude,
+	})
+	registry.SetAvailable("codex", true)
+	registry.SetAvailable("claude", true)
+	srv := &Server{cfg: &config.Config{}, registry: registry}
+	srv.fallbackPicker = buildFallbackPicker(srv)
+	if srv.fallbackPicker == nil {
+		t.Fatal("buildFallbackPicker returned nil")
+	}
+
+	sender := &workflowRecipeExecutorSender{
+		server: srv,
+		task: &loom.Task{
+			Env:     map[string]string{"AIMUX_FALLBACK_MARKER": marker},
+			Timeout: 1,
+			Metadata: map[string]any{
+				"recipe_id":  "security-audit",
+				"task_class": "review",
+			},
+		},
+		defaultCLI: "codex",
+		dispatch:   workflowRecipeWorker{server: srv}.dispatchViaServer,
+	}
+
+	handle, err := sender.Get(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	_, err = sender.Send(context.Background(), handle, types.Message{Content: "run workflow step"})
+	if err == nil {
+		t.Fatal("Send returned nil error, want unsupported fallback-selected CLI to be rejected")
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatal("fallback-selected CLI without read-only support was executed; marker file was created")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("stat fallback marker: %v", statErr)
+	}
+}
 
 func TestWorkflowPatternFnExposesDataAsResultText(t *testing.T) {
 	t.Parallel()
@@ -1271,6 +1334,20 @@ func fakeExecutable(t *testing.T, dir, name string) string {
 	if runtime.GOOS == "windows" {
 		filename += ".cmd"
 		contents = []byte("@echo off\r\nexit /b 0\r\n")
+	}
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, contents, 0o755); err != nil {
+		t.Fatalf("write fake binary %s: %v", path, err)
+	}
+	return path
+}
+func fakeExecutableWithContents(t *testing.T, dir, name, unixContents, windowsContents string) string {
+	t.Helper()
+	filename := name
+	contents := []byte(unixContents)
+	if runtime.GOOS == "windows" {
+		filename += ".cmd"
+		contents = []byte(windowsContents)
 	}
 	path := filepath.Join(dir, filename)
 	if err := os.WriteFile(path, contents, 0o755); err != nil {

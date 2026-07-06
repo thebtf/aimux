@@ -124,14 +124,23 @@ func (w workflowRecipeWorker) dispatchViaServer(ctx context.Context, cli string,
 	if w.server == nil {
 		return "", cli, extypes.NewCapabilityMismatch("workflow recipe worker requires server dispatch", nil)
 	}
+	dispatch := w.server.taskDispatch
+	if workflowRecipeForcesReadOnly(metadata) {
+		dispatch = func(ctx context.Context, selectedCLI string, selectedSpec picker.TaskSpec) (string, error) {
+			if err := requireWorkflowRecipeReadOnlyParticipant(w.server, metadata, selectedCLI); err != nil {
+				return "", err
+			}
+			return w.server.taskDispatch(ctx, selectedCLI, selectedSpec)
+		}
+	}
 	if w.server.fallbackPicker != nil {
-		result, err := w.server.fallbackPicker.RunPrimary(ctx, cli, spec, fallbackOptionsFromTaskMetadata(metadata), w.server.taskDispatch)
+		result, err := w.server.fallbackPicker.RunPrimary(ctx, cli, spec, fallbackOptionsFromTaskMetadata(metadata), dispatch)
 		if err != nil {
 			return "", cli, err
 		}
 		return result.Content, result.SelectedCLI, nil
 	}
-	raw, err := w.server.taskDispatch(ctx, cli, spec)
+	raw, err := dispatch(ctx, cli, spec)
 	return raw, cli, err
 }
 
@@ -371,15 +380,18 @@ func workflowRecipeForcesReadOnly(metadata map[string]any) bool {
 	return ok && recipe.ReadOnly
 }
 
-func (s *workflowRecipeExecutorSender) requireReadOnlyParticipant(cli string) error {
-	profile, err := s.profile(cli)
+func requireWorkflowRecipeReadOnlyParticipant(server *Server, metadata map[string]any, cli string) error {
+	if server == nil || server.registry == nil {
+		return extypes.NewCapabilityMismatch("workflow read-only recipe participant registry unavailable", nil)
+	}
+	profile, err := server.registry.Get(cli)
 	if err != nil || profile == nil {
 		if err == nil {
 			err = fmt.Errorf("profile is nil")
 		}
 		return extypes.NewCapabilityMismatch(fmt.Sprintf("workflow read-only recipe participant %q profile unavailable", cli), err)
 	}
-	recipeID, ok := metadataString(s.task.Metadata, "recipe_id")
+	recipeID, ok := metadataString(metadata, "recipe_id")
 	if !ok || strings.TrimSpace(recipeID) == "" {
 		return extypes.NewCapabilityMismatch("workflow read-only recipe participant policy requires recipe_id metadata", nil)
 	}
@@ -387,7 +399,7 @@ func (s *workflowRecipeExecutorSender) requireReadOnlyParticipant(cli string) er
 	if !ok {
 		return newUnsupportedRecipeIDError(recipeID)
 	}
-	taskClass, ok := metadataString(s.task.Metadata, "task_class")
+	taskClass, ok := metadataString(metadata, "task_class")
 	if !ok || strings.TrimSpace(taskClass) == "" {
 		taskClass = recipe.TaskClass
 	}
@@ -396,6 +408,13 @@ func (s *workflowRecipeExecutorSender) requireReadOnlyParticipant(cli string) er
 		return newTaskRecipePolicyError(result, nil)
 	}
 	return nil
+}
+
+func (s *workflowRecipeExecutorSender) requireReadOnlyParticipant(cli string) error {
+	if s == nil || s.task == nil {
+		return extypes.NewCapabilityMismatch("workflow read-only recipe participant task metadata unavailable", nil)
+	}
+	return requireWorkflowRecipeReadOnlyParticipant(s.server, s.task.Metadata, cli)
 }
 
 func workflowRecipeStatusError(result *workflow.WorkflowResult) error {
@@ -584,8 +603,8 @@ func extractWorkflowRootCauseAffirmation(text, lower string) string {
 		case "root cause:", "root cause is", "root cause was", "root cause =", "root cause -", "root cause —", "root cause identified", "identified root cause", "confirmed root cause", "the cause is", "the cause was", "caused by", "is caused by", "was caused by", "failure stems from", "failure stemmed from", "traced to":
 			start = idx + len(marker)
 		}
-		cause := strings.TrimLeft(firstWorkflowRootCauseLine(text[start:]), ":= -—")
-		return strings.TrimSpace(cause)
+		cause := firstWorkflowRootCauseLine(text[start:])
+		return trimWorkflowRootCauseText(cause)
 	}
 	return ""
 }
@@ -609,16 +628,54 @@ func cleanRootCauseVerdictLine(line string) string {
 		line = strings.TrimSpace(line)
 		line = trimWorkflowListPrefix(line)
 		line = strings.TrimSpace(line)
-		line = strings.Trim(line, "`")
-		line = strings.TrimSpace(line)
-		line = strings.TrimLeft(line, "*_")
+		line = trimWorkflowMarkdownEdges(line)
 		line = strings.TrimSpace(line)
 		if line == before {
 			break
 		}
 	}
-	line = strings.NewReplacer("**", "", "__", "", "`", "", "*", "", "_", "").Replace(line)
 	return strings.TrimSpace(line)
+}
+
+func trimWorkflowMarkdownEdges(line string) string {
+	line = strings.TrimSpace(line)
+	for {
+		before := line
+		line = trimPairedWorkflowMarkdown(line, "**")
+		line = trimPairedWorkflowMarkdown(line, "__")
+		line = trimPairedWorkflowMarkdown(line, "`")
+		line = trimPairedWorkflowMarkdown(line, "*")
+		line = trimPairedWorkflowMarkdown(line, "_")
+		line = strings.TrimSpace(line)
+		if line == before {
+			break
+		}
+	}
+	return line
+}
+
+func trimPairedWorkflowMarkdown(line, marker string) string {
+	for strings.HasPrefix(line, marker) && strings.HasSuffix(line, marker) && len(line) >= len(marker)*2 {
+		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, marker), marker))
+	}
+	return line
+}
+
+func trimWorkflowRootCauseText(text string) string {
+	text = strings.TrimSpace(strings.TrimLeft(text, ":= -—"))
+	for {
+		before := text
+		text = strings.TrimSpace(text)
+		for _, marker := range []string{"**", "__", "`", "*", "_"} {
+			text = strings.TrimSpace(strings.TrimPrefix(text, marker))
+			text = strings.TrimSpace(strings.TrimSuffix(text, marker))
+		}
+		text = trimWorkflowMarkdownEdges(text)
+		if text == before {
+			break
+		}
+	}
+	return strings.TrimSpace(text)
 }
 
 func trimWorkflowListPrefix(line string) string {

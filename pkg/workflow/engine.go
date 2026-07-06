@@ -626,19 +626,7 @@ func isWorkflowRootCauseVerdictLine(lower string) bool {
 	if strings.HasPrefix(lower, "root cause") {
 		return true
 	}
-	for _, marker := range []string{
-		"root cause:",
-		"root cause is",
-		"root cause was",
-		"root cause =",
-		"root cause -",
-		"root cause —",
-		"root cause identified",
-		"identified root cause",
-		"confirmed root cause",
-		"the cause is",
-		"the cause was",
-	} {
+	for _, marker := range workflowRootCauseAffirmativeMarkers {
 		if strings.Contains(lower, marker) {
 			return true
 		}
@@ -655,16 +643,54 @@ func cleanRootCauseVerdictLine(line string) string {
 		line = strings.TrimSpace(line)
 		line = trimWorkflowListPrefix(line)
 		line = strings.TrimSpace(line)
-		line = strings.Trim(line, "`")
-		line = strings.TrimSpace(line)
-		line = strings.TrimLeft(line, "*_")
+		line = trimWorkflowMarkdownEdges(line)
 		line = strings.TrimSpace(line)
 		if line == before {
 			break
 		}
 	}
-	line = strings.NewReplacer("**", "", "__", "", "`", "", "*", "", "_", "").Replace(line)
 	return strings.TrimSpace(line)
+}
+
+func trimWorkflowMarkdownEdges(line string) string {
+	line = strings.TrimSpace(line)
+	for {
+		before := line
+		line = trimPairedWorkflowMarkdown(line, "**")
+		line = trimPairedWorkflowMarkdown(line, "__")
+		line = trimPairedWorkflowMarkdown(line, "`")
+		line = trimPairedWorkflowMarkdown(line, "*")
+		line = trimPairedWorkflowMarkdown(line, "_")
+		line = strings.TrimSpace(line)
+		if line == before {
+			break
+		}
+	}
+	return line
+}
+
+func trimPairedWorkflowMarkdown(line, marker string) string {
+	for strings.HasPrefix(line, marker) && strings.HasSuffix(line, marker) && len(line) >= len(marker)*2 {
+		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, marker), marker))
+	}
+	return line
+}
+
+func trimWorkflowRootCauseText(text string) string {
+	text = strings.TrimSpace(strings.TrimLeft(text, ":= -—"))
+	for {
+		before := text
+		text = strings.TrimSpace(text)
+		for _, marker := range []string{"**", "__", "`", "*", "_"} {
+			text = strings.TrimSpace(strings.TrimPrefix(text, marker))
+			text = strings.TrimSpace(strings.TrimSuffix(text, marker))
+		}
+		text = trimWorkflowMarkdownEdges(text)
+		if text == before {
+			break
+		}
+	}
+	return strings.TrimSpace(text)
 }
 
 func trimWorkflowListPrefix(line string) string {
@@ -699,8 +725,8 @@ func extractWorkflowRootCauseAffirmation(text, lower string) string {
 		case "root cause:", "root cause is", "root cause was", "root cause =", "root cause -", "root cause —", "root cause identified", "identified root cause", "confirmed root cause", "the cause is", "the cause was", "caused by", "is caused by", "was caused by", "failure stems from", "failure stemmed from", "traced to":
 			start = idx + len(marker)
 		}
-		cause := strings.TrimLeft(firstWorkflowRootCauseLine(text[start:]), ":= -—")
-		return strings.TrimSpace(cause)
+		cause := firstWorkflowRootCauseLine(text[start:])
+		return trimWorkflowRootCauseText(cause)
 	}
 	return ""
 }
