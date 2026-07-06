@@ -25,12 +25,14 @@ func buildInstructions(
 	}
 
 	patternCount := len(think.GetAllPatterns())
-	toolCount := 5 + patternCount
+	const nonPatternToolCount = 7 // status, sessions, deepresearch, upgrade, task, review, think.
+	toolCount := nonPatternToolCount + patternCount
 
 	lines := []string{
 		fmt.Sprintf("aimux — AI CLI Multiplexer (%d tools, %d CLIs, %d think patterns)", toolCount, cliCount, patternCount),
 		"",
-		"aimux currently exposes a reduced MCP surface: server state tools, task routing, deep research, upgrade control, and dedicated think pattern tools.",
+		"aimux currently exposes a reduced MCP surface: server state tools, task/review routing, deep research, upgrade control, and dedicated think pattern tools.",
+		"Dedicated `review` is a facade over the same Loom-backed task/runtime-events backbone as `task`.",
 		"",
 		"## Available CLIs",
 	}

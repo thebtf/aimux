@@ -8,14 +8,15 @@ STACKS: [GO]
 
 ## Project Context
 
-aimux is an MCP server. After AIMUX-21, the live MCP surface is
-**4 server tools + 1 task entry point + 1 caller-centered think harness + 22 cognitive move tools**:
+aimux is an MCP server. After AIMUX-21 plus AIMUX-9 CR-006, the live MCP surface is
+**4 server tools + 2 task entry points + 1 caller-centered think harness + 22 cognitive move tools**:
 
 - `status` — async job status
 - `sessions` — session/job management (action: list/health/gc/cancel/kill/info/refresh-warmup)
 - `deepresearch` — Gemini SDK
 - `upgrade` — binary update (action: check/apply, mode: auto/hot_swap/deferred)
 - `task` — generic code/review entry point backed by Loom workers
+- `review` — dedicated review facade over the existing task/Loom/runtime-events backbone
 - `think` — caller-centered thinking harness (action: start/step/finalize)
 - 22 cognitive move tools (architecture_analysis, collaborative_reasoning, critical_thinking, debugging_approach, decision_framework, domain_modeling, experimental_loop, literature_review, mental_model, metacognitive_monitoring, peer_review, problem_decomposition, recursive_thinking, replication_analysis, research_synthesis, scientific_method, sequential_thinking, source_comparison, stochastic_algorithm, structured_argumentation, temporal_thinking, visual_reasoning)
 
@@ -69,7 +70,7 @@ If the memory protocol feels redundant: the redundancy is the safety. A memory h
 
 ### Code Patterns
 - Interfaces in `pkg/types/interfaces.go`
-- Strategy pattern for orchestrator (consensus, debate, dialog, pair, audit)
+- Strategy pattern code may remain in dormant seams, but public MCP registration must not expose removed broad Layer 5 tools.
 - Constructor injection for dependencies (Executor, CLIResolver)
 - Profile-based CLI configuration via YAML in `config/cli.d/`
 - **Response budget helper:** `pkg/server/budget/` shapes MCP tool responses to a
@@ -91,32 +92,14 @@ If the memory protocol feels redundant: the redundancy is the safety. A memory h
 - Test profiles in `test/e2e/testdata/config/`
 - `initTestCLIServer(t)` sets up aimux with testcli on PATH
 
-### critique Tool
+### Current Task and Review Surfaces
 
-`critique(artifact, lens, cli, max_findings)` — delegates a code/design artifact to a CLI for
-structured review using one of four built-in lenses:
-
-| Lens | Focus |
-|------|-------|
-| `security` | Injection, auth flaws, secret exposure, input validation |
-| `api-design` | REST/RPC contracts, naming conventions, backward compatibility |
-| `spec-compliance` | Alignment with a stated spec or requirements document |
-| `adversarial` | Adversarial prompt injection, misuse scenarios, trust boundary violations |
-
-Response shape: `{findings, summary, cli_used, lens, tokens}` where `findings` is an array of
-`{severity, location, issue, suggested_fix}` objects. Falls back to `{raw_output}` when the
-CLI does not return parseable JSON. Missing `artifact` returns a validation error. Unknown `lens`
-returns a validation error.
-
-### agents Tool (Preferred) vs agent Tool (Deprecated)
-
-**Use `agents(action="run", prompt="...")` — NOT `agent(agent="X", prompt="...")`.**
-
-- `agents(action="run")` without an explicit `agent` parameter runs BM25 semantic auto-select
-  and returns `selection_rationale` with score breakdown.
-- `agents(action="find", prompt="...")` returns a ranked candidate list `{query, matches, count}`.
-- `agent` (singular) still works but includes a `deprecated` field in its response directing
-  callers to `agents(action="run")`. It will be removed in a future major version.
+Use `task` for generic code/review dispatch and curated recipes outside the
+dedicated first-slice review facade. Use `review` only for direct caller-facing
+standard/gate-oriented code review work; it is a thin facade over the existing
+`task` / Loom / runtime-events backbone and must return the same async
+task/result resources. Do not expose additional recipe modes through `review`
+unless a later CR explicitly widens that surface.
 
 ### Think Harness + Cognitive Move Gates
 
@@ -197,8 +180,8 @@ $cliVersion = (.\aimux-dev-next.exe --version).Trim()
 $mcpVersion = if ($cliVersion -match '^aimux\s+(\S+)') { $Matches[1] } else { $cliVersion }
 
 # 2. Smoke test the new binary in isolation (must succeed before step 3)
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 28 -expect-version $mcpVersion
-#    Expect: "tools: 28" (4 server + task + 1 think harness + 22 cognitive moves).
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 29 -expect-version $mcpVersion
+#    Expect: "tools: 29" (4 server + task + review + 1 think harness + 22 cognitive moves).
 #    If handshake fails or count is wrong — DO NOT proceed.
 
 # 3. Clean any stale aimux-dev-next processes left by mcp-launcher
@@ -210,12 +193,12 @@ mcp__aimux-dev__upgrade(action="apply", source="D:/Dev/aimux/aimux-dev-next.exe"
 #    handoff_error="hot-swap unsupported: aimux muxcore SessionHandler mode has no transferable upstream process".
 
 # 4B. Codex/operator path when project-scoped MCP tools are unavailable
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode install -source .\aimux-dev-next.exe -force -expect-tools 28 -expect-version $mcpVersion
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode install -source .\aimux-dev-next.exe -force -expect-tools 29 -expect-version $mcpVersion
 #    Expect: [install] PASS after reconnect verification.
 
 # 5. Verify
 mcp__aimux-dev__sessions(action="health")     # daemon answers → upgrade landed
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode resource -uri aimux://health -expect-tools 28 -expect-version $mcpVersion
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode resource -uri aimux://health -expect-tools 29 -expect-version $mcpVersion
 .\aimux-dev.exe --version                      # version string matches step 1 output
 ```
 

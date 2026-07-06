@@ -5,7 +5,7 @@
 
 [![Go](https://img.shields.io/badge/go-1.25.11%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![MCP Tools](https://img.shields.io/badge/MCP-28%20tools-blueviolet)](https://modelcontextprotocol.io)
+[![MCP Tools](https://img.shields.io/badge/MCP-29%20tools-blueviolet)](https://modelcontextprotocol.io)
 
 aimux — MCP-сервер для устойчивого состояния задач, операций с сессиями,
 глубокого исследования, обновления бинарника и caller-centered structured
@@ -14,7 +14,7 @@ reasoning.
 Текущая live surface после purge намеренно небольшая:
 
 - 4 server tools: `status`, `sessions`, `deepresearch`, `upgrade`
-- 1 `task` entry point for code/review workflows
+- 2 methodology-bearing entry points: `task` для generic code/review/recipe work и `review` для direct review work
 - 1 caller-centered `think` harness и 22 cognitive move tools
 
 Прежние CLI-launching MCP tools (`exec`, `agent`, `agents`, `critique`,
@@ -96,7 +96,7 @@ go build -o aimux.exe ./cmd/aimux/
 ### Проверка
 
 Вызовите `tools/list` из любого MCP-клиента. Актуальная сборка должна
-показать 28 tools: 4 server tools, `task`, `think` harness и 22 cognitive move tools.
+показать 29 tools: 4 server tools, `task`, `review`, `think` harness и 22 cognitive move tools.
 
 ```json
 {
@@ -140,11 +140,12 @@ go test ./... -count=1
 | `deepresearch` | Gemini-backed исследование со structured output. |
 | `upgrade` | Проверка или применение обновлений aimux binary, включая local source install с честным deferred fallback. |
 
-### Task Entry Point
+### Task and Review Entry Points
 
 | Tool | Назначение |
 |---|---|
-| `task` | Loom-backed entry point для code/review tasks с 3 режимами исполнения. |
+| `task` | Loom-backed entry point для code/review/recipe work с 3 режимами исполнения кода. |
+| `review` | Отдельный review facade поверх того же task/Loom backbone для standard и gate-oriented code review. |
 
 `task` поддерживает три режима исполнения кода через параметр `navigator`:
 
@@ -200,7 +201,9 @@ Supported recipes остаются read-only и идут через сущест
 | `debug-investigation` | `review` | aggregate | Запускает compiled `pkg/workflow/debug.go` debugging workflow как read-only recipe. |
 
 Вызывайте recipe через `task(recipe_id=..., target=...)`; новый workflow,
-dialog, audit, consensus, debate или recipe tool не добавляется.
+dialog, audit, consensus, debate или recipe tool не добавляется. Dedicated
+`review` facade остаётся bounded to standard/gate-oriented review и
+`code-review` recipe; every other recipe вызывайте через `task`.
 Workflow-backed recipes публикуют `recipe_workflow_id`,
 `recipe_workflow_source` и `recipe_workflow_steps` metadata, но остаются за
 `task` contract. Recipe policy теперь fail-closed до worker spawn:
@@ -346,6 +349,7 @@ Current production surface:
 - Binary update с local source install и deferred fallback, когда live handoff не поддержан.
 - Caller-centered `think` harness и 22 local cognitive move tools.
 - Loom-backed task state и recovery.
+- Dedicated `review` facade поверх того же task/runtime-events backbone.
 - Task inspection resources under `aimux://tasks/{task_id}`.
 - Compiled read-only recipe discovery under `aimux://recipes` и invocation через `task(recipe_id=...)`.
 - Read-only task list/viewer resources для browser-readable inspection без
@@ -357,7 +361,7 @@ Out of current scope:
 - Direct CLI execution over MCP.
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
-- Pipeline v5 Layer 5 exposure.
+- Pipeline v5 Layer 5 exposure beyond task/review entry points.
 - Mutation-heavy recipe expansion beyond compiled read-only initial recipes.
 
 Эти удалённые surfaces не являются runtime defects текущей сборки. Это future

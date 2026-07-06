@@ -19,6 +19,11 @@ func TestBuildInstructions_WarmCLIs(t *testing.T) {
 			t.Fatalf("expected output to contain warm CLI %q", cli)
 		}
 	}
+	for _, expected := range []string{"29 tools", "task/review routing", "Dedicated `review`"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected output to contain %q, got:\n%s", expected, output)
+		}
+	}
 }
 
 func TestBuildInstructions_NoCLIs(t *testing.T) {

@@ -53,6 +53,9 @@
     "research_synthesis": {
       "classification": "sync_ok"
     },
+    "review": {
+      "classification": "async_mandatory"
+    },
     "scientific_method": {
       "classification": "sync_ok"
     },

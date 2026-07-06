@@ -204,7 +204,7 @@ func initAuditLog(cfg *config.Config, log *logger.Logger, reg *tenant.TenantRegi
 		return al, NewDispatchMiddleware(reg, al)
 	}
 
-	if mkdirErr := os.MkdirAll(filepath.Dir(auditLogPath), 0700); mkdirErr != nil {
+	if mkdirErr := os.MkdirAll(filepath.Dir(auditLogPath), 0o700); mkdirErr != nil {
 		if reg.IsMultiTenant() {
 			auditFatalfFn("audit log init failed in multi-tenant mode: could not create audit directory: %v", mkdirErr)
 		}
@@ -827,6 +827,7 @@ func (s *Server) registerTools() {
 
 	// AIMUX-4: cross-CLI fallback re-rank engine (FR-10).
 	s.registerTaskTool()
+	s.registerReviewTool()
 }
 
 func (s *Server) registerResources() {

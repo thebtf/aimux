@@ -10,23 +10,44 @@ Use these MCP tools:
 
 | Need | Surface |
 | --- | --- |
-| Route code or review work | `task` |
+| Route generic code/review/recipe work | `task` |
+| Run standard or gate-oriented code review | `review` |
 | Run caller-centered reasoning | `think(action=start|step|finalize)` |
 | Read async state and health | `status`, `sessions` |
 | Run Gemini-backed research | `deepresearch` |
 | Check or apply binary updates | `upgrade` |
 | Use a single cognitive move | one of the 22 cognitive move tools |
 
+
 The removed broad Layer 5 tools are not part of the current surface: `exec`,
 `agent`, `agents`, `workflow`, `dialog`, `debate`, `consensus`, `audit`,
 `investigate`, and similar CLI-launching entry points stay unavailable until a
 future design reintroduces them deliberately.
 
+## Review
+
+`review` is the dedicated caller-facing review methodology facade. It routes
+through the same Loom-backed review/task backbone as `task(task_class="review")`
+and returns the same accepted TaskResult fields and task resource URIs.
+
+Useful forms:
+
+```text
+review(prompt="review this change", target="HEAD")
+review(prompt="review this change", target="HEAD", gate=true)
+review(prompt="review this change", recipe_id="code-review", target="HEAD")
+```
+
+Recipes outside this public review facade, including `second-opinion`,
+`security-audit`, and `debug-investigation`, stay on `task(recipe_id=...)`;
+`review` does not restore `audit`, `workflow`, or any other removed broad Layer 5 tool.
+
+
 ## Task
 
-`task` is the only execution entry point for code and review work. Direct calls
-can route by `task_class`, and curated recipe calls pass `recipe_id` through the
-same tool.
+`task` remains the generic execution entry point for code, review, and curated
+recipe work. Direct calls can route by `task_class`, and curated recipe calls
+pass `recipe_id` through the same tool.
 
 Useful forms:
 

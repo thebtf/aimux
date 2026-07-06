@@ -76,6 +76,8 @@ func TestCallerGuideResourceDocumentsSupportedSurface(t *testing.T) {
 	for _, want := range []string{
 		"# aimux Caller Guide",
 		"task",
+		"review(prompt=\"review this change\"",
+		"gate=true",
 		"think(action=start|step|finalize)",
 		"aimux://tasks",
 		"aimux://tasks/{task_id}/viewer",

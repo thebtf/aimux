@@ -141,6 +141,52 @@ func (s *Server) registerTaskTool() {
 	)
 }
 
+// registerReviewTool registers the dedicated `review` MCP facade over the task backbone.
+func (s *Server) registerReviewTool() {
+	s.registerContractedTool(
+		toolContract{Name: "review", Classification: "async_mandatory", AdapterKind: "loom"},
+		mcp.NewTool("review",
+			mcp.WithDescription("[delegate — Loom routed, async] Submit code review work through the existing task/review backbone. "+
+				"Standard review uses prompt+target; gate=true requests review-gate semantics. "+
+				"Returns the same accepted JSON TaskResult, task_id/job_id, status polling command, cancel command, and task resource URIs as task."),
+			mcp.WithString("prompt",
+				mcp.Required(),
+				mcp.Description("Review prompt routed through the review/task backbone."),
+			),
+			mcp.WithString("target",
+				mcp.Required(),
+				mcp.Description("Review target, such as HEAD, a diff, or a PR ref."),
+			),
+			mcp.WithBoolean("gate",
+				mcp.Description("Use gate-oriented review semantics for merge/readiness decisions."),
+			),
+			mcp.WithString("recipe_id",
+				mcp.Description("Optional read-only review recipe. Supported here: code-review. Use task(recipe_id=...) for recipes outside this facade."),
+				mcp.Enum("code-review"),
+			),
+			mcp.WithString("resume_id",
+				mcp.Description("Loom root task_id to resume."),
+			),
+			mcp.WithNumber("timeout_seconds",
+				mcp.Description("Worker timeout in seconds, used by review-gate and long-running review workers."),
+			),
+			mcp.WithBoolean("fallback_enabled",
+				mcp.Description("Worker fallback policy hint. Default: true."),
+			),
+			mcp.WithNumber("max_attempts",
+				mcp.Description("Worker fallback attempt hint. 0 = worker default."),
+			),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				ReadOnlyHint:    mcp.ToBoolPtr(true),
+				DestructiveHint: mcp.ToBoolPtr(false),
+				IdempotentHint:  mcp.ToBoolPtr(false),
+				OpenWorldHint:   mcp.ToBoolPtr(true),
+			}),
+		),
+		s.handleReview,
+	)
+}
+
 // handleTask is the MCP handler for the `task` tool.
 func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	dispatchCtx, cancel := taskSubmitContext(ctx)
@@ -149,10 +195,25 @@ func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if parseErr != nil {
 		return taskToolError(TaskResult{}, parseErr)
 	}
+	return s.dispatchTaskRequest(dispatchCtx, taskReq)
+}
+
+// handleReview is the MCP handler for the dedicated `review` facade.
+func (s *Server) handleReview(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	dispatchCtx, cancel := taskSubmitContext(ctx)
+	defer cancel()
+	taskReq, parseErr := parseReviewToolRequest(dispatchCtx, req)
+	if parseErr != nil {
+		return taskToolError(TaskResult{}, parseErr)
+	}
+	return s.dispatchTaskRequest(dispatchCtx, taskReq)
+}
+
+func (s *Server) dispatchTaskRequest(ctx context.Context, taskReq TaskRequest) (*mcp.CallToolResult, error) {
 	if policyErr := s.validateRecipeProviderPolicy(taskReq); policyErr != nil {
 		return taskToolError(TaskResult{}, policyErr)
 	}
-	loomClient, loomErr := s.taskRouterLoom(dispatchCtx)
+	loomClient, loomErr := s.taskRouterLoom(ctx)
 	if loomClient == nil {
 		return taskToolError(TaskResult{}, taskRouterLoomUnavailableError(loomErr))
 	}
@@ -163,7 +224,7 @@ func (s *Server) handleTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if err != nil {
 		return taskToolError(TaskResult{}, extypes.NewCapabilityMismatch(err.Error(), err))
 	}
-	result, err := router.Dispatch(dispatchCtx, taskReq)
+	result, err := router.Dispatch(ctx, taskReq)
 	if err != nil {
 		return taskToolError(result, err)
 	}
@@ -203,6 +264,33 @@ func (s *Server) taskRouterLoom(ctx context.Context) (TaskRouterLoom, error) {
 		return scoped, nil
 	}
 	return loomClient, nil
+}
+
+func parseReviewToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskRequest, error) {
+	args := cloneToolArguments(req)
+	args["task_class"] = classifier.TaskClassReview
+	if strings.TrimSpace(req.GetString("cli", "")) != "" {
+		return TaskRequest{}, extypes.NewUserInputError("review: cli override is not supported by review workers", nil)
+	}
+	if recipeID := strings.TrimSpace(req.GetString("recipe_id", "")); recipeID != "" {
+		switch recipeID {
+		case "code-review":
+		default:
+			return TaskRequest{}, newUnsupportedReviewRecipeIDError(recipeID)
+		}
+	}
+	req.Params.Arguments = args
+	return parseTaskToolRequest(ctx, req)
+}
+
+func cloneToolArguments(req mcp.CallToolRequest) map[string]any {
+	args := map[string]any{}
+	if original, ok := req.Params.Arguments.(map[string]any); ok {
+		for key, value := range original {
+			args[key] = value
+		}
+	}
+	return args
 }
 
 func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskRequest, error) {
@@ -491,6 +579,16 @@ func newUnsupportedRecipeIDError(recipeID string) error {
 	return &taskRecipeInputError{
 		err:              extypes.NewUserInputError(fmt.Sprintf("task: unsupported recipe_id %q", recipeID), nil),
 		availableRecipes: recipes.AvailableIDs(),
+	}
+}
+
+func newUnsupportedReviewRecipeIDError(recipeID string) error {
+	return &taskRecipeInputError{
+		err: extypes.NewUserInputError(
+			fmt.Sprintf("review: unsupported recipe_id %q; use task(recipe_id=...) for recipes outside the public review facade", recipeID),
+			nil,
+		),
+		availableRecipes: []string{"code-review"},
 	}
 }
 
