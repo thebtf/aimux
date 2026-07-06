@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.21.2] — 2026-07-06 — AIMUX-4 fallback overhead closure
+
+### Added
+
+- **AIMUX-4 CR-003 quantitative overhead proof.** Added focused fallback benchmarks that measure `FallbackPicker.RunPrimary` retry decision overhead and `Orderer.Rank` overhead without real CLI execution, enforcing the `<10ms` NFR by several orders of magnitude.
+- **Release-path closure evidence.** Captured the residual AIMUX-4 post-purge routing/overhead proof as a bounded two-test-file slice from the shipped `v5.21.1` baseline.
+
 ## [5.21.1] — 2026-07-06 — Warm fallback picker health caches
 
 ### Fixed
@@ -2656,4 +2663,3 @@ Complete rewrite from TypeScript (v2) to Go. Single binary, zero external runtim
 - Config-driven flags only (no hardcoded CLI names in server code)
 
 [3.0.0]: https://github.com/thebtf/aimux/releases/tag/v3.0.0
-

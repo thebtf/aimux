@@ -1,23 +1,23 @@
-## v5.21.1 — Warm fallback picker health caches
+## v5.21.2 — AIMUX-4 fallback overhead closure
 
-This patch release ships the AIMUX-3 CR-003 startup-prewarm closeout: the task fallback picker now warms its health caches at construction time, so the first fallback decision no longer depends on a cold binary probe path. The change stays scoped to the existing fallback picker wiring and does not alter the public MCP surface.
+This patch release closes the remaining AIMUX-4 CR-003 residual lane from the shipped `v5.21.1` baseline. The shipped change is intentionally test-only: it adds quantitative benchmark proof that fallback retry decision overhead and orderer ranking overhead stay far below the `<10ms` NFR without real CLI execution, while preserving the current production fallback behavior and MCP surface.
 
 ### Highlights
 
-- `buildFallbackPicker` now warms both the primary picker and fallback orderer health caches immediately after constructing their health checkers.
-- Added a focused regression test that removes fake CLI binaries after construction and proves warmed cache behavior through both `PickPair` and `RunPrimary`.
-- The shipped diff stays limited to the two reviewed files from AIMUX-3 CR-003: `pkg/server/task_tool.go` and `pkg/server/task_tool_test.go`.
+- Added `BenchmarkFallbackPicker_DecisionOverhead`, covering an eligible primary failure followed by fake in-memory fallback success through `RunPrimary` without spawning any CLI process.
+- Added `BenchmarkOrderer_RankDecisionOverhead`, covering ranking over healthy fake CLIs, in-memory score data, and attempted-CLI exclusion.
+- Kept the shipped diff bounded to the reviewed AIMUX-4 CR-003 test surface: `pkg/executor/fallback/fallback_test.go` and `pkg/executor/fallback/orderer_test.go`.
 
 ### Compatibility
 
-No migration is required. The live MCP tool surface remains unchanged, and the release tightens fallback startup behavior behind the current task/runtime path rather than introducing new public tools or config.
+No migration is required. This release does not alter production fallback code, public MCP tools, or runtime configuration. It ships verification coverage for the already-release-contained fallback path rather than a new outward-facing capability.
 
 ### Verification
 
-- PR #189 merged into `master` as `b1b4b204d99c6babcf4a9fc36ea1010761fb3493` after approved review evidence plus green CI and Security checks on the reviewed diff.
-- Local release gates are being run from clean `master` for the `v5.21.1` tag candidate before publication.
-- The pre-release housekeeping pass removed the clean, already-absorbed AIMUX-3 linked worktree so release git readiness now evaluates the default branch from one active checkout.
+- PR #190 merged into `master` as `b774179d9f8e248324d7497b95a814ce31bd9314` after external PR review evidence, resolved discussion threads, and green GitHub `CI` / `Security` runs on the PR head.
+- Local release gates on the merged commit passed: `go build ./...`, `go vet ./...`, `govulncheck ./...`, `go test ./tests/critical -count=1 -timeout 300s`, `go test ./pkg/server -run "TestCritical_StallDetection_" -count=1 -timeout 120s`, `AIMUX21_E2E=1 go test ./test/e2e -run "TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)" -count=1 -timeout 600s`, `go test ./... -count=1` from `loom/`, and the AIMUX-4 benchmark gate `go test ./pkg/executor/fallback -run '^$' -bench "Benchmark.*Fallback|Benchmark.*Orderer" -benchtime=100x`.
+- Full-suite verification passed on the merged slice; earlier intermittent `pkg/server` P26 lock failures were reproduced as flaky/unrelated to the bounded AIMUX-4 diff and cleared on focused reruns plus a clean full-suite rerun.
 
 ### Notes
 
-This is a PATCH release from `v5.21.0` because the shipped delta is a scoped fallback-startup fix plus regression coverage, not a new public capability. Manual consumer updates remain out of scope for this release flow.
+This is a PATCH release from `v5.21.1` because the shipped delta closes a residual verification gap without adding a new public capability. Manual consumer updates remain out of scope for this release flow.
