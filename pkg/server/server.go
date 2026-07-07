@@ -55,11 +55,11 @@ import (
 // it without pulling in the full daemon dependency graph.
 var Version = build.Version
 
-// legacyInstructions is kept as fallback for proxy/shim mode where live state is unavailable.
-const legacyInstructions = `aimux — AI CLI Multiplexer (4 server tools + task + think harness + 22 cognitive moves, post Layer 5 purge)
+// legacyInstructions is kept as fallback for proxy/shim mode where daemon state is unavailable.
+const legacyInstructions = `aimux — AI CLI Multiplexer (29 tools: 4 server tools + task + review + think harness + 22 cognitive moves, post Layer 5 purge)
 
-Reduced MCP surface: server state management, code/review task routing, deep
-research via Gemini SDK, and structured reasoning via think(action=start|step|finalize)
+Reduced MCP surface: server state management, code/review task routing, the dedicated review facade,
+deep research via Gemini SDK, and structured reasoning via think(action=start|step|finalize)
 plus 22 dedicated cognitive move tools.
 
 ## Tool Selection — "I need to..."
@@ -69,10 +69,14 @@ plus 22 dedicated cognitive move tools.
 | Check async job status | status | job_id |
 | Manage sessions | sessions | action (list/health/gc/cancel/kill/info/refresh-warmup) |
 | Route code/review work | task | task_class (code/review), prompt |
+| Review code through the dedicated facade | review | prompt, target, gate |
 | Caller-centered thinking workflow | think | action (start/step/finalize) |
 | Low-level cognitive move | <pattern_name> | 22 individual cognitive move tools |
 | Deep research via Gemini API | deepresearch | topic |
 | Check / apply binary updates | upgrade | action (check/apply) |
+
+## Reference
+- Read the compiled caller guide resource at aimux://guides/caller; use aimux://guides for the guide catalog.
 
 ## Notes
 - Layer 5 CLI-launching tools (exec/agent/agents/critique/investigate/consensus/debate/dialog/audit/workflow) were removed at v5.0.3.
@@ -450,11 +454,11 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		server.WithPromptCapabilities(true),
 		server.WithLogging(),
 		server.WithRecovery(),
-		// Build live instructions at daemon construction time after agent and CLI discovery.
+		// Build initial instructions at daemon construction time after agent and CLI discovery.
 		// warmupComplete is false here because RunWarmup executes in a background goroutine
 		// (see cmd/aimux/main.go) and has not finished by the time NewDaemon returns.
-		// Clients will see "warmup in progress" for all profiles until a refresh-warmup
-		// action is triggered, which is the accurate initial state.
+		// Clients see the initial warmup-in-progress view until an explicit daemon
+		// refresh path rebuilds or reports newer state elsewhere.
 		server.WithInstructions(buildInstructions(
 			s.registry.EnabledCLIs(),
 			false, // warmup runs in background — not yet complete at construction time

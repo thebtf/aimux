@@ -27,10 +27,10 @@ func (s *Server) registerPrompts() {
 		s.handleBackgroundPrompt,
 	)
 
-	// aimux-guide: comprehensive decision-making guide for all 13 tools
+	// aimux-guide: reduced-surface decision guide for the current public MCP tools.
 	s.mcp.AddPrompt(
 		mcp.NewPrompt("guide",
-			mcp.WithPromptDescription("Complete guide to aimux tools — when and how to use each of the 13 MCP tools, role routing, think patterns, investigation flow, workflows"),
+			mcp.WithPromptDescription("Current reduced-surface aimux tool guide; for the compiled caller guide resource, read aimux://guides/caller"),
 		),
 		s.handleGuidePrompt,
 	)
@@ -118,9 +118,12 @@ func (s *Server) handleGuidePrompt(_ context.Context, _ mcp.GetPromptRequest) (*
 	sb.WriteString("|---|---|---|\n")
 	sb.WriteString("| Check async job status | status | job_id |\n")
 	sb.WriteString("| Manage sessions | sessions | action |\n")
+	sb.WriteString("| Route code or review work | task | task_class, prompt |\n")
+	sb.WriteString("| Review code through the dedicated facade | review | prompt, target, gate |\n")
 	sb.WriteString("| Structured reasoning/analysis | think pattern tool | tool-specific args |\n")
-	sb.WriteString("| Deep research via Gemini | deepresearch | topic |\n\n")
+	sb.WriteString("| Deep research via Gemini | deepresearch | topic |\n")
 	sb.WriteString("| Check/apply binary updates | upgrade | action, mode |\n\n")
+	sb.WriteString("For the compiled caller guide and resource/runtime details, read `aimux://guides/caller` (catalog: `aimux://guides`).\n\n")
 
 	// Dynamic CLI table — only show what is actually enabled.
 	sb.WriteString("## Your Available CLIs\n\n")
@@ -263,4 +266,3 @@ func legacyPromptNames() map[string]bool {
 		"workflow":    true,
 	}
 }
-
