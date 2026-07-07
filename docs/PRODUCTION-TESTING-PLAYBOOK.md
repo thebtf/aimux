@@ -333,10 +333,20 @@ v5.11.0 maintainer debug helper because the first-class
 5. Observe the Loom sub-task tree for the captured `task_id` through the
    v5.11.0 debug helper. Expected debug text includes root `worker=code`
    plus `worker=code_driver` and `worker=code_navigator` children.
-6. Exercise the review gate replacement path:
+6. Exercise the generic task-backed review gate replacement path:
    ```
    tool: task
-   args: {"task_class":"review","prompt":"review HEAD and return a gate decision","target":"HEAD","gate":true,"timeout_seconds":300,"project_id":"playbook-aimux21","request_id":"playbook-review-gate"}
+   args: {"task_class":"review","prompt":"review HEAD and return a gate decision","target":"HEAD","gate":true,"timeout_seconds":300,"project_id":"playbook-aimux21","request_id":"playbook-task-review-gate"}
+   ```
+7. Exercise the dedicated `review` facade standard path:
+   ```
+   tool: review
+   args: {"prompt":"review HEAD and summarize findings","target":"HEAD","timeout_seconds":300,"project_id":"playbook-aimux21","request_id":"playbook-review-standard"}
+   ```
+8. Exercise the dedicated `review` facade gate-oriented path:
+   ```
+   tool: review
+   args: {"prompt":"review HEAD and return a gate decision","target":"HEAD","gate":true,"timeout_seconds":300,"project_id":"playbook-aimux21","request_id":"playbook-review-gate"}
    ```
 
 **Expected:**
@@ -347,8 +357,12 @@ v5.11.0 maintainer debug helper because the first-class
   `confidence_score` in `[0..1]`, and `gate_result`.
 - `README.md` contains the requested `smoke test for AIMUX-21` comment.
 - Debug subtree text shows the code root and driver/navigator sub-tasks.
-- The review gate call returns a structured ALLOW/BLOCK decision shape rather
-  than a raw CLI transcript.
+- The task-backed review gate call returns a structured ALLOW/BLOCK decision shape
+  rather than a raw CLI transcript.
+- The dedicated `review(prompt, target)` call returns the accepted TaskResult fields
+  and task resource URIs used by the task-backed review path.
+- The dedicated `review(..., gate=true)` call returns a gate-oriented review task
+  without requiring callers to use `task(task_class="review", ...)`.
 
 **Pass criteria:**
 - Step 1 confirms the migration surface: `task` present, five `codex_*` tools
@@ -359,14 +373,16 @@ v5.11.0 maintainer debug helper because the first-class
 - Step 5 shows `worker=code`, `worker=code_driver`, and
   `worker=code_navigator` for the captured task.
 - Step 6 returns `decision`, `reason`, `findings`, and `passes_completed`.
+- Steps 7 and 8 return accepted `TaskResult` metadata including `task_id`,
+  `task_class: "review"`, and task resource URIs for status/result inspection.
 
 **Verdict classification:**
 - **PRODUCT_WORKS** — all pass criteria are met.
 - **PARTIALLY_WORKS** — code/review entry works, but debug subtree visibility
   requires maintainer assistance or metadata is missing a non-critical field.
-- **BROKEN** — `task` is missing, any removed `codex_*` tool is still listed,
-  code task fails, file mutation is absent, or review `gate=true` cannot return
-  a decision.
+- **BROKEN** — `task` or `review` is missing, any removed `codex_*` tool is still
+  listed, code task fails, file mutation is absent, the task-backed review gate
+  cannot return a decision, or either dedicated `review` facade call fails.
 
 ### Scenario B7: v5.14.0 MCP Prompts delegation playbooks
 

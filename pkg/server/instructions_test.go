@@ -82,9 +82,30 @@ func TestBuildInstructions_HasAllSections(t *testing.T) {
 		map[string]string{"coding": "codex"},
 	)
 
-	for _, expected := range []string{"Anti-Patterns", "First Actions", "guide", "delegate"} {
+	for _, expected := range []string{"Anti-Patterns", "First Actions", "aimux://guides", "delegate"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected output to contain %q", expected)
+		}
+	}
+}
+
+func TestBuildInstructions_ReferencesGuideResourcesNotLegacyPrompt(t *testing.T) {
+	output := buildInstructions(
+		[]string{"codex"},
+		true,
+		nil,
+		0,
+		nil,
+	)
+
+	for _, expected := range []string{"aimux://guides", "aimux://guides/caller"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected instructions to reference supported guide resource %q, got:\n%s", expected, output)
+		}
+	}
+	for _, stale := range []string{"`guide` MCP prompt", "request the `guide`"} {
+		if strings.Contains(output, stale) {
+			t.Fatalf("instructions must not send callers to stale guide prompt wording %q:\n%s", stale, output)
 		}
 	}
 }

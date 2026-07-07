@@ -9,8 +9,8 @@ import (
 	"github.com/thebtf/aimux/pkg/think"
 )
 
-// buildInstructions generates the MCP server instructions string at connect time
-// using live server state. This replaces the static const aimuxInstructions.
+// buildInstructions generates the MCP server instructions string for the daemon's
+// initial handshake. Warmup/live-state changes are refreshed by explicit daemon actions.
 func buildInstructions(
 	warmCLIs []string,
 	warmupComplete bool,
@@ -50,7 +50,7 @@ func buildInstructions(
 		"- [manage] — server state management, no cost",
 		"",
 		"## Reference",
-		"For complete tool reference, think pattern examples, and role routing details, request the `guide` MCP prompt.",
+		"For complete tool reference, think pattern examples, and role routing details, read the compiled caller guide at `aimux://guides/caller` (catalog: `aimux://guides`).",
 		"",
 		"## Anti-Patterns",
 		"- Don't expect exec/agent/workflow tools on this branch — they were removed in the Layer 5 purge",
