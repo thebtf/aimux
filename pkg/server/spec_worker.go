@@ -9,9 +9,10 @@ func registerSpecWorker(s *Server) {
 		return
 	}
 	s.loom.RegisterWorker(specWorkerType, profileTaskWorker{
-		server:     s,
-		workerType: specWorkerType,
-		taskClass:  "spec",
-		defaultCLI: "codex",
+		server:        s,
+		workerType:    specWorkerType,
+		taskClass:     "spec",
+		defaultCLI:    "codex",
+		forcedSandbox: "read-only",
 	})
 }

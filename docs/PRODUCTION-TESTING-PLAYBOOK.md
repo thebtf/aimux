@@ -483,7 +483,7 @@ manifest and resource read responses.
      -cwd D:\Dev\aimux `
      -mode resource `
      -uri aimux://guides/caller `
-    -expect-tools 30 `
+     -expect-tools 30 `
      -expect-version $mcpVersion
    ```
 
@@ -497,7 +497,7 @@ manifest and resource read responses.
 
 **Expected:**
 - `aimux://guides` lists `caller` with URI `aimux://guides/caller`.
-- `aimux://guides/caller` is Markdown and contains `task`,
+- `aimux://guides/caller` is Markdown and contains `task`, `review`, `spec`,
   `think(action=start|step|finalize)`, `aimux://tasks/{task_id}/viewer`,
   `aimux://recipes`, `code-review`, `second-opinion`,
   `recipe_replay_cache_hit`, `recipe_replay_source_task_id`,
@@ -507,7 +507,7 @@ manifest and resource read responses.
 - `aimux://recipes/code-review` reports a read-only review recipe.
 - `aimux://tasks?limit=5` returns a bounded read-only list payload or an empty
   list; it does not expose raw prompt, environment, or result payloads.
-- `aimux://health` reports the expected version and the normal 29-tool surface.
+- `aimux://health` reports the expected version and the normal 30-tool surface.
 
 **Pass criteria:**
 - All six resource reads exit `0`.

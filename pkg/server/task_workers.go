@@ -19,11 +19,12 @@ import (
 type leafOutputAdapter func(task *loom.Task, parsed string) (string, map[string]any, error)
 
 type profileTaskWorker struct {
-	server     *Server
-	workerType loom.WorkerType
-	taskClass  string
-	defaultCLI string
-	adapt      leafOutputAdapter
+	server        *Server
+	workerType    loom.WorkerType
+	taskClass     string
+	defaultCLI    string
+	forcedSandbox string
+	adapt         leafOutputAdapter
 }
 
 type tenantAwareSubtaskLoom struct {
@@ -98,6 +99,15 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		return nil, extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable: %v", cli, err), err)
 	}
 
+	sandbox := sandboxFromTaskMetadata(task.Metadata)
+	if forcedSandbox := strings.TrimSpace(w.forcedSandbox); forcedSandbox != "" {
+		if task.Metadata == nil {
+			task.Metadata = map[string]any{}
+		}
+		task.Metadata["sandbox"] = forcedSandbox
+		sandbox = forcedSandbox
+	}
+
 	spec := picker.TaskSpec{
 		TaskClass:      w.taskClass,
 		Prompt:         task.Prompt,
@@ -105,7 +115,7 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		Env:            cloneEnv(task.Env),
 		Model:          task.Model,
 		Effort:         task.Effort,
-		Sandbox:        sandboxFromTaskMetadata(task.Metadata),
+		Sandbox:        sandbox,
 		SessionID:      sessionIDFromTaskMetadata(task.Metadata),
 		SessionResume:  sessionResumeFromTaskMetadata(task.Metadata),
 		TimeoutSeconds: task.Timeout,

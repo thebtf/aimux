@@ -272,6 +272,12 @@ func parseReviewToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskR
 	if strings.TrimSpace(req.GetString("cli", "")) != "" {
 		return TaskRequest{}, extypes.NewUserInputError("review: cli override is not supported by review workers", nil)
 	}
+	if strings.TrimSpace(req.GetString("navigator", "")) != "" {
+		return TaskRequest{}, extypes.NewUserInputError("review: navigator override is not supported by review workers", nil)
+	}
+	if strings.TrimSpace(req.GetString("sandbox", "")) != "" {
+		return TaskRequest{}, extypes.NewUserInputError("review: sandbox is not supported by review workers", nil)
+	}
 	if recipeID := strings.TrimSpace(req.GetString("recipe_id", "")); recipeID != "" {
 		switch recipeID {
 		case "code-review":

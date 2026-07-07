@@ -480,27 +480,45 @@ func TestHandleReviewRejectsSecondOpinionRecipeUntilSurfaceWidens(t *testing.T) 
 	}
 }
 
-func TestHandleReviewRejectsCLIOverrideUntilSupported(t *testing.T) {
+func TestHandleReviewRejectsDeferredFacadeKnobs(t *testing.T) {
 	t.Parallel()
 
-	srv, _, reviewWorker := newTaskToolServer(t)
-	result := callReviewTool(t, srv, map[string]any{
-		"prompt": "review HEAD",
-		"target": "HEAD",
-		"cli":    "gemini",
-	})
-	if !result.IsError {
-		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	cases := []struct {
+		name        string
+		argKey      string
+		argValue    any
+		wantMessage string
+	}{
+		{name: "cli", argKey: "cli", argValue: "gemini", wantMessage: "cli override is not supported"},
+		{name: "navigator", argKey: "navigator", argValue: "none", wantMessage: "navigator override is not supported"},
+		{name: "sandbox", argKey: "sandbox", argValue: "read-only", wantMessage: "sandbox is not supported"},
 	}
-	payload := decodeTaskToolError(t, result)
-	if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
-		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
-	}
-	if !strings.Contains(payload.Message, "cli override is not supported") {
-		t.Fatalf("message = %q, want unsupported cli guidance", payload.Message)
-	}
-	if got := reviewWorker.taskCount(); got != 0 {
-		t.Fatalf("review task count = %d, want 0", got)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv, _, reviewWorker := newTaskToolServer(t)
+			args := map[string]any{
+				"prompt": "review HEAD",
+				"target": "HEAD",
+			}
+			args[tc.argKey] = tc.argValue
+			result := callReviewTool(t, srv, args)
+			if !result.IsError {
+				t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+			}
+			payload := decodeTaskToolError(t, result)
+			if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
+				t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+			}
+			if !strings.Contains(payload.Message, tc.wantMessage) {
+				t.Fatalf("message = %q, want %q", payload.Message, tc.wantMessage)
+			}
+			if got := reviewWorker.taskCount(); got != 0 {
+				t.Fatalf("review task count = %d, want 0", got)
+			}
+		})
 	}
 }
 
@@ -1647,6 +1665,71 @@ func TestProfileTaskWorkerProgressSinkForwardsLinesToLoom(t *testing.T) {
 			t.Fatalf("runtime artifact %d = %#v; want raw/stdout truthful fallback", i, item)
 		}
 	}
+}
+
+func TestProfileTaskWorkerForcedSandboxOverridesTaskMetadata(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bin := fakeExecutableWithContents(t, dir, "codex-spec-readonly",
+		`#!/bin/sh
+found=0
+prev=""
+for arg in "$@"; do
+	if [ "$prev" = "--sandbox" ] && [ "$arg" = "read-only" ]; then
+		found=1
+	fi
+	prev="$arg"
+done
+if [ "$found" -ne 1 ]; then
+	echo missing read-only sandbox
+	exit 7
+fi
+printf '%s\n' '{"type":"agent_message","content":"spec ok"}'
+`,
+		`@echo off
+echo %* | findstr /C:"--sandbox read-only" >nul
+if errorlevel 1 (
+  echo missing read-only sandbox
+  exit /b 7
+)
+echo {"type":"agent_message","content":"spec ok"}
+exit /b 0
+`,
+	)
+	profile := &config.CLIProfile{
+		Name:           "codex",
+		Binary:         bin,
+		ResolvedPath:   bin,
+		OutputFormat:   "jsonl",
+		PromptFlagType: "positional",
+		TimeoutSeconds: 5,
+		ReadOnlyFlags:  []string{"--sandbox", "read-only"},
+		Features:       types.CLIFeatures{JSONL: true},
+	}
+	registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": profile})
+	registry.SetAvailable("codex", true)
+	srv := &Server{registry: registry}
+	worker := profileTaskWorker{
+		server:        srv,
+		workerType:    specWorkerType,
+		taskClass:     classifier.TaskClassSpec,
+		defaultCLI:    "codex",
+		forcedSandbox: "read-only",
+	}
+	task := &loom.Task{
+		Prompt:   "write a spec",
+		Metadata: map[string]any{"sandbox": "workspace-write"},
+	}
+
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil || result.Content != "spec ok" {
+		t.Fatalf("result = %#v, want spec ok", result)
+	}
+	assertMetadataString(t, task.Metadata, "sandbox", "read-only")
 }
 
 func TestProfileTaskWorkerProgressSinkNilWhenNoSignalPossible(t *testing.T) {
