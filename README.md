@@ -4,7 +4,7 @@
 
 [![Go](https://img.shields.io/badge/go-1.25.11%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![MCP Tools](https://img.shields.io/badge/MCP-29%20tools-blueviolet)](https://modelcontextprotocol.io)
+[![MCP Tools](https://img.shields.io/badge/MCP-30%20tools-blueviolet)](https://modelcontextprotocol.io)
 
 aimux is an MCP server for durable task state, session operations, deep
 research, binary upgrades, and caller-centered structured reasoning.
@@ -12,7 +12,7 @@ research, binary upgrades, and caller-centered structured reasoning.
 The current post-purge live surface is intentionally small:
 
 - 4 server tools: `status`, `sessions`, `deepresearch`, `upgrade`
-- 2 methodology-bearing entry points: `task` for generic code/review/recipe work and `review` for direct review work
+- 3 direct methodology-bearing entry points: `task` for generic code/review/recipe work, `review` for direct review work, and `spec` for direct spec/plan/tasks/validate work
 - 1 caller-centered `think` harness plus 22 cognitive move tools
 
 The former CLI-launching MCP tools (`exec`, `agent`, `agents`, `critique`,
@@ -96,8 +96,8 @@ If the binary is not on PATH, use the full path:
 ### Verify
 
 Run `tools/list` from any MCP-capable client. A current build should expose
-29 tools: the 4 server tools, the `task` and `review` entry points, the
-`think` harness, and 22 cognitive move tools.
+30 tools: the 4 server tools, the `task`, `review`, and `spec` entry points,
+the `think` harness, and 22 cognitive move tools.
 
 ```json
 {
@@ -141,12 +141,13 @@ for customer-mode release walkthroughs.
 | `deepresearch` | Run Gemini-backed research with structured output. |
 | `upgrade` | Check or apply aimux binary updates, including local source installs with truthful deferred fallback. |
 
-### Task and Review Entry Points
+### Task, Review, and Spec Entry Points
 
 | Tool | Purpose |
 |---|---|
-| `task` | Route code, review, and curated recipe work through the Loom-backed worker with 3 code execution modes. |
+| `task` | Route code, review, spec, and curated recipe work through the Loom-backed worker with 3 code execution modes. |
 | `review` | Dedicated review facade over the same task/Loom backbone for standard and gate-oriented code review work. |
+| `spec` | Dedicated spec facade over the same task/Loom backbone for specification work. |
 
 The `task` tool supports three code execution modes controlled by the `navigator`
 parameter:
@@ -368,8 +369,8 @@ Current production surface:
 - Binary update with local source install and deferred fallback when live handoff is not supported.
 - Caller-centered `think` harness and 22 local cognitive move tools.
 - Loom-backed task state and recovery.
-- Task entry point with 3 execution modes: pair (driver+navigator), solo write, solo diff.
-- Dedicated `review` facade over the same task/runtime-events backbone.
+- Task entry point with 3 code execution modes plus explicit review/spec routing.
+- Dedicated `review` and `spec` facades over the same task/runtime-events backbone.
 - Task inspection resources under `aimux://tasks/{task_id}`.
 - Compiled read-only recipe discovery under `aimux://recipes` and invocation via `task(recipe_id=...)`.
 - Read-only task list/viewer resources for browser-readable inspection without execution controls.
@@ -379,7 +380,7 @@ Out of current scope:
 
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
-- Pipeline v5 Layer 5 exposure (beyond the task/review entry points).
+- Pipeline v5 Layer 5 exposure (beyond the task/review/spec entry points).
 - Mutation-heavy recipe expansion beyond the compiled read-only initial recipes.
 
 Those removed surfaces are not runtime defects in the current build. They are

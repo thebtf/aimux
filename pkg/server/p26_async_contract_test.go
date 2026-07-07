@@ -36,6 +36,21 @@ func TestP26AsyncContractTemplate_TaskCancelProgressCleanup(t *testing.T) {
 	})
 }
 
+func TestP26AsyncContractTemplate_SpecCancelProgressCleanup(t *testing.T) {
+	t.Parallel()
+
+	p26RunAsyncContractTemplate(t, p26AsyncToolSpec{
+		name:       "spec",
+		workerType: specWorkerType,
+		launch: func(ctx context.Context, srv *Server) (*mcp.CallToolResult, error) {
+			return srv.handleSpec(ctx, makeRequest("spec", map[string]any{
+				"prompt": "Write a P26 specification proof.",
+				"target": "AIMUX-9 CR-007",
+			}))
+		},
+	})
+}
+
 func TestP26AsyncContractTemplate_DeepResearchCancelProgressCleanup(t *testing.T) {
 	t.Parallel()
 

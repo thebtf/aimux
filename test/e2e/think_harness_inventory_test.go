@@ -40,9 +40,9 @@ func TestE2E_ThinkHarnessInventory(t *testing.T) {
 		}
 	}
 
-	const expectedTotal = 29 // 4 server tools + 2 task entry points + 1 caller-centered think harness + 22 cognitive move tools.
+	const expectedTotal = 30 // 4 server tools + 3 task entry points + 1 caller-centered think harness + 22 cognitive move tools.
 	if len(tools) != expectedTotal {
-		t.Fatalf("tool count = %d, want %d for CR-006 surface", len(tools), expectedTotal)
+		t.Fatalf("tool count = %d, want %d for CR-007 surface", len(tools), expectedTotal)
 	}
 	if _, ok := byName["think"]; !ok {
 		t.Fatal("think harness tool missing")
@@ -52,6 +52,9 @@ func TestE2E_ThinkHarnessInventory(t *testing.T) {
 	}
 	if _, ok := byName["think_harness"]; ok {
 		t.Fatal("think_harness must not be exposed as a parallel public tool")
+	}
+	if _, ok := byName["spec"]; !ok {
+		t.Fatal("spec facade missing from tools/list")
 	}
 	for _, name := range []string{"decision_framework", "metacognitive_monitoring"} {
 		tool, ok := byName[name]

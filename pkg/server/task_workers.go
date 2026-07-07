@@ -396,6 +396,8 @@ func (s *Server) registerTaskWorkers() {
 			adapt:      adaptReviewPassOutput,
 		})
 	}
+
+	registerSpecWorker(s)
 }
 
 func serverDefaultTimeoutSeconds(s *Server) int {

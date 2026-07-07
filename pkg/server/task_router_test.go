@@ -147,7 +147,7 @@ func TestTaskRouterDriverCLIOverrideStaysMetadataOnly(t *testing.T) {
 	assertMetadataString(t, req.Metadata, "driver_cli_override", "gemini")
 }
 
-func TestTaskRouterClassifierRejectsUnroutableAutomaticClass(t *testing.T) {
+func TestTaskRouterClassifierKeepsOnlyRoutableAutomaticClasses(t *testing.T) {
 	t.Parallel()
 
 	fake := newFakeTaskRouterLoom()
@@ -170,7 +170,9 @@ func TestTaskRouterClassifierRejectsUnroutableAutomaticClass(t *testing.T) {
 		t.Fatal("candidates empty, want routable candidates")
 	}
 	for _, candidate := range result.Candidates {
-		if candidate.TaskClass != classifier.TaskClassCode && candidate.TaskClass != classifier.TaskClassReview {
+		switch candidate.TaskClass {
+		case classifier.TaskClassCode, classifier.TaskClassReview, classifier.TaskClassSpec:
+		default:
 			t.Fatalf("candidate task_class = %s, want only routable classes", candidate.TaskClass)
 		}
 	}

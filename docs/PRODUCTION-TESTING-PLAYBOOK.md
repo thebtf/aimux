@@ -1,7 +1,8 @@
 # aimux Production Testing Playbook
 
-**Last updated:** 2026-06-14
-**Tested surface:** v5.16.0 candidate MCP surface: 4 server tools, `task`,
+**Last updated:** 2026-07-07
+**Tested surface:** current candidate MCP surface: 4 server tools, 3 direct
+methodology-bearing entry points (`task`, `review`, `spec`),
 `think(action=start|step|finalize)`, 22 cognitive move tools, task resources,
 compiled recipe resources, read-only viewer resources, caller guide resources,
 and 4 delegation playbook MCP Prompts (`developer`, `pm`, `codereviewer`,
@@ -316,8 +317,8 @@ v5.11.0 maintainer debug helper because the first-class
    ```
 
 **Steps:**
-1. Confirm `task` is present in the tool list and `codex_task`,
-   `codex_review`, `codex_status`, `codex_cancel`, and
+1. Confirm `task`, `review`, and `spec` are present in the tool list and
+   `codex_task`, `codex_review`, `codex_status`, `codex_cancel`, and
    `codex_review_gate` are absent.
 2. Call:
    ```
@@ -348,9 +349,14 @@ v5.11.0 maintainer debug helper because the first-class
    tool: review
    args: {"prompt":"review HEAD and return a gate decision","target":"HEAD","gate":true,"timeout_seconds":300,"project_id":"playbook-aimux21","request_id":"playbook-review-gate"}
    ```
+9. Exercise the dedicated `spec` facade standard path:
+   ```
+   tool: spec
+   args: {"prompt":"write requirements and acceptance criteria","target":"playbook-aimux21","timeout_seconds":300,"project_id":"playbook-aimux21","request_id":"playbook-spec-standard"}
+   ```
 
 **Expected:**
-- `tools/list` exposes `task` and does not expose any removed `codex_*` tool.
+- `tools/list` exposes `task`, `review`, and `spec` and does not expose any removed `codex_*` tool.
 - The code task returns `status: "completed"` with `task_class: "code"` and
   `worker_type: "code"`.
 - `TaskResult` metadata includes `driver_cli`, `navigator_cli`, `rounds >= 1`,
@@ -363,10 +369,12 @@ v5.11.0 maintainer debug helper because the first-class
   and task resource URIs used by the task-backed review path.
 - The dedicated `review(..., gate=true)` call returns a gate-oriented review task
   without requiring callers to use `task(task_class="review", ...)`.
+- The dedicated `spec(prompt, target)` call returns accepted TaskResult fields with
+  `task_class: "spec"` and `worker_type: "spec"`, without exposing review-gate mode.
 
 **Pass criteria:**
-- Step 1 confirms the migration surface: `task` present, five `codex_*` tools
-  absent.
+- Step 1 confirms the migration surface: `task`, `review`, and `spec` present;
+  five `codex_*` tools absent.
 - Step 2 returns a `task_id` and no MCP tool error.
 - Step 3 has all required fields and numeric ranges.
 - Step 4 shows the requested file mutation.
@@ -375,6 +383,8 @@ v5.11.0 maintainer debug helper because the first-class
 - Step 6 returns `decision`, `reason`, `findings`, and `passes_completed`.
 - Steps 7 and 8 return accepted `TaskResult` metadata including `task_id`,
   `task_class: "review"`, and task resource URIs for status/result inspection.
+- Step 9 returns accepted `TaskResult` metadata including `task_id`,
+  `task_class: "spec"`, `worker_type: "spec"`, and task resource URIs.
 
 **Verdict classification:**
 - **PRODUCT_WORKS** — all pass criteria are met.
@@ -473,7 +483,7 @@ manifest and resource read responses.
      -cwd D:\Dev\aimux `
      -mode resource `
      -uri aimux://guides/caller `
-     -expect-tools 29 `
+    -expect-tools 30 `
      -expect-version $mcpVersion
    ```
 
@@ -822,7 +832,7 @@ customer-supported installed-daemon paths.
      -mode install `
      -source D:\Dev\aimux\bin\postexit-smoke\aimux-postexit-next.exe `
      -force `
-     -expect-tools 29 `
+    -expect-tools 30 `
      -expect-version $nextVersion `
      -timeout 90 `
      -reconnect-delay 15 `
@@ -848,7 +858,7 @@ customer-supported installed-daemon paths.
      -mode install `
      -source D:\Dev\aimux\bin\aimux-dev-next.exe `
      -force `
-     -expect-tools 29 `
+    -expect-tools 30 `
      -expect-version $mcpVersion `
      -timeout 90 `
      -reconnect-delay 15 `
@@ -875,7 +885,7 @@ customer-supported installed-daemon paths.
   `update_method: "deferred"`,
   `update_topology.restart_topology: "post_exit"`,
   `update_topology.replacement_started: true`, and reconnect verifies the
-  expected version, 29 tools, `sessions(action="health").init_phase == 2`,
+  expected version, 30 tools, `sessions(action="health").init_phase == 2`,
   `sessions(action="health").loom_status == "ok"`, and
   `aimux://health.version`.
 - On platforms where muxcore can complete live handoff, the install may report
@@ -889,7 +899,7 @@ customer-supported installed-daemon paths.
   post-update `aimux://health` request after the `upgrade(action="apply")`
   response returns.
 - Reconnect verification reaches `sessions(action="health")`, reads
-  `aimux://health`, sees `tools: 29`, reports the expected version, and exposes
+  `aimux://health`, sees `tools: 30`, reports the expected version, and exposes
   `engine_name`, `daemon_generation`, `owner_generation`, `restore_source`,
   `handoff`, and shim reconnect counters.
 - The final installer line is `[install] PASS`.

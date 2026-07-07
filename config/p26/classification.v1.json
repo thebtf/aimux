@@ -1,7 +1,7 @@
 {
   "schema_version": "v1",
   "source_of_truth": {
-    "runtime_registration": "pkg/server/server.go plus delegated registrations in pkg/server/think_harness.go, pkg/server/patterns.go, and pkg/server/task_tool.go",
+    "runtime_registration": "pkg/server/server.go plus delegated registrations in pkg/server/think_harness.go, pkg/server/patterns.go, pkg/server/task_tool.go, and pkg/server/spec_tool.go",
     "principle": "P26"
   },
   "tools": {
@@ -86,6 +86,9 @@
       "classification": "sync_ok"
     },
     "task": {
+      "classification": "async_mandatory"
+    },
+    "spec": {
       "classification": "async_mandatory"
     },
     "temporal_thinking": {

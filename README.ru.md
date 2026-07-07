@@ -5,7 +5,7 @@
 
 [![Go](https://img.shields.io/badge/go-1.25.11%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![MCP Tools](https://img.shields.io/badge/MCP-29%20tools-blueviolet)](https://modelcontextprotocol.io)
+[![MCP Tools](https://img.shields.io/badge/MCP-30%20tools-blueviolet)](https://modelcontextprotocol.io)
 
 aimux — MCP-сервер для устойчивого состояния задач, операций с сессиями,
 глубокого исследования, обновления бинарника и caller-centered structured
@@ -14,7 +14,7 @@ reasoning.
 Текущая live surface после purge намеренно небольшая:
 
 - 4 server tools: `status`, `sessions`, `deepresearch`, `upgrade`
-- 2 methodology-bearing entry points: `task` для generic code/review/recipe work и `review` для direct review work
+- 3 direct methodology-bearing entry points: `task` для generic code/review/recipe work, `review` для direct review work и `spec` для direct spec/plan/tasks/validate work
 - 1 caller-centered `think` harness и 22 cognitive move tools
 
 Прежние CLI-launching MCP tools (`exec`, `agent`, `agents`, `critique`,
@@ -96,7 +96,7 @@ go build -o aimux.exe ./cmd/aimux/
 ### Проверка
 
 Вызовите `tools/list` из любого MCP-клиента. Актуальная сборка должна
-показать 29 tools: 4 server tools, `task`, `review`, `think` harness и 22 cognitive move tools.
+показать 30 tools: 4 server tools, `task`, `review`, `spec`, `think` harness и 22 cognitive move tools.
 
 ```json
 {
@@ -140,12 +140,13 @@ go test ./... -count=1
 | `deepresearch` | Gemini-backed исследование со structured output. |
 | `upgrade` | Проверка или применение обновлений aimux binary, включая local source install с честным deferred fallback. |
 
-### Task and Review Entry Points
+### Task, Review, and Spec Entry Points
 
 | Tool | Назначение |
 |---|---|
-| `task` | Loom-backed entry point для code/review/recipe work с 3 режимами исполнения кода. |
+| `task` | Loom-backed entry point для code/review/spec/recipe work с 3 режимами исполнения кода. |
 | `review` | Отдельный review facade поверх того же task/Loom backbone для standard и gate-oriented code review. |
+| `spec` | Отдельный spec facade поверх того же task/Loom backbone для specification work. |
 
 `task` поддерживает три режима исполнения кода через параметр `navigator`:
 
@@ -348,8 +349,9 @@ Current production surface:
 - Deep research через Gemini SDK.
 - Binary update с local source install и deferred fallback, когда live handoff не поддержан.
 - Caller-centered `think` harness и 22 local cognitive move tools.
+- Task entry point с 3 code execution modes plus explicit review/spec routing.
 - Loom-backed task state и recovery.
-- Dedicated `review` facade поверх того же task/runtime-events backbone.
+- Dedicated `review` и `spec` facades поверх того же task/runtime-events backbone.
 - Task inspection resources under `aimux://tasks/{task_id}`.
 - Compiled read-only recipe discovery under `aimux://recipes` и invocation через `task(recipe_id=...)`.
 - Read-only task list/viewer resources для browser-readable inspection без
@@ -361,7 +363,7 @@ Out of current scope:
 - Direct CLI execution over MCP.
 - Agent registry execution over MCP.
 - Multi-model orchestration tools over MCP.
-- Pipeline v5 Layer 5 exposure beyond task/review entry points.
+- Pipeline v5 Layer 5 exposure beyond task/review/spec entry points.
 - Mutation-heavy recipe expansion beyond compiled read-only initial recipes.
 
 Эти удалённые surfaces не являются runtime defects текущей сборки. Это future

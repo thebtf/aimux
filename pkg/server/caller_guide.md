@@ -10,8 +10,9 @@ Use these MCP tools:
 
 | Need | Surface |
 | --- | --- |
-| Route generic code/review/recipe work | `task` |
+| Route generic code/review/spec/recipe work | `task` |
 | Run standard or gate-oriented code review | `review` |
+| Draft feature or change specifications | `spec` |
 | Run caller-centered reasoning | `think(action=start|step|finalize)` |
 | Read async state and health | `status`, `sessions` |
 | Run Gemini-backed research | `deepresearch` |
@@ -43,16 +44,34 @@ Recipes outside this public review facade, including `second-opinion`,
 `review` does not restore `audit`, `workflow`, or any other removed broad Layer 5 tool.
 
 
+## Spec
+
+`spec` is the dedicated caller-facing specification methodology facade. It routes
+through the same Loom-backed task backbone as `task(task_class="spec")` and
+returns the same accepted TaskResult fields and task resource URIs.
+
+Useful forms:
+
+```text
+spec(prompt="write requirements and acceptance criteria", target="AIMUX-9 CR-007")
+spec(prompt="turn this PRD into a feature spec", target=".agent/specs/feature/prd.md")
+task(prompt="write requirements and acceptance criteria", task_class="spec", target="AIMUX-9 CR-007")
+```
+
+`spec` intentionally does not expose review-gate mode. Run `review(..., gate=true)`
+after a concrete spec output exists.
+
 ## Task
 
-`task` remains the generic execution entry point for code, review, and curated
-recipe work. Direct calls can route by `task_class`, and curated recipe calls
-pass `recipe_id` through the same tool.
+`task` remains the generic execution entry point for code, review, spec, and
+curated recipe work. Direct calls can route by `task_class`, and curated recipe
+calls pass `recipe_id` through the same tool.
 
 Useful forms:
 
 ```text
 task(prompt="review this change", task_class="review", target="HEAD", gate=true)
+task(prompt="write requirements and acceptance criteria", task_class="spec", target="AIMUX-9 CR-007")
 task(prompt="review this change", recipe_id="code-review", target="HEAD")
 task(prompt="give an independent assessment", recipe_id="second-opinion", target="HEAD")
 task(prompt="make the requested code change", task_class="code", sandbox="workspace-write")

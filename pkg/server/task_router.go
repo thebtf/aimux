@@ -128,6 +128,7 @@ func DefaultTaskRoutes() map[string]loom.WorkerType {
 	return map[string]loom.WorkerType{
 		classifier.TaskClassCode:   code.WorkerTypeCode,
 		classifier.TaskClassReview: review.WorkerTypeReview,
+		classifier.TaskClassSpec:   specWorkerType,
 	}
 }
 
@@ -245,7 +246,12 @@ func canonicalLoomRequest(req TaskRequest, prompt string, taskClass string, work
 	}
 	if req.Target != "" {
 		metadata["target"] = req.Target
-		metadata["review_target"] = req.Target
+		switch taskClass {
+		case classifier.TaskClassReview:
+			metadata["review_target"] = req.Target
+		case classifier.TaskClassSpec:
+			metadata["spec_target"] = req.Target
+		}
 	}
 	if req.Gate {
 		metadata["gate"] = true

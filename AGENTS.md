@@ -8,15 +8,16 @@ STACKS: [GO]
 
 ## Project Context
 
-aimux is an MCP server. After AIMUX-21 plus AIMUX-9 CR-006, the live MCP surface is
-**4 server tools + 2 task entry points + 1 caller-centered think harness + 22 cognitive move tools**:
+aimux is an MCP server. After AIMUX-21 plus AIMUX-9 CR-006/CR-007, the live MCP surface is
+**4 server tools + 3 task entry points + 1 caller-centered think harness + 22 cognitive move tools**:
 
 - `status` — async job status
 - `sessions` — session/job management (action: list/health/gc/cancel/kill/info/refresh-warmup)
 - `deepresearch` — Gemini SDK
 - `upgrade` — binary update (action: check/apply, mode: auto/hot_swap/deferred)
-- `task` — generic code/review entry point backed by Loom workers
+- `task` — generic code/review/spec entry point backed by Loom workers
 - `review` — dedicated review facade over the existing task/Loom/runtime-events backbone
+- `spec` — dedicated spec facade over the existing task/Loom/runtime-events backbone
 - `think` — caller-centered thinking harness (action: start/step/finalize)
 - 22 cognitive move tools (architecture_analysis, collaborative_reasoning, critical_thinking, debugging_approach, decision_framework, domain_modeling, experimental_loop, literature_review, mental_model, metacognitive_monitoring, peer_review, problem_decomposition, recursive_thinking, replication_analysis, research_synthesis, scientific_method, sequential_thinking, source_comparison, stochastic_algorithm, structured_argumentation, temporal_thinking, visual_reasoning)
 
@@ -92,13 +93,14 @@ If the memory protocol feels redundant: the redundancy is the safety. A memory h
 - Test profiles in `test/e2e/testdata/config/`
 - `initTestCLIServer(t)` sets up aimux with testcli on PATH
 
-### Current Task and Review Surfaces
+### Current Task, Review, and Spec Surfaces
 
-Use `task` for generic code/review dispatch and curated recipes outside the
-dedicated first-slice review facade. Use `review` only for direct caller-facing
-standard/gate-oriented code review work; it is a thin facade over the existing
-`task` / Loom / runtime-events backbone and must return the same async
-task/result resources. Do not expose additional recipe modes through `review`
+Use `task` for generic code/review/spec dispatch and curated recipes outside the
+dedicated first-slice facades. Use `review` only for direct caller-facing
+standard/gate-oriented code review work, and use `spec` only for direct
+caller-facing specification work. Both are thin facades over the existing `task`
+/ Loom / runtime-events backbone and must return the same async task/result
+resources. Do not expose additional recipe modes through `review` or `spec`
 unless a later CR explicitly widens that surface.
 
 ### Think Harness + Cognitive Move Gates
@@ -180,8 +182,8 @@ $cliVersion = (.\aimux-dev-next.exe --version).Trim()
 $mcpVersion = if ($cliVersion -match '^aimux\s+(\S+)') { $Matches[1] } else { $cliVersion }
 
 # 2. Smoke test the new binary in isolation (must succeed before step 3)
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 29 -expect-version $mcpVersion
-#    Expect: "tools: 29" (4 server + task + review + 1 think harness + 22 cognitive moves).
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev-next.exe -mode hold -hold 8 -expect-tools 30 -expect-version $mcpVersion
+#    Expect: "tools: 30" (4 server + task + review + spec + 1 think harness + 22 cognitive moves).
 #    If handshake fails or count is wrong — DO NOT proceed.
 
 # 3. Clean any stale aimux-dev-next processes left by mcp-launcher
@@ -193,12 +195,12 @@ mcp__aimux-dev__upgrade(action="apply", source="D:/Dev/aimux/aimux-dev-next.exe"
 #    handoff_error="hot-swap unsupported: aimux muxcore SessionHandler mode has no transferable upstream process".
 
 # 4B. Codex/operator path when project-scoped MCP tools are unavailable
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode install -source .\aimux-dev-next.exe -force -expect-tools 29 -expect-version $mcpVersion
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode install -source .\aimux-dev-next.exe -force -expect-tools 30 -expect-version $mcpVersion
 #    Expect: [install] PASS after reconnect verification.
 
 # 5. Verify
 mcp__aimux-dev__sessions(action="health")     # daemon answers → upgrade landed
-D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode resource -uri aimux://health -expect-tools 29 -expect-version $mcpVersion
+D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\aimux-dev.exe -mode resource -uri aimux://health -expect-tools 30 -expect-version $mcpVersion
 .\aimux-dev.exe --version                      # version string matches step 1 output
 ```
 

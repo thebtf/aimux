@@ -80,9 +80,9 @@ func (s *Server) registerTaskTool() {
 		toolContract{Name: "task", Classification: "async_mandatory", AdapterKind: "loom"},
 		mcp.NewTool("task",
 			mcp.WithDescription("[delegate — Loom routed, async] Submit a task through the v5.12 task meta-router. "+
-				"Provide task_class to route directly to code or review. "+
+				"Provide task_class to route directly to code, review, or spec. "+
 				"Omit task_class or pass task to use the deterministic classifier. "+
-				"Review mode accepts target and gate; code mode accepts sandbox and cli driver override. "+
+				"Review/spec modes accept target; review mode accepts gate; code mode accepts sandbox and cli driver override. "+
 				"Returns an accepted JSON TaskResult with task_id/job_id, status polling command, cancel command, and task resource URIs. "+
 				"Poll status(job_id) for progress and include_content=true for terminal content."),
 			mcp.WithString("prompt",
@@ -91,7 +91,7 @@ func (s *Server) registerTaskTool() {
 			),
 			mcp.WithString("task_class",
 				mcp.Description("Explicit task class. Omit or use task to classify from prompt."),
-				mcp.Enum("code", "review", "task"),
+				mcp.Enum("code", "review", "spec", "task"),
 				mcp.DefaultString("task"),
 			),
 			mcp.WithString("recipe_id",
@@ -109,7 +109,7 @@ func (s *Server) registerTaskTool() {
 				mcp.Description("Loom root task_id to resume."),
 			),
 			mcp.WithString("target",
-				mcp.Description("Review target, such as HEAD, a diff, or a PR ref."),
+				mcp.Description("Review/spec target, such as HEAD, a diff, PR ref, feature slug, or spec artifact path."),
 			),
 			mcp.WithBoolean("gate",
 				mcp.Description("Review sub-mode flag. Requires review routing and target."),
@@ -501,8 +501,11 @@ func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string
 		}
 	}
 
-	if (target != "" || gate) && taskClass != classifier.TaskClassReview {
-		return "", extypes.NewUserInputError("task: target/gate params require task_class review", nil)
+	if gate && taskClass != classifier.TaskClassReview {
+		return "", extypes.NewUserInputError("task: gate param requires task_class review", nil)
+	}
+	if target != "" && taskClass != classifier.TaskClassReview && taskClass != classifier.TaskClassSpec {
+		return "", extypes.NewUserInputError("task: target param requires task_class review or spec", nil)
 	}
 	if sandbox != "" && taskClass != classifier.TaskClassCode {
 		return "", extypes.NewUserInputError("task: sandbox param requires task_class code", nil)
@@ -510,12 +513,15 @@ func normalizeTaskToolClass(raw string, target string, gate bool, sandbox string
 	if taskClass == classifier.TaskClassReview && strings.TrimSpace(target) == "" {
 		return "", extypes.NewUserInputError("task: target is required for review task_class", nil)
 	}
+	if taskClass == classifier.TaskClassSpec && strings.TrimSpace(target) == "" {
+		return "", extypes.NewUserInputError("task: target is required for spec task_class", nil)
+	}
 	return taskClass, nil
 }
 
 func validTaskToolClass(taskClass string) bool {
 	switch taskClass {
-	case "", taskClassTask, classifier.TaskClassCode, classifier.TaskClassReview:
+	case "", taskClassTask, classifier.TaskClassCode, classifier.TaskClassReview, classifier.TaskClassSpec:
 		return true
 	default:
 		return false

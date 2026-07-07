@@ -283,6 +283,126 @@ func TestHandleReviewGateRoutesThroughReviewBackbone(t *testing.T) {
 	}
 }
 
+func TestHandleSpecStandardRoutesThroughSpecBackbone(t *testing.T) {
+	t.Parallel()
+
+	srv, specWorker := newSpecTaskToolServer(t)
+	result := callSpecTool(t, srv, map[string]any{
+		"prompt":          "write a feature spec with acceptance criteria",
+		"target":          "AIMUX-9 CR-007",
+		"timeout_seconds": 29,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	payload := decodeTaskToolResult(t, result)
+	if payload["task_class"] != classifier.TaskClassSpec {
+		t.Fatalf("task_class = %v, want spec; payload=%v", payload["task_class"], payload)
+	}
+	task := specWorker.onlyTask(t)
+	if task.WorkerType != specWorkerType {
+		t.Fatalf("worker_type = %s, want %s", task.WorkerType, specWorkerType)
+	}
+	assertMetadataString(t, task.Metadata, "target", "AIMUX-9 CR-007")
+	assertMetadataString(t, task.Metadata, "spec_target", "AIMUX-9 CR-007")
+	if _, ok := task.Metadata["review_target"]; ok {
+		t.Fatalf("spec task set review_target metadata; want spec-local target metadata: %v", task.Metadata)
+	}
+	if _, ok := task.Metadata["gate"]; ok {
+		t.Fatalf("spec task set gate metadata; want review gate deferred: %v", task.Metadata)
+	}
+	if task.Timeout != 29 {
+		t.Fatalf("timeout_seconds = %d, want 29", task.Timeout)
+	}
+}
+
+func TestHandleTaskSpecClassRoutesThroughSpecWorker(t *testing.T) {
+	t.Parallel()
+
+	srv, specWorker := newSpecTaskToolServer(t)
+	result := callTaskTool(t, srv, map[string]any{
+		"prompt":     "write requirements and acceptance criteria",
+		"task_class": "spec",
+		"target":     "docs/specs/aimux9-cr007.md",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", taskToolResultText(t, result))
+	}
+
+	task := specWorker.onlyTask(t)
+	assertMetadataString(t, task.Metadata, "task_class", classifier.TaskClassSpec)
+	assertMetadataString(t, task.Metadata, "target", "docs/specs/aimux9-cr007.md")
+	assertMetadataString(t, task.Metadata, "spec_target", "docs/specs/aimux9-cr007.md")
+}
+
+func TestHandleSpecRejectsReviewGate(t *testing.T) {
+	t.Parallel()
+
+	srv, specWorker := newSpecTaskToolServer(t)
+	result := callSpecTool(t, srv, map[string]any{
+		"prompt": "write a feature spec",
+		"target": "AIMUX-9 CR-007",
+		"gate":   true,
+	})
+	if !result.IsError {
+		t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+	}
+	payload := decodeTaskToolError(t, result)
+	if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
+		t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+	}
+	if !strings.Contains(payload.Message, "review(..., gate=true)") {
+		t.Fatalf("message = %q, want review gate guidance", payload.Message)
+	}
+	if got := specWorker.taskCount(); got != 0 {
+		t.Fatalf("spec task count = %d, want 0", got)
+	}
+}
+
+func TestHandleSpecRejectsDeferredFacadeKnobs(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		argKey      string
+		argValue    any
+		wantMessage string
+	}{
+		{name: "cli", argKey: "cli", argValue: "codex", wantMessage: "cli override is not supported"},
+		{name: "navigator", argKey: "navigator", argValue: "none", wantMessage: "navigator override is not supported"},
+		{name: "sandbox", argKey: "sandbox", argValue: "read-only", wantMessage: "sandbox is not supported"},
+		{name: "recipe", argKey: "recipe_id", argValue: "code-review", wantMessage: "recipe_id is not supported"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv, specWorker := newSpecTaskToolServer(t)
+			args := map[string]any{
+				"prompt": "write a feature spec",
+				"target": "AIMUX-9 CR-007",
+			}
+			args[tc.argKey] = tc.argValue
+			result := callSpecTool(t, srv, args)
+			if !result.IsError {
+				t.Fatalf("expected error result, got %s", taskToolResultText(t, result))
+			}
+			payload := decodeTaskToolError(t, result)
+			if payload.Code != extypes.CLIErrorCodeUserInputError.String() {
+				t.Fatalf("code = %s, want %s", payload.Code, extypes.CLIErrorCodeUserInputError)
+			}
+			if !strings.Contains(payload.Message, tc.wantMessage) {
+				t.Fatalf("message = %q, want %q", payload.Message, tc.wantMessage)
+			}
+			if got := specWorker.taskCount(); got != 0 {
+				t.Fatalf("spec task count = %d, want 0", got)
+			}
+		})
+	}
+}
+
 func TestHandleReviewCodeReviewRecipeUsesReviewBackbone(t *testing.T) {
 	t.Parallel()
 
@@ -449,6 +569,56 @@ func TestReviewToolRegisteredAsDedicatedSurface(t *testing.T) {
 		}
 	}
 	t.Fatalf("review tool not registered; tools=%v", tools)
+}
+
+func TestSpecToolRegisteredAsDedicatedSurface(t *testing.T) {
+	t.Parallel()
+
+	srv := testServerWithLoom(t)
+	response := srv.mcp.HandleMessage(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal response %s: %v", raw, err)
+	}
+	result, ok := decoded["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/list result missing or wrong type: %s", raw)
+	}
+	tools, ok := result["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools missing or wrong type: %s", raw)
+	}
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("tool item type = %T, want map", item)
+		}
+		if tool["name"] == "spec" {
+			description, _ := tool["description"].(string)
+			if !strings.Contains(description, "specification work through the existing task backbone") {
+				t.Fatalf("spec description = %q, want task backbone guidance", description)
+			}
+			inputSchema, ok := tool["inputSchema"].(map[string]any)
+			if !ok {
+				t.Fatalf("spec inputSchema missing or wrong type: %v", tool["inputSchema"])
+			}
+			properties, ok := inputSchema["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("spec inputSchema.properties missing or wrong type: %v", inputSchema["properties"])
+			}
+			for _, forbidden := range []string{"recipe_id", "gate", "cli", "navigator", "sandbox"} {
+				if _, ok := properties[forbidden]; ok {
+					t.Fatalf("spec tool schema must not expose %s: %v", forbidden, properties)
+				}
+			}
+			return
+		}
+	}
+	t.Fatalf("spec tool not registered; tools=%v", tools)
 }
 
 func TestHandleTaskRecipeCodeReviewRoutesAsReviewWithMetadata(t *testing.T) {
@@ -1669,6 +1839,14 @@ func newTaskToolServerWithWorkflowHooks(t *testing.T, profile *config.CLIProfile
 	return srv, codeWorker, reviewWorker
 }
 
+func newSpecTaskToolServer(t *testing.T) (*Server, *recordingTaskWorker) {
+	t.Helper()
+	srv, _, _ := newTaskToolServer(t)
+	specWorker := &recordingTaskWorker{workerType: specWorkerType}
+	srv.loom.RegisterWorker(specWorkerType, specWorker)
+	return srv, specWorker
+}
+
 func defaultWorkflowRecipeDispatch(_ context.Context, cli string, spec picker.TaskSpec, _ map[string]any) (string, string, error) {
 	if strings.TrimSpace(spec.Prompt) == "" {
 		return "", cli, errors.New("empty workflow step prompt")
@@ -1748,6 +1926,15 @@ func callReviewTool(t *testing.T, srv *Server, args map[string]any) *mcp.CallToo
 	result, err := srv.handleReview(context.Background(), makeRequest("review", args))
 	if err != nil {
 		t.Fatalf("handleReview returned Go error: %v", err)
+	}
+	return result
+}
+
+func callSpecTool(t *testing.T, srv *Server, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	result, err := srv.handleSpec(context.Background(), makeRequest("spec", args))
+	if err != nil {
+		t.Fatalf("handleSpec returned Go error: %v", err)
 	}
 	return result
 }

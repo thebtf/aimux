@@ -56,9 +56,9 @@ import (
 var Version = build.Version
 
 // legacyInstructions is kept as fallback for proxy/shim mode where daemon state is unavailable.
-const legacyInstructions = `aimux — AI CLI Multiplexer (29 tools: 4 server tools + task + review + think harness + 22 cognitive moves, post Layer 5 purge)
+const legacyInstructions = `aimux — AI CLI Multiplexer (30 tools: 4 server tools + task + review + spec + think harness + 22 cognitive moves, post Layer 5 purge)
 
-Reduced MCP surface: server state management, code/review task routing, the dedicated review facade,
+Reduced MCP surface: server state management, code/review/spec task routing, the dedicated review/spec facades,
 deep research via Gemini SDK, and structured reasoning via think(action=start|step|finalize)
 plus 22 dedicated cognitive move tools.
 
@@ -68,8 +68,9 @@ plus 22 dedicated cognitive move tools.
 |---|---|---|
 | Check async job status | status | job_id |
 | Manage sessions | sessions | action (list/health/gc/cancel/kill/info/refresh-warmup) |
-| Route code/review work | task | task_class (code/review), prompt |
+| Route code/review/spec work | task | task_class (code/review/spec), prompt |
 | Review code through the dedicated facade | review | prompt, target, gate |
+| Draft specifications through the dedicated facade | spec | prompt, target |
 | Caller-centered thinking workflow | think | action (start/step/finalize) |
 | Low-level cognitive move | <pattern_name> | 22 individual cognitive move tools |
 | Deep research via Gemini API | deepresearch | topic |
@@ -832,6 +833,7 @@ func (s *Server) registerTools() {
 	// AIMUX-4: cross-CLI fallback re-rank engine (FR-10).
 	s.registerTaskTool()
 	s.registerReviewTool()
+	s.registerSpecTool()
 }
 
 func (s *Server) registerResources() {

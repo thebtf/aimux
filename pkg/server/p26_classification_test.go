@@ -239,7 +239,7 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 	}
 	files := []*ast.File{file}
 	serverDir := filepath.Dir(serverPath)
-	for _, name := range []string{"think_harness.go", "task_tool.go", "patterns.go"} {
+	for _, name := range []string{"think_harness.go", "task_tool.go", "spec_tool.go", "patterns.go"} {
 		path := filepath.Join(serverDir, name)
 		if _, statErr := os.Stat(path); statErr != nil {
 			continue
@@ -319,7 +319,7 @@ func p26ExtractRuntimeToolCoverage(serverPath string) (map[string]struct{}, map[
 		return nil, nil, nil, err
 	}
 
-	for _, delegated := range []string{"registerThinkHarnessTool", "registerTaskTool", "registerReviewTool"} {
+	for _, delegated := range []string{"registerThinkHarnessTool", "registerTaskTool", "registerReviewTool", "registerSpecTool"} {
 		if !p26FuncContainsReceiverCall(registerTools, delegated) {
 			return nil, nil, nil, fmt.Errorf("registerTools no longer delegates to %s; update P26 coverage extractor", delegated)
 		}
