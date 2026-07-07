@@ -1,3 +1,30 @@
+## v5.24.0 — AIMUX-9 review entry facade
+
+This MINOR release ships AIMUX-9 CR-006 as the first dedicated methodology-bearing public entry after the Layer 5 purge. Aimux now exposes a literal `review` MCP tool for standard and gate-oriented code review while keeping the same task/Loom/runtime-events evidence plane underneath.
+
+### Highlights
+
+- Added a dedicated public `review` facade instead of forcing callers to express all review work through generic `task(...)` calls.
+- Preserved the existing async task/result/runtime contract: `review` stays a thin facade over the current task/Loom backbone rather than creating a second execution surface.
+- Kept `second-opinion` and workflow-backed review-class recipes off the public `review` facade; they remain on `task(recipe_id=...)`.
+- Corrected handshake, prompt, and customer-mode playbook guidance so the 29-tool public surface and compiled caller-guide resources are described truthfully.
+
+### Compatibility
+
+The release is additive for callers that want direct review entry. Existing `task(task_class="review", ...)` and `task(recipe_id=...)` paths remain valid. The only intentional boundary tightening is that `second-opinion` is not part of the public `review` facade and continues to live on `task(recipe_id="second-opinion")`.
+
+### Verification
+
+- PR #193 merged the initial review-facade slice into `master` as `7914dc8f6d8b4ef2b0fb802d418db65d16288b56`.
+- PR #194 merged the bounded truthfulness/playbook follow-up into `master` as `d5eee5905b6522d46929c913925857207db6a6da` after external PR-review evidence and resolved review threads.
+- Local merged-`master` release gates passed: `go build ./...`, `go test ./... -count=1 -timeout 120s`, `go vet ./...`, `go test ./tests/critical -count=1 -timeout 300s`, `go test ./pkg/server -run "TestCritical_StallDetection_" -count=1 -timeout 120s`, `AIMUX21_E2E=1 go test ./test/e2e -run "TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)" -count=1 -timeout 600s`, and `go test ./... -count=1` from `loom/`.
+- The `go mod verify` release gate passed in a disposable clean module cache with `GOMODCACHE=D:\tmp\aimux-go-mod-cache-cr006-release` and `GOCACHE=D:\tmp\aimux-go-build-cache-cr006-release` after `go mod download`.
+- `govulncheck ./...` reported no vulnerabilities in aimux code paths.
+
+### Notes
+
+This release is cut as `v5.24.0` rather than a patch because CR-006 adds a new public MCP entry point (`review`) and raises the caller-visible tool inventory from 28 to 29. Manual consumer updates remain outside this release flow.
+
 ## v5.23.0 — AIMUX-23 structured runtime event slices
 
 This MINOR release ships AIMUX-23 CR-011 as a caller-visible expansion of the

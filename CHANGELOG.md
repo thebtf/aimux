@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.24.0] — 2026-07-07 — AIMUX-9 review entry facade
+
+### Added
+
+- **AIMUX-9 CR-006 dedicated `review` MCP facade.** Added a first-class caller-facing `review` tool for standard and gate-oriented code review work while preserving the existing Loom-backed task/result/runtime-events contract.
+- **Review-facade regression coverage.** Added focused server and inventory coverage proving the public tool inventory is now 29 tools, that `review` is registered as a literal MCP tool, and that unsupported review recipes stay off the public facade.
+
+### Changed
+
+- **Caller guidance and handshake truth.** Updated handshake instructions, legacy prompt guidance, README/AGENTS surfaces, and customer-mode playbook text to describe the reduced 29-tool surface truthfully and to route callers to `aimux://guides/caller` / `aimux://guides` as the compiled reference.
+- **Customer-mode review playbook.** Extended `docs/PRODUCTION-TESTING-PLAYBOOK.md` so customer-mode smoke directly exercises `review(prompt, target)` and `review(..., gate=true)` instead of validating review only through `task(task_class="review", ...)`.
+
+### Fixed
+
+- **Public review boundary.** Removed `second-opinion` from the public `review` facade while preserving it on `task(recipe_id="second-opinion")` and recipe resources.
+- **Prompt/playbook contract drift.** Corrected stale guide-prompt routing and versioned playbook expectations so the v5.14 prompt scenario stays on the 28-tool surface while current review-facade scenarios assert the full accepted contract.
+
 ## [5.23.0] — 2026-07-06 — AIMUX-23 structured runtime event slices
 
 ### Added
