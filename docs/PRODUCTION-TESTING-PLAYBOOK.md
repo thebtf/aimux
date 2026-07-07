@@ -359,10 +359,12 @@ v5.11.0 maintainer debug helper because the first-class
 - Debug subtree text shows the code root and driver/navigator sub-tasks.
 - The task-backed review gate call returns a structured ALLOW/BLOCK decision shape
   rather than a raw CLI transcript.
-- The dedicated `review(prompt, target)` call returns the accepted TaskResult fields
-  and task resource URIs used by the task-backed review path.
-- The dedicated `review(..., gate=true)` call returns a gate-oriented review task
-  without requiring callers to use `task(task_class="review", ...)`.
+- The dedicated `review(prompt, target)` call returns the accepted TaskResult fields,
+  `job_id`, the status-polling command, the cancel command, and task resource URIs
+  used by the task-backed review path.
+- The dedicated `review(..., gate=true)` call returns a gate-oriented review task,
+  `job_id`, the status-polling command, the cancel command, and does not require
+  callers to use `task(task_class="review", ...)`.
 
 **Pass criteria:**
 - Step 1 confirms the migration surface: `task` present, five `codex_*` tools
@@ -374,7 +376,8 @@ v5.11.0 maintainer debug helper because the first-class
   `worker=code_navigator` for the captured task.
 - Step 6 returns `decision`, `reason`, `findings`, and `passes_completed`.
 - Steps 7 and 8 return accepted `TaskResult` metadata including `task_id`,
-  `task_class: "review"`, and task resource URIs for status/result inspection.
+  `job_id`, `task_class: "review"`, the status-polling command, the cancel
+  command, and task resource URIs for status/result inspection.
 
 **Verdict classification:**
 - **PRODUCT_WORKS** — all pass criteria are met.
@@ -414,16 +417,16 @@ responses.
    `docs`.
 3. Call `prompts/get` for each new prompt:
    ```powershell
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"developer","arguments":{"task":"smoke"}}' -expect-tools 29 -expect-version 5.14.0
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"pm","arguments":{"intent":"smoke"}}' -expect-tools 29 -expect-version 5.14.0
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"codereviewer","arguments":{"target":"HEAD"}}' -expect-tools 29 -expect-version 5.14.0
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"docs","arguments":{"change":"smoke","audience":"operator"}}' -expect-tools 29 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"developer","arguments":{"task":"smoke"}}' -expect-tools 28 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"pm","arguments":{"intent":"smoke"}}' -expect-tools 28 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"codereviewer","arguments":{"target":"HEAD"}}' -expect-tools 28 -expect-version 5.14.0
+   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"docs","arguments":{"change":"smoke","audience":"operator"}}' -expect-tools 28 -expect-version 5.14.0
    ```
 4. Inspect each `prompts/get` response body from the MCP client.
 
 **Expected:**
 - Server initialization reports MCP server version `5.14.0`.
-- `tools/list` count remains `29`.
+- `tools/list` count remains `28`.
 - `prompts/list` includes exactly the new delegation playbooks:
   `developer`, `pm`, `codereviewer`, and `docs`, in addition to legacy prompts.
 - Each `prompts/get` response contains a rendered Markdown prompt with
