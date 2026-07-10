@@ -9,6 +9,7 @@
 //   codex  — Rust-style JSONL (item.completed events)
 //   gemini — Node-style JSONL (init/message/result events)
 //   claude — Bun-style NDJSON (content_block_delta events)
+//   generic-worker — provider-neutral stream/flood/tree/framing fixture
 //
 // Archived emulators (kept for future Layer 5 restoration):
 //   goose  — Rust-style JSONL + 100ms OTEL delay
@@ -28,7 +29,7 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: testcli <cli> [flags] [prompt]")
-		fmt.Fprintln(os.Stderr, "active CLIs: codex, gemini, claude (archived: goose, crush, aider, qwen, gptme, cline, continue)")
+		fmt.Fprintln(os.Stderr, "active CLIs: codex, gemini, claude, generic-worker (archived: goose, crush, aider, qwen, gptme, cline, continue)")
 		os.Exit(1)
 	}
 
@@ -44,6 +45,8 @@ func main() {
 		exitCode = runGemini()
 	case "claude":
 		exitCode = runClaude()
+	case "generic-worker":
+		exitCode = runGenericWorker(os.Args[1:], os.Stdout, os.Stderr)
 	case "goose":
 		exitCode = runGoose()
 	case "crush":
