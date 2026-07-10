@@ -1,10 +1,12 @@
 package loom
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -666,5 +668,371 @@ func TestTaskStore_MigrateV9_AuthorityDDLRemainsCompatibleWithFutureV10(t *testi
 	t004AssertV9Stage(t, db, "future-v10")
 	if !loomTableExists(t, db, "t004_v10_event_ledger_sentinel") {
 		t.Fatal("additive v10 event-ledger sentinel was removed")
+	}
+}
+
+const t010MigrationLedgerDDL = `
+CREATE TABLE loom_migrations (
+	version INTEGER PRIMARY KEY,
+	state TEXT NOT NULL CHECK (state IN ('running','complete')),
+	checkpoint_seq INTEGER NOT NULL,
+	source_rows INTEGER NOT NULL,
+	processed_rows INTEGER NOT NULL,
+	batch_count INTEGER NOT NULL,
+	started_at DATETIME NOT NULL,
+	completed_at DATETIME
+);`
+
+type t010MigrationLedgerSnapshot struct {
+	Version       int
+	State         string
+	CheckpointSeq int64
+	SourceRows    int64
+	ProcessedRows int64
+	BatchCount    int64
+	StartedAt     string
+	CompletedAt   sql.NullString
+}
+
+type t010V10Snapshot struct {
+	Ledger         t010MigrationLedgerSnapshot
+	SchemaDigest   [32]byte
+	EventSeqDigest string
+	ArtifactRows   int64
+	NullEventSeq   int64
+	DuplicatePairs int64
+}
+
+func t010AssertMigrationLedgerShape(t *testing.T, db *sql.DB) {
+	t.Helper()
+	rows, err := db.Query(`PRAGMA table_info('loom_migrations')`)
+	t004Must(t, err)
+	var columns []string
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, columnType string
+		var defaultValue sql.NullString
+		t004Must(t, rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk))
+		columns = append(columns, name)
+	}
+	t004Must(t, rows.Err())
+	t004Must(t, rows.Close())
+	want := []string{"version", "state", "checkpoint_seq", "source_rows", "processed_rows", "batch_count", "started_at", "completed_at"}
+	if !reflect.DeepEqual(columns, want) {
+		t.Fatalf("loom_migrations columns=%v want=%v", columns, want)
+	}
+	if loomTableColumnExists(t, db, "loom_migrations", "integrity_result") {
+		t.Fatal("loom_migrations must not persist stale integrity_result")
+	}
+}
+
+func t010ReadV10Ledger(t *testing.T, db *sql.DB) t010MigrationLedgerSnapshot {
+	t.Helper()
+	var rows int
+	t004Must(t, db.QueryRow(`SELECT count(*) FROM loom_migrations WHERE version=10`).Scan(&rows))
+	if rows != 1 {
+		t.Fatalf("v10 ledger row count=%d want=1", rows)
+	}
+	var got t010MigrationLedgerSnapshot
+	t004Must(t, db.QueryRow(`
+SELECT version,state,checkpoint_seq,source_rows,processed_rows,batch_count,started_at,completed_at
+FROM loom_migrations WHERE version=10`).Scan(
+		&got.Version,
+		&got.State,
+		&got.CheckpointSeq,
+		&got.SourceRows,
+		&got.ProcessedRows,
+		&got.BatchCount,
+		&got.StartedAt,
+		&got.CompletedAt,
+	))
+	return got
+}
+
+func t010HasUniqueTaskEventSeq(t *testing.T, db *sql.DB) bool {
+	t.Helper()
+	rows, err := db.Query(`PRAGMA index_list('task_artifacts')`)
+	t004Must(t, err)
+	var candidates []string
+	for rows.Next() {
+		var seq, unique, partial int
+		var name, origin string
+		t004Must(t, rows.Scan(&seq, &name, &unique, &origin, &partial))
+		if unique == 1 && partial == 0 {
+			candidates = append(candidates, name)
+		}
+	}
+	t004Must(t, rows.Err())
+	t004Must(t, rows.Close())
+	for _, name := range candidates {
+		escaped := strings.ReplaceAll(name, "'", "''")
+		indexRows, err := db.Query(`PRAGMA index_info('` + escaped + `')`)
+		t004Must(t, err)
+		var columns []string
+		for indexRows.Next() {
+			var seq, cid int
+			var column string
+			t004Must(t, indexRows.Scan(&seq, &cid, &column))
+			columns = append(columns, column)
+		}
+		t004Must(t, indexRows.Err())
+		t004Must(t, indexRows.Close())
+		if reflect.DeepEqual(columns, []string{"task_id", "event_seq"}) {
+			return true
+		}
+	}
+	return false
+}
+
+func t010SchemaDigest(t *testing.T, db *sql.DB) [32]byte {
+	t.Helper()
+	rows, err := db.Query(`
+SELECT type,name,sql
+FROM sqlite_master
+WHERE tbl_name IN ('task_artifacts','loom_migrations')
+ORDER BY type,name`)
+	t004Must(t, err)
+	var builder strings.Builder
+	for rows.Next() {
+		var objectType, name string
+		var ddl sql.NullString
+		t004Must(t, rows.Scan(&objectType, &name, &ddl))
+		builder.WriteString(objectType)
+		builder.WriteByte(0)
+		builder.WriteString(name)
+		builder.WriteByte(0)
+		builder.WriteString(ddl.String)
+		builder.WriteByte(0)
+	}
+	t004Must(t, rows.Err())
+	t004Must(t, rows.Close())
+	return sha256.Sum256([]byte(builder.String()))
+}
+
+func t010EventSeqDigest(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	var digest sql.NullString
+	t004Must(t, db.QueryRow(`
+SELECT group_concat(task_id||':'||event_seq,'|')
+FROM (SELECT task_id,event_seq FROM task_artifacts ORDER BY seq)`).Scan(&digest))
+	return digest.String
+}
+
+func t010AssertDatabaseChecks(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if got := t004Scalar(t, db, `PRAGMA integrity_check`); got != "ok" {
+		t.Fatalf("integrity_check=%q want ok", got)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	t004Must(t, err)
+	if rows.Next() {
+		t.Fatal("foreign_key_check returned a row")
+	}
+	t004Must(t, rows.Err())
+	t004Must(t, rows.Close())
+}
+
+func t010AssertV10Stage(t *testing.T, db *sql.DB, want t010MigrationLedgerSnapshot) t010V10Snapshot {
+	t.Helper()
+	if !loomTableColumnExists(t, db, "task_artifacts", "event_seq") {
+		t.Fatal("task_artifacts.event_seq is missing")
+	}
+	t010AssertMigrationLedgerShape(t, db)
+	if !t010HasUniqueTaskEventSeq(t, db) {
+		t.Fatal("unique (task_id,event_seq) constraint/index is missing")
+	}
+	got := t010ReadV10Ledger(t, db)
+	if got.Version != want.Version || got.State != want.State ||
+		got.CheckpointSeq != want.CheckpointSeq || got.SourceRows != want.SourceRows ||
+		got.ProcessedRows != want.ProcessedRows || got.BatchCount != want.BatchCount {
+		t.Fatalf("v10 ledger=%+v want version/state/checkpoint/source/processed/batches=%d/%s/%d/%d/%d/%d",
+			got, want.Version, want.State, want.CheckpointSeq, want.SourceRows, want.ProcessedRows, want.BatchCount)
+	}
+	if got.StartedAt == "" {
+		t.Fatal("v10 ledger started_at is empty")
+	}
+	if want.StartedAt != "" && got.StartedAt != want.StartedAt {
+		t.Fatalf("v10 ledger started_at=%q want preserved %q", got.StartedAt, want.StartedAt)
+	}
+	if got.State == "complete" && !got.CompletedAt.Valid {
+		t.Fatal("complete v10 ledger row has NULL completed_at")
+	}
+	var artifactRows, nullRows, duplicates int64
+	t004Must(t, db.QueryRow(`SELECT count(*) FROM task_artifacts`).Scan(&artifactRows))
+	t004Must(t, db.QueryRow(`SELECT count(*) FROM task_artifacts WHERE event_seq IS NULL`).Scan(&nullRows))
+	t004Must(t, db.QueryRow(`
+SELECT count(*) FROM (
+	SELECT task_id,event_seq FROM task_artifacts
+	GROUP BY task_id,event_seq HAVING count(*)>1
+)`).Scan(&duplicates))
+	if artifactRows != want.SourceRows {
+		t.Fatalf("artifact row count=%d want ledger source_rows=%d", artifactRows, want.SourceRows)
+	}
+	if nullRows != 0 || duplicates != 0 {
+		t.Fatalf("event_seq null/duplicate counts=%d/%d want=0/0", nullRows, duplicates)
+	}
+	t010AssertDatabaseChecks(t, db)
+	return t010V10Snapshot{
+		Ledger:         got,
+		SchemaDigest:   t010SchemaDigest(t, db),
+		EventSeqDigest: t010EventSeqDigest(t, db),
+		ArtifactRows:   artifactRows,
+		NullEventSeq:   nullRows,
+		DuplicatePairs: duplicates,
+	}
+}
+
+func t010ArtifactDigestAll(t *testing.T, db *sql.DB) [32]byte {
+	t.Helper()
+	rows, err := db.Query(`SELECT ` + t004ArtifactDigest + ` FROM task_artifacts ORDER BY seq`)
+	t004Must(t, err)
+	var builder strings.Builder
+	for rows.Next() {
+		var row string
+		t004Must(t, rows.Scan(&row))
+		builder.WriteString(row)
+		builder.WriteByte(0)
+	}
+	t004Must(t, rows.Err())
+	t004Must(t, rows.Close())
+	return sha256.Sum256([]byte(builder.String()))
+}
+
+func t010ArtifactGlobalSeqs(t *testing.T, db *sql.DB) []int64 {
+	t.Helper()
+	rows, err := db.Query(`SELECT seq FROM task_artifacts ORDER BY seq`)
+	t004Must(t, err)
+	var seqs []int64
+	for rows.Next() {
+		var seq int64
+		t004Must(t, rows.Scan(&seq))
+		seqs = append(seqs, seq)
+	}
+	t004Must(t, rows.Err())
+	t004Must(t, rows.Close())
+	return seqs
+}
+
+func t010AssertTaskEventSeq(t *testing.T, db *sql.DB, taskID string, want []int64) {
+	t.Helper()
+	rows, err := db.Query(`SELECT event_seq FROM task_artifacts WHERE task_id=? ORDER BY seq`, taskID)
+	t004Must(t, err)
+	var got []int64
+	for rows.Next() {
+		var eventSeq int64
+		t004Must(t, rows.Scan(&eventSeq))
+		got = append(got, eventSeq)
+	}
+	t004Must(t, rows.Err())
+	t004Must(t, rows.Close())
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("task %s event_seq=%v want=%v", taskID, got, want)
+	}
+}
+
+func TestTaskStore_MigrateV10_FreshRepeatReopenAndConstraints(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fresh-v10.db")
+	db := t004OpenDB(t, path)
+	_ = t004NewStore(t, db, "fresh-v10")
+	want := t010MigrationLedgerSnapshot{
+		Version: 10, State: "complete", CheckpointSeq: 0,
+		SourceRows: 0, ProcessedRows: 0, BatchCount: 0,
+	}
+	first := t010AssertV10Stage(t, db, want)
+	_ = t004NewStore(t, db, "fresh-v10")
+	repeat := t010AssertV10Stage(t, db, want)
+	if repeat != first {
+		t.Fatalf("repeat changed v10 completion evidence: first=%+v repeat=%+v", first, repeat)
+	}
+	t004Must(t, db.Close())
+	reopened := t004OpenDB(t, path)
+	_ = t004NewStore(t, reopened, "fresh-v10")
+	reopen := t010AssertV10Stage(t, reopened, want)
+	if reopen != first {
+		t.Fatalf("reopen changed v10 completion evidence: first=%+v reopen=%+v", first, reopen)
+	}
+}
+
+func TestTaskStore_MigrateV10_ResumesInterruptedBackfillWithoutDataLoss(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "interrupted-v10.db")
+	fixture := t004OpenDB(t, path)
+	_, err := fixture.Exec(t004LiteralV8Schema)
+	t004Must(t, err)
+	t004Must(t, migrateV9(fixture))
+	_, err = fixture.Exec(`
+INSERT INTO tasks(id,status,worker_type,project_id,prompt,created_at,engine_name,tenant_id)
+VALUES
+ ('t010-resume-a','running','cli','t010-resume','A','2030-01-01T00:00:00Z','resume','tenant'),
+ ('t010-resume-b','running','cli','t010-resume','B','2030-01-01T00:00:01Z','resume','tenant');
+INSERT INTO task_artifacts(seq,task_id,kind,event_type,channel,summary,payload_json,content_length,redacted,truncated,created_at)
+VALUES
+ (10,'t010-resume-a','runtime','text_delta','stdout','A1','{"text":"A1"}',2,0,0,'2030-01-01T00:01:00Z'),
+ (20,'t010-resume-b','runtime','status','stderr','B1','{"state":"running"}',2,0,0,'2030-01-01T00:02:00Z'),
+ (30,'t010-resume-a','runtime','output_truncated','system','A2 gap','{"reason":"admission_quota","dropped_events":7,"dropped_bytes":257}',257,0,1,'2030-01-01T00:03:00Z');`)
+	t004Must(t, err)
+
+	beforeDigest := t010ArtifactDigestAll(t, fixture)
+	beforeSeqs := t010ArtifactGlobalSeqs(t, fixture)
+	var beforeCount int64
+	t004Must(t, fixture.QueryRow(`SELECT count(*) FROM task_artifacts`).Scan(&beforeCount))
+
+	_, err = fixture.Exec(`ALTER TABLE task_artifacts ADD COLUMN event_seq INTEGER;` + t010MigrationLedgerDDL + `
+INSERT INTO loom_migrations(version,state,checkpoint_seq,source_rows,processed_rows,batch_count,started_at,completed_at)
+VALUES(10,'running',20,3,2,1,'2030-01-01T00:10:00Z',NULL);
+UPDATE task_artifacts SET event_seq=1 WHERE seq IN (10,20);
+CREATE TRIGGER t010_reject_backfill_prefix_rewrite
+BEFORE UPDATE OF event_seq ON task_artifacts
+WHEN OLD.seq <= 20
+BEGIN
+	SELECT RAISE(ABORT,'t010 processed prefix was rewritten');
+END;`)
+	t004Must(t, err)
+	t004Must(t, fixture.Close())
+
+	reopened := t004OpenDB(t, path)
+	_ = t004NewStore(t, reopened, "resume-v10")
+	want := t010MigrationLedgerSnapshot{
+		Version: 10, State: "complete", CheckpointSeq: 30,
+		SourceRows: 3, ProcessedRows: 3, BatchCount: 2,
+		StartedAt: "2030-01-01T00:10:00Z",
+	}
+	first := t010AssertV10Stage(t, reopened, want)
+	t010AssertTaskEventSeq(t, reopened, "t010-resume-a", []int64{1, 2})
+	t010AssertTaskEventSeq(t, reopened, "t010-resume-b", []int64{1})
+	if got := t010ArtifactGlobalSeqs(t, reopened); !reflect.DeepEqual(got, beforeSeqs) {
+		t.Fatalf("global seq changed: got=%v want=%v", got, beforeSeqs)
+	}
+	var afterCount int64
+	t004Must(t, reopened.QueryRow(`SELECT count(*) FROM task_artifacts`).Scan(&afterCount))
+	if afterCount != beforeCount {
+		t.Fatalf("artifact row count changed: got=%d want=%d", afterCount, beforeCount)
+	}
+	if got := t010ArtifactDigestAll(t, reopened); got != beforeDigest {
+		t.Fatalf("pre-v10 artifact digest changed: got=%x want=%x", got, beforeDigest)
+	}
+
+	_ = t004NewStore(t, reopened, "resume-v10")
+	repeat := t010AssertV10Stage(t, reopened, want)
+	if repeat != first {
+		t.Fatalf("repeat changed resumed v10 evidence: first=%+v repeat=%+v", first, repeat)
+	}
+	if got := t010ArtifactDigestAll(t, reopened); got != beforeDigest {
+		t.Fatalf("repeat changed pre-v10 artifact digest: got=%x want=%x", got, beforeDigest)
+	}
+	t004Must(t, reopened.Close())
+
+	reopenedAgain := t004OpenDB(t, path)
+	_ = t004NewStore(t, reopenedAgain, "resume-v10")
+	reopen := t010AssertV10Stage(t, reopenedAgain, want)
+	if reopen != first {
+		t.Fatalf("second reopen changed resumed v10 evidence: first=%+v reopen=%+v", first, reopen)
+	}
+	t010AssertTaskEventSeq(t, reopenedAgain, "t010-resume-a", []int64{1, 2})
+	t010AssertTaskEventSeq(t, reopenedAgain, "t010-resume-b", []int64{1})
+	if got := t010ArtifactGlobalSeqs(t, reopenedAgain); !reflect.DeepEqual(got, beforeSeqs) {
+		t.Fatalf("second reopen changed global seq: got=%v want=%v", got, beforeSeqs)
+	}
+	if got := t010ArtifactDigestAll(t, reopenedAgain); got != beforeDigest {
+		t.Fatalf("second reopen changed pre-v10 artifact digest: got=%x want=%x", got, beforeDigest)
 	}
 }

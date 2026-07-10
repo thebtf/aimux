@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -500,4 +501,384 @@ func (w *artifactProgressFailWorker) Execute(_ context.Context, task *Task) (*Wo
 
 func (w *artifactProgressFailWorker) Type() WorkerType {
 	return WorkerTypeCLI
+}
+
+func TestTaskStore_EventLedger_TaskLocalSeqOpaquePagingAndLegacyCursor(t *testing.T) {
+	store := newTestStore(t)
+	createArtifactTask(t, store, "t010-ledger-a", "t010-ledger", TaskStatusRunning)
+	createArtifactTask(t, store, "t010-ledger-b", "t010-ledger", TaskStatusRunning)
+	createArtifactTask(t, store, "t010-ledger-old-writer", "t010-ledger", TaskStatusRunning)
+
+	appendEvent := func(taskID, label string) TaskArtifact {
+		t.Helper()
+		artifacts, err := t010AppendStoreRuntimeEvents(t, store, taskID, []TaskRuntimeEventAppend{{
+			EventType: "text_delta",
+			Channel:   "stdout",
+			Summary:   label,
+			Payload:   map[string]any{"label": label},
+		}})
+		if err != nil {
+			t.Fatalf("AppendRuntimeEvents(%s,%s): %v", taskID, label, err)
+		}
+		if len(artifacts) != 1 {
+			t.Fatalf("AppendRuntimeEvents(%s,%s) returned %d artifacts want 1", taskID, label, len(artifacts))
+		}
+		return artifacts[0]
+	}
+	a1 := appendEvent("t010-ledger-a", "A1")
+	b1 := appendEvent("t010-ledger-b", "B1")
+	a2 := appendEvent("t010-ledger-a", "A2")
+	b2 := appendEvent("t010-ledger-b", "B2")
+	a3 := appendEvent("t010-ledger-a", "A3")
+
+	if got := []int64{t010ArtifactEventSeq(t, a1), t010ArtifactEventSeq(t, a2), t010ArtifactEventSeq(t, a3)}; got[0] != 1 || got[1] != 2 || got[2] != 3 {
+		t.Fatalf("task A event_seq=%v want [1 2 3]", got)
+	}
+	if got := []int64{t010ArtifactEventSeq(t, b1), t010ArtifactEventSeq(t, b2)}; got[0] != 1 || got[1] != 2 {
+		t.Fatalf("task B event_seq=%v want [1 2]", got)
+	}
+	if !(a1.Seq < b1.Seq && b1.Seq < a2.Seq && a2.Seq < b2.Seq && b2.Seq < a3.Seq) {
+		t.Fatalf("global seq order changed: A1=%d B1=%d A2=%d B2=%d A3=%d", a1.Seq, b1.Seq, a2.Seq, b2.Seq, a3.Seq)
+	}
+	if a2.Seq == a1.Seq+1 || a3.Seq == a2.Seq+1 || b2.Seq == b1.Seq+1 {
+		t.Fatalf("task-local rows lost global inter-task gaps: A=[%d %d %d] B=[%d %d]", a1.Seq, a2.Seq, a3.Seq, b1.Seq, b2.Seq)
+	}
+
+	page1, err := store.ListArtifacts("t010-ledger-a", TaskArtifactListOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("ListArtifacts page1: %v", err)
+	}
+	if len(page1.Items) != 2 || page1.Items[0].Seq != a1.Seq || page1.Items[1].Seq != a2.Seq {
+		t.Fatalf("page1 items=%#v want A1/A2", page1.Items)
+	}
+	if t010ArtifactEventSeq(t, page1.Items[0]) != 1 || t010ArtifactEventSeq(t, page1.Items[1]) != 2 || !page1.HasMore || page1.NextCursor == "" {
+		t.Fatalf("page1 local sequence/cursor=%#v", page1)
+	}
+	opaqueCursor := page1.NextCursor
+	page2, err := store.ListArtifacts("t010-ledger-a", TaskArtifactListOptions{Cursor: opaqueCursor, Limit: 2})
+	if err != nil {
+		t.Fatalf("ListArtifacts page2: %v", err)
+	}
+	if page2.Cursor != opaqueCursor || len(page2.Items) != 1 || page2.Items[0].Seq != a3.Seq || t010ArtifactEventSeq(t, page2.Items[0]) != 3 || page2.HasMore {
+		t.Fatalf("page2=%#v want exactly A3 through opaque cursor", page2)
+	}
+	for _, page := range []TaskArtifactPage{page1, page2} {
+		for _, artifact := range page.Items {
+			if artifact.TaskID != "t010-ledger-a" || artifact.Seq == b1.Seq || artifact.Seq == b2.Seq {
+				t.Fatalf("task A page disclosed foreign artifact: %#v", artifact)
+			}
+		}
+	}
+
+	legacyCursor := strconv.FormatInt(a1.Seq, 10)
+	legacyPage, err := store.ListArtifacts("t010-ledger-a", TaskArtifactListOptions{Cursor: legacyCursor, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListArtifacts legacy cursor: %v", err)
+	}
+	if legacyPage.Cursor != legacyCursor || len(legacyPage.Items) != 2 ||
+		legacyPage.Items[0].Seq != a2.Seq || legacyPage.Items[1].Seq != a3.Seq {
+		t.Fatalf("legacy global cursor page=%#v want A2/A3", legacyPage)
+	}
+	for _, artifact := range legacyPage.Items {
+		if artifact.TaskID != "t010-ledger-a" || artifact.Seq == b1.Seq || artifact.Seq == b2.Seq {
+			t.Fatalf("legacy task A page disclosed foreign artifact: %#v", artifact)
+		}
+	}
+
+	const legacyAuthorityInsert = "INSERT INTO task_artifacts(task_id,kind,event_type,channel,summary,payload_json,content_length,redacted,truncated,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)"
+	legacyRows := []struct {
+		eventType string
+		payload   string
+		createdAt time.Time
+	}{
+		{eventType: "legacy.first", payload: `{"ordinal":1}`, createdAt: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)},
+		{eventType: "legacy.second", payload: `{"ordinal":2}`, createdAt: time.Date(2030, 1, 2, 3, 4, 6, 0, time.UTC)},
+	}
+	legacyTx, err := store.db.Begin()
+	if err != nil {
+		t.Fatalf("begin legacy authority transaction: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = legacyTx.Rollback()
+	})
+	for _, row := range legacyRows {
+		if _, err := legacyTx.Exec(
+			legacyAuthorityInsert,
+			"t010-ledger-old-writer",
+			string(TaskArtifactKindRuntime),
+			row.eventType,
+			"",
+			row.eventType,
+			row.payload,
+			len(row.payload),
+			0,
+			0,
+			row.createdAt,
+		); err != nil {
+			t.Fatalf("legacy authority artifact insert %q: %v", row.eventType, err)
+		}
+	}
+	transactionRows, err := legacyTx.Query(
+		`SELECT event_seq FROM task_artifacts WHERE task_id=? ORDER BY seq`,
+		"t010-ledger-old-writer",
+	)
+	if err != nil {
+		t.Fatalf("query legacy event_seq inside authority transaction: %v", err)
+	}
+	var transactionEventSeqs []int64
+	for transactionRows.Next() {
+		var eventSeq int64
+		if err := transactionRows.Scan(&eventSeq); err != nil {
+			_ = transactionRows.Close()
+			t.Fatalf("scan legacy event_seq inside authority transaction: %v", err)
+		}
+		transactionEventSeqs = append(transactionEventSeqs, eventSeq)
+	}
+	if err := transactionRows.Err(); err != nil {
+		_ = transactionRows.Close()
+		t.Fatalf("iterate legacy event_seq inside authority transaction: %v", err)
+	}
+	if err := transactionRows.Close(); err != nil {
+		t.Fatalf("close legacy event_seq rows inside authority transaction: %v", err)
+	}
+	if len(transactionEventSeqs) != 2 || transactionEventSeqs[0] != 1 || transactionEventSeqs[1] != 2 {
+		t.Fatalf("legacy event_seq inside authority transaction=%v want=[1 2]", transactionEventSeqs)
+	}
+	if err := legacyTx.Commit(); err != nil {
+		t.Fatalf("commit legacy authority transaction: %v", err)
+	}
+	oldWriterPage, err := store.ListArtifacts("t010-ledger-old-writer", TaskArtifactListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListArtifacts old writer rows: %v", err)
+	}
+	if len(oldWriterPage.Items) != 2 {
+		t.Fatalf("old writer page len=%d want=2", len(oldWriterPage.Items))
+	}
+	for i, artifact := range oldWriterPage.Items {
+		if artifact.TaskID != "t010-ledger-old-writer" || t010ArtifactEventSeq(t, artifact) != int64(i+1) {
+			t.Fatalf("old writer artifact[%d]=%#v want task-local event_seq=%d", i, artifact, i+1)
+		}
+	}
+	next, err := t010AppendStoreRuntimeEvents(t, store, "t010-ledger-old-writer", []TaskRuntimeEventAppend{{
+		EventType: "text_delta",
+		Channel:   "stdout",
+		Summary:   "new writer after legacy rows",
+		Payload:   map[string]any{"ordinal": 3},
+	}})
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvents after old writer rows: %v", err)
+	}
+	if len(next) != 1 || t010ArtifactEventSeq(t, next[0]) != 3 {
+		t.Fatalf("AppendRuntimeEvents after old writer returned %#v want one row with event_seq=3", next)
+	}
+	combined, err := store.ListArtifacts("t010-ledger-old-writer", TaskArtifactListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListArtifacts combined old/new writer rows: %v", err)
+	}
+	if len(combined.Items) != 3 {
+		t.Fatalf("combined old/new writer page len=%d want=3", len(combined.Items))
+	}
+	for i, artifact := range combined.Items {
+		if t010ArtifactEventSeq(t, artifact) != int64(i+1) {
+			t.Fatalf("combined artifact[%d].event_seq=%d want=%d", i, t010ArtifactEventSeq(t, artifact), i+1)
+		}
+	}
+}
+
+func TestLoomEngine_EventLedger_BatchIsAtomicDurableBeforePushAndPersistsExactGap(t *testing.T) {
+	path := t.TempDir() + "/t010-batch.db"
+	db := t004OpenDB(t, path)
+	store := t004NewStore(t, db, "t010-batch")
+	createArtifactTask(t, store, "t010-batch-task", "t010-batch", TaskStatusRunning)
+	observer := t004OpenDB(t, path)
+	engine := New(store)
+	defer func() { _ = engine.Close(context.Background()) }()
+
+	const (
+		wantDroppedEvents uint64 = 17
+		wantDroppedBytes  uint64 = 4097
+	)
+	batch := []TaskRuntimeEventAppend{
+		{
+			EventType: "text_delta",
+			Channel:   "stdout",
+			Summary:   "normal runtime event",
+			Payload:   map[string]any{"text": "normal"},
+		},
+		{
+			EventType: "output_truncated",
+			Channel:   "system",
+			Summary:   "admission quota gap",
+			Payload: map[string]any{
+				"reason":         "admission_quota",
+				"dropped_events": wantDroppedEvents,
+				"dropped_bytes":  wantDroppedBytes,
+			},
+			Truncated: true,
+		},
+		{
+			EventType: "runtime_completed",
+			Channel:   "control",
+			Summary:   "runtime terminal control event",
+			Payload:   map[string]any{"exit_code": 0},
+		},
+	}
+
+	var visibleRowsAtPush []int
+	var observedEventTypes []EventType
+	var pushErrors []error
+	unsubscribe := engine.Events().Subscribe(func(event TaskEvent) {
+		if event.TaskID != "t010-batch-task" {
+			return
+		}
+		var count int
+		err := observer.QueryRow(`SELECT count(*) FROM task_artifacts WHERE task_id='t010-batch-task'`).Scan(&count)
+		if err != nil {
+			pushErrors = append(pushErrors, err)
+			return
+		}
+		observedEventTypes = append(observedEventTypes, event.Type)
+		visibleRowsAtPush = append(visibleRowsAtPush, count)
+	})
+	defer unsubscribe()
+
+	_, err := db.Exec(`
+CREATE TRIGGER t010_abort_second_runtime_event
+BEFORE INSERT ON task_artifacts
+WHEN NEW.task_id='t010-batch-task' AND NEW.event_type='output_truncated'
+BEGIN
+	SELECT RAISE(ABORT, 't010 abort second insert');
+END`)
+	if err != nil {
+		t.Fatalf("create abort trigger: %v", err)
+	}
+	failed, err := t010AppendRuntimeEvents(t, engine, "t010-batch-task", batch)
+	if err == nil {
+		t.Fatal("AppendRuntimeEvents with abort trigger succeeded; want error")
+	}
+	if len(failed) != 0 {
+		t.Fatalf("failed batch returned %d artifacts; want none", len(failed))
+	}
+	var durableAfterFailure int
+	if err := observer.QueryRow(`SELECT count(*) FROM task_artifacts WHERE task_id='t010-batch-task'`).Scan(&durableAfterFailure); err != nil {
+		t.Fatalf("count failed batch rows: %v", err)
+	}
+	if durableAfterFailure != 0 {
+		t.Fatalf("failed batch left %d durable prefix rows; want 0", durableAfterFailure)
+	}
+	if len(visibleRowsAtPush) != 0 || len(observedEventTypes) != 0 || len(pushErrors) != 0 {
+		t.Fatalf("failed batch published task-visible events: types=%v rows=%v errors=%v", observedEventTypes, visibleRowsAtPush, pushErrors)
+	}
+
+	if _, err := db.Exec(`DROP TRIGGER t010_abort_second_runtime_event`); err != nil {
+		t.Fatalf("drop abort trigger: %v", err)
+	}
+	persisted, err := t010AppendRuntimeEvents(t, engine, "t010-batch-task", batch)
+	if err != nil {
+		t.Fatalf("AppendRuntimeEvents success: %v", err)
+	}
+	if len(persisted) != len(batch) {
+		t.Fatalf("persisted batch len=%d want=%d", len(persisted), len(batch))
+	}
+	for i, artifact := range persisted {
+		if eventSeq := t010ArtifactEventSeq(t, artifact); eventSeq != int64(i+1) {
+			t.Fatalf("returned artifact[%d].event_seq=%d want=%d", i, eventSeq, i+1)
+		}
+	}
+	if len(pushErrors) != 0 {
+		t.Fatalf("post-commit push observer errors: %v", pushErrors)
+	}
+	if len(visibleRowsAtPush) != 1 || len(observedEventTypes) != 1 {
+		t.Fatalf("successful batch events: types=%v rows=%v want exactly one", observedEventTypes, visibleRowsAtPush)
+	}
+	if observedEventTypes[0] != EventType("task.artifacts_appended") {
+		t.Fatalf("successful batch event type=%q want task.artifacts_appended", observedEventTypes[0])
+	}
+	for i, visible := range visibleRowsAtPush {
+		if visible != len(batch) {
+			t.Fatalf("push[%d] observed %d durable rows want complete batch %d", i, visible, len(batch))
+		}
+	}
+
+	page, err := store.ListArtifacts("t010-batch-task", TaskArtifactListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListArtifacts batch: %v", err)
+	}
+	if len(page.Items) != len(batch) {
+		t.Fatalf("durable batch len=%d want=%d", len(page.Items), len(batch))
+	}
+	gapCount := 0
+	for i, artifact := range page.Items {
+		if eventSeq := t010ArtifactEventSeq(t, artifact); eventSeq != int64(i+1) {
+			t.Fatalf("durable artifact[%d].event_seq=%d want=%d", i, eventSeq, i+1)
+		}
+		if artifact.EventType != "output_truncated" || artifact.Channel != "system" {
+			continue
+		}
+		gapCount++
+		if artifact.Kind != TaskArtifactKindRuntime || !artifact.Truncated {
+			t.Fatalf("gap kind/truncated=%q/%v want runtime/true", artifact.Kind, artifact.Truncated)
+		}
+		if reason, _ := artifact.Payload["reason"].(string); reason != "admission_quota" {
+			t.Fatalf("gap reason=%v want admission_quota", artifact.Payload["reason"])
+		}
+	}
+	if gapCount != 1 {
+		t.Fatalf("quota-gap artifact count=%d want=1", gapCount)
+	}
+	var persistedGapCount, droppedEvents, droppedBytes int64
+	if err := db.QueryRow(`
+SELECT count(*),
+       coalesce(max(json_extract(payload_json,'$.dropped_events')),0),
+       coalesce(max(json_extract(payload_json,'$.dropped_bytes')),0)
+FROM task_artifacts
+WHERE task_id=? AND event_type='output_truncated' AND channel='system'
+  AND truncated=1 AND json_extract(payload_json,'$.reason')='admission_quota'`,
+		"t010-batch-task").Scan(&persistedGapCount, &droppedEvents, &droppedBytes); err != nil {
+		t.Fatalf("query exact persisted quota gap: %v", err)
+	}
+	if persistedGapCount != 1 || droppedEvents != int64(wantDroppedEvents) || droppedBytes != int64(wantDroppedBytes) {
+		t.Fatalf("persisted quota gap count/events/bytes=%d/%d/%d want=1/%d/%d",
+			persistedGapCount, droppedEvents, droppedBytes, wantDroppedEvents, wantDroppedBytes)
+	}
+}
+
+type t010RuntimeEventBatchAppender interface {
+	AppendRuntimeEvents(string, []TaskRuntimeEventAppend) ([]TaskArtifact, error)
+}
+
+func t010AppendStoreRuntimeEvents(t *testing.T, store *TaskStore, taskID string, batch []TaskRuntimeEventAppend) ([]TaskArtifact, error) {
+	t.Helper()
+	appender, ok := any(store).(t010RuntimeEventBatchAppender)
+	if !ok {
+		t.Fatalf("*TaskStore does not implement AppendRuntimeEvents(string, []TaskRuntimeEventAppend) ([]TaskArtifact, error)")
+	}
+	return appender.AppendRuntimeEvents(taskID, batch)
+}
+
+func t010AppendRuntimeEvents(t *testing.T, engine *LoomEngine, taskID string, batch []TaskRuntimeEventAppend) ([]TaskArtifact, error) {
+	t.Helper()
+	appender, ok := any(engine).(t010RuntimeEventBatchAppender)
+	if !ok {
+		t.Fatalf("*LoomEngine does not implement AppendRuntimeEvents(string, []TaskRuntimeEventAppend) ([]TaskArtifact, error)")
+	}
+	return appender.AppendRuntimeEvents(taskID, batch)
+}
+
+func t010ArtifactEventSeq(t *testing.T, artifact TaskArtifact) int64 {
+	t.Helper()
+	raw, err := json.Marshal(artifact)
+	if err != nil {
+		t.Fatalf("marshal TaskArtifact event_seq shape: %v", err)
+	}
+	var shape struct {
+		EventSeq *int64 `json:"event_seq"`
+	}
+	if err := json.Unmarshal(raw, &shape); err != nil {
+		t.Fatalf("unmarshal TaskArtifact event_seq shape: %v", err)
+	}
+	if shape.EventSeq == nil {
+		t.Fatal("TaskArtifact JSON is missing event_seq")
+	}
+	return *shape.EventSeq
 }
