@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -476,6 +477,535 @@ func TestEventQueue_BoundsMemoryAndEmitsExactGapReserveAndClosedResults(t *testi
 	testStatus(t, closed, "rejected_closed")
 	if closed.IngestOrdinal != 0 {
 		t.Fatalf("closed ordinal = %d", closed.IngestOrdinal)
+	}
+}
+
+func TestProtocolDecoder_Functional_StderrJSONRemainsSanitizedProcessText(t *testing.T) {
+	tests := []struct {
+		name, provider, fingerprint, frame string
+	}{
+		{
+			"codex",
+			"codex",
+			"codex-app-server-v1",
+			fmt.Sprintf("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"safe-stderr %s\"}}", testSecretValue),
+		},
+		{
+			"grok",
+			"grok",
+			"grok-acp-v1",
+			fmt.Sprintf("{\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":\"safe-stderr %s\"}}}", testSecretValue),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n := testNewNormalizer(t, eventNormalizerConfig{Provider: tt.provider, Format: "jsonl", SchemaFingerprint: tt.fingerprint, MaxFrameBytes: 4096, MaxPayloadBytes: 1024})
+			events := testFeed(t, n, "process.stderr", append([]byte(tt.frame), '\n'))
+			if len(events) != 1 {
+				t.Fatalf("stderr events = %#v", events)
+			}
+			event := events[0]
+			text := testEventText(t, event)
+			if event.Channel != "process.stderr" || event.Type != "command_output_delta" || event.Terminal || event.Truncated ||
+				!event.Redacted || !strings.Contains(text, "safe-stderr") || strings.Contains(text, testSecretValue) ||
+				strings.ContainsAny(text, "\x00\x1b\r\n") {
+				t.Fatalf("stderr JSON forged provider output: event=%#v text=%q", event, text)
+			}
+		})
+	}
+}
+
+func TestEventQueue_Functional_AdmissionOwnsDeepClonedPayload(t *testing.T) {
+	pump := testNewPump(t, eventPumpConfig{MaxEvents: 8, MaxBytes: 4096, ControlReserveEvents: 3, ControlReserveBytes: 1024})
+	nested := map[string]any{"value": "before"}
+	list := []any{"before"}
+	payload := map[string]any{"status": "queued", "nested": nested, "list": list}
+	event := RuntimeEvent{Provider: "generic", Channel: "system", Type: "status", Payload: payload}
+	testStatus(t, pump.admit(event), "admitted")
+
+	payload["status"] = "after"
+	payload["added"] = "caller-owned"
+	nested["value"] = "after"
+	list[0] = "after"
+
+	events := pump.drain(1)
+	if len(events) != 1 {
+		t.Fatalf("drain = %#v", events)
+	}
+	got := events[0].Payload
+	gotNested, nestedOK := got["nested"].(map[string]any)
+	gotList, listOK := got["list"].([]any)
+	_, added := got["added"]
+	if testString(t, got, "status") != "queued" || !nestedOK || gotNested["value"] != "before" ||
+		!listOK || len(gotList) != 1 || gotList[0] != "before" || added {
+		t.Fatalf("admitted payload changed through caller alias: %#v", got)
+	}
+}
+
+func TestEventQueue_Functional_DistinguishesQuotaStatusTruncationAndInvalidPayload(t *testing.T) {
+	t.Run("valid_ordinary_text_oversize", func(t *testing.T) {
+		blob := strings.Repeat("z", 1024)
+		payload := map[string]any{"text": "x", "blob": blob}
+		originalBytes := uint64(len(testJSON(t, payload)))
+		pump := testNewPump(t, eventPumpConfig{MaxEvents: 4, MaxBytes: 256, ControlReserveEvents: 2, ControlReserveBytes: 128})
+
+		result := pump.admit(RuntimeEvent{
+			Provider: "generic",
+			Channel:  "process.stdout",
+			Type:     "command_output_delta",
+			Payload:  payload,
+		})
+		testStatus(t, result, "rejected_quota")
+		if result.IngestOrdinal != 0 || result.CoalescedEvents != 0 || result.CoalescedBytes != 0 {
+			t.Fatalf("quota result consumed admission state: %#v", result)
+		}
+
+		events := pump.drain(4)
+		if len(events) != 1 {
+			t.Fatalf("quota drain = %#v; want one exact truncation fact", events)
+		}
+		gap := events[0]
+		if gap.Provider != "generic" || gap.Channel != "system" || gap.Type != "output_truncated" ||
+			!gap.Truncated || gap.Terminal || gap.IngestOrdinal != 1 ||
+			testUint(t, gap.Payload, "dropped_events") != 1 ||
+			testUint(t, gap.Payload, "dropped_bytes") != originalBytes {
+			t.Fatalf("quota truncation fact = %#v; original payload bytes=%d", gap, originalBytes)
+		}
+		if strings.Contains(string(testJSON(t, gap)), blob[:64]) {
+			t.Fatalf("quota truncation fact retained raw payload: %#v", gap)
+		}
+	})
+
+	t.Run("valid_oversized_status_preserves_safe_core", func(t *testing.T) {
+		const status = "model_selected"
+		blob := strings.Repeat("z", 1024)
+		payload := map[string]any{"status": status, "blob": blob}
+		originalBytes := uint64(len(testJSON(t, payload)))
+		safeCoreBytes := uint64(len(testJSON(t, map[string]any{"status": status})))
+		omittedBytes := originalBytes - safeCoreBytes
+		pump := testNewPump(t, eventPumpConfig{MaxEvents: 4, MaxBytes: 256, ControlReserveEvents: 2, ControlReserveBytes: 192})
+
+		result := pump.admit(RuntimeEvent{
+			Provider: "generic",
+			Channel:  "system",
+			Type:     "status",
+			Payload:  payload,
+		})
+		testStatus(t, result, "admitted")
+		if result.IngestOrdinal != 1 || result.CoalescedEvents != 0 || result.CoalescedBytes != 0 {
+			t.Fatalf("status admission result = %#v", result)
+		}
+
+		events := pump.drain(4)
+		if len(events) != 1 {
+			t.Fatalf("status drain = %#v; want one bounded status fact", events)
+		}
+		event := events[0]
+		if event.Provider != "generic" || event.Channel != "system" || event.Type != "status" ||
+			event.Terminal || !event.Truncated || event.IngestOrdinal != 1 ||
+			testString(t, event.Payload, "status") != status ||
+			testUint(t, event.Payload, "original_payload_bytes") != originalBytes ||
+			testUint(t, event.Payload, "omitted_bytes") != omittedBytes {
+			t.Fatalf("bounded status event = %#v; original=%d omitted=%d", event, originalBytes, omittedBytes)
+		}
+		if len(event.Payload) != 3 {
+			t.Fatalf("bounded status retained non-allowlisted fields: %#v", event.Payload)
+		}
+		if strings.Contains(string(testJSON(t, event)), blob[:64]) {
+			t.Fatalf("bounded status retained raw extra payload: %#v", event)
+		}
+	})
+
+	invalid := []struct {
+		name, key, channel, eventType, shape string
+	}{
+		{"text_cycle", "text", "process.stdout", "command_output_delta", "cycle"},
+		{"text_function", "text", "process.stdout", "command_output_delta", "function"},
+		{"status_cycle", "status", "system", "status", "cycle"},
+		{"status_function", "status", "system", "status", "function"},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := map[string]any{tt.key: "x"}
+			if tt.shape == "cycle" {
+				payload["self"] = payload
+			} else {
+				payload["callback"] = func() {}
+			}
+			pump := testNewPump(t, eventPumpConfig{MaxEvents: 4, MaxBytes: 4096, ControlReserveEvents: 2, ControlReserveBytes: 1024})
+
+			result := pump.admit(RuntimeEvent{
+				Provider: "generic",
+				Channel:  tt.channel,
+				Type:     tt.eventType,
+				Payload:  payload,
+			})
+			testStatus(t, result, "rejected_invalid")
+			if result.IngestOrdinal != 0 || result.CoalescedEvents != 0 || result.CoalescedBytes != 0 {
+				t.Fatalf("invalid result consumed admission state: %#v", result)
+			}
+			if events := pump.drain(4); len(events) != 0 {
+				t.Fatalf("invalid payload created queue or quota evidence: %#v", events)
+			}
+
+			next := pump.admit(testDelta("process.stdout", "ok"))
+			testStatus(t, next, "admitted")
+			if next.IngestOrdinal != 1 {
+				t.Fatalf("first valid ordinal after invalid input = %d; want 1", next.IngestOrdinal)
+			}
+			events := pump.drain(2)
+			if len(events) != 1 || events[0].IngestOrdinal != 1 || testEventText(t, events[0]) != "ok" {
+				t.Fatalf("valid event after invalid input = %#v", events)
+			}
+
+			quotaPayload := map[string]any{"text": "q", "blob": strings.Repeat("z", 4096)}
+			const quotaPayloadBytes = uint64(4118)
+			if got := uint64(len(testJSON(t, quotaPayload))); got != quotaPayloadBytes {
+				t.Fatalf("canonical quota payload bytes = %d; want %d", got, quotaPayloadBytes)
+			}
+			quota := pump.admit(RuntimeEvent{
+				Provider: "generic",
+				Channel:  "process.stdout",
+				Type:     "command_output_delta",
+				Payload:  quotaPayload,
+			})
+			testStatus(t, quota, "rejected_quota")
+			if quota.IngestOrdinal != 0 || quota.CoalescedEvents != 0 || quota.CoalescedBytes != 0 {
+				t.Fatalf("valid quota overflow consumed admission state: %#v", quota)
+			}
+
+			gapEvents := pump.drain(4)
+			if len(gapEvents) != 1 {
+				t.Fatalf("valid quota overflow drain = %#v; want one exact truncation fact", gapEvents)
+			}
+			gap := gapEvents[0]
+			if gap.Provider != "generic" || gap.Channel != "system" || gap.Type != "output_truncated" ||
+				!gap.Truncated || gap.Terminal || gap.IngestOrdinal != 2 ||
+				testUint(t, gap.Payload, "dropped_events") != 1 ||
+				testUint(t, gap.Payload, "dropped_bytes") != quotaPayloadBytes {
+				t.Fatalf("valid quota overflow truncation fact = %#v", gap)
+			}
+			if events := pump.drain(4); len(events) != 0 {
+				t.Fatalf("valid quota overflow left delayed evidence: %#v", events)
+			}
+		})
+	}
+}
+
+func TestEventQueue_Memory_RejectedInvalidPayloadDoesNotRemainReachable(t *testing.T) {
+	tests := []struct {
+		name, key, channel, eventType, shape string
+	}{
+		{"text_cycle", "text", "process.stdout", "command_output_delta", "cycle"},
+		{"text_closure", "text", "process.stdout", "command_output_delta", "closure"},
+		{"status_cycle", "status", "system", "status", "cycle"},
+		{"status_closure", "status", "system", "status", "closure"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pump := testNewPump(t, eventPumpConfig{MaxEvents: 32, MaxBytes: 64 << 20, ControlReserveEvents: 4, ControlReserveBytes: 8 << 20})
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			allInvalid := true
+			for i := 0; i < 8; i++ {
+				result := testAdmitLargeInvalidPayload(pump, tt.key, tt.channel, tt.eventType, tt.shape)
+				if testAdmissionStatus(result) != "rejected_invalid" ||
+					result.IngestOrdinal != 0 || result.CoalescedEvents != 0 || result.CoalescedBytes != 0 {
+					allInvalid = false
+				}
+			}
+			runtime.GC()
+			runtime.ReadMemStats(&after)
+			runtime.KeepAlive(pump)
+
+			if !allInvalid {
+				t.Error("large invalid payload did not produce rejected_invalid with zero counters")
+			}
+			retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+			if retained > 2<<20 {
+				t.Errorf("rejected invalid payload retained %d heap bytes; want <= %d", retained, int64(2<<20))
+			}
+			if events := pump.drain(8); len(events) != 0 {
+				t.Errorf("rejected invalid payload retained %d queue events; first type=%q", len(events), events[0].Type)
+			}
+		})
+	}
+}
+
+func testAdmitLargeInvalidPayload(pump *eventPump, key, channel, eventType, shape string) AdmissionResult {
+	secret := strings.Repeat(testSecretValue, (4<<20)/len(testSecretValue)+1)
+	payload := map[string]any{key: "x", "secret": secret}
+	if shape == "cycle" {
+		payload["self"] = payload
+	} else {
+		payload["callback"] = func() { runtime.KeepAlive(secret) }
+	}
+	return pump.admit(RuntimeEvent{
+		Provider: "generic",
+		Channel:  channel,
+		Type:     eventType,
+		Payload:  payload,
+	})
+}
+
+func TestEventQueue_Functional_CoalescesOnlyExactTextOnlyDeltas(t *testing.T) {
+	for _, extraOnFirst := range []bool{true, false} {
+		name := "extra_on_incoming"
+		if extraOnFirst {
+			name = "extra_on_tail"
+		}
+		t.Run(name, func(t *testing.T) {
+			pump := testNewPump(t, eventPumpConfig{MaxEvents: 8, MaxBytes: 4096, ControlReserveEvents: 2, ControlReserveBytes: 512})
+			first, second := testDelta("process.stdout", "a"), testDelta("process.stdout", "b")
+			if extraOnFirst {
+				first.Payload["meta"] = "first"
+			} else {
+				second.Payload["meta"] = "second"
+			}
+			testStatus(t, pump.admit(first), "admitted")
+			testStatus(t, pump.admit(second), "admitted")
+			events := pump.drain(2)
+			if len(events) != 2 || testEventText(t, events[0]) != "a" || testEventText(t, events[1]) != "b" {
+				t.Fatalf("non-exact payloads coalesced: %#v", events)
+			}
+			index, want := 1, "second"
+			if extraOnFirst {
+				index, want = 0, "first"
+			}
+			if events[index].Payload["meta"] != want {
+				t.Fatalf("retained metadata lost: %#v", events)
+			}
+		})
+	}
+}
+
+func TestEventQueue_Functional_CoalescesUnknownMarkersBySignature(t *testing.T) {
+	tests := []struct {
+		name, provider, field string
+	}{
+		{"grok_method", "grok", "method"},
+		{"codex_type", "codex", "type"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fpA, fpB := tt.provider+"-schema-A", tt.provider+"-schema-B"
+			signature, otherSignature := "future/event", "future/other"
+			nA := testNewNormalizer(t, eventNormalizerConfig{Provider: tt.provider, Format: "jsonl", SchemaFingerprint: fpA, MaxFrameBytes: 4096, MaxPayloadBytes: 320})
+			nB := testNewNormalizer(t, eventNormalizerConfig{Provider: tt.provider, Format: "jsonl", SchemaFingerprint: fpB, MaxFrameBytes: 4096, MaxPayloadBytes: 320})
+			first, firstBytes := testUnknownMarker(t, nA, tt.field, signature, "a")
+			second, secondBytes := testUnknownMarker(t, nA, tt.field, signature, "bb")
+			third, thirdBytes := testUnknownMarker(t, nA, tt.field, signature, "ccc")
+			distinctMethod, _ := testUnknownMarker(t, nA, tt.field, otherSignature, "d")
+			distinctFingerprint, _ := testUnknownMarker(t, nB, tt.field, signature, "e")
+
+			pump := testNewPump(t, eventPumpConfig{MaxEvents: 8, MaxBytes: 4096, ControlReserveEvents: 2, ControlReserveBytes: 512})
+			testStatus(t, pump.admit(first), "admitted")
+			testStatus(t, pump.admit(second), "coalesced")
+			testStatus(t, pump.admit(third), "coalesced")
+			testStatus(t, pump.admit(distinctMethod), "admitted")
+			testStatus(t, pump.admit(distinctFingerprint), "admitted")
+
+			events := pump.drain(8)
+			if len(events) != 3 {
+				t.Fatalf("unknown marker signatures = %#v", events)
+			}
+			aggregate := events[0]
+			if aggregate.Type != "provider_event_unknown" ||
+				testString(t, aggregate.Payload, "provider_method") != signature ||
+				testString(t, aggregate.Payload, "schema_fingerprint") != fpA ||
+				testUintAny(t, aggregate.Payload, "occurrences", "occurrence_count") != 3 ||
+				testUintAny(t, aggregate.Payload, "byte_length", "byte_count") != firstBytes+secondBytes+thirdBytes ||
+				len(testJSON(t, aggregate.Payload)) > 320 {
+				t.Fatalf("unknown aggregate = %#v", aggregate)
+			}
+			if testString(t, events[1].Payload, "provider_method") != otherSignature ||
+				testString(t, events[1].Payload, "schema_fingerprint") != fpA ||
+				testString(t, events[2].Payload, "provider_method") != signature ||
+				testString(t, events[2].Payload, "schema_fingerprint") != fpB {
+				t.Fatalf("distinct unknown signatures merged: %#v", events)
+			}
+		})
+	}
+}
+
+func TestEventQueue_Functional_LaterDropsCreateANewTailGap(t *testing.T) {
+	pump := testNewPump(t, eventPumpConfig{MaxEvents: 5, MaxBytes: 4096, ControlReserveEvents: 3, ControlReserveBytes: 1024})
+	testStatus(t, pump.admit(testDelta("process.stdout", "a")), "admitted")
+	testStatus(t, pump.admit(testDelta("process.stderr", "b")), "admitted")
+	testStatus(t, pump.admit(RuntimeEvent{Provider: "generic", Channel: "assistant", Type: "text_delta", Payload: map[string]any{"text": "c"}}), "rejected_quota")
+	testStatus(t, pump.admit(testControl("status", false, "ack")), "admitted")
+	testStatus(t, pump.admit(testDelta("file", "later")), "rejected_quota")
+
+	events := pump.drain(8)
+	wantTypes := []string{"command_output_delta", "command_output_delta", "output_truncated", "status", "output_truncated"}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("events = %#v; want %v", events, wantTypes)
+	}
+	for i, want := range wantTypes {
+		if events[i].Type != want || events[i].IngestOrdinal != uint64(i+1) {
+			t.Fatalf("event[%d] = %#v", i, events[i])
+		}
+	}
+	if testUint(t, events[2].Payload, "dropped_events") != 1 || testUint(t, events[2].Payload, "dropped_bytes") != 1 ||
+		testUint(t, events[4].Payload, "dropped_events") != 1 || testUint(t, events[4].Payload, "dropped_bytes") != 5 {
+		t.Fatalf("gap ordering/counters = %#v", events)
+	}
+}
+
+func TestEventQueue_Performance_DrainOneByOneHasBoundedAllocation(t *testing.T) {
+	const count = 4096
+	pump := testNewPump(t, eventPumpConfig{MaxEvents: count + 256, MaxBytes: 8 << 20, ControlReserveEvents: 128, ControlReserveBytes: 1 << 20})
+	for i := 0; i < count; i++ {
+		if result := pump.admit(testOrdinaryEvent(i)); result.Status != "admitted" {
+			t.Fatalf("fill[%d] = %#v", i, result)
+		}
+	}
+	ok := true
+	allocated := testAllocatedBytes(func() {
+		for i := 0; i < count; i++ {
+			if len(pump.drain(1)) != 1 {
+				ok = false
+				return
+			}
+		}
+	})
+	if !ok || len(pump.drain(1)) != 0 {
+		t.Fatal("drain-one-by-one lost events")
+	}
+	if allocated > 64<<20 {
+		t.Fatalf("drain-one-by-one allocated %d bytes; want <= %d", allocated, uint64(64<<20))
+	}
+}
+
+func TestEventQueue_Performance_OneByteCoalescingHasBoundedAllocation(t *testing.T) {
+	const chunks = 12_000
+	pump := testNewPump(t, eventPumpConfig{MaxEvents: 2048, MaxBytes: 1 << 20, ControlReserveEvents: 128, ControlReserveBytes: 64 << 10})
+	testStatus(t, pump.admit(testDelta("process.stdout", "x")), "admitted")
+	ok := true
+	allocated := testAllocatedBytes(func() {
+		for i := 1; i < chunks; i++ {
+			status := pump.admit(testDelta("process.stdout", "x")).Status
+			if status != "admitted" && status != "coalesced" {
+				ok = false
+				return
+			}
+		}
+	})
+	if !ok {
+		t.Fatal("one-byte delta workload was rejected")
+	}
+	var text strings.Builder
+	for _, event := range pump.drain(chunks) {
+		if event.Type == "output_truncated" {
+			t.Fatalf("unexpected truncation: %#v", event)
+		}
+		text.WriteString(testEventText(t, event))
+	}
+	if text.Len() != chunks {
+		t.Fatalf("coalesced bytes = %d; want %d", text.Len(), chunks)
+	}
+	if allocated > 32<<20 {
+		t.Fatalf("one-byte coalescing allocated %d bytes; want <= %d", allocated, uint64(32<<20))
+	}
+}
+
+func TestEventNormalizer_Functional_CanonicalizesOrRejectsUnknownChannels(t *testing.T) {
+	n := testNewNormalizer(t, eventNormalizerConfig{Provider: "generic", Format: "text", SchemaFingerprint: "generic-text-v1", MaxFrameBytes: 1024, MaxPayloadBytes: 512})
+	allowed := map[string]bool{"process.stdout": true, "process.stderr": true}
+	for i := 0; i < 128; i++ {
+		channel := fmt.Sprintf("attacker.channel.%03d", i)
+		events, err := n.feed(channel, []byte("safe\n"))
+		if err != nil {
+			continue
+		}
+		if len(events) != 1 || !allowed[events[0].Channel] || events[0].Channel == channel || testEventText(t, events[0]) != "safe" {
+			t.Fatalf("unknown channel was retained verbatim: channel=%q events=%#v", channel, events)
+		}
+	}
+	events := testFeed(t, n, "process.stderr", []byte("canonical\n"))
+	if len(events) != 1 || events[0].Channel != "process.stderr" || testEventText(t, events[0]) != "canonical" {
+		t.Fatalf("canonical channel changed: %#v", events)
+	}
+}
+
+func TestEventNormalizer_Memory_BoundsUnknownChannelCardinality(t *testing.T) {
+	n := testNewNormalizer(t, eventNormalizerConfig{Provider: "generic", Format: "text", SchemaFingerprint: "generic-text-v1", MaxFrameBytes: 1024, MaxPayloadBytes: 512})
+	// Deliberately omit a newline: finish-frame cleanup must not hide raw-channel cardinality retention.
+	chunk := []byte("x")
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for i := 0; i < 50_000; i++ {
+		_, _ = n.feed(fmt.Sprintf("attacker.channel.%05d", i), chunk)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(n)
+	retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	if retained > 2<<20 {
+		t.Fatalf("unknown channel state retained %d heap bytes; want <= %d", retained, int64(2<<20))
+	}
+}
+
+func TestEventNormalizer_Memory_ReleasesCompletedSecretFrameBuffer(t *testing.T) {
+	n := testNewNormalizer(t, eventNormalizerConfig{Provider: "grok", Format: "jsonl", SchemaFingerprint: "grok-acp-v1", MaxFrameBytes: 8 << 20, MaxPayloadBytes: 512})
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	testFeedLargeUnknownSecretFrame(t, n, 6<<20)
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(n)
+	retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	if retained > 2<<20 {
+		t.Fatalf("completed secret frame retained %d heap bytes; want <= %d", retained, int64(2<<20))
+	}
+}
+
+func testUnknownMarker(t *testing.T, n *eventNormalizer, field, signature, body string) (RuntimeEvent, uint64) {
+	t.Helper()
+	frame := testJSON(t, map[string]any{field: signature, "payload": body})
+	events := testFeed(t, n, "process.stdout", append(frame, '\n'))
+	if len(events) != 1 || events[0].Type != "provider_event_unknown" {
+		t.Fatalf("unknown frame events = %#v", events)
+	}
+	return events[0], uint64(len(frame))
+}
+
+func testUintAny(t *testing.T, payload map[string]any, keys ...string) uint64 {
+	t.Helper()
+	for _, key := range keys {
+		if _, ok := payload[key]; ok {
+			return testUint(t, payload, key)
+		}
+	}
+	t.Fatalf("payload lacks count fields %v: %#v", keys, payload)
+	return 0
+}
+
+func testAllocatedBytes(work func()) uint64 {
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	work()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+func testFeedLargeUnknownSecretFrame(t *testing.T, n *eventNormalizer, size int) {
+	t.Helper()
+	frame := testJSON(t, map[string]any{
+		"method": "future/secret",
+		"params": map[string]any{
+			"api_key": testSecretValue,
+			"blob":    strings.Repeat("x", size),
+		},
+	})
+	events := testFeed(t, n, "process.stdout", append(frame, '\n'))
+	if len(events) != 1 || events[0].Type != "provider_event_unknown" ||
+		strings.Contains(string(testJSON(t, events[0])), testSecretValue) {
+		t.Fatalf("large secret frame result = %#v", events)
 	}
 }
 
