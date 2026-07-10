@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,12 +19,13 @@ type ProcessHandle struct {
 	ExitCode  int
 	StartedAt time.Time
 
-	done      chan error  // internal writable channel
-	exited    atomic.Bool // set to true before Done is signalled; safe for concurrent reads
-	mu        sync.Mutex
-	cleaned   bool
-	drainDone chan struct{} // optional: closed when stdout/stderr readers are fully drained
-	drained   bool
+	done        chan error  // internal writable channel
+	exited      atomic.Bool // set to true before Done is signalled; safe for concurrent reads
+	mu          sync.Mutex
+	cleaned     bool
+	drainDone   chan struct{} // optional: closed when stdout/stderr readers are fully drained
+	drained     bool
+	processTree *processTree // non-nil only for processes started by Spawn
 }
 
 // ProcessManager tracks and manages spawned processes.
@@ -47,32 +47,51 @@ var SharedPM = NewProcessManager()
 // The provided cmd must not have Stdout/Stderr set — Spawn sets up the pipes itself.
 // Returns a ProcessHandle with PID > 0 on success.
 func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
+	tree, err := prepareProcessTree(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("prepare process tree: %w", err)
+	}
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		tree.discard()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		stdout.Close() // prevent fd leak
+		tree.discard()
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
 		stdout.Close() // prevent fd leak
 		stderr.Close() // prevent fd leak
+		tree.discard()
 		return nil, fmt.Errorf("start process: %w", err)
+	}
+	if err := tree.attach(cmd); err != nil {
+		// Assignment failure is a spawn failure: terminate anything that may
+		// have been attached, then kill and reap the root as a fallback.
+		tree.terminate()
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		stdout.Close()
+		stderr.Close()
+		return nil, fmt.Errorf("attach process tree: %w", err)
 	}
 
 	done := make(chan error, 1)
 	h := &ProcessHandle{
-		PID:       cmd.Process.Pid,
-		Cmd:       cmd,
-		Stdout:    stdout,
-		Stderr:    stderr,
-		Done:      done,
-		StartedAt: time.Now(),
-		done:      done,
+		PID:         cmd.Process.Pid,
+		Cmd:         cmd,
+		Stdout:      stdout,
+		Stderr:      stderr,
+		Done:        done,
+		StartedAt:   time.Now(),
+		done:        done,
+		processTree: tree,
 	}
 
 	pm.handles.Store(h.PID, h)
@@ -93,6 +112,10 @@ func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
 			h.ExitCode = -1
 		}
 		h.mu.Unlock()
+		// Done represents the managed lifetime, so release the owned tree
+		// before publishing root completion. On Windows, closing the Job Object
+		// kills remaining descendants; on Unix, the process group is drained.
+		h.processTree.terminate()
 		// Mark exited BEFORE signalling Done so that IsAlive() observes the
 		// post-exit state as soon as <-h.Done unblocks (happens-before guarantee).
 		h.exited.Store(true)
@@ -103,19 +126,17 @@ func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
 	return h, nil
 }
 
-// Kill terminates a process.
-// On Windows: immediately kills the process.
-// On Unix: sends SIGTERM then waits up to 5s before sending SIGKILL.
+// Kill terminates a process and every descendant owned by Spawn. Synthetic
+// handles that were not created by Spawn retain the direct-process fallback.
 func (pm *ProcessManager) Kill(h *ProcessHandle) {
 	if h == nil || h.Cmd == nil || h.Cmd.Process == nil {
 		return
 	}
 
-	if runtime.GOOS == "windows" {
-		// Windows does not support SIGTERM; kill immediately.
-		_ = h.Cmd.Process.Kill()
+	if h.processTree != nil {
+		h.processTree.terminate()
 	} else {
-		killUnix(h)
+		killRootProcess(h)
 	}
 
 	// Drain the done channel to unblock the Wait goroutine.
@@ -191,6 +212,13 @@ func (pm *ProcessManager) Cleanup(h *ProcessHandle) {
 	h.cleaned = true
 	drainDone := h.drainDone
 	h.mu.Unlock()
+
+	// Releasing an owned tree is part of cleanup. This is idempotent with Kill
+	// and the natural-exit reap path, and is intentionally absent for synthetic
+	// externally-owned handles.
+	if h.processTree != nil {
+		h.processTree.terminate()
+	}
 
 	if drainDone != nil {
 		select {
