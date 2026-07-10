@@ -3,6 +3,7 @@ package loom
 import (
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -422,5 +423,203 @@ func TestTaskStore_ParentTaskID_NullForRoot(t *testing.T) {
 	}
 	if parent.Valid {
 		t.Fatalf("parent_task_id = %q, want NULL", parent.String)
+	}
+}
+
+const t004LiteralV8Schema = `
+CREATE TABLE tasks (
+ id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending', worker_type TEXT NOT NULL,
+ project_id TEXT NOT NULL, request_id TEXT NOT NULL DEFAULT '', parent_task_id TEXT REFERENCES tasks(id),
+ prompt TEXT NOT NULL, cwd TEXT DEFAULT '', env TEXT DEFAULT '{}', cli TEXT DEFAULT '', role TEXT DEFAULT '',
+ model TEXT DEFAULT '', effort TEXT DEFAULT '', timeout INTEGER DEFAULT 0, metadata TEXT DEFAULT '{}',
+ result TEXT DEFAULT '', error TEXT DEFAULT '', retries INTEGER DEFAULT 0, created_at DATETIME NOT NULL,
+ dispatched_at DATETIME, completed_at DATETIME, engine_name TEXT NOT NULL DEFAULT '',
+ tenant_id TEXT NOT NULL DEFAULT '__legacy__', daemon_uuid TEXT, last_seen_at TEXT, aborted_at TEXT,
+ last_output_line TEXT NOT NULL DEFAULT '', progress_lines INTEGER NOT NULL DEFAULT 0, progress_updated_at DATETIME
+);
+CREATE INDEX idx_tasks_project_id ON tasks(project_id); CREATE INDEX idx_tasks_status ON tasks(status);
+CREATE INDEX idx_tasks_engine_status ON tasks(engine_name,status); CREATE INDEX idx_tasks_tenant_id ON tasks(tenant_id,status);
+CREATE INDEX idx_tasks_parent_task_id ON tasks(parent_task_id);
+CREATE TABLE task_artifacts (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ kind TEXT NOT NULL, event_type TEXT NOT NULL DEFAULT '', channel TEXT NOT NULL DEFAULT '',
+ summary TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}', content_length INTEGER NOT NULL DEFAULT 0,
+ redacted INTEGER NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0, created_at DATETIME NOT NULL
+);
+CREATE INDEX idx_task_artifacts_task_seq ON task_artifacts(task_id,seq);
+CREATE INDEX idx_task_artifacts_runtime_slice ON task_artifacts(task_id,kind,event_type,channel,seq);`
+
+const t004TaskDigest = `quote(id)||'|'||quote(status)||'|'||quote(worker_type)||'|'||quote(project_id)||'|'||
+ quote(request_id)||'|'||quote(parent_task_id)||'|'||quote(prompt)||'|'||quote(cwd)||'|'||quote(env)||'|'||
+ quote(cli)||'|'||quote(role)||'|'||quote(model)||'|'||quote(effort)||'|'||quote(timeout)||'|'||quote(metadata)||'|'||
+ quote(result)||'|'||quote(error)||'|'||quote(retries)||'|'||quote(created_at)||'|'||quote(dispatched_at)||'|'||
+ quote(completed_at)||'|'||quote(engine_name)||'|'||quote(tenant_id)||'|'||quote(daemon_uuid)||'|'||
+ quote(last_seen_at)||'|'||quote(aborted_at)||'|'||quote(last_output_line)||'|'||quote(progress_lines)||'|'||quote(progress_updated_at)`
+
+const t004ActionDigest = `quote(id)||'|'||quote(task_id)||'|'||quote(kind)||'|'||quote(status)||'|'||quote(provider_request_id)||'|'||quote(connection_generation)||'|'||quote(request_json)||'|'||quote(response_json)||'|'||quote(delivery_json)||'|'||quote(expires_at)||'|'||quote(created_at)||'|'||quote(responded_at)||'|'||quote(resolved_at)`
+
+const t004ArtifactDigest = `quote(seq)||'|'||quote(task_id)||'|'||quote(kind)||'|'||quote(event_type)||'|'||quote(channel)||'|'||
+ quote(summary)||'|'||quote(payload_json)||'|'||quote(content_length)||'|'||quote(redacted)||'|'||quote(truncated)||'|'||quote(created_at)`
+
+func t004Must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func t004OpenDB(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000")
+	t004Must(t, err)
+	db.SetMaxOpenConns(1)
+	_, err = db.Exec(`PRAGMA foreign_keys=ON`)
+	t004Must(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func t004NewStore(t *testing.T, db *sql.DB, name string) *TaskStore {
+	t.Helper()
+	store, err := NewTaskStore(db, name)
+	if err != nil {
+		t.Fatalf("NewTaskStore(%s): %v", name, err)
+	}
+	return store
+}
+
+func t004Scalar(t *testing.T, db *sql.DB, query string, args ...any) string {
+	t.Helper()
+	var got string
+	t004Must(t, db.QueryRow(query, args...).Scan(&got))
+	return got
+}
+
+func t004Digest(t *testing.T, db *sql.DB, expr, table, id string) string {
+	t.Helper()
+	return t004Scalar(t, db, `SELECT `+expr+` FROM `+table+` WHERE id=?`, id)
+}
+
+func t004LegacyDigest(t *testing.T, db *sql.DB, hasCancel bool) string {
+	expr := t004TaskDigest + `||'|'||'NULL'`
+	if hasCancel {
+		expr = t004TaskDigest + `||'|'||quote(cancel_requested_at)`
+	}
+	return t004Digest(t, db, expr, "tasks", "v9-legacy")
+}
+
+func t004AssertV9(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var columns, idPK, taskNotNull int
+	t004Must(t, db.QueryRow(`SELECT count(*),coalesce(max(CASE WHEN name='id' THEN pk ELSE 0 END),0),coalesce(max(CASE WHEN name='task_id' THEN "notnull" ELSE 0 END),0)
+FROM pragma_table_info('pending_actions')
+WHERE name IN ('id','task_id','kind','status','provider_request_id','connection_generation','request_json','response_json','delivery_json','expires_at','created_at','responded_at','resolved_at')`).Scan(&columns, &idPK, &taskNotNull))
+	if columns != 13 || idPK == 0 || taskNotNull == 0 || !loomColumnExists(t, db, "cancel_requested_at") {
+		t.Fatalf("v9 columns/pk/not-null incomplete: columns=%d id_pk=%d task_not_null=%d", columns, idPK, taskNotNull)
+	}
+	var taskFK int
+	t004Must(t, db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('pending_actions') WHERE "table"='tasks' AND "from"='task_id' AND "to"='id'`).Scan(&taskFK))
+	if taskFK == 0 {
+		t.Fatal("pending_actions.task_id foreign key missing")
+	}
+	if integrity := t004Scalar(t, db, `PRAGMA integrity_check`); integrity != "ok" {
+		t.Fatalf("integrity_check=%q", integrity)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	t004Must(t, err)
+	if rows.Next() {
+		t.Fatal("foreign_key_check returned a row")
+	}
+	t004Must(t, rows.Err())
+	_ = rows.Close()
+}
+
+func t004AssertProviderFence(t *testing.T, db *sql.DB, stage string) {
+	t.Helper()
+	for _, id := range []string{stage + "-a", stage + "-b"} {
+		_, err := db.Exec(`INSERT INTO tasks(id,status,worker_type,project_id,prompt,created_at) VALUES(?,'running','cli','p','p','2030-01-01T00:00:00Z')`, id)
+		t004Must(t, err)
+	}
+	insert := func(id, task string, generation int64) error {
+		_, err := db.Exec(`INSERT INTO pending_actions(id,task_id,kind,status,provider_request_id,connection_generation,request_json,expires_at,created_at) VALUES(?,?,'approval','pending',?,?, '{}','2030-01-02T00:00:00Z','2030-01-01T00:00:00Z')`, id, task, "provider-"+stage, generation)
+		return err
+	}
+	if err := insert(stage+"-one", stage+"-a", 7); err != nil {
+		t.Fatalf("%s first provider insert: %v", stage, err)
+	}
+	if err := insert(stage+"-duplicate", stage+"-b", 7); err == nil {
+		t.Fatalf("%s accepted duplicate provider request and generation", stage)
+	}
+	if err := insert(stage+"-next", stage+"-b", 8); err != nil {
+		t.Fatalf("%s rejected different generation: %v", stage, err)
+	}
+}
+
+func t004AssertV9Stage(t *testing.T, db *sql.DB, stage string) {
+	t.Helper()
+	t004AssertV9(t, db)
+	t004AssertProviderFence(t, db, stage)
+}
+
+func TestTaskStore_MigrateV9_FreshRepeatReopenAndConstraints(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fresh-v9.db")
+	db := t004OpenDB(t, path)
+	_ = t004NewStore(t, db, "fresh-v9")
+	t004AssertV9Stage(t, db, "fresh-first")
+	_ = t004NewStore(t, db, "fresh-v9")
+	t004AssertV9Stage(t, db, "fresh-repeat")
+	t004Must(t, db.Close())
+	reopened := t004OpenDB(t, path)
+	_ = t004NewStore(t, reopened, "fresh-v9")
+	t004AssertV9Stage(t, reopened, "fresh-reopen")
+}
+
+func TestTaskStore_MigrateV9_RepairsLiteralFixturesWithoutDataLoss(t *testing.T) {
+	fixtures := []struct {
+		name, setup          string
+		hasCancel, hasAction bool
+	}{
+		{"raw-v8", "", false, false},
+		{"column-only", `ALTER TABLE tasks ADD COLUMN cancel_requested_at DATETIME; UPDATE tasks SET cancel_requested_at='2030-01-02T03:09:05Z'`, true, false},
+		{"table-without-unique", `CREATE TABLE pending_actions(id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(id),kind TEXT NOT NULL,status TEXT NOT NULL,provider_request_id TEXT NOT NULL,connection_generation INTEGER NOT NULL,request_json TEXT NOT NULL,response_json TEXT,delivery_json TEXT,expires_at DATETIME NOT NULL,created_at DATETIME NOT NULL,responded_at DATETIME,resolved_at DATETIME); INSERT INTO pending_actions VALUES('legacy-action','v9-legacy','approval','pending','legacy-provider',4,'{"q":1}',NULL,NULL,'2030-02-01T00:00:00Z','2030-01-01T00:00:00Z',NULL,NULL)`, false, true},
+	}
+	for _, fixture := range fixtures {
+		fixture := fixture
+		t.Run(fixture.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), fixture.name+".db")
+			db := t004OpenDB(t, path)
+			_, err := db.Exec(t004LiteralV8Schema + `
+INSERT INTO tasks(id,status,worker_type,project_id,request_id,prompt,cwd,env,cli,role,model,effort,timeout,metadata,result,error,retries,created_at,dispatched_at,engine_name,tenant_id,daemon_uuid,last_seen_at,aborted_at,last_output_line,progress_lines,progress_updated_at)
+VALUES('v9-legacy','running','cli','legacy-project','legacy-request','legacy prompt','D:/legacy','{"LEGACY":"yes"}','legacy-cli','legacy-role','legacy-model','high',77,'{"legacy":true}','legacy-result','legacy-error',3,'2030-01-02T03:04:05Z','2030-01-02T03:05:05Z','legacy-engine','legacy-tenant','legacy-daemon','2030-01-02T03:06:05Z','2030-01-02T03:07:05Z','legacy-tail',123,'2030-01-02T03:08:05Z');`)
+			t004Must(t, err)
+			if fixture.setup != "" {
+				_, err = db.Exec(fixture.setup)
+				t004Must(t, err)
+			}
+			beforeTask := t004LegacyDigest(t, db, fixture.hasCancel)
+			beforeAction := ""
+			if fixture.hasAction {
+				beforeAction = t004Digest(t, db, t004ActionDigest, "pending_actions", "legacy-action")
+			}
+			assertStage := func(stage string, db *sql.DB) {
+				t.Helper()
+				label := fixture.name + "-" + stage
+				t004AssertV9Stage(t, db, label)
+				if got := t004LegacyDigest(t, db, true); got != beforeTask {
+					t.Fatalf("%s changed legacy task", label)
+				}
+				if fixture.hasAction && t004Digest(t, db, t004ActionDigest, "pending_actions", "legacy-action") != beforeAction {
+					t.Fatalf("%s changed legacy action", label)
+				}
+			}
+			_ = t004NewStore(t, db, fixture.name)
+			assertStage("first", db)
+			_ = t004NewStore(t, db, fixture.name)
+			assertStage("repeat", db)
+			t004Must(t, db.Close())
+			reopened := t004OpenDB(t, path)
+			_ = t004NewStore(t, reopened, fixture.name)
+			assertStage("reopen", reopened)
+		})
 	}
 }
