@@ -65,6 +65,13 @@ type eventNormalizerConfig struct {
 	MaxPayloadBytes   int
 }
 
+// decodedFrame is the framing layer's complete, policy-neutral output.
+type decodedFrame struct {
+	raw        []byte
+	byteLength uint64
+	oversize   bool
+}
+
 type frameState struct {
 	data       []byte
 	frameBytes uint64
@@ -72,10 +79,25 @@ type frameState struct {
 	skipLF     bool
 }
 
+// eventDecoder owns channel-local byte framing and nothing provider-specific.
+type eventDecoder struct {
+	structuredStdout bool
+	maxFrameBytes    int
+	channels         map[string]*frameState
+}
+
+// eventPolicy turns complete frames into bounded, sink-safe runtime events.
+type eventPolicy struct {
+	provider          string
+	format            string
+	schemaFingerprint string
+	maxPayloadBytes   int
+}
+
 type eventNormalizer struct {
-	mu       sync.Mutex
-	config   eventNormalizerConfig
-	channels map[string]*frameState
+	mu      sync.Mutex
+	decoder eventDecoder
+	policy  eventPolicy
 }
 
 func newEventNormalizer(config eventNormalizerConfig) (*eventNormalizer, error) {
@@ -93,7 +115,19 @@ func newEventNormalizer(config eventNormalizerConfig) (*eventNormalizer, error) 
 	if config.MaxPayloadBytes < 64 {
 		return nil, errors.New("event payload limit must be at least 64 bytes")
 	}
-	return &eventNormalizer{config: config, channels: make(map[string]*frameState)}, nil
+	return &eventNormalizer{
+		decoder: eventDecoder{
+			structuredStdout: config.Format == "jsonl",
+			maxFrameBytes:    config.MaxFrameBytes,
+			channels:         make(map[string]*frameState),
+		},
+		policy: eventPolicy{
+			provider:          config.Provider,
+			format:            config.Format,
+			schemaFingerprint: config.SchemaFingerprint,
+			maxPayloadBytes:   config.MaxPayloadBytes,
+		},
+	}, nil
 }
 
 func (normalizer *eventNormalizer) feed(channel string, chunk []byte) ([]RuntimeEvent, error) {
@@ -104,36 +138,10 @@ func (normalizer *eventNormalizer) feed(channel string, chunk []byte) ([]Runtime
 	normalizer.mu.Lock()
 	defer normalizer.mu.Unlock()
 
-	state := normalizer.channels[channel]
-	if state == nil {
-		state = &frameState{}
-		normalizer.channels[channel] = state
-	}
 	events := make([]RuntimeEvent, 0, 1)
-	structured := normalizer.config.Format == "jsonl" && channel == "process.stdout"
-	for _, value := range chunk {
-		if !structured {
-			if state.skipLF {
-				state.skipLF = false
-				if value == '\n' {
-					continue
-				}
-			}
-			if value == '\r' || value == '\n' {
-				events = append(events, normalizer.finishFrame(channel, state)...)
-				state.skipLF = value == '\r'
-				continue
-			}
-		} else if value == '\n' {
-			if !state.oversize && len(state.data) > 0 && state.data[len(state.data)-1] == '\r' {
-				state.data = state.data[:len(state.data)-1]
-				state.frameBytes--
-			}
-			events = append(events, normalizer.finishFrame(channel, state)...)
-			continue
-		}
-		normalizer.appendFrameByte(state, value)
-	}
+	normalizer.decoder.feed(channel, chunk, func(frame decodedFrame) {
+		events = append(events, normalizer.policy.normalizeFrame(channel, frame)...)
+	})
 	return events, nil
 }
 
@@ -144,22 +152,66 @@ func (normalizer *eventNormalizer) flush(channel string) ([]RuntimeEvent, error)
 	}
 	normalizer.mu.Lock()
 	defer normalizer.mu.Unlock()
-	state := normalizer.channels[channel]
-	if state == nil {
+	frame, ok := normalizer.decoder.flush(channel)
+	if !ok {
 		return nil, nil
 	}
-	state.skipLF = false
-	events := normalizer.finishFrame(channel, state)
-	delete(normalizer.channels, channel)
-	return events, nil
+	return normalizer.policy.normalizeFrame(channel, frame), nil
 }
 
-func (normalizer *eventNormalizer) appendFrameByte(state *frameState, value byte) {
+func (decoder *eventDecoder) feed(channel string, chunk []byte, emit func(decodedFrame)) {
+	state := decoder.channels[channel]
+	if state == nil {
+		state = &frameState{}
+		decoder.channels[channel] = state
+	}
+	structured := decoder.structuredStdout && channel == "process.stdout"
+	for _, value := range chunk {
+		if !structured {
+			if state.skipLF {
+				state.skipLF = false
+				if value == '\n' {
+					continue
+				}
+			}
+			if value == '\r' || value == '\n' {
+				if frame, ok := decoder.finishFrame(state); ok {
+					emit(frame)
+				}
+				state.skipLF = value == '\r'
+				continue
+			}
+		} else if value == '\n' {
+			if !state.oversize && len(state.data) > 0 && state.data[len(state.data)-1] == '\r' {
+				state.data = state.data[:len(state.data)-1]
+				state.frameBytes--
+			}
+			if frame, ok := decoder.finishFrame(state); ok {
+				emit(frame)
+			}
+			continue
+		}
+		decoder.appendFrameByte(state, value)
+	}
+}
+
+func (decoder *eventDecoder) flush(channel string) (decodedFrame, bool) {
+	state := decoder.channels[channel]
+	if state == nil {
+		return decodedFrame{}, false
+	}
+	state.skipLF = false
+	frame, ok := decoder.finishFrame(state)
+	delete(decoder.channels, channel)
+	return frame, ok
+}
+
+func (decoder *eventDecoder) appendFrameByte(state *frameState, value byte) {
 	state.frameBytes++
 	if state.oversize {
 		return
 	}
-	if state.frameBytes > uint64(normalizer.config.MaxFrameBytes) {
+	if state.frameBytes > uint64(decoder.maxFrameBytes) {
 		state.oversize = true
 		state.data = nil
 		return
@@ -167,54 +219,12 @@ func (normalizer *eventNormalizer) appendFrameByte(state *frameState, value byte
 	state.data = append(state.data, value)
 }
 
-func (normalizer *eventNormalizer) finishFrame(channel string, state *frameState) []RuntimeEvent {
-	frameBytes := state.frameBytes
-	oversize := state.oversize
-	raw := state.data
+func (decoder *eventDecoder) finishFrame(state *frameState) (decodedFrame, bool) {
+	frame := decodedFrame{raw: state.data, byteLength: state.frameBytes, oversize: state.oversize}
 	state.data = nil
 	state.frameBytes = 0
 	state.oversize = false
-	if frameBytes == 0 {
-		return nil
-	}
-	if oversize {
-		return []RuntimeEvent{{
-			Provider:  normalizer.config.Provider,
-			Channel:   channel,
-			Type:      "output_truncated",
-			Payload:   map[string]any{"reason": "frame_limit", "dropped_events": uint64(1), "dropped_bytes": frameBytes},
-			Truncated: true,
-		}}
-	}
-	return normalizer.normalizeFrame(channel, raw)
-}
-
-func (normalizer *eventNormalizer) normalizeFrame(channel string, raw []byte) []RuntimeEvent {
-	if normalizer.config.Format == "text" || channel != "process.stdout" {
-		text, wasRedacted, wasTruncated := normalizer.prepareText(string(raw))
-		return []RuntimeEvent{{
-			Provider:  normalizer.config.Provider,
-			Channel:   channel,
-			Type:      "command_output_delta",
-			Payload:   map[string]any{"text": text},
-			Redacted:  wasRedacted,
-			Truncated: wasTruncated,
-		}}
-	}
-
-	var envelope map[string]any
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return []RuntimeEvent{normalizer.unknownEvent("invalid_json", raw)}
-	}
-	provider := strings.ToLower(normalizer.config.Provider)
-	switch provider {
-	case "codex":
-		return normalizer.normalizeCodex(envelope, raw)
-	case "grok":
-		return normalizer.normalizeGrok(envelope, raw)
-	default:
-		return []RuntimeEvent{normalizer.unknownEvent(providerMethod(envelope), raw)}
-	}
+	return frame, frame.byteLength != 0
 }
 
 func canonicalEventChannel(channel string) (string, error) {
@@ -230,7 +240,45 @@ func canonicalEventChannel(channel string) (string, error) {
 	}
 }
 
-func (normalizer *eventNormalizer) normalizeCodex(envelope map[string]any, raw []byte) []RuntimeEvent {
+func (policy *eventPolicy) normalizeFrame(channel string, frame decodedFrame) []RuntimeEvent {
+	if frame.oversize {
+		return []RuntimeEvent{{
+			Provider:  policy.provider,
+			Channel:   channel,
+			Type:      "output_truncated",
+			Payload:   map[string]any{"reason": "frame_limit", "dropped_events": uint64(1), "dropped_bytes": frame.byteLength},
+			Truncated: true,
+		}}
+	}
+	raw := frame.raw
+	if policy.format == "text" || channel != "process.stdout" {
+		text, wasRedacted, wasTruncated := policy.prepareText(string(raw))
+		return []RuntimeEvent{{
+			Provider:  policy.provider,
+			Channel:   channel,
+			Type:      "command_output_delta",
+			Payload:   map[string]any{"text": text},
+			Redacted:  wasRedacted,
+			Truncated: wasTruncated,
+		}}
+	}
+
+	var envelope map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return []RuntimeEvent{policy.unknownEvent("invalid_json", raw)}
+	}
+	provider := strings.ToLower(policy.provider)
+	switch provider {
+	case "codex":
+		return policy.normalizeCodex(envelope, raw)
+	case "grok":
+		return policy.normalizeGrok(envelope, raw)
+	default:
+		return []RuntimeEvent{policy.unknownEvent(providerMethod(envelope), raw)}
+	}
+}
+
+func (policy *eventPolicy) normalizeCodex(envelope map[string]any, raw []byte) []RuntimeEvent {
 	method := stringField(envelope, "method")
 	eventType := stringField(envelope, "type")
 	item := mapField(envelope, "item")
@@ -239,19 +287,19 @@ func (normalizer *eventNormalizer) normalizeCodex(envelope map[string]any, raw [
 		return nil
 	}
 	if eventType != "item.completed" || itemType != "agent_message" {
-		return []RuntimeEvent{normalizer.unknownEvent(providerMethod(envelope), raw)}
+		return []RuntimeEvent{policy.unknownEvent(providerMethod(envelope), raw)}
 	}
 	text, ok := item["text"].(string)
 	if !ok {
-		return []RuntimeEvent{normalizer.unknownEvent(providerMethod(envelope), raw)}
+		return []RuntimeEvent{policy.unknownEvent(providerMethod(envelope), raw)}
 	}
-	return []RuntimeEvent{normalizer.assistantEvent(text, containsSensitiveValue(envelope))}
+	return []RuntimeEvent{policy.assistantEvent(text, containsSensitiveValue(envelope))}
 }
 
-func (normalizer *eventNormalizer) normalizeGrok(envelope map[string]any, raw []byte) []RuntimeEvent {
+func (policy *eventPolicy) normalizeGrok(envelope map[string]any, raw []byte) []RuntimeEvent {
 	method := stringField(envelope, "method")
 	if method == "_x.ai/mcp/servers_updated" {
-		return []RuntimeEvent{normalizer.unknownEvent(method, raw)}
+		return []RuntimeEvent{policy.unknownEvent(method, raw)}
 	}
 	params := mapField(envelope, "params")
 	update := mapField(params, "update")
@@ -260,19 +308,19 @@ func (normalizer *eventNormalizer) normalizeGrok(envelope map[string]any, raw []
 		return nil
 	}
 	if method != "session/update" || updateType != "agent_message_chunk" {
-		return []RuntimeEvent{normalizer.unknownEvent(providerMethod(envelope), raw)}
+		return []RuntimeEvent{policy.unknownEvent(providerMethod(envelope), raw)}
 	}
 	text, ok := update["content"].(string)
 	if !ok {
-		return []RuntimeEvent{normalizer.unknownEvent(providerMethod(envelope), raw)}
+		return []RuntimeEvent{policy.unknownEvent(providerMethod(envelope), raw)}
 	}
-	return []RuntimeEvent{normalizer.assistantEvent(text, containsSensitiveValue(envelope))}
+	return []RuntimeEvent{policy.assistantEvent(text, containsSensitiveValue(envelope))}
 }
 
-func (normalizer *eventNormalizer) assistantEvent(rawText string, structuralRedaction bool) RuntimeEvent {
-	text, valueRedaction, truncated := normalizer.prepareText(rawText)
+func (policy *eventPolicy) assistantEvent(rawText string, structuralRedaction bool) RuntimeEvent {
+	text, valueRedaction, truncated := policy.prepareText(rawText)
 	return RuntimeEvent{
-		Provider:  normalizer.config.Provider,
+		Provider:  policy.provider,
 		Channel:   "assistant",
 		Type:      "text_delta",
 		Payload:   map[string]any{"text": text},
@@ -281,7 +329,7 @@ func (normalizer *eventNormalizer) assistantEvent(rawText string, structuralReda
 	}
 }
 
-func (normalizer *eventNormalizer) prepareText(rawText string) (string, bool, bool) {
+func (policy *eventPolicy) prepareText(rawText string) (string, bool, bool) {
 	valid := strings.ToValidUTF8(rawText, "\uFFFD")
 	safe := strings.Map(func(value rune) rune {
 		if unicode.IsControl(value) {
@@ -290,21 +338,21 @@ func (normalizer *eventNormalizer) prepareText(rawText string) (string, bool, bo
 		return value
 	}, valid)
 	redactedText := redact.RedactSecrets(safe)
-	bounded, truncated := boundTextPayload(redactedText, normalizer.config.MaxPayloadBytes)
+	bounded, truncated := boundTextPayload(redactedText, policy.maxPayloadBytes)
 	return bounded, redactedText != safe, truncated
 }
 
-func (normalizer *eventNormalizer) unknownEvent(method string, raw []byte) RuntimeEvent {
+func (policy *eventPolicy) unknownEvent(method string, raw []byte) RuntimeEvent {
 	digest := sha256.Sum256(raw)
 	method = safeMetadata(method, 80)
-	fingerprint := safeMetadata(normalizer.config.SchemaFingerprint, 96)
+	fingerprint := safeMetadata(policy.schemaFingerprint, 96)
 	payload := map[string]any{
 		"provider_method":    method,
 		"schema_fingerprint": fingerprint,
 		"byte_length":        uint64(len(raw)),
 		"diagnostic_hash":    hex.EncodeToString(digest[:]),
 	}
-	if jsonSize(payload) > normalizer.config.MaxPayloadBytes {
+	if jsonSize(payload) > policy.maxPayloadBytes {
 		methodHash := sha256.Sum256([]byte(method))
 		fingerprintHash := sha256.Sum256([]byte(fingerprint))
 		payload = map[string]any{
@@ -315,7 +363,7 @@ func (normalizer *eventNormalizer) unknownEvent(method string, raw []byte) Runti
 		}
 	}
 	return RuntimeEvent{
-		Provider: normalizer.config.Provider,
+		Provider: policy.provider,
 		Channel:  "system",
 		Type:     "provider_event_unknown",
 		Payload:  payload,
@@ -460,6 +508,7 @@ func defaultEventPumpConfig() eventPumpConfig {
 	}
 }
 
+// eventPump owns admission, coalescing, quotas, ordering, and queue storage.
 type eventPump struct {
 	mu      sync.Mutex
 	config  eventPumpConfig
