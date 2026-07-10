@@ -57,6 +57,30 @@ type ExecutorV2 interface {
 	Close() error
 }
 
+// EventExecutor is an optional ExecutorV2 capability for provider-neutral,
+// execution-correlated event delivery.
+type EventExecutor interface {
+	SendEvents(ctx context.Context, executionID ExecutionID, msg Message, emit func(ExecutorEvent)) (*Response, error)
+}
+
+// ExecutionCanceller is an optional ExecutorV2 capability for native
+// cancellation with explicit acknowledgement evidence.
+type ExecutionCanceller interface {
+	CancelExecution(ctx context.Context, executionID ExecutionID, reason string) (CancellationEvidence, error)
+}
+
+// ProcessEvidenceProvider is an optional ExecutorV2 capability for inspecting
+// the process generation and tree owned by an execution.
+type ProcessEvidenceProvider interface {
+	ProcessTreeEvidence(ctx context.Context, executionID ExecutionID) (ProcessTreeEvidence, error)
+}
+
+// SessionIdentityProvider is an optional ExecutorV2 capability exposing the
+// exact provider-neutral session generation bound to the executor.
+type SessionIdentityProvider interface {
+	SessionIdentity() SessionIdentity
+}
+
 // Session represents a persistent CLI process for multi-turn interaction.
 type Session interface {
 	// ID returns the session identifier.
