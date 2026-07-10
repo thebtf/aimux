@@ -163,6 +163,18 @@ func TestTaskLifecycleAuthority_AdditiveSurface(t *testing.T) {
 			}
 		}
 
+		parent := &Task{
+			ID: "reflect-parent", Status: TaskStatusPending, WorkerType: WorkerTypeCLI,
+			ProjectID: "reflect-project", EngineName: fixture.name, TenantID: "reflect-tenant",
+			Prompt: "reflect parent", CreatedAt: t013At.Add(-time.Second),
+		}
+		if err := fixture.store.Create(parent); err != nil {
+			t.Fatalf("seed canonical parent: %v", err)
+		}
+		if facts := t013Artifacts(t, fixture.view, parent.ID); len(facts) != 0 {
+			t.Fatalf("legacy parent seed artifacts=%d, want 0", len(facts))
+		}
+
 		created, err := t013InvokeReflectedCommit(t, fixture.store, "CommitCreated", createFields("reflect-lifecycle"))
 		if err != nil {
 			t.Fatalf("CommitCreated: %v", err)
@@ -214,7 +226,6 @@ func TestTaskLifecycleAuthority_AdditiveSurface(t *testing.T) {
 			fields map[string]any
 		}{
 			{name: "illegal-expected-status", fields: map[string]any{"TaskID": "reflect-lifecycle", "ExpectedStatus": TaskStatusRunning, "RunningAt": t013At.Add(2 * time.Second)}},
-			{name: "time-before-dispatched", fields: map[string]any{"TaskID": "reflect-lifecycle", "ExpectedStatus": TaskStatusDispatched, "RunningAt": t013At}},
 			{name: "missing-task", fields: map[string]any{"TaskID": "reflect-missing", "ExpectedStatus": TaskStatusDispatched, "RunningAt": t013At.Add(2 * time.Second)}},
 		}
 		for _, tc := range invalidCases {
@@ -233,6 +244,29 @@ func TestTaskLifecycleAuthority_AdditiveSurface(t *testing.T) {
 		t013SeedAction(t, fixture.db, "run-responding", "reflect-lifecycle")
 		if _, err := fixture.db.Exec(`UPDATE pending_actions SET status='responding',response_json='{"answer":"seed"}' WHERE id='run-responding'`); err != nil {
 			t.Fatal(err)
+		}
+		runningTemporalBefore, runningTemporalBeforeErr := fixture.view.Get("reflect-lifecycle")
+		if runningTemporalBeforeErr != nil {
+			t.Fatalf("read task before CommitRunning temporal conflict: %v", runningTemporalBeforeErr)
+		}
+		runningTemporalFactsBefore := t013Artifacts(t, fixture.view, "reflect-lifecycle")
+		runningTemporalActionsBefore := t004ReadRows(t, fixture.observer, "pending_actions", "id")
+		runningTemporal, runningTemporalErr := t013InvokeReflectedCommit(t, fixture.store, "CommitRunning", map[string]any{
+			"TaskID": "reflect-lifecycle", "ExpectedStatus": TaskStatusDispatched, "RunningAt": t013At,
+		})
+		runningTemporalWinnerMatches := reflect.DeepEqual(runningTemporal.Winner.Task, t013CanonicalTaskProjection(runningTemporalBefore))
+		if !errors.Is(runningTemporalErr, ErrAuthorityConflict) || runningTemporal.Applied || runningTemporal.ArtifactSeq != 0 || runningTemporal.ClosedActionCount != 0 || !runningTemporalWinnerMatches || runningTemporal.Winner.Action != nil || len(runningTemporal.Winner.Conflicts) != 1 || runningTemporal.Winner.Conflicts[0].Kind != ConflictDispatchTime || runningTemporal.Winner.Conflicts[0].Action != nil {
+			t.Errorf("CommitRunning temporal conflict=%#v err=%v canonical=%#v, want exact dispatch-time winner with zero seq/count", runningTemporal, runningTemporalErr, t013CanonicalTaskProjection(runningTemporalBefore))
+		}
+		runningTemporalAfter, runningTemporalAfterErr := fixture.view.Get("reflect-lifecycle")
+		if runningTemporalAfterErr != nil || !reflect.DeepEqual(runningTemporalAfter, runningTemporalBefore) {
+			t.Errorf("CommitRunning temporal conflict task before=%#v after=%#v err=%v", runningTemporalBefore, runningTemporalAfter, runningTemporalAfterErr)
+		}
+		if actionsAfter := t004ReadRows(t, fixture.observer, "pending_actions", "id"); !reflect.DeepEqual(actionsAfter, runningTemporalActionsBefore) {
+			t.Errorf("CommitRunning temporal conflict changed actions: before=%#v after=%#v", runningTemporalActionsBefore, actionsAfter)
+		}
+		if factsAfter := t013Artifacts(t, fixture.view, "reflect-lifecycle"); !reflect.DeepEqual(factsAfter, runningTemporalFactsBefore) {
+			t.Errorf("CommitRunning temporal conflict changed facts: before=%#v after=%#v", runningTemporalFactsBefore, factsAfter)
 		}
 		runningAt := t013At.Add(2 * time.Second)
 		running, runningErr := t013InvokeReflectedCommit(t, fixture.store, "CommitRunning", map[string]any{
@@ -264,6 +298,29 @@ func TestTaskLifecycleAuthority_AdditiveSurface(t *testing.T) {
 		t013SeedAction(t, fixture.db, "retry-responding", "reflect-lifecycle")
 		if _, err := fixture.db.Exec(`UPDATE pending_actions SET status='responding',response_json='{"answer":"seed"}' WHERE id='retry-responding'`); err != nil {
 			t.Fatal(err)
+		}
+		retryingTemporalBefore, retryingTemporalBeforeErr := fixture.view.Get("reflect-lifecycle")
+		if retryingTemporalBeforeErr != nil {
+			t.Fatalf("read task before CommitRetrying temporal conflict: %v", retryingTemporalBeforeErr)
+		}
+		retryingTemporalFactsBefore := t013Artifacts(t, fixture.view, "reflect-lifecycle")
+		retryingTemporalActionsBefore := t004ReadRows(t, fixture.observer, "pending_actions", "id")
+		retryingTemporal, retryingTemporalErr := t013InvokeReflectedCommit(t, fixture.store, "CommitRetrying", map[string]any{
+			"TaskID": "reflect-lifecycle", "ExpectedStatus": TaskStatusRunning, "RetryingAt": t013At,
+		})
+		retryingTemporalWinnerMatches := reflect.DeepEqual(retryingTemporal.Winner.Task, t013CanonicalTaskProjection(retryingTemporalBefore))
+		if !errors.Is(retryingTemporalErr, ErrAuthorityConflict) || retryingTemporal.Applied || retryingTemporal.ArtifactSeq != 0 || retryingTemporal.ClosedActionCount != 0 || !retryingTemporalWinnerMatches || retryingTemporal.Winner.Action != nil || len(retryingTemporal.Winner.Conflicts) != 1 || retryingTemporal.Winner.Conflicts[0].Kind != ConflictDispatchTime || retryingTemporal.Winner.Conflicts[0].Action != nil {
+			t.Errorf("CommitRetrying temporal conflict=%#v err=%v canonical=%#v, want exact dispatch-time winner with zero seq/count", retryingTemporal, retryingTemporalErr, t013CanonicalTaskProjection(retryingTemporalBefore))
+		}
+		retryingTemporalAfter, retryingTemporalAfterErr := fixture.view.Get("reflect-lifecycle")
+		if retryingTemporalAfterErr != nil || !reflect.DeepEqual(retryingTemporalAfter, retryingTemporalBefore) {
+			t.Errorf("CommitRetrying temporal conflict task before=%#v after=%#v err=%v", retryingTemporalBefore, retryingTemporalAfter, retryingTemporalAfterErr)
+		}
+		if actionsAfter := t004ReadRows(t, fixture.observer, "pending_actions", "id"); !reflect.DeepEqual(actionsAfter, retryingTemporalActionsBefore) {
+			t.Errorf("CommitRetrying temporal conflict changed actions: before=%#v after=%#v", retryingTemporalActionsBefore, actionsAfter)
+		}
+		if factsAfter := t013Artifacts(t, fixture.view, "reflect-lifecycle"); !reflect.DeepEqual(factsAfter, retryingTemporalFactsBefore) {
+			t.Errorf("CommitRetrying temporal conflict changed facts: before=%#v after=%#v", retryingTemporalFactsBefore, factsAfter)
 		}
 		retryingAt := t013At.Add(3 * time.Second)
 		retrying, retryingErr := t013InvokeReflectedCommit(t, fixture.store, "CommitRetrying", map[string]any{
