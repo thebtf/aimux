@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1713,9 +1714,45 @@ func limitedRecipeProfile() *config.CLIProfile {
 	}
 }
 
+var taskToolFixtureSequence atomic.Uint64
+
+func nextTaskToolFixtureDSN() string {
+	fixtureID := taskToolFixtureSequence.Add(1)
+	return fmt.Sprintf("file:task_tool_%d?cache=shared&mode=memory", fixtureID)
+}
+
+func TestNextTaskToolFixtureDSNIsProcessUnique(t *testing.T) {
+	const fixtureCount = 1024
+	dsns := make(chan string, fixtureCount)
+	var workers sync.WaitGroup
+	workers.Add(fixtureCount)
+	for range fixtureCount {
+		go func() {
+			defer workers.Done()
+			dsns <- nextTaskToolFixtureDSN()
+		}()
+	}
+	workers.Wait()
+	close(dsns)
+
+	seen := make(map[string]struct{}, fixtureCount)
+	for dsn := range dsns {
+		if !strings.HasSuffix(dsn, "?cache=shared&mode=memory") {
+			t.Fatalf("fixture DSN lost shared-memory mode: %q", dsn)
+		}
+		if _, duplicate := seen[dsn]; duplicate {
+			t.Fatalf("duplicate fixture DSN: %q", dsn)
+		}
+		seen[dsn] = struct{}{}
+	}
+	if len(seen) != fixtureCount {
+		t.Fatalf("unique fixture DSNs=%d want=%d", len(seen), fixtureCount)
+	}
+}
+
 func newTaskToolEngine(t *testing.T) *loom.LoomEngine {
 	t.Helper()
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:task_tool_%d?cache=shared&mode=memory", time.Now().UnixNano()))
+	db, err := sql.Open("sqlite", nextTaskToolFixtureDSN())
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
