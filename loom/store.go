@@ -1217,6 +1217,38 @@ func (s *TaskStore) listInternal(projectID, tenantID string, statuses ...TaskSta
 	return tasks, rows.Err()
 }
 
+func (s *TaskStore) listRecoveryCandidates() ([]*Task, error) {
+	rows, err := s.db.Query(`
+		SELECT `+taskSelectColumns+`
+		FROM tasks
+		WHERE engine_name = ? AND status IN (?,?,?,?,?)
+		ORDER BY created_at ASC, id ASC`,
+		s.engineName,
+		TaskStatusDispatched,
+		TaskStatusRunning,
+		TaskStatusInputRequired,
+		TaskStatusRetrying,
+		TaskStatusCancelling,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loom store: list recovery candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*Task
+	for rows.Next() {
+		task, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("loom store: scan recovery candidate: %w", scanErr)
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("loom store: iterate recovery candidates: %w", err)
+	}
+	return tasks, nil
+}
+
 // ListAll returns tasks across all engines and projects, optionally filtered by status.
 // Unlike List, it applies no engine_name or project_id filter — use for cross-daemon
 // global views (AIMUX-10 FR-5, sessions tool all=true opt-in).
