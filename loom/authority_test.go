@@ -393,7 +393,13 @@ func t004BuildCommand(commandType reflect.Type, cmd t004Command) reflect.Value {
 	value := reflect.New(commandType).Elem()
 	t004SetNamed(value, "TaskID", cmd.TaskID)
 	t004SetNamed(value, "ActionID", cmd.ActionID)
-	t004SetNamed(value, "ExpectedStatus", cmd.ExpectedActionStatus)
+	legacyExpectedStatus := any(cmd.ExpectedTaskStatus)
+	if cmd.Method == "BeginActionResponse" {
+		// Frozen-v1 BeginActionResponse used ExpectedStatus for the action CAS;
+		// task commands used the same field name for the task CAS.
+		legacyExpectedStatus = cmd.ExpectedActionStatus
+	}
+	t004SetNamed(value, "ExpectedStatus", legacyExpectedStatus)
 	t004SetNamed(value, "ExpectedTaskStatus", cmd.ExpectedTaskStatus)
 	t004SetNamed(value, "ExpectedActionStatus", cmd.ExpectedActionStatus)
 	t004SetNamed(value, "Result", cmd.Result)
@@ -415,6 +421,66 @@ func t004BuildCommand(commandType reflect.Type, cmd t004Command) reflect.Value {
 		t004Set(stop, t004StopEvidence(cmd.Stop))
 	}
 	return value
+}
+
+type t004HarnessTaskCommand struct {
+	ExpectedStatus TaskStatus
+}
+
+type t004HarnessActionCommand struct {
+	ExpectedStatus string
+}
+
+type t004HarnessExpectedStatusTarget struct{}
+
+func (t004HarnessExpectedStatusTarget) CommitDispatched(context.Context, t004HarnessTaskCommand) (struct{}, error) {
+	return struct{}{}, nil
+}
+
+func (t004HarnessExpectedStatusTarget) BeginActionResponse(context.Context, t004HarnessActionCommand) (struct{}, error) {
+	return struct{}{}, nil
+}
+
+func TestTaskAuthority_HarnessExpectedStatusMapping(t *testing.T) {
+	target := reflect.ValueOf(t004HarnessExpectedStatusTarget{})
+	base := t004Command{
+		ExpectedTaskStatus:   t004Retrying,
+		ExpectedActionStatus: "responding",
+	}
+	for _, testCase := range []struct {
+		method string
+		want   string
+	}{
+		{method: "CommitDispatched", want: string(t004Retrying)},
+		{method: "BeginActionResponse", want: "responding"},
+	} {
+		command := base
+		command.Method = testCase.method
+		method := target.MethodByName(testCase.method)
+		if !method.IsValid() {
+			t.Fatalf("surrogate method %s unavailable", testCase.method)
+		}
+		built := t004BuildCommand(method.Type().In(1), command)
+		if got := t004String(built, "ExpectedStatus"); got != testCase.want {
+			t.Fatalf("%s ExpectedStatus=%q want=%q", testCase.method, got, testCase.want)
+		}
+	}
+}
+
+func t004AssertBuiltTaskExpectedStatus(t *testing.T, target any, cmd t004Command) {
+	t.Helper()
+	method := reflect.ValueOf(target).MethodByName(cmd.Method)
+	if !method.IsValid() || method.Type().NumIn() < 2 {
+		t.Fatalf("t004 oracle: %s command method unavailable", cmd.Method)
+	}
+	built := t004BuildCommand(method.Type().In(1), cmd)
+	field := built.FieldByName("ExpectedStatus")
+	if !field.IsValid() {
+		t.Fatalf("t004 oracle: %s command has no ExpectedStatus", cmd.Method)
+	}
+	if got, want := t004String(built, "ExpectedStatus"), string(cmd.ExpectedTaskStatus); got != want {
+		t.Fatalf("t004 oracle: %s ExpectedStatus=%q want task status %q", cmd.Method, got, want)
+	}
 }
 
 func t004Invoke(ctx context.Context, target any, cmd t004Command) (authorityObservedResult, error) {
@@ -1457,6 +1523,7 @@ func TestTaskAuthority_DispatchMonotonicPendingAndRetrying(t *testing.T) {
 			command := t004DefaultCommand("CommitDispatched", fixture.id, fixture.action)
 			command.ExpectedTaskStatus = source
 			command.At = prior.Add(time.Second)
+			t004AssertBuiltTaskExpectedStatus(t, fixture.target, command)
 			baseline := t004ArtifactBaseline(t, fixture.store.db)
 			result, err := t004Invoke(context.Background(), fixture.target, command)
 			t004RequireApplied(t, result, err)
@@ -1565,7 +1632,11 @@ func TestTaskAuthority_ValidationAndNotFoundReturnZero(t *testing.T) {
 				testCase.setup(t, fixture)
 			}
 			before := t004ReadState(t, fixture.store.db)
-			result, err := t004Invoke(context.Background(), fixture.target, testCase.mutate(fixture))
+			command := testCase.mutate(fixture)
+			if testCase.name == "dispatch-illegal-caller" {
+				t004AssertBuiltTaskExpectedStatus(t, fixture.target, command)
+			}
+			result, err := t004Invoke(context.Background(), fixture.target, command)
 			if err == nil {
 				t.Errorf("validation unexpectedly succeeded: %#v", result)
 			}
