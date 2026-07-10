@@ -194,6 +194,244 @@ var migrateV8Statements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_task_artifacts_runtime_slice ON task_artifacts(task_id, kind, event_type, channel, seq)`,
 }
 
+const migrateV9CancelRequestedAt = `ALTER TABLE tasks ADD COLUMN cancel_requested_at DATETIME`
+
+const createPendingActionsTable = `
+CREATE TABLE IF NOT EXISTS pending_actions (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    provider_request_id TEXT NOT NULL,
+    connection_generation INTEGER NOT NULL,
+    request_json TEXT NOT NULL,
+    response_json TEXT,
+    delivery_json TEXT,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL,
+    responded_at DATETIME,
+    resolved_at DATETIME
+)`
+
+const pendingActionsProviderIndex = "idx_pending_actions_provider_generation"
+
+var pendingActionsProviderIndexColumns = []string{"task_id", "provider_request_id", "connection_generation"}
+
+const taskStorePragmaTimeout = 5 * time.Second
+
+func sqliteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sqlite_busy") || strings.Contains(message, "database is locked")
+}
+
+func waitTaskStorePragmaRetry(ctx context.Context) error {
+	timer := time.NewTimer(10 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func taskStoreMainDatabaseIsMemory(ctx context.Context, db *sql.DB) (bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA database_list")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq int
+		var name, filename string
+		if err := rows.Scan(&seq, &name, &filename); err != nil {
+			return false, err
+		}
+		if name == "main" {
+			return filename == "", nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, errors.New("PRAGMA database_list has no main database")
+}
+
+func ensureTaskStoreJournalMode(db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), taskStorePragmaTimeout)
+	defer cancel()
+	for {
+		var mode string
+		err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode)
+		if err == nil {
+			if strings.EqualFold(mode, "wal") {
+				return nil
+			}
+			if strings.EqualFold(mode, "memory") {
+				memoryBacked, inspectErr := taskStoreMainDatabaseIsMemory(ctx, db)
+				if inspectErr != nil {
+					return fmt.Errorf("inspect memory journal backing: %w", inspectErr)
+				}
+				if memoryBacked {
+					// SQLite cannot enable WAL for an in-memory database. Loom's
+					// shared-memory test/example stores intentionally use this mode.
+					return nil
+				}
+			}
+			err = db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&mode)
+			if err == nil {
+				if strings.EqualFold(mode, "wal") {
+					return nil
+				}
+				return fmt.Errorf("journal mode is %q after WAL request", mode)
+			}
+		}
+		if !sqliteBusyError(err) {
+			return err
+		}
+		if err := waitTaskStorePragmaRetry(ctx); err != nil {
+			return fmt.Errorf("waiting for WAL mode: %w", err)
+		}
+	}
+}
+
+func ensureTaskStoreSynchronousNormal(db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), taskStorePragmaTimeout)
+	defer cancel()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire synchronous connection: %w", err)
+	}
+	defer conn.Close()
+	for {
+		_, err := conn.ExecContext(ctx, "PRAGMA synchronous=NORMAL")
+		if err == nil {
+			var level int
+			err = conn.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&level)
+			if err == nil {
+				if level != 1 {
+					return fmt.Errorf("synchronous level is %d after NORMAL request", level)
+				}
+				return nil
+			}
+		}
+		if !sqliteBusyError(err) {
+			return err
+		}
+		if err := waitTaskStorePragmaRetry(ctx); err != nil {
+			return fmt.Errorf("waiting to set synchronous mode: %w", err)
+		}
+	}
+}
+
+func migrateV9(db *sql.DB) (err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := beginAuthorityTransaction(ctx, db)
+	if err != nil {
+		return fmt.Errorf("begin v9 migration: %w", err)
+	}
+	defer func() {
+		if tx.active {
+			if rollbackErr := tx.rollback(); rollbackErr != nil {
+				if err != nil {
+					err = fmt.Errorf("%v; rollback v9 migration: %w", err, rollbackErr)
+				} else {
+					err = fmt.Errorf("rollback v9 migration: %w", rollbackErr)
+				}
+			}
+		}
+	}()
+
+	if _, execErr := tx.conn.ExecContext(ctx, migrateV9CancelRequestedAt); execErr != nil && !strings.Contains(execErr.Error(), "duplicate column name") {
+		return fmt.Errorf("add cancel_requested_at: %w", execErr)
+	}
+	if _, execErr := tx.conn.ExecContext(ctx, createPendingActionsTable); execErr != nil {
+		return fmt.Errorf("create pending_actions: %w", execErr)
+	}
+
+	rows, err := tx.conn.QueryContext(ctx, `PRAGMA index_list('pending_actions')`)
+	if err != nil {
+		return fmt.Errorf("inspect pending_actions indexes: %w", err)
+	}
+	indexExists := false
+	indexUnique := false
+	indexOwned := false
+	indexPartial := false
+	for rows.Next() {
+		var seq, unique, partial int
+		var name, origin string
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			rows.Close()
+			return fmt.Errorf("inspect pending_actions index row: %w", err)
+		}
+		if name == pendingActionsProviderIndex {
+			indexExists = true
+			indexUnique = unique == 1
+			indexOwned = origin == "c"
+			indexPartial = partial != 0
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("inspect pending_actions index rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close pending_actions index inspection: %w", err)
+	}
+
+	var columns []string
+	if indexExists {
+		rows, err = tx.conn.QueryContext(ctx, `PRAGMA index_info(`+pendingActionsProviderIndex+`)`)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", pendingActionsProviderIndex, err)
+		}
+		for rows.Next() {
+			var seq, cid int
+			var name string
+			if err := rows.Scan(&seq, &cid, &name); err != nil {
+				rows.Close()
+				return fmt.Errorf("inspect %s row: %w", pendingActionsProviderIndex, err)
+			}
+			columns = append(columns, name)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("inspect %s rows: %w", pendingActionsProviderIndex, err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close %s inspection: %w", pendingActionsProviderIndex, err)
+		}
+	}
+
+	indexMatches := indexExists && indexUnique && indexOwned && !indexPartial &&
+		len(columns) == len(pendingActionsProviderIndexColumns)
+	if indexMatches {
+		for i := range columns {
+			if columns[i] != pendingActionsProviderIndexColumns[i] {
+				indexMatches = false
+				break
+			}
+		}
+	}
+	if indexExists && !indexMatches {
+		if _, err := tx.conn.ExecContext(ctx, `DROP INDEX IF EXISTS `+pendingActionsProviderIndex); err != nil {
+			return fmt.Errorf("drop incompatible %s: %w", pendingActionsProviderIndex, err)
+		}
+	}
+	if _, err := tx.conn.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS `+pendingActionsProviderIndex+
+		` ON pending_actions(task_id, provider_request_id, connection_generation)`); err != nil {
+		return fmt.Errorf("create %s: %w", pendingActionsProviderIndex, err)
+	}
+	if err := tx.commit(); err != nil {
+		return fmt.Errorf("commit v9 migration: %w", err)
+	}
+	return nil
+}
+
 // MigrateV5Down reverts the v5 progress columns. Returns an error on the
 // first DROP that fails for a reason other than "no such column" (which is
 // idempotent — the column was already absent).
@@ -243,8 +481,9 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 		return nil, fmt.Errorf("loom store: create schema: %w", err)
 	}
 	// Migrate: add request_id column if not present (pre-Phase 4a databases).
-	// Ignore "duplicate column name" errors — ALTER is idempotent by design.
-	db.Exec(migrateRequestIDColumn) //nolint:errcheck
+	if _, err := db.Exec(migrateRequestIDColumn); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return nil, fmt.Errorf("loom store: migrate request_id: %w", err)
+	}
 	// Session-durability Phase 1: add daemon_uuid, last_seen_at, aborted_at.
 	// Each ALTER is run individually; "duplicate column name" is silently ignored
 	// (idempotent migration). Any other error is propagated — a partial schema
@@ -323,10 +562,21 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 			return nil, fmt.Errorf("loom store: migrate v8 artifact runtime slices: %w", err)
 		}
 	}
+	// AIMUX-26 CR-001: install the sole-authority cancellation marker and
+	// durable task-scoped pending-action table. migrateV9 repairs the legacy
+	// two-column correlation index without rewriting existing rows.
+	if err := migrateV9(db); err != nil {
+		return nil, fmt.Errorf("loom store: migrate v9 runtime authority: %w", err)
+	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
-	// These PRAGMAs are idempotent — safe even if already set.
-	db.Exec("PRAGMA journal_mode=WAL")   //nolint:errcheck
-	db.Exec("PRAGMA synchronous=NORMAL") //nolint:errcheck
+	// Reading first avoids an unnecessary write-PRAGMA racing a concurrent
+	// constructor's immediate migration transaction when WAL is already active.
+	if err := ensureTaskStoreJournalMode(db); err != nil {
+		return nil, fmt.Errorf("loom store: set journal mode: %w", err)
+	}
+	if err := ensureTaskStoreSynchronousNormal(db); err != nil {
+		return nil, fmt.Errorf("loom store: set synchronous mode: %w", err)
+	}
 	return &TaskStore{db: db, engineName: engineName}, nil
 }
 
@@ -354,9 +604,9 @@ func (s *TaskStore) Create(task *Task) error {
 	_, err = s.db.Exec(`
 		INSERT INTO tasks
 			(id, status, worker_type, project_id, request_id, parent_task_id, prompt, cwd, env, cli, role, model,
-			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, cancel_requested_at, completed_at,
 			 daemon_uuid, last_seen_at, engine_name, tenant_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID,
 		string(task.Status),
 		string(task.WorkerType),
@@ -375,6 +625,7 @@ func (s *TaskStore) Create(task *Task) error {
 		task.Retries,
 		task.CreatedAt,
 		task.DispatchedAt,
+		task.CancelRequestedAt,
 		task.CompletedAt,
 		s.daemonUUID,
 		lastSeenAt,
@@ -427,9 +678,9 @@ func (s *TaskStore) Import(task *Task) error {
 	_, err = s.db.Exec(`
 		INSERT INTO tasks
 			(id, status, worker_type, project_id, request_id, parent_task_id, prompt, cwd, env, cli, role, model,
-			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+			 effort, timeout, metadata, result, error, retries, created_at, dispatched_at, cancel_requested_at, completed_at,
 			 daemon_uuid, last_seen_at, engine_name, tenant_id, last_output_line, progress_lines, progress_updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			status              = excluded.status,
 			worker_type         = excluded.worker_type,
@@ -450,6 +701,7 @@ func (s *TaskStore) Import(task *Task) error {
 			retries             = excluded.retries,
 			created_at          = excluded.created_at,
 			dispatched_at       = excluded.dispatched_at,
+			cancel_requested_at = excluded.cancel_requested_at,
 			completed_at        = excluded.completed_at,
 			daemon_uuid         = excluded.daemon_uuid,
 			last_seen_at        = excluded.last_seen_at,
@@ -478,6 +730,7 @@ func (s *TaskStore) Import(task *Task) error {
 		task.Retries,
 		createdAt,
 		task.DispatchedAt,
+		task.CancelRequestedAt,
 		task.CompletedAt,
 		s.daemonUUID,
 		lastSeenAt,
@@ -497,7 +750,7 @@ func (s *TaskStore) Import(task *Task) error {
 // hydrate a *Task via scanTask. Defining it once avoids drift between the
 // query columns and scanTask's destination order.
 const taskSelectColumns = `id, status, worker_type, project_id, request_id, parent_task_id, prompt, cwd, env, cli, role, model,
-		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, completed_at,
+		       effort, timeout, metadata, result, error, retries, created_at, dispatched_at, cancel_requested_at, completed_at,
 		       engine_name, tenant_id, last_output_line, progress_lines, progress_updated_at`
 
 // Get retrieves a task by ID (cross-tenant — use GetForTenant for scoped access).
@@ -843,6 +1096,7 @@ func scanTask(s scanner) (*Task, error) {
 		metaJSON          string
 		parentTaskID      sql.NullString
 		dispatchedAt      sql.NullTime
+		cancelRequestedAt sql.NullTime
 		completedAt       sql.NullTime
 		progressUpdatedAt sql.NullTime
 	)
@@ -868,6 +1122,7 @@ func scanTask(s scanner) (*Task, error) {
 		&task.Retries,
 		&task.CreatedAt,
 		&dispatchedAt,
+		&cancelRequestedAt,
 		&completedAt,
 		&task.EngineName,
 		&task.TenantID,
@@ -892,6 +1147,10 @@ func scanTask(s scanner) (*Task, error) {
 	if dispatchedAt.Valid {
 		t := dispatchedAt.Time
 		task.DispatchedAt = &t
+	}
+	if cancelRequestedAt.Valid {
+		t := cancelRequestedAt.Time
+		task.CancelRequestedAt = &t
 	}
 	if completedAt.Valid {
 		t := completedAt.Time

@@ -8,13 +8,16 @@ import (
 type TaskStatus string
 
 const (
-	TaskStatusPending     TaskStatus = "pending"
-	TaskStatusDispatched  TaskStatus = "dispatched"
-	TaskStatusRunning     TaskStatus = "running"
-	TaskStatusCompleted   TaskStatus = "completed"
-	TaskStatusFailed      TaskStatus = "failed"
-	TaskStatusFailedCrash TaskStatus = "failed_crash"
-	TaskStatusRetrying    TaskStatus = "retrying"
+	TaskStatusPending       TaskStatus = "pending"
+	TaskStatusDispatched    TaskStatus = "dispatched"
+	TaskStatusRunning       TaskStatus = "running"
+	TaskStatusInputRequired TaskStatus = "input_required"
+	TaskStatusRetrying      TaskStatus = "retrying"
+	TaskStatusCancelling    TaskStatus = "cancelling"
+	TaskStatusCompleted     TaskStatus = "completed"
+	TaskStatusFailed        TaskStatus = "failed"
+	TaskStatusFailedCrash   TaskStatus = "failed_crash"
+	TaskStatusCancelled     TaskStatus = "cancelled"
 )
 
 // validTransitions defines the state machine.
@@ -36,10 +39,12 @@ const (
 // by CanTransitionTo, leaving tasks permanently stuck in retrying. The PRC #2
 // bug-hunter audit caught this regression before merge.
 var validTransitions = map[TaskStatus][]TaskStatus{
-	TaskStatusPending:    {TaskStatusDispatched, TaskStatusFailed},
-	TaskStatusDispatched: {TaskStatusRunning, TaskStatusFailed, TaskStatusFailedCrash},
-	TaskStatusRunning:    {TaskStatusCompleted, TaskStatusFailed, TaskStatusRetrying, TaskStatusFailedCrash},
-	TaskStatusRetrying:   {TaskStatusDispatched, TaskStatusFailed},
+	TaskStatusPending:       {TaskStatusDispatched, TaskStatusFailed, TaskStatusCancelled},
+	TaskStatusDispatched:    {TaskStatusRunning, TaskStatusFailed, TaskStatusFailedCrash, TaskStatusCancelling},
+	TaskStatusRunning:       {TaskStatusCompleted, TaskStatusFailed, TaskStatusFailedCrash, TaskStatusRetrying, TaskStatusInputRequired, TaskStatusCancelling},
+	TaskStatusInputRequired: {TaskStatusRunning, TaskStatusFailed, TaskStatusFailedCrash, TaskStatusCancelling},
+	TaskStatusRetrying:      {TaskStatusDispatched, TaskStatusFailed, TaskStatusFailedCrash, TaskStatusCancelling},
+	TaskStatusCancelling:    {TaskStatusCancelled, TaskStatusFailedCrash},
 }
 
 // CanTransitionTo checks if transitioning from current status to target is valid.
@@ -59,7 +64,7 @@ func (s TaskStatus) CanTransitionTo(target TaskStatus) bool {
 // IsTerminal returns true if the status is a terminal state.
 func (s TaskStatus) IsTerminal() bool {
 	switch s {
-	case TaskStatusCompleted, TaskStatusFailed, TaskStatusFailedCrash:
+	case TaskStatusCompleted, TaskStatusFailed, TaskStatusFailedCrash, TaskStatusCancelled:
 		return true
 	}
 	return false
@@ -69,7 +74,7 @@ func (s TaskStatus) IsTerminal() bool {
 // or reaped. Terminal states are intentionally excluded.
 func (s TaskStatus) IsActive() bool {
 	switch s {
-	case TaskStatusPending, TaskStatusDispatched, TaskStatusRunning, TaskStatusRetrying:
+	case TaskStatusPending, TaskStatusDispatched, TaskStatusRunning, TaskStatusInputRequired, TaskStatusRetrying, TaskStatusCancelling:
 		return true
 	}
 	return false
@@ -115,6 +120,7 @@ type Task struct {
 	Retries           int               `json:"retries"`
 	CreatedAt         time.Time         `json:"created_at"`
 	DispatchedAt      *time.Time        `json:"dispatched_at,omitempty"`
+	CancelRequestedAt *time.Time        `json:"cancel_requested_at,omitempty"`
 	CompletedAt       *time.Time        `json:"completed_at,omitempty"`
 	LastOutputLine    string            `json:"last_output_line,omitempty"`
 	ProgressLines     int64             `json:"progress_lines,omitempty"`
