@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -522,10 +523,30 @@ WHERE name IN ('id','task_id','kind','status','provider_request_id','connection_
 	if taskFK == 0 {
 		t.Fatal("pending_actions.task_id foreign key missing")
 	}
+	rows, err := db.Query(`PRAGMA index_info(idx_pending_actions_provider_generation)`)
+	t004Must(t, err)
+	var indexColumns []string
+	for rows.Next() {
+		var seq, cid int
+		var name string
+		t004Must(t, rows.Scan(&seq, &cid, &name))
+		indexColumns = append(indexColumns, name)
+	}
+	t004Must(t, rows.Err())
+	_ = rows.Close()
+	wantIndexColumns := []string{"task_id", "provider_request_id", "connection_generation"}
+	if !reflect.DeepEqual(indexColumns, wantIndexColumns) {
+		t.Fatalf("idx_pending_actions_provider_generation columns=%v want=%v", indexColumns, wantIndexColumns)
+	}
+	for _, forbidden := range []string{"worker_session_id", "run_binding_id", "lease_id", "principal_id", "provider_session_id"} {
+		if loomTableColumnExists(t, db, "pending_actions", forbidden) {
+			t.Errorf("v9 introduced CR-003 column pending_actions.%s", forbidden)
+		}
+	}
 	if integrity := t004Scalar(t, db, `PRAGMA integrity_check`); integrity != "ok" {
 		t.Fatalf("integrity_check=%q", integrity)
 	}
-	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	rows, err = db.Query(`PRAGMA foreign_key_check`)
 	t004Must(t, err)
 	if rows.Next() {
 		t.Fatal("foreign_key_check returned a row")
@@ -547,8 +568,11 @@ func t004AssertProviderFence(t *testing.T, db *sql.DB, stage string) {
 	if err := insert(stage+"-one", stage+"-a", 7); err != nil {
 		t.Fatalf("%s first provider insert: %v", stage, err)
 	}
-	if err := insert(stage+"-duplicate", stage+"-b", 7); err == nil {
-		t.Fatalf("%s accepted duplicate provider request and generation", stage)
+	if err := insert(stage+"-cross-task", stage+"-b", 7); err != nil {
+		t.Fatalf("%s rejected identical provider correlation on another task: %v", stage, err)
+	}
+	if err := insert(stage+"-same-task-duplicate", stage+"-b", 7); err == nil {
+		t.Fatalf("%s accepted same-task duplicate provider correlation", stage)
 	}
 	if err := insert(stage+"-next", stage+"-b", 8); err != nil {
 		t.Fatalf("%s rejected different generation: %v", stage, err)
@@ -582,6 +606,7 @@ func TestTaskStore_MigrateV9_RepairsLiteralFixturesWithoutDataLoss(t *testing.T)
 		{"raw-v8", "", false, false},
 		{"column-only", `ALTER TABLE tasks ADD COLUMN cancel_requested_at DATETIME; UPDATE tasks SET cancel_requested_at='2030-01-02T03:09:05Z'`, true, false},
 		{"table-without-unique", `CREATE TABLE pending_actions(id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(id),kind TEXT NOT NULL,status TEXT NOT NULL,provider_request_id TEXT NOT NULL,connection_generation INTEGER NOT NULL,request_json TEXT NOT NULL,response_json TEXT,delivery_json TEXT,expires_at DATETIME NOT NULL,created_at DATETIME NOT NULL,responded_at DATETIME,resolved_at DATETIME); INSERT INTO pending_actions VALUES('legacy-action','v9-legacy','approval','pending','legacy-provider',4,'{"q":1}',NULL,NULL,'2030-02-01T00:00:00Z','2030-01-01T00:00:00Z',NULL,NULL)`, false, true},
+		{"legacy-two-column-index", `CREATE TABLE pending_actions(id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(id),kind TEXT NOT NULL,status TEXT NOT NULL,provider_request_id TEXT NOT NULL,connection_generation INTEGER NOT NULL,request_json TEXT NOT NULL,response_json TEXT,delivery_json TEXT,expires_at DATETIME NOT NULL,created_at DATETIME NOT NULL,responded_at DATETIME,resolved_at DATETIME); CREATE UNIQUE INDEX idx_pending_actions_provider_generation ON pending_actions(provider_request_id,connection_generation); INSERT INTO pending_actions VALUES('legacy-action','v9-legacy','approval','pending','legacy-provider',4,'{"q":1}',NULL,NULL,'2030-02-01T00:00:00Z','2030-01-01T00:00:00Z',NULL,NULL)`, false, true},
 	}
 	for _, fixture := range fixtures {
 		fixture := fixture
@@ -621,5 +646,25 @@ VALUES('v9-legacy','running','cli','legacy-project','legacy-request','legacy pro
 			_ = t004NewStore(t, reopened, fixture.name)
 			assertStage("reopen", reopened)
 		})
+	}
+}
+
+func TestTaskStore_MigrateV9_AuthorityDDLRemainsCompatibleWithFutureV10(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v9-with-v10.db")
+	db := t004OpenDB(t, path)
+	_ = t004NewStore(t, db, "v9-before-v10")
+	// This sentinel models an additive event-ledger migration. The authority
+	// oracle intentionally does not assert that 9 is the global latest version.
+	_, err := db.Exec(`CREATE TABLE t004_v10_event_ledger_sentinel (
+		seq INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL,
+		event_type TEXT NOT NULL,
+		created_at DATETIME NOT NULL
+	)`)
+	t004Must(t, err)
+	_ = t004NewStore(t, db, "v9-after-v10")
+	t004AssertV9Stage(t, db, "future-v10")
+	if !loomTableExists(t, db, "t004_v10_event_ledger_sentinel") {
+		t.Fatal("additive v10 event-ledger sentinel was removed")
 	}
 }
