@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -401,6 +402,28 @@ func TestTaskArtifactResource_EventsPaginationWithCursorAndLimit(t *testing.T) {
 	}
 	if secondItems[0].(map[string]any)["seq"] == items[0].(map[string]any)["seq"] {
 		t.Fatalf("cursor page repeated seq %v", secondItems[0].(map[string]any)["seq"])
+	}
+}
+
+func TestTaskArtifactItems_ProjectsGlobalAndTaskLocalSequence(t *testing.T) {
+	artifact := loom.TaskArtifact{Seq: 41}
+	if eventSeq := reflect.ValueOf(&artifact).Elem().FieldByName("EventSeq"); eventSeq.IsValid() {
+		eventSeq.SetInt(7)
+	}
+
+	items := taskArtifactItems([]loom.TaskArtifact{artifact})
+	if len(items) != 1 {
+		t.Fatalf("items len = %d, want 1", len(items))
+	}
+	if got := items[0]["seq"]; got != int64(41) {
+		t.Fatalf("seq = %v, want unchanged global seq 41", got)
+	}
+	eventSeq, ok := items[0]["event_seq"]
+	if !ok {
+		t.Fatal("event_seq missing from public task artifact item")
+	}
+	if eventSeq != int64(7) {
+		t.Fatalf("event_seq = %v, want task-local seq 7", eventSeq)
 	}
 }
 

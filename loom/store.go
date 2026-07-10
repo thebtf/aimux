@@ -196,6 +196,56 @@ var migrateV8Statements = []string{
 
 const migrateV9CancelRequestedAt = `ALTER TABLE tasks ADD COLUMN cancel_requested_at DATETIME`
 
+const (
+	migrateV10Version              = 10
+	migrateV10BatchSize            = 256
+	migrateV10UniqueIndex          = "idx_task_artifacts_task_event_seq"
+	migrateV10CompatibilityTrigger = "trg_task_artifacts_event_seq_migrating"
+	migrateV10SteadyStateTrigger   = "trg_task_artifacts_event_seq_steady"
+)
+
+const createLoomMigrationsTable = `
+CREATE TABLE IF NOT EXISTS loom_migrations (
+    version INTEGER PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('running','complete')),
+    checkpoint_seq INTEGER NOT NULL,
+    source_rows INTEGER NOT NULL,
+    processed_rows INTEGER NOT NULL,
+    batch_count INTEGER NOT NULL,
+    started_at DATETIME NOT NULL,
+    completed_at DATETIME
+)`
+
+const createV10CompatibilityTrigger = `
+CREATE TRIGGER trg_task_artifacts_event_seq_migrating
+AFTER INSERT ON task_artifacts
+FOR EACH ROW WHEN NEW.event_seq IS NULL
+BEGIN
+    UPDATE task_artifacts
+    SET event_seq = (
+        SELECT COUNT(*)
+        FROM task_artifacts AS prior
+        WHERE prior.task_id = NEW.task_id
+          AND prior.seq <= NEW.seq
+    )
+    WHERE seq = NEW.seq;
+END`
+
+const createV10SteadyStateTrigger = `
+CREATE TRIGGER trg_task_artifacts_event_seq_steady
+AFTER INSERT ON task_artifacts
+FOR EACH ROW WHEN NEW.event_seq IS NULL
+BEGIN
+    UPDATE task_artifacts
+    SET event_seq = COALESCE((
+        SELECT MAX(prior.event_seq)
+        FROM task_artifacts AS prior
+        WHERE prior.task_id = NEW.task_id
+          AND prior.seq <> NEW.seq
+    ), 0) + 1
+    WHERE seq = NEW.seq;
+END`
+
 const createPendingActionsTable = `
 CREATE TABLE IF NOT EXISTS pending_actions (
     id TEXT PRIMARY KEY,
@@ -432,6 +482,280 @@ func migrateV9(db *sql.DB) (err error) {
 	return nil
 }
 
+func runV10Transaction(db *sql.DB, phase string, fn func(context.Context, *sql.Conn) error) (err error) {
+	ctx := context.Background()
+	tx, err := beginAuthorityTransaction(ctx, db)
+	if err != nil {
+		return fmt.Errorf("begin v10 %s: %w", phase, err)
+	}
+	defer func() {
+		if tx.active {
+			if rollbackErr := tx.rollback(); rollbackErr != nil {
+				if err != nil {
+					err = fmt.Errorf("%v; rollback v10 %s: %w", err, phase, rollbackErr)
+				} else {
+					err = fmt.Errorf("rollback v10 %s: %w", phase, rollbackErr)
+				}
+			}
+		}
+	}()
+
+	if err := fn(ctx, tx.conn); err != nil {
+		return fmt.Errorf("v10 %s: %w", phase, err)
+	}
+	if err := tx.commit(); err != nil {
+		return fmt.Errorf("commit v10 %s: %w", phase, err)
+	}
+	return nil
+}
+
+// expandV10 atomically installs every object needed to keep pre-v10 writers
+// safe before releasing the first writer lock. The migration trigger derives
+// task-local ordinals from immutable global row order because MAX(event_seq)
+// is incomplete until the legacy NULL backlog has been backfilled.
+func expandV10(db *sql.DB) (complete bool, err error) {
+	err = runV10Transaction(db, "expansion", func(ctx context.Context, conn *sql.Conn) error {
+		if _, execErr := conn.ExecContext(ctx, `ALTER TABLE task_artifacts ADD COLUMN event_seq INTEGER`); execErr != nil &&
+			!strings.Contains(strings.ToLower(execErr.Error()), "duplicate column name") {
+			return fmt.Errorf("add task_artifacts.event_seq: %w", execErr)
+		}
+		if _, execErr := conn.ExecContext(ctx, createLoomMigrationsTable); execErr != nil {
+			return fmt.Errorf("create loom_migrations: %w", execErr)
+		}
+
+		var state string
+		scanErr := conn.QueryRowContext(ctx, `SELECT state FROM loom_migrations WHERE version=?`, migrateV10Version).Scan(&state)
+		switch {
+		case errors.Is(scanErr, sql.ErrNoRows):
+			var sourceRows int64
+			if queryErr := conn.QueryRowContext(ctx,
+				`SELECT count(*) FROM task_artifacts WHERE event_seq IS NULL`).Scan(&sourceRows); queryErr != nil {
+				return fmt.Errorf("count v10 source rows: %w", queryErr)
+			}
+			startedAt := time.Now().UTC().Format(time.RFC3339Nano)
+			if _, execErr := conn.ExecContext(ctx, `
+				INSERT INTO loom_migrations(
+					version,state,checkpoint_seq,source_rows,processed_rows,batch_count,started_at,completed_at
+				) VALUES(?, 'running', 0, ?, 0, 0, ?, NULL)`,
+				migrateV10Version, sourceRows, startedAt); execErr != nil {
+				return fmt.Errorf("insert v10 running ledger: %w", execErr)
+			}
+			state = "running"
+		case scanErr != nil:
+			return fmt.Errorf("read v10 ledger: %w", scanErr)
+		}
+
+		switch state {
+		case "complete":
+			complete = true
+			return nil
+		case "running":
+		default:
+			return fmt.Errorf("invalid ledger state %q", state)
+		}
+
+		// A partial/restarted migration may have either trigger. Replacing them
+		// while BEGIN IMMEDIATE owns the writer lock leaves no unguarded writer
+		// interval outside this transaction.
+		if _, execErr := conn.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+migrateV10SteadyStateTrigger); execErr != nil {
+			return fmt.Errorf("drop premature steady-state trigger: %w", execErr)
+		}
+		if _, execErr := conn.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+migrateV10CompatibilityTrigger); execErr != nil {
+			return fmt.Errorf("replace migration trigger: %w", execErr)
+		}
+		if _, execErr := conn.ExecContext(ctx, createV10CompatibilityTrigger); execErr != nil {
+			return fmt.Errorf("create migration trigger: %w", execErr)
+		}
+		return nil
+	})
+	return complete, err
+}
+
+// backfillV10Batch advances at most 256 legacy rows and the durable ledger in
+// one pinned transaction. Rows at or below checkpoint_seq are never revisited;
+// a contradictory checkpoint therefore fails final validation instead of
+// silently rewriting the accepted prefix.
+func backfillV10Batch(db *sql.DB) (updated int64, err error) {
+	err = runV10Transaction(db, "backfill", func(ctx context.Context, conn *sql.Conn) error {
+		var state string
+		var checkpoint, sourceRows, processedRows int64
+		if queryErr := conn.QueryRowContext(ctx, `
+			SELECT state,checkpoint_seq,source_rows,processed_rows
+			FROM loom_migrations WHERE version=?`, migrateV10Version).Scan(
+			&state, &checkpoint, &sourceRows, &processedRows,
+		); queryErr != nil {
+			return fmt.Errorf("read backfill ledger: %w", queryErr)
+		}
+		if state == "complete" {
+			return nil
+		}
+		if state != "running" {
+			return fmt.Errorf("invalid ledger state %q", state)
+		}
+		if processedRows < 0 || sourceRows < processedRows {
+			return fmt.Errorf("invalid ledger counts source=%d processed=%d", sourceRows, processedRows)
+		}
+
+		var batchRows, lastSeq int64
+		if queryErr := conn.QueryRowContext(ctx, `
+			SELECT count(*), COALESCE(MAX(seq), 0)
+			FROM (
+				SELECT seq
+				FROM task_artifacts
+				WHERE event_seq IS NULL AND seq > ?
+				ORDER BY seq
+				LIMIT ?
+			)`, checkpoint, migrateV10BatchSize).Scan(&batchRows, &lastSeq); queryErr != nil {
+			return fmt.Errorf("select backfill batch: %w", queryErr)
+		}
+		if batchRows == 0 {
+			return nil
+		}
+
+		result, execErr := conn.ExecContext(ctx, `
+			UPDATE task_artifacts AS target
+			SET event_seq = (
+				SELECT COUNT(*)
+				FROM task_artifacts AS prior
+				WHERE prior.task_id = target.task_id
+				  AND prior.seq <= target.seq
+			)
+			WHERE target.event_seq IS NULL
+			  AND target.seq > ?
+			  AND target.seq <= ?`, checkpoint, lastSeq)
+		if execErr != nil {
+			return fmt.Errorf("update backfill batch: %w", execErr)
+		}
+		rowsAffected, affectedErr := result.RowsAffected()
+		if affectedErr != nil {
+			return fmt.Errorf("count updated backfill rows: %w", affectedErr)
+		}
+		if rowsAffected != batchRows {
+			return fmt.Errorf("updated backfill rows=%d want=%d", rowsAffected, batchRows)
+		}
+
+		result, execErr = conn.ExecContext(ctx, `
+			UPDATE loom_migrations
+			SET checkpoint_seq=?,
+				processed_rows=processed_rows+?,
+				batch_count=batch_count+1
+			WHERE version=? AND state='running'
+			  AND checkpoint_seq=? AND processed_rows=?
+			  AND processed_rows+? <= source_rows`,
+			lastSeq, batchRows, migrateV10Version, checkpoint, processedRows, batchRows)
+		if execErr != nil {
+			return fmt.Errorf("advance backfill ledger: %w", execErr)
+		}
+		ledgerRows, affectedErr := result.RowsAffected()
+		if affectedErr != nil {
+			return fmt.Errorf("count advanced ledger rows: %w", affectedErr)
+		}
+		if ledgerRows != 1 {
+			return fmt.Errorf("advanced ledger rows=%d want=1", ledgerRows)
+		}
+		updated = batchRows
+		return nil
+	})
+	return updated, err
+}
+
+func finalizeV10(db *sql.DB) error {
+	return runV10Transaction(db, "finalization", func(ctx context.Context, conn *sql.Conn) error {
+		var state string
+		var checkpoint, sourceRows, processedRows int64
+		if queryErr := conn.QueryRowContext(ctx, `
+			SELECT state,checkpoint_seq,source_rows,processed_rows
+			FROM loom_migrations WHERE version=?`, migrateV10Version).Scan(
+			&state, &checkpoint, &sourceRows, &processedRows,
+		); queryErr != nil {
+			return fmt.Errorf("read final ledger: %w", queryErr)
+		}
+		if state == "complete" {
+			return nil
+		}
+		if state != "running" {
+			return fmt.Errorf("invalid ledger state %q", state)
+		}
+		if sourceRows != processedRows {
+			return fmt.Errorf("incomplete backfill source=%d processed=%d checkpoint=%d", sourceRows, processedRows, checkpoint)
+		}
+
+		var nullRows, duplicatePairs int64
+		if queryErr := conn.QueryRowContext(ctx,
+			`SELECT count(*) FROM task_artifacts WHERE event_seq IS NULL`).Scan(&nullRows); queryErr != nil {
+			return fmt.Errorf("count NULL event sequences: %w", queryErr)
+		}
+		if queryErr := conn.QueryRowContext(ctx, `
+			SELECT count(*) FROM (
+				SELECT task_id,event_seq
+				FROM task_artifacts
+				WHERE event_seq IS NOT NULL
+				GROUP BY task_id,event_seq
+				HAVING count(*) > 1
+			)`).Scan(&duplicatePairs); queryErr != nil {
+			return fmt.Errorf("count duplicate event sequences: %w", queryErr)
+		}
+		if nullRows != 0 || duplicatePairs != 0 {
+			return fmt.Errorf("event sequence validation failed: null=%d duplicates=%d", nullRows, duplicatePairs)
+		}
+
+		if _, execErr := conn.ExecContext(ctx, `DROP INDEX IF EXISTS `+migrateV10UniqueIndex); execErr != nil {
+			return fmt.Errorf("replace event sequence index: %w", execErr)
+		}
+		if _, execErr := conn.ExecContext(ctx, `CREATE UNIQUE INDEX `+migrateV10UniqueIndex+
+			` ON task_artifacts(task_id,event_seq)`); execErr != nil {
+			return fmt.Errorf("create event sequence index: %w", execErr)
+		}
+		if _, execErr := conn.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+migrateV10CompatibilityTrigger); execErr != nil {
+			return fmt.Errorf("drop migration trigger: %w", execErr)
+		}
+		if _, execErr := conn.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+migrateV10SteadyStateTrigger); execErr != nil {
+			return fmt.Errorf("replace steady-state trigger: %w", execErr)
+		}
+		if _, execErr := conn.ExecContext(ctx, createV10SteadyStateTrigger); execErr != nil {
+			return fmt.Errorf("create steady-state trigger: %w", execErr)
+		}
+
+		completedAt := time.Now().UTC().Format(time.RFC3339Nano)
+		result, execErr := conn.ExecContext(ctx, `
+			UPDATE loom_migrations
+			SET state='complete', completed_at=COALESCE(completed_at, ?)
+			WHERE version=? AND state='running'
+			  AND source_rows=processed_rows`, completedAt, migrateV10Version)
+		if execErr != nil {
+			return fmt.Errorf("complete v10 ledger: %w", execErr)
+		}
+		rowsAffected, affectedErr := result.RowsAffected()
+		if affectedErr != nil {
+			return fmt.Errorf("count completed ledger rows: %w", affectedErr)
+		}
+		if rowsAffected != 1 {
+			return fmt.Errorf("completed ledger rows=%d want=1", rowsAffected)
+		}
+		return nil
+	})
+}
+
+func migrateV10(db *sql.DB) error {
+	complete, err := expandV10(db)
+	if err != nil {
+		return err
+	}
+	if complete {
+		return nil
+	}
+	for {
+		updated, err := backfillV10Batch(db)
+		if err != nil {
+			return err
+		}
+		if updated == 0 {
+			break
+		}
+	}
+	return finalizeV10(db)
+}
+
 // MigrateV5Down reverts the v5 progress columns. Returns an error on the
 // first DROP that fails for a reason other than "no such column" (which is
 // idempotent — the column was already absent).
@@ -567,6 +891,13 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 	// two-column correlation index without rewriting existing rows.
 	if err := migrateV9(db); err != nil {
 		return nil, fmt.Errorf("loom store: migrate v9 runtime authority: %w", err)
+	}
+	// AIMUX-26 CR-001: add task-local runtime-event ordering through the
+	// restartable v10 ledger. Registration is deliberately after the accepted
+	// v9 authority migration; expansion, bounded backfill, and cutover each use
+	// pinned BEGIN IMMEDIATE transactions.
+	if err := migrateV10(db); err != nil {
+		return nil, fmt.Errorf("loom store: migrate v10 runtime event ledger: %w", err)
 	}
 	// Inherit WAL mode from parent DB (session.Store already sets WAL).
 	// Reading first avoids an unnecessary write-PRAGMA racing a concurrent

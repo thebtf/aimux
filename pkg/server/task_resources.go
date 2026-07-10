@@ -682,6 +682,7 @@ func taskArtifactItems(items []loom.TaskArtifact) []map[string]any {
 	for _, item := range items {
 		out = append(out, map[string]any{
 			"seq":            item.Seq,
+			"event_seq":      item.EventSeq,
 			"kind":           string(item.Kind),
 			"event_type":     item.EventType,
 			"channel":        item.Channel,

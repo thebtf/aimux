@@ -1,6 +1,7 @@
 package loom
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -42,8 +43,8 @@ const (
 	TaskArtifactProjectionPartial TaskArtifactProjectionStatus = "partial"
 )
 
-// TaskArtifactAppend is caller-owned input for a projection row. Seq and
-// CreatedAt are assigned by the store so callers cannot forge cursor identity.
+// TaskArtifactAppend is caller-owned input for a projection row. Seq, EventSeq,
+// and CreatedAt are assigned by the store so callers cannot forge cursor identity.
 type TaskArtifactAppend struct {
 	Kind          TaskArtifactKind
 	EventType     string
@@ -58,6 +59,7 @@ type TaskArtifactAppend struct {
 // TaskArtifact is a durable projection row for a Loom task.
 type TaskArtifact struct {
 	Seq           int64            `json:"seq"`
+	EventSeq      int64            `json:"event_seq"`
 	TaskID        string           `json:"task_id"`
 	Kind          TaskArtifactKind `json:"kind"`
 	EventType     string           `json:"event_type,omitempty"`
@@ -139,6 +141,30 @@ func (l *LoomEngine) AppendRuntimeEvent(taskID string, input TaskRuntimeEventApp
 	return l.store.AppendRuntimeEvent(taskID, input)
 }
 
+// AppendRuntimeEvents persists one atomic runtime-event batch and publishes a
+// payload-free wake-up only after the committed rows are visible to readers.
+func (l *LoomEngine) AppendRuntimeEvents(taskID string, batch []TaskRuntimeEventAppend) ([]TaskArtifact, error) {
+	if l == nil || l.store == nil {
+		return nil, fmt.Errorf("loom: append runtime events: engine unavailable")
+	}
+	result, err := l.store.appendRuntimeEvents(taskID, batch)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.artifacts) == 0 {
+		return result.artifacts, nil
+	}
+	l.events.Emit(TaskEvent{
+		Type:      EventTaskArtifactsAppended,
+		TaskID:    taskID,
+		ProjectID: result.projectID,
+		RequestID: result.requestID,
+		Status:    result.status,
+		Timestamp: l.clock.Now().UTC(),
+	})
+	return result.artifacts, nil
+}
+
 // AppendRuntimeEvent persists one normalized runtime projection row for taskID.
 func (s *TaskStore) AppendRuntimeEvent(taskID string, input TaskRuntimeEventAppend) (TaskArtifact, error) {
 	return s.AppendArtifact(taskID, TaskArtifactAppend{
@@ -153,31 +179,45 @@ func (s *TaskStore) AppendRuntimeEvent(taskID string, input TaskRuntimeEventAppe
 	})
 }
 
-// AppendArtifact persists one projection row for a Loom task. It validates that
-// the source task exists but never updates canonical task state.
-func (s *TaskStore) AppendArtifact(taskID string, input TaskArtifactAppend) (TaskArtifact, error) {
-	if strings.TrimSpace(taskID) == "" {
-		return TaskArtifact{}, fmt.Errorf("loom store: append artifact: missing task id")
+// AppendRuntimeEvents persists a normalized runtime-event batch in one pinned
+// SQLite transaction and returns only rows from the successful commit.
+func (s *TaskStore) AppendRuntimeEvents(taskID string, batch []TaskRuntimeEventAppend) ([]TaskArtifact, error) {
+	result, err := s.appendRuntimeEvents(taskID, batch)
+	if err != nil {
+		return nil, err
 	}
-	if err := validateTaskArtifactKind(input.Kind); err != nil {
-		return TaskArtifact{}, err
-	}
-	if _, err := s.Get(taskID); err != nil {
-		if isNoRows(err) {
-			return TaskArtifact{}, ErrTaskNotFound
-		}
-		return TaskArtifact{}, fmt.Errorf("loom store: append artifact get task: %w", err)
-	}
+	return result.artifacts, nil
+}
 
+type preparedTaskArtifactAppend struct {
+	kind          TaskArtifactKind
+	eventType     string
+	channel       string
+	summary       string
+	payloadJSON   string
+	contentLength int64
+	redacted      bool
+	truncated     bool
+	createdAt     time.Time
+}
+
+type runtimeEventBatchResult struct {
+	artifacts []TaskArtifact
+	projectID string
+	requestID string
+	status    TaskStatus
+}
+
+func prepareTaskArtifactAppend(input TaskArtifactAppend) (preparedTaskArtifactAppend, error) {
+	if err := validateTaskArtifactKind(input.Kind); err != nil {
+		return preparedTaskArtifactAppend{}, err
+	}
 	summary, redacted, truncated := prepareArtifactSummary(input.Summary)
 	payload, payloadRedacted, payloadTruncated := prepareArtifactPayload(input.Payload)
-	redacted = redacted || input.Redacted || payloadRedacted
-	truncated = truncated || input.Truncated || payloadTruncated
 	payloadJSON, err := marshalJSON(payload)
 	if err != nil {
-		return TaskArtifact{}, fmt.Errorf("loom store: append artifact marshal payload: %w", err)
+		return preparedTaskArtifactAppend{}, fmt.Errorf("loom store: append artifact marshal payload: %w", err)
 	}
-
 	contentLength := input.ContentLength
 	if contentLength < 0 {
 		contentLength = 0
@@ -185,46 +225,137 @@ func (s *TaskStore) AppendArtifact(taskID string, input TaskArtifactAppend) (Tas
 	if contentLength == 0 && input.Summary != "" {
 		contentLength = int64(len(input.Summary))
 	}
-	now := time.Now().UTC()
+	return preparedTaskArtifactAppend{
+		kind:          input.Kind,
+		eventType:     input.EventType,
+		channel:       input.Channel,
+		summary:       summary,
+		payloadJSON:   payloadJSON,
+		contentLength: contentLength,
+		redacted:      redacted || input.Redacted || payloadRedacted,
+		truncated:     truncated || input.Truncated || payloadTruncated,
+		createdAt:     time.Now().UTC(),
+	}, nil
+}
 
-	var artifact TaskArtifact
-	var redactedInt, truncatedInt int
-	var payloadRaw string
-	err = s.db.QueryRow(`
-		INSERT INTO task_artifacts
-			(task_id, kind, event_type, channel, summary, payload_json, content_length, redacted, truncated, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		RETURNING seq, task_id, kind, event_type, channel, summary, payload_json, content_length, redacted, truncated, created_at`,
-		taskID,
-		string(input.Kind),
-		input.EventType,
-		input.Channel,
-		summary,
-		payloadJSON,
-		contentLength,
-		boolToInt(redacted),
-		boolToInt(truncated),
-		now,
-	).Scan(
-		&artifact.Seq,
-		&artifact.TaskID,
-		&artifact.Kind,
-		&artifact.EventType,
-		&artifact.Channel,
-		&artifact.Summary,
-		&payloadRaw,
-		&artifact.ContentLength,
-		&redactedInt,
-		&truncatedInt,
-		&artifact.CreatedAt,
-	)
-	if err != nil {
-		return TaskArtifact{}, fmt.Errorf("loom store: append artifact: %w", err)
+func (s *TaskStore) appendRuntimeEvents(taskID string, batch []TaskRuntimeEventAppend) (runtimeEventBatchResult, error) {
+	if strings.TrimSpace(taskID) == "" {
+		return runtimeEventBatchResult{}, fmt.Errorf("loom store: append runtime events: missing task id")
 	}
-	artifact.Redacted = redactedInt != 0
-	artifact.Truncated = truncatedInt != 0
-	artifact.Payload = decodeArtifactPayload(payloadRaw)
-	return artifact, nil
+	if len(batch) == 0 {
+		return runtimeEventBatchResult{artifacts: []TaskArtifact{}}, nil
+	}
+	prepared := make([]preparedTaskArtifactAppend, 0, len(batch))
+	for _, input := range batch {
+		artifact, err := prepareTaskArtifactAppend(TaskArtifactAppend{
+			Kind:          TaskArtifactKindRuntime,
+			EventType:     input.EventType,
+			Channel:       input.Channel,
+			Summary:       input.Summary,
+			Payload:       input.Payload,
+			ContentLength: input.ContentLength,
+			Redacted:      input.Redacted,
+			Truncated:     input.Truncated,
+		})
+		if err != nil {
+			return runtimeEventBatchResult{}, err
+		}
+		prepared = append(prepared, artifact)
+	}
+	return s.appendPreparedArtifacts(taskID, prepared)
+}
+
+// AppendArtifact persists one projection row for a Loom task. It validates that
+// the source task exists but never updates canonical task state.
+func (s *TaskStore) AppendArtifact(taskID string, input TaskArtifactAppend) (TaskArtifact, error) {
+	if strings.TrimSpace(taskID) == "" {
+		return TaskArtifact{}, fmt.Errorf("loom store: append artifact: missing task id")
+	}
+	prepared, err := prepareTaskArtifactAppend(input)
+	if err != nil {
+		return TaskArtifact{}, err
+	}
+	result, err := s.appendPreparedArtifacts(taskID, []preparedTaskArtifactAppend{prepared})
+	if err != nil {
+		return TaskArtifact{}, err
+	}
+	return result.artifacts[0], nil
+}
+
+func (s *TaskStore) appendPreparedArtifacts(taskID string, batch []preparedTaskArtifactAppend) (runtimeEventBatchResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := beginAuthorityTransaction(ctx, s.db)
+	if err != nil {
+		return runtimeEventBatchResult{}, fmt.Errorf("loom store: append artifacts begin: %w", err)
+	}
+	defer tx.rollback()
+
+	result := runtimeEventBatchResult{artifacts: make([]TaskArtifact, 0, len(batch))}
+	var nextEventSeq int64
+	err = tx.conn.QueryRowContext(ctx, `
+		SELECT t.project_id, t.request_id, t.status,
+		       COALESCE((SELECT MAX(a.event_seq) FROM task_artifacts a WHERE a.task_id=t.id), 0)
+		FROM tasks t WHERE t.id=?`, taskID).Scan(
+		&result.projectID,
+		&result.requestID,
+		&result.status,
+		&nextEventSeq,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return runtimeEventBatchResult{}, ErrTaskNotFound
+	}
+	if err != nil {
+		return runtimeEventBatchResult{}, fmt.Errorf("loom store: append artifacts load task: %w", err)
+	}
+
+	for _, input := range batch {
+		nextEventSeq++
+		var artifact TaskArtifact
+		var payloadRaw string
+		var redactedInt, truncatedInt int
+		err := tx.conn.QueryRowContext(ctx, `
+			INSERT INTO task_artifacts
+				(task_id, event_seq, kind, event_type, channel, summary, payload_json, content_length, redacted, truncated, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			RETURNING seq, event_seq, task_id, kind, event_type, channel, summary, payload_json, content_length, redacted, truncated, created_at`,
+			taskID,
+			nextEventSeq,
+			string(input.kind),
+			input.eventType,
+			input.channel,
+			input.summary,
+			input.payloadJSON,
+			input.contentLength,
+			boolToInt(input.redacted),
+			boolToInt(input.truncated),
+			input.createdAt,
+		).Scan(
+			&artifact.Seq,
+			&artifact.EventSeq,
+			&artifact.TaskID,
+			&artifact.Kind,
+			&artifact.EventType,
+			&artifact.Channel,
+			&artifact.Summary,
+			&payloadRaw,
+			&artifact.ContentLength,
+			&redactedInt,
+			&truncatedInt,
+			&artifact.CreatedAt,
+		)
+		if err != nil {
+			return runtimeEventBatchResult{}, fmt.Errorf("loom store: append artifact: %w", err)
+		}
+		artifact.Redacted = redactedInt != 0
+		artifact.Truncated = truncatedInt != 0
+		artifact.Payload = decodeArtifactPayload(payloadRaw)
+		result.artifacts = append(result.artifacts, artifact)
+	}
+	if err := tx.commit(); err != nil {
+		return runtimeEventBatchResult{}, fmt.Errorf("loom store: append artifacts commit: %w", err)
+	}
+	return result, nil
 }
 
 // ListArtifacts returns a deterministic page of artifact rows for one Loom
@@ -241,7 +372,7 @@ func (s *TaskStore) ListArtifacts(taskID string, opts TaskArtifactListOptions) (
 	limit := normalizeArtifactLimit(opts.Limit)
 
 	query := `
-		SELECT seq, task_id, kind, event_type, channel, summary, payload_json, content_length, redacted, truncated, created_at
+		SELECT seq, event_seq, task_id, kind, event_type, channel, summary, payload_json, content_length, redacted, truncated, created_at
 		FROM task_artifacts
 		WHERE task_id = ? AND seq > ?`
 	args := []any{taskID, afterSeq}
@@ -419,6 +550,7 @@ func scanTaskArtifact(rows *sql.Rows) (TaskArtifact, error) {
 	var redactedInt, truncatedInt int
 	if err := rows.Scan(
 		&artifact.Seq,
+		&artifact.EventSeq,
 		&artifact.TaskID,
 		&artifact.Kind,
 		&artifact.EventType,

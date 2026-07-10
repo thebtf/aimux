@@ -29,6 +29,9 @@ const (
 	// The Status field on the emitted TaskEvent is TaskStatusRunning — progress
 	// only flows from a running task.
 	EventTaskProgress EventType = "task.progress"
+	// EventTaskArtifactsAppended is a payload-free post-commit wake-up. A
+	// subscriber uses its durable global cursor to read the committed batch.
+	EventTaskArtifactsAppended EventType = "task.artifacts_appended"
 )
 
 // TaskEvent carries task lifecycle data to subscribers.
