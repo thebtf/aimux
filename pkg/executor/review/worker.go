@@ -114,6 +114,8 @@ func (w *ReviewWorker) runGate(ctx context.Context, task *loom.Task, target stri
 	metadata := reviewMetadata(task.Metadata, target, "gate", decision.PassesCompleted, decision.Severity, decision.Blocking)
 	metadata["decision"] = string(decision.Decision)
 	metadata["reason"] = decision.Reason
+	metadata["review_complete"] = decision.ReviewComplete
+	metadata["confidence_score"] = decision.ConfidenceScore
 	task.Metadata = metadata
 
 	content, err := marshalWorkerContent(decision)
@@ -182,6 +184,12 @@ func (w *ReviewWorker) criteriaForTask(task *loom.Task) Criteria {
 	}
 	if task.Timeout > 0 {
 		criteria.TaskTimeout = time.Duration(task.Timeout) * time.Second
+	}
+	if value, ok := metadataBool(task.Metadata, "fallback_enabled"); ok {
+		criteria.FallbackEnabled = &value
+	}
+	if value, ok := metadataInt(task.Metadata, "max_attempts"); ok && value > 0 {
+		criteria.MaxAttempts = value
 	}
 	return criteria
 }

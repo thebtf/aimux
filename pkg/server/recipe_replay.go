@@ -155,7 +155,9 @@ func (r *TaskRouter) recipeReplayResult(task *loom.Task, taskClass string, confi
 	metadata[recipeReplayCacheHitMetadata] = true
 	metadata[recipeReplaySourceTaskMetadata] = task.ID
 	task.Metadata = metadata
-	return buildTaskResult(task, taskClass, confidence, candidates), nil
+	result := buildTaskResult(task, taskClass, confidence, candidates)
+	result.Content = ""
+	return result, nil
 }
 
 func metadataBool(metadata map[string]any, key string) (bool, bool) {

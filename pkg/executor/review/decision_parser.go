@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// gateDecisionResponse is the JSON schema produced by buildReviewPrompt for gate decisions.
+// gateDecisionResponse is the legacy JSON schema accepted from gate agents.
 type gateDecisionResponse struct {
 	Findings []any  `json:"findings"`
 	Summary  string `json:"summary"`
@@ -16,25 +16,24 @@ type gateDecisionResponse struct {
 
 // ParseGateDecision extracts ALLOW/BLOCK decision from agent JSON output.
 // The agent is instructed to embed decision and reason inside the JSON object.
-// Unrecognised or invalid output -> fail-open ("allow", reason with parse error).
+// Unrecognised or invalid output fails closed.
 func ParseGateDecision(content string) (string, string) {
 	// Find the JSON object in the content (agent may output preamble before JSON).
 	start := strings.Index(content, "{")
 	if start < 0 {
-		return "allow", "gate output did not contain a JSON object"
+		return string(DecisionBlock), SanitizePublicReason("gate output did not contain a JSON object")
 	}
 	var resp gateDecisionResponse
 	if err := json.NewDecoder(strings.NewReader(content[start:])).Decode(&resp); err != nil {
-		// Fail-open: malformed JSON should not block the gate.
-		return "allow", fmt.Sprintf("gate output parse error: %v", err)
+		return string(DecisionBlock), SanitizePublicReason(fmt.Sprintf("gate output parse error: %v", err))
 	}
 	upper := strings.ToUpper(strings.TrimSpace(resp.Decision))
 	switch upper {
 	case "ALLOW":
-		return "allow", resp.Reason
+		return string(DecisionAllow), SanitizePublicReason(resp.Reason)
 	case "BLOCK":
-		return "block", resp.Reason
+		return string(DecisionBlock), SanitizePublicReason(resp.Reason)
 	default:
-		return "allow", fmt.Sprintf("gate decision field %q not recognised (expected ALLOW or BLOCK)", resp.Decision)
+		return string(DecisionBlock), SanitizePublicReason(fmt.Sprintf("gate decision field %q not recognised (expected ALLOW or BLOCK)", resp.Decision))
 	}
 }

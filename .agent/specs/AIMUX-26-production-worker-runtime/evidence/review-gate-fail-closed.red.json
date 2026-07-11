@@ -1,0 +1,37 @@
+{
+  "phase": "RED",
+  "observed_at": "2026-07-11",
+  "command": "go test ./pkg/executor/review ./pkg/server -run 'TestGateRunGate(Blocks|Preserves)|TestReviewIntegrationFailClosedTimeout|TestReviewWorkerGateFailureIsBlockingAndLowersVerdictConfidence|TestReviewGatePublicSurfacesFailClosedWhenAllPassesUnavailable' -count=1",
+  "result": "FAIL",
+  "expected_failure": true,
+  "proved_old_behavior": [
+    "pipeline error after retries returned decision=allow and blocking=false",
+    "timeout returned decision=allow",
+    "zero completed passes returned decision=allow",
+    "incomplete pass set returned decision=allow",
+    "partial successful results were discarded when a later pass failed",
+    "ReviewWorker exposed allow for an unavailable pass runner",
+    "both task(task_class=review, gate=true) and review(gate=true) exposed allow with passes_completed=[]",
+    "ParseGateDecision returned allow for missing JSON, malformed JSON, and unknown decisions",
+    "fallback_enabled and max_attempts were dropped before review leaf dispatch"
+  ],
+  "failing_tests": [
+    "TestGateRunGateBlocksOnPipelineError",
+    "TestGateRunGateBlocksOnTimeout",
+    "TestGateRunGateBlocksWhenNoPassCompletes",
+    "TestGateRunGateBlocksOnIncompletePassSet",
+    "TestGateRunGatePreservesPartialResultsWhenLaterPassFails",
+    "TestReviewIntegrationFailClosedTimeout",
+    "TestReviewWorkerGateFailureIsBlockingAndLowersVerdictConfidence",
+    "TestReviewGatePublicSurfacesFailClosedWhenAllPassesUnavailable/task",
+    "TestReviewGatePublicSurfacesFailClosedWhenAllPassesUnavailable/review",
+    "TestParseGateDecisionFailsClosedOnInvalidOutput",
+    "TestPassesRunDispatchesAllPassesWithMetadata",
+    "TestReviewWorkerPassesFallbackPolicyToRunner"
+  ],
+  "preserved_contract": {
+    "caller_cancellation": "returns context.Canceled and no fabricated decision",
+    "full_three_pass_success": "may allow when no blocking findings exist",
+    "full_three_pass_findings": "blocks when error-severity findings exist"
+  }
+}

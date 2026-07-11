@@ -358,7 +358,11 @@ v5.11.0 maintainer debug helper because the first-class
 - `README.md` contains the requested `smoke test for AIMUX-21` comment.
 - Debug subtree text shows the code root and driver/navigator sub-tasks.
 - The task-backed review gate call returns a structured ALLOW/BLOCK decision shape
-  rather than a raw CLI transcript.
+  rather than a raw CLI transcript. Treat ALLOW as valid only when
+  review_complete is true and passes_completed contains exactly structural,
+  behavioural, and adversarial. An unavailable, timed-out, or incomplete
+  review must return BLOCK, blocking true, review_complete false, and
+  confidence_score 0.
 - The dedicated `review(prompt, target)` call returns the accepted TaskResult fields,
   `job_id`, the status-polling command, the cancel command, and task resource URIs
   used by the task-backed review path.
@@ -374,7 +378,9 @@ v5.11.0 maintainer debug helper because the first-class
 - Step 4 shows the requested file mutation.
 - Step 5 shows `worker=code`, `worker=code_driver`, and
   `worker=code_navigator` for the captured task.
-- Step 6 returns `decision`, `reason`, `findings`, and `passes_completed`.
+- Steps 6 and 8 terminal results return decision, reason, findings,
+  passes_completed, blocking, review_complete, and confidence_score; ALLOW
+  requires review_complete true plus the exact complete mandatory pass set.
 - Steps 7 and 8 return accepted `TaskResult` metadata including `task_id`,
   `job_id`, `task_class: "review"`, the status-polling command, the cancel
   command, and task resource URIs for status/result inspection.

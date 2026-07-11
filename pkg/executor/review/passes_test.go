@@ -22,7 +22,11 @@ func TestPassesRunDispatchesAllPassesWithMetadata(t *testing.T) {
 		t.Fatalf("NewPasses returned error: %v", err)
 	}
 
-	results, err := passes.Run(context.Background(), "HEAD~1..HEAD", testCriteria())
+	criteria := testCriteria()
+	fallbackEnabled := false
+	criteria.FallbackEnabled = &fallbackEnabled
+	criteria.MaxAttempts = 2
+	results, err := passes.Run(context.Background(), "HEAD~1..HEAD", criteria)
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -54,6 +58,12 @@ func TestPassesRunDispatchesAllPassesWithMetadata(t *testing.T) {
 		}
 		if req.Metadata["sandbox"] != "read-only" {
 			t.Fatalf("metadata sandbox = %#v, want read-only", req.Metadata["sandbox"])
+		}
+		if req.Metadata["fallback_enabled"] != false {
+			t.Fatalf("metadata fallback_enabled = %#v, want false", req.Metadata["fallback_enabled"])
+		}
+		if req.Metadata["max_attempts"] != 2 {
+			t.Fatalf("metadata max_attempts = %#v, want 2", req.Metadata["max_attempts"])
 		}
 		if !strings.Contains(req.Prompt, "HEAD~1..HEAD") {
 			t.Fatalf("prompt missing target: %q", req.Prompt)

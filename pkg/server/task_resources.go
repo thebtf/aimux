@@ -15,12 +15,15 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/executor/redact"
+	"github.com/thebtf/aimux/pkg/executor/review"
 	"github.com/thebtf/aimux/pkg/util"
 )
 
 const (
-	taskResourceMIMEType = "application/json"
-	taskViewerMIMEType   = "text/html; charset=utf-8"
+	taskResourceMIMEType         = "application/json"
+	taskViewerMIMEType           = "text/html; charset=utf-8"
+	taskResourceTruncationMarker = "...[truncated]"
 )
 
 func (s *Server) registerTaskResources() {
@@ -348,7 +351,7 @@ func taskSnapshotPayload(task *loom.Task, projectionStatus loom.TaskArtifactProj
 		},
 	}
 	if task.Result != "" {
-		payload["result_summary"] = compactTaskResourceText(task.Result, 512)
+		payload["result_summary"] = taskResultSummary(task, 512)
 		payload["result_length"] = len(task.Result)
 	}
 	if task.Error != "" {
@@ -370,6 +373,12 @@ func taskSnapshotMetadataPayload(metadata map[string]any) map[string]any {
 		if !ok {
 			continue
 		}
+		if key == "reason" {
+			if reason, ok := value.(string); ok {
+				out[key] = review.SanitizePublicReason(reason)
+				continue
+			}
+		}
 		if cloned, ok := cloneTaskResourceMetadataValue(value); ok {
 			out[key] = cloned
 		}
@@ -387,6 +396,12 @@ var taskSnapshotMetadataKeys = []string{
 	"navigator_cli",
 	"rounds",
 	"confidence_score",
+	"decision",
+	"reason",
+	"passes_completed",
+	"severity",
+	"blocking",
+	"review_complete",
 	"gate_result",
 	"verdict",
 	"recipe_id",
@@ -557,10 +572,118 @@ func formatTaskResourceTime(t *time.Time) any {
 }
 
 func compactTaskResourceText(text string, limit int) string {
+	text = strings.ToValidUTF8(redact.RedactSecrets(text), "\uFFFD")
 	if limit <= 0 || len(text) <= limit {
 		return text
 	}
-	return util.TruncateUTF8(text, limit) + "...[truncated]"
+	contentBudget := limit - len(taskResourceTruncationMarker)
+	if contentBudget <= 0 {
+		return util.TruncateUTF8(taskResourceTruncationMarker, limit)
+	}
+	return util.TruncateUTF8(text, contentBudget) + taskResourceTruncationMarker
+}
+
+type taskReviewResultSummary struct {
+	Decision        review.DecisionValue `json:"decision,omitempty"`
+	Reason          string               `json:"reason,omitempty"`
+	PassesCompleted []review.PassName    `json:"passes_completed,omitempty"`
+	Severity        review.Severity      `json:"severity,omitempty"`
+	Blocking        bool                 `json:"blocking"`
+	ReviewComplete  bool                 `json:"review_complete"`
+	ConfidenceScore float64              `json:"confidence_score"`
+	ContentOmitted  bool                 `json:"content_omitted"`
+	Retrieval       string               `json:"retrieval"`
+}
+
+func taskResultSummary(task *loom.Task, limit int) string {
+	if task == nil {
+		return ""
+	}
+	if !isReviewTask(task) {
+		return compactTaskResourceText(task.Result, limit)
+	}
+	return compactReviewTaskResultSummary(task.Result, limit)
+}
+
+func isReviewTask(task *loom.Task) bool {
+	if task == nil {
+		return false
+	}
+	if task.WorkerType == review.WorkerTypeReview {
+		return true
+	}
+	if taskClass, ok := task.Metadata["task_class"].(string); ok {
+		return strings.EqualFold(strings.TrimSpace(taskClass), "review")
+	}
+	return false
+}
+
+func compactReviewTaskResultSummary(content string, limit int) string {
+	const retrieval = "status(include_content=true)"
+	var decision review.Decision
+	if err := json.Unmarshal([]byte(content), &decision); err != nil || !publicReviewDecision(decision.Decision) {
+		return marshalReviewTaskResultSummary(taskReviewResultSummary{
+			Reason:         "review result omitted from the default projection",
+			ContentOmitted: true,
+			Retrieval:      retrieval,
+		}, limit)
+	}
+
+	summary := taskReviewResultSummary{
+		Decision:        decision.Decision,
+		Reason:          compactTaskResourceText(review.SanitizePublicReason(decision.Reason), 128),
+		PassesCompleted: publicReviewPasses(decision.PassesCompleted),
+		Severity:        publicReviewSeverity(decision.Severity),
+		Blocking:        decision.Blocking,
+		ReviewComplete:  decision.ReviewComplete,
+		ConfidenceScore: decision.ConfidenceScore,
+		ContentOmitted:  true,
+		Retrieval:       retrieval,
+	}
+	return marshalReviewTaskResultSummary(summary, limit)
+}
+
+func marshalReviewTaskResultSummary(summary taskReviewResultSummary, limit int) string {
+	raw, err := json.Marshal(summary)
+	if err == nil && (limit <= 0 || len(raw) <= limit) {
+		return string(raw)
+	}
+	fallback, _ := json.Marshal(taskReviewResultSummary{
+		Reason:         "review result omitted from the default projection",
+		ContentOmitted: true,
+		Retrieval:      "status(include_content=true)",
+	})
+	if limit <= 0 || len(fallback) <= limit {
+		return string(fallback)
+	}
+	return compactTaskResourceText("review result omitted", limit)
+}
+
+func publicReviewDecision(value review.DecisionValue) bool {
+	return value == review.DecisionAllow || value == review.DecisionBlock
+}
+
+func publicReviewPasses(values []review.PassName) []review.PassName {
+	passes := make([]review.PassName, 0, len(values))
+	for _, value := range values {
+		switch value {
+		case review.PassStructural, review.PassBehavioural, review.PassAdversarial:
+			passes = append(passes, value)
+		}
+		if len(passes) == 3 {
+			break
+		}
+	}
+	return passes
+}
+
+func publicReviewSeverity(value review.Severity) review.Severity {
+	switch value {
+	case review.SeverityError, review.SeverityWarning, review.SeverityInfo:
+		return value
+	default:
+		return ""
+	}
 }
 
 func parseTaskResourceLimit(query url.Values) (int, error) {

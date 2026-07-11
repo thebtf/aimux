@@ -11,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/executor/review"
 	"github.com/thebtf/aimux/pkg/workflow"
 )
 
@@ -313,6 +314,102 @@ func TestTaskSnapshotResource_IncludesWorktreePreservationMetadata(t *testing.T)
 	assertTaskResourceMetadata(t, metadata, "worktree_preserve_reason", "code task mutates caller worktree")
 	if _, leaked := got["env"]; leaked {
 		t.Fatalf("snapshot exposed raw env: %v", got)
+	}
+}
+
+func TestTaskSnapshotResourceBoundsAndRedactsReviewReason(t *testing.T) {
+	const rawSecret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	rawReason := "review backend failed " + rawSecret + " " + strings.Repeat("界", 300)
+	srv := testServerWithLoom(t)
+	ctx, projectID := projectCtxAndID("proj-resource-review-reason")
+
+	taskID, err := srv.loom.Submit(ctx, loom.TaskRequest{
+		WorkerType: loom.WorkerType("missing-review-reason-worker"),
+		ProjectID:  projectID,
+		Prompt:     "exercise bounded review reason projection",
+		Metadata:   map[string]any{"reason": rawReason},
+	})
+	if err != nil {
+		t.Fatalf("loom.Submit: %v", err)
+	}
+
+	got := readTaskSnapshotResource(t, srv, ctx, "aimux://tasks/"+taskID)
+	metadata, ok := got["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata type = %T, want map; payload=%v", got["metadata"], got)
+	}
+	reason, _ := metadata["reason"].(string)
+	assertSafeReviewReasonProjection(t, reason, rawSecret)
+}
+
+func TestTaskSnapshotPayloadReviewSummaryExcludesRawDecisionEvidence(t *testing.T) {
+	tests := []struct {
+		name          string
+		result        string
+		forbidden     string
+		wantDecision  string
+		wantMalformed bool
+	}{
+		{
+			name:         "blocking finding body",
+			result:       `{"decision":"block","reason":"safe blocking reason","findings":[{"severity":"error","file":"blocker.go","body":"BLOCK-FINDING-BODY-MARKER"}],"summary":"aggregate block summary","passes_completed":["structural","behavioural","adversarial"],"severity":"error","blocking":true,"review_complete":true,"confidence_score":1}`,
+			forbidden:    "BLOCK-FINDING-BODY-MARKER",
+			wantDecision: "block",
+		},
+		{
+			name:         "allow aggregate summary",
+			result:       `{"decision":"allow","reason":"safe allow reason","findings":[],"summary":"ALLOW-SUMMARY-RAW-MARKER","passes_completed":["structural","behavioural","adversarial"],"blocking":false,"review_complete":true,"confidence_score":1}`,
+			forbidden:    "ALLOW-SUMMARY-RAW-MARKER",
+			wantDecision: "allow",
+		},
+		{
+			name:          "malformed review result",
+			result:        `MALFORMED-REVIEW-RAW-MARKER`,
+			forbidden:     "MALFORMED-REVIEW-RAW-MARKER",
+			wantMalformed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := &loom.Task{
+				ID:         "review-summary-task",
+				WorkerType: review.WorkerTypeReview,
+				Status:     loom.TaskStatusCompleted,
+				Result:     tt.result,
+				Metadata:   map[string]any{"task_class": "review"},
+			}
+			payload := taskSnapshotPayload(task, loom.TaskArtifactProjectionOK)
+			summary, _ := payload["result_summary"].(string)
+			if summary == "" {
+				t.Fatalf("result_summary missing: %v", payload)
+			}
+			if strings.Contains(summary, tt.forbidden) {
+				t.Fatalf("result_summary leaked raw review evidence %q: %s", tt.forbidden, summary)
+			}
+			if len(summary) > 512 {
+				t.Fatalf("result_summary length = %d, want <= 512", len(summary))
+			}
+
+			var got map[string]any
+			if err := json.Unmarshal([]byte(summary), &got); err != nil {
+				t.Fatalf("result_summary must remain structured JSON: %v; raw=%q", err, summary)
+			}
+			for _, forbiddenKey := range []string{"findings", "summary"} {
+				if _, ok := got[forbiddenKey]; ok {
+					t.Fatalf("result_summary exposed raw review field %q: %v", forbiddenKey, got)
+				}
+			}
+			if tt.wantMalformed {
+				if omitted, _ := got["content_omitted"].(bool); !omitted {
+					t.Fatalf("malformed review summary = %v, want content_omitted=true", got)
+				}
+				return
+			}
+			if got["decision"] != tt.wantDecision {
+				t.Fatalf("decision = %v, want %s; summary=%v", got["decision"], tt.wantDecision, got)
+			}
+		})
 	}
 }
 

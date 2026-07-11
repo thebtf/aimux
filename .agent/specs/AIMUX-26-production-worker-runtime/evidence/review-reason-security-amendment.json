@@ -1,0 +1,74 @@
+{
+  "finding_id": "review-reason-default-projection-unbounded-secret-exposure",
+  "base_commit": "eae71b74340abfcc31c252cbe27539f1dda45ed0",
+  "observed_at": "2026-07-11",
+  "red": {
+    "command": "go test ./pkg/executor/review ./pkg/server -run 'TestGateRunGateBoundsAndRedacts|TestParseGateDecisionBoundsAndRedactsLegacyReason|TestReviewWorkerAggregateMetadataUsesSafeBoundedReason|TestReviewGatePublicSurfacesFailClosedWhenAllPassesUnavailable' -count=1",
+    "result": "FAIL",
+    "proved_old_behavior": [
+      "raw runner errors leaked secrets and exceeded the default metadata budget",
+      "blocking finding bodies leaked through Decision.reason",
+      "allow and aggregate summaries leaked through public reason metadata",
+      "legacy ParseGateDecision returned an unbounded secret-bearing reason",
+      "task and review public surfaces persisted and projected the raw reason"
+    ]
+  },
+  "default_projection_red": {
+    "command": "go test ./pkg/server -run 'TestReviewGatePublicSurfacesDefaultResourceSanitizesCompleteDecisionContent' -count=1",
+    "result": "FAIL",
+    "proved_old_behavior": [
+      "a complete BLOCK leaked an oversized secret-bearing Finding.body through default result_summary on task and review",
+      "a complete ALLOW leaked a secret-bearing Decision.summary through default result_summary on task and review",
+      "the historical truncation helper exceeded its nominal byte limit by appending the marker after truncation"
+    ]
+  },
+  "contract": {
+    "redaction": "pkg/executor/redact.RedactSecrets",
+    "max_bytes": 512,
+    "truncation_marker": "...[truncated]",
+    "utf8": "invalid input is repaired and truncation never splits a code point",
+    "default_task_resource": "result_summary and other compact text projections redact secrets before a strict total byte cap",
+    "raw_evidence": "full task result remains available only through the existing explicit status(include_content=true) opt-in",
+    "consistency": [
+      "Decision.reason",
+      "WorkerResult.metadata.reason",
+      "task.metadata.reason",
+      "default aimux://tasks/{task_id} metadata.reason"
+    ],
+    "semantic_preservation": [
+      "decision",
+      "passes_completed",
+      "severity",
+      "blocking",
+      "review_complete",
+      "confidence_score"
+    ]
+  },
+  "green": [
+    {
+      "command": "go test ./pkg/executor/review ./pkg/server -run 'TestSanitizePublicReason|TestGateRunGateBoundsAndRedacts|TestParseGateDecisionBoundsAndRedactsLegacyReason|TestReviewWorkerAggregateMetadataUsesSafeBoundedReason|TestReviewGatePublicSurfacesFailClosedWhenAllPassesUnavailable|TestReviewGatePublicSurfacesDefaultResourceSanitizesCompleteDecisionContent|TestTaskSnapshotResourceBoundsAndRedactsReviewReason' -count=10",
+      "result": "PASS"
+    },
+    {
+      "command": "go test -race ./pkg/executor/review ./pkg/server -run 'TestSanitizePublicReason|TestGateRunGateBoundsAndRedacts|TestReviewGatePublicSurfacesFailClosedWhenAllPassesUnavailable|TestReviewGatePublicSurfacesDefaultResourceSanitizesCompleteDecisionContent|TestTaskSnapshotResourceBoundsAndRedactsReviewReason' -count=1",
+      "result": "PASS"
+    },
+    {
+      "command": "AIMUX21_E2E=1 go test ./test/e2e -run 'TestE2E_TaskRouter(MCPRoundTrip|ReviewGateFailsClosedWhenCLIExitsNonZero)$' -count=1 -v",
+      "result": "PASS"
+    },
+    {
+      "command": "go test ./... -count=1",
+      "result": "PASS",
+      "duration_seconds": 54.1
+    },
+    {
+      "command": "go build ./...",
+      "result": "PASS"
+    },
+    {
+      "command": "go vet ./...",
+      "result": "PASS"
+    }
+  ]
+}

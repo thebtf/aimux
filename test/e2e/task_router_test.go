@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,9 +22,16 @@ func TestE2E_TaskRouterMCPRoundTrip(t *testing.T) {
 		"prompt":          "Run an explicit router wiring review.",
 		"task_class":      "review",
 		"target":          "HEAD",
+		"gate":            true,
 		"timeout_seconds": 300,
 	})
 	assertTaskRouterResult(t, explicit, "review")
+	if complete, _ := explicit["review_complete"].(bool); !complete {
+		t.Fatalf("review_complete = %#v, want true for emulator-backed three-pass gate; payload=%v", explicit["review_complete"], explicit)
+	}
+	if confidence, _ := explicit["confidence_score"].(float64); confidence != 1 {
+		t.Fatalf("confidence_score = %#v, want 1 for complete emulator-backed gate; payload=%v", explicit["confidence_score"], explicit)
+	}
 
 	classified := callTaskRouterToolJSON(t, stdin, reader, 3, map[string]any{
 		"prompt":          "Review PR #152 diff against HEAD and block on security regressions.",
@@ -41,6 +49,55 @@ func TestE2E_TaskRouterMCPRoundTrip(t *testing.T) {
 	}
 	if candidates, ok := errPayload["candidates"].([]any); !ok || len(candidates) != 3 {
 		t.Fatalf("ambiguous candidates = %#v, want 3 candidates", errPayload["candidates"])
+	}
+}
+
+func TestE2E_TaskRouterReviewGateFailsClosedWhenCLIExitsNonZero(t *testing.T) {
+	if os.Getenv("AIMUX21_E2E") != "1" {
+		t.Skip("AIMUX21_E2E=1 not set - skipping fail-closed review gate e2e")
+	}
+
+	aimuxBin := buildBinary(t)
+	testcliBin := buildTestCLI(t)
+	configDir := failingReviewTaskRouterConfigDir(t)
+	_, stdin, reader := startDaemonAndShimWithEnv(t, aimuxBin, filepath.Dir(testcliBin), configDir, []string{
+		"AIMUX_SESSION_STORE=sqlite",
+	})
+	initializeMCP(t, stdin, reader)
+
+	payload := callTaskRouterToolJSON(t, stdin, reader, 20, map[string]any{
+		"prompt":           "Review HEAD and fail closed when the reviewer is unavailable.",
+		"task_class":       "review",
+		"target":           "HEAD",
+		"gate":             true,
+		"fallback_enabled": false,
+		"max_attempts":     1,
+		"timeout_seconds":  300,
+	})
+	if payload["decision"] != "block" {
+		t.Fatalf("decision = %#v, want block; payload=%v", payload["decision"], payload)
+	}
+	if blocking, _ := payload["blocking"].(bool); !blocking {
+		t.Fatalf("blocking = %#v, want true; payload=%v", payload["blocking"], payload)
+	}
+	if complete, _ := payload["review_complete"].(bool); complete {
+		t.Fatalf("review_complete = %#v, want false; payload=%v", payload["review_complete"], payload)
+	}
+	if confidence, _ := payload["confidence_score"].(float64); confidence != 0 {
+		t.Fatalf("confidence_score = %#v, want 0; payload=%v", payload["confidence_score"], payload)
+	}
+	if passes, ok := payload["passes_completed"].([]any); !ok || len(passes) != 0 {
+		t.Fatalf("passes_completed = %#v, want empty list; payload=%v", payload["passes_completed"], payload)
+	}
+	if summary, _ := payload["summary"].(string); summary == "" || strings.Contains(summary, "No review findings") {
+		t.Fatalf("summary = %q, want explicit operational failure; payload=%v", summary, payload)
+	}
+
+	taskID, _ := payload["task_id"].(string)
+	resource := readTaskResourceJSON(t, stdin, reader, 30, "aimux://tasks/"+taskID)
+	metadata, _ := resource["metadata"].(map[string]any)
+	if metadata["decision"] != "block" || metadata["review_complete"] != false || metadata["confidence_score"] != float64(0) {
+		t.Fatalf("resource metadata does not expose fail-closed state: %#v", metadata)
 	}
 }
 
@@ -102,6 +159,26 @@ circuit_breaker:
 `, logPath, dbPath)
 	if err := os.WriteFile(filepath.Join(dir, "default.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatalf("write task router config: %v", err)
+	}
+	return dir
+}
+
+func failingReviewTaskRouterConfigDir(t *testing.T) string {
+	t.Helper()
+	dir := taskRouterConfigDir(t)
+	profilePath := filepath.Join(dir, "cli.d", "codex", "profile.yaml")
+	content, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read codex emulator profile: %v", err)
+	}
+	const working = `base: "testcli codex --json --full-auto"`
+	const failing = `base: "testcli unavailable-review-backend"`
+	replaced := strings.Replace(string(content), working, failing, 1)
+	if replaced == string(content) {
+		t.Fatalf("codex emulator profile missing command %q", working)
+	}
+	if err := os.WriteFile(profilePath, []byte(replaced), 0o644); err != nil {
+		t.Fatalf("write failing codex emulator profile: %v", err)
 	}
 	return dir
 }

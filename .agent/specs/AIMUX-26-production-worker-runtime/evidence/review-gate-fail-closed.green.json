@@ -1,0 +1,57 @@
+{
+  "phase": "GREEN",
+  "observed_at": "2026-07-11",
+  "contract": {
+    "allow_requires": [
+      "decision=allow",
+      "review_complete=true",
+      "confidence_score=1",
+      "exact mandatory pass identities: structural, behavioural, adversarial"
+    ],
+    "incomplete_or_unavailable": [
+      "decision=block",
+      "blocking=true",
+      "review_complete=false",
+      "confidence_score=0",
+      "operational reason preserved",
+      "successful partial pass results preserved"
+    ],
+    "caller_cancellation": "context.Canceled is propagated with no fabricated decision"
+  },
+  "provider_agnostic_changes": [
+    "review gate fails closed on nil runner, timeout, final runner error, zero passes, incomplete pass set, and duplicate/missing pass identity",
+    "legacy ParseGateDecision fails closed on malformed or unrecognised output",
+    "fallback_enabled and max_attempts propagate from task and review facades through ReviewWorker to every leaf pass",
+    "task status/resource metadata exposes decision, reason, passes_completed, blocking, review_complete, and confidence_score"
+  ],
+  "verification": [
+    {
+      "command": "go test ./pkg/executor/review ./pkg/server -run focused-review-gate-and-public-surface-tests -count=1",
+      "result": "PASS"
+    },
+    {
+      "command": "AIMUX21_E2E=1 go test ./test/e2e -run 'TestE2E_TaskRouter(MCPRoundTrip|ReviewGateFailsClosedWhenCLIExitsNonZero)$' -count=1 -v",
+      "result": "PASS",
+      "evidence": "real aimux daemon + shim JSON-RPC with testcli: complete three-pass ALLOW and unavailable-reviewer BLOCK/resource projection"
+    },
+    {
+      "command": "go test ./... -count=1",
+      "result": "PASS",
+      "duration_seconds": 49.7
+    },
+    {
+      "command": "go build ./...",
+      "result": "PASS"
+    },
+    {
+      "command": "go vet ./...",
+      "result": "PASS"
+    }
+  ],
+  "diagnostic_note": {
+    "noncanonical_parallel_run": "Running go test, go build, and go vet concurrently created unrelated resource-sensitive failures in an existing Codex worker test and shim latency NFR.",
+    "codex_isolated": "TestCodexWorker_Execute_HappyPath passed 10/10 isolated.",
+    "shim_latency_isolated": "first isolated run p95=221.8793ms failed; immediate clean rerun p95=177.5418ms passed.",
+    "canonical_gate": "the final serial full-suite run passed and is the release evidence"
+  }
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -56,6 +57,32 @@ func TestReviewWorkerExecuteRecordsAggregateMetadata(t *testing.T) {
 	}
 }
 
+func TestReviewWorkerAggregateMetadataUsesSafeBoundedReason(t *testing.T) {
+	runner := &recordingPassRunner{results: []PassResult{
+		{Name: PassStructural, Summary: "structure clean " + testReviewSecret + " " + strings.Repeat("界", 300)},
+		{Name: PassBehavioural, Summary: "behaviour clean"},
+		{Name: PassAdversarial, Summary: "adversarial clean"},
+	}}
+	worker, err := NewReviewWorker(ReviewWorkerConfig{PassRunner: runner})
+	if err != nil {
+		t.Fatalf("NewReviewWorker returned error: %v", err)
+	}
+	task := reviewWorkerTask(map[string]any{"target": "HEAD"})
+
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	reason, ok := result.Metadata["reason"].(string)
+	if !ok {
+		t.Fatalf("reason metadata = %#v, want string", result.Metadata["reason"])
+	}
+	assertSafeBoundedReviewReason(t, reason)
+	if taskReason, _ := task.Metadata["reason"].(string); taskReason != reason {
+		t.Fatalf("task reason = %q, worker result reason = %q", taskReason, reason)
+	}
+}
+
 func TestReviewWorkerPassesWorkflowRecipeMetadataToRunner(t *testing.T) {
 	runner := &recordingPassRunner{results: []PassResult{{Name: PassStructural, Summary: "structure clean"}}}
 	worker, err := NewReviewWorker(ReviewWorkerConfig{PassRunner: runner})
@@ -96,6 +123,38 @@ func TestReviewWorkerPassesWorkflowRecipeMetadataToRunner(t *testing.T) {
 	}
 }
 
+func TestReviewWorkerPassesFallbackPolicyToRunner(t *testing.T) {
+	runner := &recordingPassRunner{results: []PassResult{
+		{Name: PassStructural, Summary: "structure clean"},
+		{Name: PassBehavioural, Summary: "behaviour clean"},
+		{Name: PassAdversarial, Summary: "adversarial clean"},
+	}}
+	worker, err := NewReviewWorker(ReviewWorkerConfig{PassRunner: runner})
+	if err != nil {
+		t.Fatalf("NewReviewWorker returned error: %v", err)
+	}
+	task := reviewWorkerTask(map[string]any{
+		"target":           "HEAD",
+		"gate":             true,
+		"fallback_enabled": false,
+		"max_attempts":     2,
+	})
+
+	if _, err := worker.Execute(context.Background(), task); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if len(runner.criteria) != 1 {
+		t.Fatalf("criteria count = %d, want 1", len(runner.criteria))
+	}
+	criteria := runner.criteria[0]
+	if criteria.FallbackEnabled == nil || *criteria.FallbackEnabled {
+		t.Fatalf("FallbackEnabled = %#v, want false", criteria.FallbackEnabled)
+	}
+	if criteria.MaxAttempts != 2 {
+		t.Fatalf("MaxAttempts = %d, want 2", criteria.MaxAttempts)
+	}
+}
+
 func TestReviewWorkerExecuteGateModeRecordsDecision(t *testing.T) {
 	runner := &recordingPassRunner{results: []PassResult{
 		{Name: PassStructural, Summary: "error", Findings: []Finding{
@@ -127,6 +186,41 @@ func TestReviewWorkerExecuteGateModeRecordsDecision(t *testing.T) {
 		t.Fatalf("reason metadata = %#v, want blocking finding", task.Metadata["reason"])
 	}
 	assertMetadataPasses(t, task.Metadata["passes_completed"], []string{"structural", "behavioural", "adversarial"})
+}
+
+func TestReviewWorkerGateFailureIsBlockingAndLowersVerdictConfidence(t *testing.T) {
+	runner := &recordingPassRunner{
+		results: []PassResult{{Name: PassStructural, Summary: "structure clean"}},
+		err:     errors.New("behavioural review pass unavailable after retries"),
+	}
+	worker, err := NewReviewWorker(ReviewWorkerConfig{PassRunner: runner})
+	if err != nil {
+		t.Fatalf("NewReviewWorker returned error: %v", err)
+	}
+	task := reviewWorkerTask(map[string]any{
+		"target":                    "HEAD",
+		"gate":                      true,
+		"classification_confidence": 1.0,
+	})
+
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	decision := decodeReviewDecision(t, result.Content)
+	if decision.Decision != DecisionBlock || !decision.Blocking {
+		t.Fatalf("decision = %#v, want fail-closed block", decision)
+	}
+	if decision.ReviewComplete {
+		t.Fatal("ReviewComplete = true, want false for incomplete gate")
+	}
+	assertMetadataPasses(t, task.Metadata["passes_completed"], []string{"structural"})
+	if complete, ok := task.Metadata["review_complete"].(bool); !ok || complete {
+		t.Fatalf("review_complete = %#v, want false", task.Metadata["review_complete"])
+	}
+	if confidence, ok := task.Metadata["confidence_score"].(float64); !ok || confidence != 0 {
+		t.Fatalf("confidence_score = %#v, want 0 for incomplete gate", task.Metadata["confidence_score"])
+	}
 }
 
 func TestReviewWorkerRejectsCrossWorktreeResume(t *testing.T) {
@@ -214,6 +308,7 @@ func TestReviewWorkerSubtaskTreeShape(t *testing.T) {
 
 type recordingPassRunner struct {
 	results  []PassResult
+	err      error
 	calls    int
 	criteria []Criteria
 }
@@ -227,7 +322,7 @@ func (r *recordingPassRunner) Run(_ context.Context, target string, criteria Cri
 	if criteria.ParentTaskID == "" {
 		return nil, fmt.Errorf("parent task ID is empty")
 	}
-	return r.results, nil
+	return r.results, r.err
 }
 
 type reviewLeafWorker struct {

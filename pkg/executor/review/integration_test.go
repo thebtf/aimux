@@ -62,7 +62,7 @@ func TestReviewIntegrationThreePassGateBlock(t *testing.T) {
 }
 
 // @critical - release blocker per Constitution rule #10.
-func TestReviewIntegrationFailOpenTimeout(t *testing.T) {
+func TestReviewIntegrationFailClosedTimeout(t *testing.T) {
 	runner := &blockingPassRunner{}
 	worker, err := NewReviewWorker(ReviewWorkerConfig{PassRunner: runner})
 	if err != nil {
@@ -77,11 +77,14 @@ func TestReviewIntegrationFailOpenTimeout(t *testing.T) {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 	decision := decodeReviewDecision(t, result.Content)
-	if decision.Decision != DecisionAllow {
-		t.Fatalf("decision = %s, want fail-open %s", decision.Decision, DecisionAllow)
+	if decision.Decision != DecisionBlock {
+		t.Fatalf("decision = %s, want fail-closed %s", decision.Decision, DecisionBlock)
 	}
 	if decision.Reason != "timeout" {
 		t.Fatalf("reason = %q, want timeout", decision.Reason)
+	}
+	if !decision.Blocking {
+		t.Fatal("Blocking = false, want true on timeout")
 	}
 }
 

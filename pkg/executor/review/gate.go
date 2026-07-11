@@ -27,6 +27,8 @@ type Decision struct {
 	PassesCompleted []PassName    `json:"passes_completed"`
 	Severity        Severity      `json:"severity,omitempty"`
 	Blocking        bool          `json:"blocking"`
+	ReviewComplete  bool          `json:"review_complete"`
+	ConfidenceScore float64       `json:"confidence_score"`
 }
 
 // PassRunner is the gate-facing subset of the review pass pipeline.
@@ -41,7 +43,7 @@ type Gate struct {
 	aggregator Aggregator
 }
 
-// NewGate constructs a fail-open review gate.
+// NewGate constructs a fail-closed review gate.
 func NewGate(runner PassRunner, criteria Criteria) *Gate {
 	return &Gate{
 		runner:     runner,
@@ -50,7 +52,8 @@ func NewGate(runner PassRunner, criteria Criteria) *Gate {
 	}
 }
 
-// RunGate runs review passes synchronously and returns a fail-open decision.
+// RunGate runs review passes synchronously and only allows after every required
+// pass completes successfully.
 func (g *Gate) RunGate(ctx context.Context, target string, timeoutSec int) (Decision, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -60,7 +63,7 @@ func (g *Gate) RunGate(ctx context.Context, target string, timeoutSec int) (Deci
 	defer cancel()
 
 	if g == nil || g.runner == nil {
-		return failOpenDecision("review gate runner is required"), nil
+		return failClosedDecision("review gate runner is required", Aggregator{}.Aggregate(nil)), nil
 	}
 
 	criteria := g.criteria
@@ -68,17 +71,20 @@ func (g *Gate) RunGate(ctx context.Context, target string, timeoutSec int) (Deci
 		criteria.TaskTimeout = timeout
 	}
 	results, err := g.runner.Run(gateCtx, target, criteria)
+	aggregated := g.aggregator.Aggregate(results)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(gateCtx.Err(), context.DeadlineExceeded) {
-			return failOpenDecision("timeout"), nil
+			return failClosedDecision("timeout", aggregated), nil
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(gateCtx.Err(), context.Canceled) {
 			return Decision{}, context.Canceled
 		}
-		return failOpenDecision(err.Error()), nil
+		return failClosedDecision(err.Error(), aggregated), nil
 	}
 
-	aggregated := g.aggregator.Aggregate(results)
+	if !completeReviewPassSet(aggregated.PassesCompleted) {
+		return failClosedDecision(incompleteReviewPassReason(aggregated.PassesCompleted), aggregated), nil
+	}
 	if aggregated.Blocking {
 		return blockDecision(aggregated), nil
 	}
@@ -97,6 +103,7 @@ func allowDecision(aggregated AggregatedFindings) Decision {
 	if reason == "" {
 		reason = "no blocking findings"
 	}
+	reason = SanitizePublicReason(reason)
 	return Decision{
 		Decision:        DecisionAllow,
 		Reason:          reason,
@@ -105,31 +112,83 @@ func allowDecision(aggregated AggregatedFindings) Decision {
 		PassesCompleted: aggregated.PassesCompleted,
 		Severity:        aggregated.Severity,
 		Blocking:        false,
+		ReviewComplete:  true,
+		ConfidenceScore: 1,
 	}
 }
 
 func blockDecision(aggregated AggregatedFindings) Decision {
 	return Decision{
 		Decision:        DecisionBlock,
-		Reason:          topErrorSummary(aggregated.Findings),
+		Reason:          SanitizePublicReason(topErrorSummary(aggregated.Findings)),
 		Findings:        aggregated.Findings,
 		Summary:         aggregated.Summary,
 		PassesCompleted: aggregated.PassesCompleted,
 		Severity:        aggregated.Severity,
 		Blocking:        true,
+		ReviewComplete:  true,
+		ConfidenceScore: 1,
 	}
 }
 
-func failOpenDecision(reason string) Decision {
+func failClosedDecision(reason string, aggregated AggregatedFindings) Decision {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		reason = "review gate failed open"
+		reason = "review gate incomplete"
+	}
+	reason = SanitizePublicReason(reason)
+	summary := strings.TrimSpace(aggregated.Summary)
+	if len(aggregated.PassesCompleted) == 0 || summary == "" || summary == "No review findings." {
+		summary = reason
 	}
 	return Decision{
-		Decision: DecisionAllow,
-		Reason:   reason,
-		Blocking: false,
+		Decision:        DecisionBlock,
+		Reason:          reason,
+		Findings:        aggregated.Findings,
+		Summary:         summary,
+		PassesCompleted: aggregated.PassesCompleted,
+		Severity:        aggregated.Severity,
+		Blocking:        true,
+		ReviewComplete:  false,
+		ConfidenceScore: 0,
 	}
+}
+
+func completeReviewPassSet(passes []PassName) bool {
+	expected := orderedPasses()
+	if len(passes) != len(expected) {
+		return false
+	}
+	completed := make(map[PassName]struct{}, len(passes))
+	for _, pass := range passes {
+		completed[pass] = struct{}{}
+	}
+	for _, pass := range expected {
+		if _, ok := completed[pass]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func incompleteReviewPassReason(passes []PassName) string {
+	if len(passes) == 0 {
+		return "review gate incomplete: zero passes completed"
+	}
+	completed := make(map[PassName]struct{}, len(passes))
+	for _, pass := range passes {
+		completed[pass] = struct{}{}
+	}
+	missing := make([]string, 0, len(orderedPasses()))
+	for _, pass := range orderedPasses() {
+		if _, ok := completed[pass]; !ok {
+			missing = append(missing, string(pass))
+		}
+	}
+	if len(missing) == 0 {
+		return "review gate incomplete: unexpected pass set"
+	}
+	return "review gate incomplete: missing passes: " + strings.Join(missing, ", ")
 }
 
 func topErrorSummary(findings []Finding) string {

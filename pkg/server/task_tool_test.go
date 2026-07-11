@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	_ "modernc.org/sqlite"
@@ -281,6 +282,399 @@ func TestHandleReviewGateRoutesThroughReviewBackbone(t *testing.T) {
 	assertMetadataBool(t, task.Metadata, "review_gate", true)
 	if task.Timeout != 23 {
 		t.Fatalf("timeout_seconds = %d, want 23", task.Timeout)
+	}
+}
+
+func TestReviewGatePublicSurfacesFailClosedWhenAllPassesUnavailable(t *testing.T) {
+	const rawSecret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	rawError := "all review backends unavailable after retries: " + rawSecret + " " + strings.Repeat("界", 300)
+	tests := []struct {
+		name string
+		call func(*testing.T, *Server, map[string]any) *mcp.CallToolResult
+		args map[string]any
+	}{
+		{
+			name: "task",
+			call: callTaskTool,
+			args: map[string]any{
+				"prompt":           "review HEAD for release readiness",
+				"task_class":       "review",
+				"target":           "HEAD",
+				"gate":             true,
+				"fallback_enabled": true,
+				"max_attempts":     2,
+			},
+		},
+		{
+			name: "review",
+			call: callReviewTool,
+			args: map[string]any{
+				"prompt":           "review HEAD for release readiness",
+				"target":           "HEAD",
+				"gate":             true,
+				"fallback_enabled": true,
+				"max_attempts":     2,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := newTaskToolEngine(t)
+			worker, err := review.NewReviewWorker(review.ReviewWorkerConfig{
+				PassRunner: unavailableReviewPassRunner{err: errors.New(rawError)},
+			})
+			if err != nil {
+				t.Fatalf("NewReviewWorker returned error: %v", err)
+			}
+			engine.RegisterWorker(review.WorkerTypeReview, worker)
+			srv := &Server{loom: engine}
+
+			result := tt.call(t, srv, tt.args)
+			if result.IsError {
+				t.Fatalf("unexpected submit error: %s", taskToolResultText(t, result))
+			}
+			payload := decodeTaskToolResult(t, result)
+			task := waitTaskToolStatus(t, srv, payload["task_id"].(string), loom.TaskStatusCompleted)
+
+			var decision review.Decision
+			if err := json.Unmarshal([]byte(task.Result), &decision); err != nil {
+				t.Fatalf("decode review decision: %v; raw=%s", err, task.Result)
+			}
+			if decision.Decision != review.DecisionBlock || !decision.Blocking {
+				t.Fatalf("decision = %#v, want fail-closed block", decision)
+			}
+			if decision.ReviewComplete {
+				t.Fatal("ReviewComplete = true, want false for unavailable reviewers")
+			}
+			if decision.ConfidenceScore != 0 {
+				t.Fatalf("ConfidenceScore = %v, want 0 for unavailable reviewers", decision.ConfidenceScore)
+			}
+			if len(decision.PassesCompleted) != 0 {
+				t.Fatalf("passes_completed = %#v, want none", decision.PassesCompleted)
+			}
+			if !strings.Contains(decision.Reason, "all review backends unavailable after retries") {
+				t.Fatalf("reason = %q, want exhausted reviewer error", decision.Reason)
+			}
+			assertSafeReviewReasonProjection(t, decision.Reason, rawSecret)
+			if decision.Summary != decision.Reason || strings.Contains(task.Result, "No review findings") {
+				t.Fatalf("terminal result implies a clean review: %s", task.Result)
+			}
+			if strings.Contains(task.Result, rawSecret) {
+				t.Fatalf("terminal result leaked raw secret: %s", task.Result)
+			}
+			if metadataReason, _ := task.Metadata["reason"].(string); metadataReason != decision.Reason {
+				t.Fatalf("task metadata reason = %q, decision reason = %q", metadataReason, decision.Reason)
+			}
+
+			projected := buildTaskResult(task, classifier.TaskClassReview, 1, nil)
+			if projected.ConfidenceScore != 0 {
+				t.Fatalf("terminal confidence_score = %v, want 0 for zero-pass gate", projected.ConfidenceScore)
+			}
+			resourceMetadata := taskSnapshotMetadataPayload(task.Metadata)
+			assertMetadataString(t, resourceMetadata, "decision", string(review.DecisionBlock))
+			assertMetadataBool(t, resourceMetadata, "blocking", true)
+			assertMetadataBool(t, resourceMetadata, "review_complete", false)
+			if confidence, ok := resourceMetadata["confidence_score"].(float64); !ok || confidence != 0 {
+				t.Fatalf("resource confidence_score = %#v, want 0", resourceMetadata["confidence_score"])
+			}
+			if resourceReason, _ := resourceMetadata["reason"].(string); resourceReason != decision.Reason {
+				t.Fatalf("resource metadata reason = %q, decision reason = %q", resourceReason, decision.Reason)
+			}
+
+			resource := readTaskSnapshotResource(t, srv, context.Background(), "aimux://tasks/"+task.ID)
+			metadata, ok := resource["metadata"].(map[string]any)
+			if !ok {
+				t.Fatalf("resource metadata = %#v, want map", resource["metadata"])
+			}
+			resourceReason, _ := metadata["reason"].(string)
+			if resourceReason != decision.Reason {
+				t.Fatalf("resource read reason = %q, decision reason = %q", resourceReason, decision.Reason)
+			}
+			assertSafeReviewReasonProjection(t, resourceReason, rawSecret)
+			snapshot := taskSnapshotPayload(task, loom.TaskArtifactProjectionOK)
+			if summary, _ := snapshot["result_summary"].(string); strings.Contains(summary, "No review findings") {
+				t.Fatalf("resource result_summary implies a clean review: %q", summary)
+			}
+		})
+	}
+}
+
+func assertSafeReviewReasonProjection(t *testing.T, reason string, rawSecret string) {
+	t.Helper()
+	if strings.Contains(reason, rawSecret) {
+		t.Fatalf("review reason leaked raw secret: %q", reason)
+	}
+	if !strings.Contains(reason, "[REDACTED:openai-key-project]") {
+		t.Fatalf("review reason = %q, want redaction marker", reason)
+	}
+	if len(reason) > review.PublicReasonMaxBytes {
+		t.Fatalf("review reason length = %d bytes, want <= %d", len(reason), review.PublicReasonMaxBytes)
+	}
+	if !strings.HasSuffix(reason, review.PublicReasonTruncationMarker) {
+		t.Fatalf("review reason = %q, want explicit truncation marker", reason)
+	}
+	if !utf8.ValidString(reason) {
+		t.Fatalf("review reason is not valid UTF-8: %q", reason)
+	}
+}
+
+func TestReviewGatePublicSurfacesDefaultResourceSanitizesCompleteDecisionContent(t *testing.T) {
+	const rawSecret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	tests := []struct {
+		name       string
+		call       func(*testing.T, *Server, map[string]any) *mcp.CallToolResult
+		args       map[string]any
+		results    []review.PassResult
+		want       review.DecisionValue
+		wantSuffix bool
+	}{
+		{
+			name: "task complete blocking finding",
+			call: callTaskTool,
+			args: map[string]any{
+				"prompt":     "review HEAD",
+				"task_class": "review",
+				"target":     "HEAD",
+				"gate":       true,
+			},
+			results: completeReviewResults(
+				"structure checked",
+				[]review.Finding{
+					{Severity: review.SeverityError, File: "blocker.go", Body: "release blocker"},
+					{Severity: review.SeverityWarning, File: "evidence.go", Body: "oversized evidence " + rawSecret + " " + strings.Repeat("界", 300)},
+				},
+			),
+			want:       review.DecisionBlock,
+			wantSuffix: true,
+		},
+		{
+			name: "review complete blocking finding",
+			call: callReviewTool,
+			args: map[string]any{
+				"prompt": "review HEAD",
+				"target": "HEAD",
+				"gate":   true,
+			},
+			results: completeReviewResults(
+				"structure checked",
+				[]review.Finding{
+					{Severity: review.SeverityError, File: "blocker.go", Body: "release blocker"},
+					{Severity: review.SeverityWarning, File: "evidence.go", Body: "oversized evidence " + rawSecret + " " + strings.Repeat("界", 300)},
+				},
+			),
+			want:       review.DecisionBlock,
+			wantSuffix: true,
+		},
+		{
+			name: "task complete allow summary",
+			call: callTaskTool,
+			args: map[string]any{
+				"prompt":     "review HEAD",
+				"task_class": "review",
+				"target":     "HEAD",
+				"gate":       true,
+			},
+			results: completeReviewResults("structure clean "+rawSecret, nil),
+			want:    review.DecisionAllow,
+		},
+		{
+			name: "review complete allow summary",
+			call: callReviewTool,
+			args: map[string]any{
+				"prompt": "review HEAD",
+				"target": "HEAD",
+				"gate":   true,
+			},
+			results: completeReviewResults("structure clean "+rawSecret, nil),
+			want:    review.DecisionAllow,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := newTaskToolEngine(t)
+			worker, err := review.NewReviewWorker(review.ReviewWorkerConfig{
+				PassRunner: unavailableReviewPassRunner{results: tt.results},
+			})
+			if err != nil {
+				t.Fatalf("NewReviewWorker returned error: %v", err)
+			}
+			engine.RegisterWorker(review.WorkerTypeReview, worker)
+			srv := &Server{loom: engine}
+
+			result := tt.call(t, srv, tt.args)
+			if result.IsError {
+				t.Fatalf("unexpected submit error: %s", taskToolResultText(t, result))
+			}
+			payload := decodeTaskToolResult(t, result)
+			task := waitTaskToolStatus(t, srv, payload["task_id"].(string), loom.TaskStatusCompleted)
+
+			var decision review.Decision
+			if err := json.Unmarshal([]byte(task.Result), &decision); err != nil {
+				t.Fatalf("decode review decision: %v; raw=%s", err, task.Result)
+			}
+			if decision.Decision != tt.want || !decision.ReviewComplete || decision.ConfidenceScore != 1 {
+				t.Fatalf("decision = %#v, want complete %s", decision, tt.want)
+			}
+
+			resource := readTaskSnapshotResource(t, srv, context.Background(), "aimux://tasks/"+task.ID)
+			rawResource, err := json.Marshal(resource)
+			if err != nil {
+				t.Fatalf("marshal task resource: %v", err)
+			}
+			if strings.Contains(string(rawResource), rawSecret) {
+				t.Fatalf("default task resource leaked raw secret: %s", rawResource)
+			}
+			resultSummary, _ := resource["result_summary"].(string)
+			if resultSummary == "" {
+				t.Fatalf("result_summary missing: %v", resource)
+			}
+			if strings.Contains(resultSummary, rawSecret) {
+				t.Fatalf("result_summary leaked raw secret: %q", resultSummary)
+			}
+			if tt.want != review.DecisionBlock && !strings.Contains(resultSummary, "[REDACTED:openai-key-project]") {
+				t.Fatalf("result_summary = %q, want redaction marker", resultSummary)
+			}
+			if len(resultSummary) > 512 {
+				t.Fatalf("result_summary length = %d bytes, want <= 512", len(resultSummary))
+			}
+			if !utf8.ValidString(resultSummary) {
+				t.Fatalf("result_summary is not valid UTF-8: %q", resultSummary)
+			}
+			if tt.wantSuffix && strings.Contains(resultSummary, "findings") && !strings.HasSuffix(resultSummary, "...[truncated]") {
+				t.Fatalf("result_summary = %q, want explicit truncation marker", resultSummary)
+			}
+		})
+	}
+}
+
+func completeReviewResults(structuralSummary string, structuralFindings []review.Finding) []review.PassResult {
+	return []review.PassResult{
+		{Name: review.PassStructural, Summary: structuralSummary, Findings: structuralFindings},
+		{Name: review.PassBehavioural, Summary: "behaviour clean"},
+		{Name: review.PassAdversarial, Summary: "adversarial clean"},
+	}
+}
+
+func TestReviewGatePublicSurfacesPropagateRetryPolicyToEveryLeaf(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*testing.T, *Server, map[string]any) *mcp.CallToolResult
+		args map[string]any
+	}{
+		{
+			name: "task",
+			call: callTaskTool,
+			args: map[string]any{
+				"prompt":           "review HEAD",
+				"task_class":       "review",
+				"target":           "HEAD",
+				"gate":             true,
+				"fallback_enabled": false,
+				"max_attempts":     2,
+			},
+		},
+		{
+			name: "review",
+			call: callReviewTool,
+			args: map[string]any{
+				"prompt":           "review HEAD",
+				"target":           "HEAD",
+				"gate":             true,
+				"fallback_enabled": false,
+				"max_attempts":     2,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := newTaskToolEngine(t)
+			worker, err := review.NewReviewWorker(review.ReviewWorkerConfig{Loom: engine})
+			if err != nil {
+				t.Fatalf("NewReviewWorker returned error: %v", err)
+			}
+			engine.RegisterWorker(review.WorkerTypeReview, worker)
+			leaves := []*recordingReviewPolicyLeafWorker{
+				{workerType: review.WorkerTypeReviewStructural},
+				{workerType: review.WorkerTypeReviewBehavioural},
+				{workerType: review.WorkerTypeReviewAdversarial},
+			}
+			for _, leaf := range leaves {
+				engine.RegisterWorker(leaf.workerType, leaf)
+			}
+			srv := &Server{loom: engine}
+
+			result := tt.call(t, srv, tt.args)
+			if result.IsError {
+				t.Fatalf("unexpected submit error: %s", taskToolResultText(t, result))
+			}
+			payload := decodeTaskToolResult(t, result)
+			task := waitTaskToolStatus(t, srv, payload["task_id"].(string), loom.TaskStatusCompleted)
+			var decision review.Decision
+			if err := json.Unmarshal([]byte(task.Result), &decision); err != nil {
+				t.Fatalf("decode review decision: %v; raw=%s", err, task.Result)
+			}
+			if decision.Decision != review.DecisionAllow || !decision.ReviewComplete {
+				t.Fatalf("decision = %#v, want complete allow from all three leaves", decision)
+			}
+
+			for _, leaf := range leaves {
+				leafTask := leaf.onlyTask(t)
+				assertMetadataBool(t, leafTask.Metadata, "fallback_enabled", false)
+				if attempts, ok := metadataInt(leafTask.Metadata, "max_attempts"); !ok || attempts != 2 {
+					t.Fatalf("%s max_attempts = %#v, want 2", leaf.workerType, leafTask.Metadata["max_attempts"])
+				}
+			}
+		})
+	}
+}
+
+type unavailableReviewPassRunner struct {
+	results []review.PassResult
+	err     error
+}
+
+func (r unavailableReviewPassRunner) Run(context.Context, string, review.Criteria) ([]review.PassResult, error) {
+	return r.results, r.err
+}
+
+type recordingReviewPolicyLeafWorker struct {
+	mu         sync.Mutex
+	workerType loom.WorkerType
+	task       *loom.Task
+}
+
+func (w *recordingReviewPolicyLeafWorker) Type() loom.WorkerType {
+	return w.workerType
+}
+
+func (w *recordingReviewPolicyLeafWorker) Execute(_ context.Context, task *loom.Task) (*loom.WorkerResult, error) {
+	w.mu.Lock()
+	cp := *task
+	cp.Metadata = cloneTaskMetadata(task.Metadata)
+	w.task = &cp
+	w.mu.Unlock()
+	return &loom.WorkerResult{Content: `{"summary":"review pass complete","findings":[]}`}, nil
+}
+
+func (w *recordingReviewPolicyLeafWorker) onlyTask(t *testing.T) *loom.Task {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		w.mu.Lock()
+		if w.task != nil {
+			cp := *w.task
+			cp.Metadata = cloneTaskMetadata(w.task.Metadata)
+			w.mu.Unlock()
+			return &cp
+		}
+		w.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatalf("%s leaf task was not executed", w.workerType)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1022,7 +1416,7 @@ func TestHandleTaskRecipeReplayCacheHitReusesCompletedTask(t *testing.T) {
 	if firstTaskID == "" {
 		t.Fatalf("first task_id missing: %v", firstPayload)
 	}
-	waitTaskToolStatus(t, srv, firstTaskID, loom.TaskStatusCompleted)
+	storedTask := waitTaskToolStatus(t, srv, firstTaskID, loom.TaskStatusCompleted)
 	firstMetadata := taskToolPayloadMetadata(t, firstPayload)
 	assertMetadataBool(t, firstMetadata, "recipe_replay_cache_hit", false)
 	assertMetadataString(t, firstMetadata, "recipe_replay_key_version", "v1")
@@ -1043,6 +1437,24 @@ func TestHandleTaskRecipeReplayCacheHitReusesCompletedTask(t *testing.T) {
 	assertMetadataBool(t, secondMetadata, "recipe_replay_cache_hit", true)
 	assertMetadataString(t, secondMetadata, "recipe_replay_source_task_id", firstTaskID)
 	assertMetadataString(t, secondMetadata, "recipe_replay_fingerprint", firstFingerprint)
+	if content, ok := secondPayload["content"]; ok {
+		t.Fatalf("recipe replay exposed terminal content without explicit opt-in: %v", content)
+	}
+	if secondPayload["status"] != string(loom.TaskStatusCompleted) {
+		t.Fatalf("recipe replay status = %v, want completed", secondPayload["status"])
+	}
+
+	fullResult, err := srv.handleStatus(context.Background(), makeRequest("status", map[string]any{
+		"job_id":          firstTaskID,
+		"include_content": true,
+	}))
+	if err != nil {
+		t.Fatalf("handleStatus(include_content=true): %v", err)
+	}
+	fullPayload := parseResult(t, fullResult)
+	if fullPayload["content"] != storedTask.Result {
+		t.Fatalf("explicit full content = %v, want stored result %q", fullPayload["content"], storedTask.Result)
+	}
 
 	snapshot := readTaskSnapshotResource(t, srv, context.Background(), "aimux://tasks/"+firstTaskID)
 	snapshotMetadata, ok := snapshot["metadata"].(map[string]any)

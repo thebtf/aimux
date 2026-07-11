@@ -76,6 +76,8 @@ type Criteria struct {
 	WorkerTypes          map[PassName]loom.WorkerType
 	TaskTimeout          time.Duration
 	PollInterval         time.Duration
+	FallbackEnabled      *bool
+	MaxAttempts          int
 }
 
 // LoomClient is the subset of Loom used by review pass orchestration.
@@ -308,6 +310,12 @@ func passMetadata(pass PassName, workerType loom.WorkerType, criteria Criteria) 
 		if len(criteria.RecipeWorkflowSteps) > 0 {
 			metadata["recipe_workflow_steps"] = cloneStrings(criteria.RecipeWorkflowSteps)
 		}
+	}
+	if criteria.FallbackEnabled != nil {
+		metadata["fallback_enabled"] = *criteria.FallbackEnabled
+	}
+	if criteria.MaxAttempts > 0 {
+		metadata["max_attempts"] = criteria.MaxAttempts
 	}
 	return metadata
 }
