@@ -96,6 +96,58 @@ type subtaskContext struct {
 	rootTaskID string
 }
 
+type failedCrashIntent struct {
+	task                 *Task
+	expectedStatus       TaskStatus
+	errMsg               string
+	errorCode            string
+	completedAt          time.Time
+	logFailure           bool
+	retryCanonicalWinner bool
+}
+
+type lifecycleProjectionState struct {
+	deferred *failedCrashIntent
+}
+
+type lifecycleOrderingStripe struct {
+	mu      sync.Mutex
+	pending map[string]*lifecycleProjectionState
+}
+
+// markProjectionPending records the short interval in which cancellation has
+// been committed but its externally visible event and worker signal have not
+// both completed. The caller must hold s.mu.
+func (s *lifecycleOrderingStripe) markProjectionPending(taskID string) {
+	if s.pending == nil {
+		s.pending = make(map[string]*lifecycleProjectionState)
+	}
+	s.pending[taskID] = &lifecycleProjectionState{}
+}
+
+// deferFailedCrash records at most one terminal intent while cancellation is
+// being projected. Additional contenders are accepted but cannot replace the
+// deterministic first winner. The caller must hold s.mu.
+func (s *lifecycleOrderingStripe) deferFailedCrash(taskID string, intent failedCrashIntent) bool {
+	state, pending := s.pending[taskID]
+	if !pending {
+		return false
+	}
+	if state.deferred == nil {
+		state.deferred = cloneFailedCrashIntent(intent)
+	}
+	return true
+}
+
+func cloneFailedCrashIntent(intent failedCrashIntent) *failedCrashIntent {
+	cloned := intent
+	if intent.task != nil {
+		task := *intent.task
+		cloned.task = &task
+	}
+	return &cloned
+}
+
 // LoomEngine is the central task mediator.
 // All tool handler work flows through LoomEngine which owns task creation,
 // dispatch, execution, persistence, and delivery.
@@ -131,7 +183,7 @@ type LoomEngine struct {
 	// lifecycleOrdering serializes the cancellation intent projection with any
 	// local failed_crash authority commit for the same task. A fixed stripe set
 	// keeps the ordering primitive bounded for the lifetime of the daemon.
-	lifecycleOrdering [lifecycleOrderingStripes]sync.Mutex
+	lifecycleOrdering [lifecycleOrderingStripes]lifecycleOrderingStripe
 
 	// T030 instruments — initialised in New() after options are applied.
 	taskSubmittedCounter otelmetric.Int64Counter
@@ -315,8 +367,8 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	l.emitTaskEvent(task, EventTaskCreated, TaskStatusPending, now)
 
 	// Transition pending → dispatched synchronously before launching goroutine.
-	// This ensures crash recovery (MarkCrashed) can pick up the task even if the
-	// process dies before the goroutine runs.
+	// This ensures RecoverCrashed can pick up the task even if the process dies
+	// before the goroutine runs.
 	dispatchedAt := l.clock.Now().UTC()
 	dispatched, err := l.store.CommitDispatched(context.Background(), DispatchTask{
 		TaskID:         task.ID,
@@ -516,20 +568,20 @@ func (l *LoomEngine) Cancel(taskID string) error {
 		return err
 	}
 	ordering := l.lifecycleOrderingFor(taskID)
-	ordering.Lock()
+	ordering.mu.Lock()
 	requestedAt := l.clock.Now().UTC()
 	intent, err := l.store.RequestCancel(context.Background(), taskID, requestedAt)
 	if err != nil {
-		ordering.Unlock()
+		ordering.mu.Unlock()
 		return err
 	}
 	if !intent.Applied {
-		ordering.Unlock()
+		ordering.mu.Unlock()
 		return fmt.Errorf("loom: cancel task %s: authority command was not applied", taskID)
 	}
 
 	if !intent.RequiresStop {
-		ordering.Unlock()
+		ordering.mu.Unlock()
 		l.emitTaskEvent(task, EventTaskCancelled, TaskStatusCancelled, requestedAt)
 		l.taskCancelledCounter.Add(context.Background(), 1, otelmetric.WithAttributes(
 			attribute.String("worker_type", string(task.WorkerType)),
@@ -545,16 +597,16 @@ func (l *LoomEngine) Cancel(taskID string) error {
 		)
 		return nil
 	}
-
+	ordering.markProjectionPending(taskID)
 	l.mu.RLock()
 	cancel := l.cancels[taskID]
 	l.mu.RUnlock()
+	ordering.mu.Unlock()
 	l.emitTaskEvent(task, EventTaskCancelRequested, TaskStatusCancelling, requestedAt)
 	if cancel != nil {
 		cancel()
 	}
-	ordering.Unlock()
-	return nil
+	return l.flushDeferredFailedCrash(taskID)
 }
 
 // CancelAllForProject cancels all running tasks for the given project.
@@ -593,10 +645,10 @@ func (l *LoomEngine) CancelAllForProject(projectID string) (int, error) {
 	signalled := 0
 	for _, candidate := range candidates {
 		ordering := l.lifecycleOrderingFor(candidate.task.ID)
-		ordering.Lock()
+		ordering.mu.Lock()
 		intent, requestErr := l.store.RequestCancel(context.Background(), candidate.task.ID, requestedAt)
 		if requestErr != nil {
-			ordering.Unlock()
+			ordering.mu.Unlock()
 			if errors.Is(requestErr, ErrAuthorityConflict) {
 				continue
 			}
@@ -604,13 +656,17 @@ func (l *LoomEngine) CancelAllForProject(projectID string) (int, error) {
 			continue
 		}
 		if !intent.Applied || !intent.RequiresStop {
-			ordering.Unlock()
+			ordering.mu.Unlock()
 			continue
 		}
+		ordering.markProjectionPending(candidate.task.ID)
+		ordering.mu.Unlock()
 		l.emitTaskEvent(candidate.task, EventTaskCancelRequested, TaskStatusCancelling, requestedAt)
 		candidate.cancel()
-		ordering.Unlock()
 		signalled++
+		if flushErr := l.flushDeferredFailedCrash(candidate.task.ID); flushErr != nil {
+			joined = append(joined, fmt.Errorf("loom: cancel task %s: %w", candidate.task.ID, flushErr))
+		}
 	}
 
 	return signalled, errors.Join(joined...)
@@ -629,15 +685,15 @@ func (l *LoomEngine) RecoverCrashed() (int, error) {
 	var joined []error
 	recovered := 0
 	for _, task := range tasks {
+		intent := failedCrashIntent{task: task, expectedStatus: task.Status, errMsg: recoveryError, completedAt: recoveryAt}
 		ordering := l.lifecycleOrderingFor(task.ID)
-		ordering.Lock()
-		result, commitErr := l.store.CommitFailedCrash(context.Background(), FailCrashedTask{
-			TaskID:         task.ID,
-			ExpectedStatus: task.Status,
-			Error:          recoveryError,
-			CompletedAt:    recoveryAt,
-		})
-		ordering.Unlock()
+		ordering.mu.Lock()
+		if ordering.deferFailedCrash(task.ID, intent) {
+			ordering.mu.Unlock()
+			continue
+		}
+		projection, commitErr := l.commitFailedCrashLocked(intent)
+		ordering.mu.Unlock()
 		if commitErr != nil {
 			if errors.Is(commitErr, ErrAuthorityConflict) {
 				continue
@@ -645,11 +701,10 @@ func (l *LoomEngine) RecoverCrashed() (int, error) {
 			joined = append(joined, fmt.Errorf("loom: recover task %s: %w", task.ID, commitErr))
 			continue
 		}
-		if !result.Applied {
+		if projection == nil {
 			continue
 		}
-		l.emitTaskEvent(task, EventTaskFailedCrash, TaskStatusFailedCrash, recoveryAt)
-		l.recordTaskFailed(task)
+		l.projectFailedCrash(*projection)
 		recovered++
 	}
 	return recovered, errors.Join(joined...)
@@ -865,50 +920,147 @@ func (l *LoomEngine) logAuthorityCommitError(task *Task, operation string, statu
 	)
 }
 
+// commitFailedCrashAt returns true when this intent was either applied now or
+// accepted into an in-flight cancellation projection. In the deferred case it
+// means handled, not that this contender became the deterministic winner.
 func (l *LoomEngine) commitFailedCrashAt(task *Task, expectedStatus TaskStatus, errMsg, errorCode string, completedAt time.Time) bool {
-	ordering := l.lifecycleOrderingFor(task.ID)
-	ordering.Lock()
-	result, err := l.store.CommitFailedCrash(context.Background(), FailCrashedTask{
-		TaskID:         task.ID,
-		ExpectedStatus: expectedStatus,
-		Error:          errMsg,
-		CompletedAt:    completedAt,
+	return l.commitFailedCrashIntent(failedCrashIntent{
+		task:           task,
+		expectedStatus: expectedStatus,
+		errMsg:         errMsg,
+		errorCode:      errorCode,
+		completedAt:    completedAt,
+		logFailure:     true,
 	})
-	if errors.Is(err, ErrAuthorityConflict) && expectedStatus != TaskStatusCancelling && result.Winner.Task.Status == TaskStatusCancelling {
-		completedAt = l.clock.Now().UTC()
-		result, err = l.store.CommitFailedCrash(context.Background(), FailCrashedTask{
-			TaskID:         task.ID,
-			ExpectedStatus: TaskStatusCancelling,
-			Error:          unverifiedStopError,
-			CompletedAt:    completedAt,
-		})
-		errMsg = unverifiedStopError
-		errorCode = "unverified_stop"
+}
+
+func (l *LoomEngine) commitPanicFailedCrashAt(task *Task, expectedStatus TaskStatus, errMsg string, completedAt time.Time) bool {
+	return l.commitFailedCrashIntent(failedCrashIntent{
+		task:                 task,
+		expectedStatus:       expectedStatus,
+		errMsg:               errMsg,
+		errorCode:            "dispatch_panic",
+		completedAt:          completedAt,
+		logFailure:           true,
+		retryCanonicalWinner: true,
+	})
+}
+
+func (l *LoomEngine) commitFailedCrashIntent(intent failedCrashIntent) bool {
+	if intent.task == nil {
+		return false
 	}
-	ordering.Unlock()
+	ordering := l.lifecycleOrderingFor(intent.task.ID)
+	ordering.mu.Lock()
+	if ordering.deferFailedCrash(intent.task.ID, intent) {
+		ordering.mu.Unlock()
+		return true
+	}
+	projection, err := l.commitFailedCrashLocked(intent)
+	ordering.mu.Unlock()
 	if err != nil {
-		l.logAuthorityCommitError(task, "failed_crash authority commit failed", expectedStatus, err)
+		l.logAuthorityCommitError(intent.task, "failed_crash authority commit failed", intent.expectedStatus, err)
 		return false
 	}
-	if !result.Applied {
+	if projection == nil {
 		return false
 	}
-	l.emitTaskEvent(task, EventTaskFailedCrash, TaskStatusFailedCrash, completedAt)
-	l.recordTaskFailed(task)
-	l.logger.ErrorContext(context.Background(), "task failed crash",
-		"module", "loom",
-		"task_id", task.ID,
-		"project_id", task.ProjectID,
-		"worker_type", string(task.WorkerType),
-		"task_status", string(TaskStatusFailedCrash),
-		"request_id", task.RequestID,
-		"error_code", errorCode,
-		"error", errMsg,
-	)
+	l.projectFailedCrash(*projection)
 	return true
 }
 
-func (l *LoomEngine) lifecycleOrderingFor(taskID string) *sync.Mutex {
+// commitFailedCrashLocked performs only canonical persistence. Event delivery,
+// metrics, and logging are deliberately projected after the ordering stripe is
+// released so arbitrary subscribers never execute under the stripe lock.
+func (l *LoomEngine) commitFailedCrashLocked(intent failedCrashIntent) (*failedCrashIntent, error) {
+	result, err := l.store.CommitFailedCrash(context.Background(), FailCrashedTask{
+		TaskID:         intent.task.ID,
+		ExpectedStatus: intent.expectedStatus,
+		Error:          intent.errMsg,
+		CompletedAt:    intent.completedAt,
+	})
+	if errors.Is(err, ErrAuthorityConflict) {
+		winner := result.Winner.Task.Status
+		if winner.IsTerminal() {
+			return nil, nil
+		}
+		retryWinner := winner == TaskStatusCancelling || intent.retryCanonicalWinner
+		if retryWinner && winner != intent.expectedStatus && !winner.IsTerminal() {
+			intent.expectedStatus = winner
+			if winner == TaskStatusCancelling {
+				intent.completedAt = l.clock.Now().UTC()
+				intent.errMsg = unverifiedStopError
+				intent.errorCode = "unverified_stop"
+			}
+			result, err = l.store.CommitFailedCrash(context.Background(), FailCrashedTask{
+				TaskID:         intent.task.ID,
+				ExpectedStatus: intent.expectedStatus,
+				Error:          intent.errMsg,
+				CompletedAt:    intent.completedAt,
+			})
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !result.Applied {
+		return nil, nil
+	}
+	return cloneFailedCrashIntent(intent), nil
+}
+
+func (l *LoomEngine) projectFailedCrash(intent failedCrashIntent) {
+	if intent.task == nil {
+		return
+	}
+	l.emitTaskEvent(intent.task, EventTaskFailedCrash, TaskStatusFailedCrash, intent.completedAt)
+	l.recordTaskFailed(intent.task)
+	if !intent.logFailure {
+		return
+	}
+	l.logger.ErrorContext(context.Background(), "task failed crash",
+		"module", "loom",
+		"task_id", intent.task.ID,
+		"project_id", intent.task.ProjectID,
+		"worker_type", string(intent.task.WorkerType),
+		"task_status", string(TaskStatusFailedCrash),
+		"request_id", intent.task.RequestID,
+		"error_code", intent.errorCode,
+		"error", intent.errMsg,
+	)
+}
+
+func (l *LoomEngine) flushDeferredFailedCrash(taskID string) error {
+	ordering := l.lifecycleOrderingFor(taskID)
+	ordering.mu.Lock()
+	state, pending := ordering.pending[taskID]
+	if !pending {
+		ordering.mu.Unlock()
+		return nil
+	}
+	delete(ordering.pending, taskID)
+	if len(ordering.pending) == 0 {
+		ordering.pending = nil
+	}
+	var projection *failedCrashIntent
+	var err error
+	if state.deferred != nil {
+		projection, err = l.commitFailedCrashLocked(*state.deferred)
+	}
+	ordering.mu.Unlock()
+	if err != nil {
+		if state.deferred != nil {
+			l.logAuthorityCommitError(state.deferred.task, "deferred failed_crash authority commit failed", state.deferred.expectedStatus, err)
+		}
+		return fmt.Errorf("flush deferred failed_crash: %w", err)
+	}
+	if projection != nil {
+		l.projectFailedCrash(*projection)
+	}
+	return nil
+}
+
+func (l *LoomEngine) lifecycleOrderingFor(taskID string) *lifecycleOrderingStripe {
 	// FNV-1a is stable, allocation-free, and sufficient for spreading task IDs
 	// across a bounded set of private ordering stripes.
 	const offset32 = uint32(2166136261)
@@ -919,6 +1071,14 @@ func (l *LoomEngine) lifecycleOrderingFor(taskID string) *sync.Mutex {
 		hash *= prime32
 	}
 	return &l.lifecycleOrdering[hash%uint32(len(l.lifecycleOrdering))]
+}
+
+func (l *LoomEngine) lifecycleProjectionPending(taskID string) bool {
+	ordering := l.lifecycleOrderingFor(taskID)
+	ordering.mu.Lock()
+	_, pending := ordering.pending[taskID]
+	ordering.mu.Unlock()
+	return pending
 }
 
 func (l *LoomEngine) reconcileCancellingWinner(task *Task, result CommitResult, err error, at time.Time) bool {
@@ -1021,15 +1181,17 @@ func (l *LoomEngine) dispatch(task *Task) {
 			return
 		}
 		panicMsg := fmt.Sprintf("panic: %v", r)
+		expectedStatus := task.Status
 		current, err := l.store.Get(task.ID)
 		if err != nil {
 			l.logAuthorityCommitError(task, "dispatch panic: load canonical task failed", task.Status, err)
-			return
+		} else {
+			if current.Status.IsTerminal() {
+				return
+			}
+			expectedStatus = current.Status
 		}
-		if current.Status.IsTerminal() {
-			return
-		}
-		if l.commitFailedCrashAt(task, current.Status, panicMsg, "dispatch_panic", l.clock.Now().UTC()) {
+		if l.commitPanicFailedCrashAt(task, expectedStatus, panicMsg, l.clock.Now().UTC()) {
 			l.logger.ErrorContext(context.Background(), "dispatch panic stack",
 				"module", "loom",
 				"task_id", task.ID,
@@ -1068,7 +1230,12 @@ func (l *LoomEngine) dispatch(task *Task) {
 	l.cancels[task.ID] = cancel
 	l.mu.Unlock()
 	defer func() {
-		cancel()
+		if !l.lifecycleProjectionPending(task.ID) {
+			cancel()
+		}
+		// lifecycleProjectionPending releases the stripe before this lock.
+		// Cancel takes the opposite data path (stripe then l.mu.RLock), so the
+		// two locks are never held in inverse order.
 		l.mu.Lock()
 		delete(l.cancels, task.ID)
 		l.mu.Unlock()

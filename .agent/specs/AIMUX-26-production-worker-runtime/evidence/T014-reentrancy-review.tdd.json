@@ -1,0 +1,60 @@
+{
+  "task_id": "T014-reentrancy-review",
+  "base_snapshot": "7a10099c2ef91795ee66ff603f26cb3217c6747f",
+  "completed_at": "2026-07-11T01:42:18.2236072Z",
+  "red": {
+    "primary_evidence": "T014-reentrancy-review.red.json",
+    "blocked_callback_command": "go test . -run '^TestCancelProjection(ReentrancyDoesNotHoldLifecycleStripe|DeferredCommitFailureIsReturnedAndStateIsReleased)$' -count=1 -timeout 45s",
+    "blocked_callback_result": "five concurrency subtests failed because synchronous subscribers executed under the lifecycle stripe",
+    "terminal_winner_command": "go test . -run '^TestCancelProjectionTerminalWinnerConflictIsSatisfiedAndStateIsReleased$' -count=1 -timeout 30s",
+    "terminal_winner_result": "failed because a satisfied terminal authority conflict was surfaced by deferred flush",
+    "created_at_result": "TestCommitCreatedDerivesLastSeenAtFromCreatedAt failed because last_seen_at used wall clock time"
+  },
+  "green": {
+    "command": "go test . -run '^TestCancelProjection|^TestDispatchPanicCommitsFromLocalStatusWhenCanonicalPreflightReadFails$|^TestCommitCreatedDerivesLastSeenAtFromCreatedAt$' -count=1 -timeout 120s",
+    "result": "pass",
+    "duration": "1.081s"
+  },
+  "regression_caught_and_closed": {
+    "test": "TestCancelProjectionPrecedesConcurrentWorkerTerminalization",
+    "failure": "dispatch cleanup signalled task context while cancel_requested projection was blocked",
+    "resolution": "Cancel snapshots its signal under stripe ownership; dispatch cleanup checks pending projection before automatic context cancellation",
+    "result": "pass"
+  },
+  "lock_order_stress": {
+    "test": "TestCancelProjectionSignalSnapshotRaceStress",
+    "shape": "Cancel holds stripe and blocks at l.mu signal snapshot while worker returns; subscriber then reenters terminalization and Cancel",
+    "command": "go test . -run '^TestCancelProjectionSignalSnapshotRaceStress$' -count=1 -timeout 120s",
+    "result": "16 of 16 iterations passed; no deadlock, pending state released, cancels entry removed, one explicit/context signal, one terminal fact",
+    "scheduler_stability": "observer completion is gate-synchronized; count=10 passed in 20.300s and race count=3 passed in 14.532s"
+  },
+  "race": {
+    "command": "go test -race . -run '^TestCancelProjection(SignalSnapshotRaceStress|ReentrancyDoesNotHoldLifecycleStripe|DeferredCommitFailureIsReturnedAndStateIsReleased|TerminalWinnerConflictIsSatisfiedAndStateIsReleased|PrecedesConcurrentWorkerTerminalization)$' -count=1 -timeout 240s",
+    "result": "pass",
+    "duration": "6.873s"
+  },
+  "full_suite": {
+    "loom": "go test ./... -count=1 -timeout 300s: pass in 48.390s",
+    "root": "go test ./... -count=1 -timeout 600s: pass in 75.6s"
+  },
+  "build_and_static": {
+    "root_go_build": "pass",
+    "loom_go_build": "pass",
+    "root_go_vet": "pass",
+    "loom_go_vet": "pass",
+    "git_diff_check": "pass"
+  },
+  "oracle_invariants": {
+    "event_before_signal": true,
+    "callbacks_outside_stripe": true,
+    "first_deferred_intent_wins_full_tuple": true,
+    "terminal_fact_cardinality": 1,
+    "terminal_winner_conflict_is_satisfied": true,
+    "nonterminal_or_infrastructure_failure_is_returned": true,
+    "pending_state_released_on_all_tested_paths": true
+  },
+  "test_inventory": {
+    "test_functions": 242,
+    "sorted_signature_sha1": "fa049f5b793b19e3727fca8704b68f35840885b0"
+  }
+}

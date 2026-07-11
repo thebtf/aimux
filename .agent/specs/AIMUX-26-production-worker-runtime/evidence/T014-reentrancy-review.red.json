@@ -1,0 +1,17 @@
+{
+  "task_id": "T014-reentrancy-review",
+  "observed_at": "2026-07-11T01:09:44.5457889Z",
+  "test_file": "loom/cancel_projection_reentrancy_test.go",
+  "test_name": "TestCancelProjectionReentrancyDoesNotHoldLifecycleStripe",
+  "additional_test_name": "TestCancelProjectionDeferredCommitFailureIsReturnedAndStateIsReleased",
+  "minor_test_name": "TestCommitCreatedDerivesLastSeenAtFromCreatedAt",
+  "minor_test_file": "loom/authority_created_at_test.go",
+  "failure_reason": "Synchronous task.cancel_requested subscribers blocked same-task Cancel, same-task RecoverCrashed, same-stripe CancelAllForProject, and deferred failure handling behind the lifecycle stripe.",
+  "runner_command": "go test . -run '^TestCancelProjection(ReentrancyDoesNotHoldLifecycleStripe|DeferredCommitFailureIsReturnedAndStateIsReleased)$' -count=1 -timeout 45s",
+  "runner_stdout_excerpt": "all five concurrency subtests blocked; CommitCreated last_seen_at used wall clock instead of command CreatedAt",
+  "terminal_winner_conflict_red": {
+    "test_name": "TestCancelProjectionTerminalWinnerConflictIsSatisfiedAndStateIsReleased",
+    "command": "go test . -run '^TestCancelProjectionTerminalWinnerConflictIsSatisfiedAndStateIsReleased$' -count=1 -timeout 30s",
+    "result": "failed because flush returned ErrAuthorityConflict after a terminal canonical winner had already committed exactly one failed_crash fact"
+  }
+}

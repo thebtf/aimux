@@ -826,7 +826,7 @@ func (s *TaskStore) CommitCreated(ctx context.Context, command CreateTask) (Comm
 		return CommitResult{AuthorityResult: result}, conflictErr
 	}
 
-	lastSeenAt := time.Now().UTC().Format(time.RFC3339)
+	lastSeenAt := command.CreatedAt.UTC().Format(time.RFC3339)
 	if err := execOneAuthorityRow(
 		ctx,
 		tx,
