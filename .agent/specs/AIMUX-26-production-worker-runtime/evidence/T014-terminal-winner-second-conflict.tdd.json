@@ -1,0 +1,48 @@
+{
+  "task_id": "T014-terminal-winner-second-conflict",
+  "stack": "GO",
+  "red": {
+    "observed_at": "2026-07-11T03:14:00.0569569Z",
+    "test_file": "loom/cancel_projection_reentrancy_test.go",
+    "test_name": "TestFailedCrashRetryTreatsSecondTerminalAuthorityConflictAsSatisfied",
+    "failure_reason": "The second terminal ErrAuthorityConflict escaped both the deferred flush and retryCanonicalWinner paths.",
+    "runner_stdout_excerpt": "flush_deferred_failed_crash and panic_retry_canonical_winner both returned loom: authority conflict: durable state changed"
+  },
+  "green": {
+    "observed_at": "2026-07-11T03:25:18.7571363Z",
+    "passed_tests": 2,
+    "regressed_tests": 0,
+    "implementation": "After the single bounded retry, treat a second authority conflict with a terminal canonical winner as satisfied and return no projection.",
+    "runner_stdout_excerpt": "PASS: TestFailedCrashRetryTreatsSecondTerminalAuthorityConflictAsSatisfied; 20/20 deterministic repeats; focused related tests x5; race run; full Loom and root suites passed"
+  },
+  "refactor": {
+    "applied": false,
+    "reason": "The three-line GREEN implementation is already the minimum bounded change."
+  },
+  "prove_it": {
+    "substituted_files": [
+      "loom/loom.go"
+    ],
+    "mutation": "Temporarily removed the second-conflict terminal-winner satisfaction branch, restoring pre-fix behavior.",
+    "failed_tests": 2,
+    "runner_stdout_excerpt": "Both subtests failed again with the second ErrAuthorityConflict; restoring the branch returned both to GREEN.",
+    "reverted_at": "2026-07-11T03:25:18.7571363Z"
+  },
+  "coverage": {
+    "percent": 23.7,
+    "threshold": 80,
+    "status": "WARN",
+    "scope": "Single regression test against the full Loom package; informational threshold only."
+  },
+  "verification": {
+    "focused_repeat": "go test -run '^TestFailedCrashRetryTreatsSecondTerminalAuthorityConflictAsSatisfied$' -count=20 -timeout 90s .",
+    "focused_related": "go test -run '^(TestFailedCrashRetryTreatsSecondTerminalAuthorityConflictAsSatisfied|TestCancelProjectionTerminalWinnerConflictIsSatisfiedAndStateIsReleased|TestCancelProjectionDeferredCommitFailureIsReturnedAndStateIsReleased|TestDispatchPanicCommitsFromLocalStatusWhenCanonicalPreflightReadFails)$' -count=5 -timeout 90s .",
+    "race": "go test -race -run '^TestFailedCrashRetryTreatsSecondTerminalAuthorityConflictAsSatisfied$' -count=1 -timeout 120s .",
+    "loom_full": "go test ./... -count=1",
+    "loom_build": "go build ./...",
+    "loom_vet": "go vet ./...",
+    "root_full": "go test ./... -count=1",
+    "root_build": "go build ./...",
+    "root_vet": "go vet ./..."
+  }
+}

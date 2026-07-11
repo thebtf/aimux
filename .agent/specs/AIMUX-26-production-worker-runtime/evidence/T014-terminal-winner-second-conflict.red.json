@@ -1,0 +1,11 @@
+{
+  "task_id": "T014-terminal-winner-second-conflict",
+  "observed_at": "2026-07-11T03:14:00.0569569Z",
+  "test_file": "loom/cancel_projection_reentrancy_test.go",
+  "test_name": "TestFailedCrashRetryTreatsSecondTerminalAuthorityConflictAsSatisfied",
+  "invariant": "A terminal canonical winner that lands between the first failed_crash authority conflict and the single bounded retry satisfies the loser without a duplicate projection, event, artifact, or log.",
+  "runner_command": "go test -run '^TestFailedCrashRetryTreatsSecondTerminalAuthorityConflictAsSatisfied$' -count=1 -timeout 45s -v .",
+  "runner_workdir": "loom",
+  "failure_reason": "Both the deferred flush path and the panic retryCanonicalWinner path returned the second ErrAuthorityConflict instead of treating the terminal durable winner as satisfied.",
+  "runner_stdout_excerpt": "flush_deferred_failed_crash: second terminal authority conflict=flush deferred failed_crash: loom: authority conflict: durable state changed; panic_retry_canonical_winner: second terminal authority conflict=loom: authority conflict: durable state changed"
+}

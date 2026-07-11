@@ -927,6 +927,9 @@ func (l *LoomEngine) commitFailedCrashLocked(intent failedCrashIntent) (*failedC
 				Error:          intent.errMsg,
 				CompletedAt:    intent.completedAt,
 			})
+			if errors.Is(err, ErrAuthorityConflict) && result.Winner.Task.Status.IsTerminal() {
+				return nil, nil
+			}
 		}
 	}
 	if err != nil {

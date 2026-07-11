@@ -120,6 +120,199 @@ func (c *t014ReadFaultConn) CheckNamedValue(value *driver.NamedValue) error {
 
 var t014ReadFaultDriverCounter atomic.Uint64
 
+type t014TerminalWinnerRetryDriver struct {
+	base              driver.Driver
+	armed             atomic.Bool
+	authorityBegins   atomic.Int32
+	taskLoads         atomic.Int32
+	firstLoadObserved *t013Gate
+	retryLoadBlocked  *t013Gate
+	retryLoadRelease  *t013Gate
+}
+
+func (d *t014TerminalWinnerRetryDriver) Open(name string) (driver.Conn, error) {
+	connection, err := d.base.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := connection.(driver.ExecerContext); !ok {
+		_ = connection.Close()
+		return nil, fmt.Errorf("T014_TERMINAL_WINNER_DRIVER_CAPABILITY: %T lacks driver.ExecerContext", connection)
+	}
+	if _, ok := connection.(driver.QueryerContext); !ok {
+		_ = connection.Close()
+		return nil, fmt.Errorf("T014_TERMINAL_WINNER_DRIVER_CAPABILITY: %T lacks driver.QueryerContext", connection)
+	}
+	return &t014TerminalWinnerRetryConn{Conn: connection, owner: d}, nil
+}
+
+func (d *t014TerminalWinnerRetryDriver) arm() {
+	d.authorityBegins.Store(0)
+	d.taskLoads.Store(0)
+	d.armed.Store(true)
+}
+
+type t014TerminalWinnerRetryConn struct {
+	driver.Conn
+	owner *t014TerminalWinnerRetryDriver
+}
+
+func (c *t014TerminalWinnerRetryConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	normalized := strings.ToUpper(strings.Join(strings.Fields(query), " "))
+	if c.owner.armed.Load() && normalized == "BEGIN IMMEDIATE" {
+		if attempt := c.owner.authorityBegins.Add(1); attempt == 2 {
+			c.owner.retryLoadBlocked.open()
+			select {
+			case <-c.owner.retryLoadRelease.ch:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
+}
+
+func (c *t014TerminalWinnerRetryConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	normalized := strings.ToUpper(strings.Join(strings.Fields(query), " "))
+	if c.owner.armed.Load() && strings.Contains(normalized, "FROM TASKS WHERE ID=?") {
+		if load := c.owner.taskLoads.Add(1); load == 1 {
+			c.owner.firstLoadObserved.open()
+		}
+	}
+	return rows, nil
+}
+
+func (c *t014TerminalWinnerRetryConn) CheckNamedValue(value *driver.NamedValue) error {
+	if checker, ok := c.Conn.(driver.NamedValueChecker); ok {
+		return checker.CheckNamedValue(value)
+	}
+	return driver.ErrSkip
+}
+
+var t014TerminalWinnerRetryDriverCounter atomic.Uint64
+
+type t014TerminalWinnerRetryFixture struct {
+	db          *sql.DB
+	winnerDB    *sql.DB
+	store       *TaskStore
+	winnerStore *TaskStore
+	view        *TaskStore
+	engine      *LoomEngine
+	driver      *t014TerminalWinnerRetryDriver
+	logger      *recordingLogger
+}
+
+func t014NewTerminalWinnerRetryFixture(t *testing.T) *t014TerminalWinnerRetryFixture {
+	t.Helper()
+	firstLoadObserved := t013NewGate()
+	retryLoadBlocked := t013NewGate()
+	retryLoadRelease := t013NewGate()
+	wrappedDriver := &t014TerminalWinnerRetryDriver{
+		base:              &sqlite.Driver{},
+		firstLoadObserved: firstLoadObserved,
+		retryLoadBlocked:  retryLoadBlocked,
+		retryLoadRelease:  retryLoadRelease,
+	}
+	driverName := fmt.Sprintf("t014-terminal-winner-retry-%d", t014TerminalWinnerRetryDriverCounter.Add(1))
+	sql.Register(driverName, wrappedDriver)
+
+	path := filepath.ToSlash(filepath.Join(t.TempDir(), "terminal-winner-retry.db"))
+	dsn := "file:" + path + "?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000"
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(4)
+	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewTaskStore(db, "t014-terminal-winner-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	winnerDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winnerDB.SetMaxOpenConns(2)
+	if err := winnerDB.Ping(); err != nil {
+		t.Fatal(err)
+	}
+	winnerStore := &TaskStore{db: winnerDB, engineName: "t014-terminal-winner-retry"}
+	logger := &recordingLogger{}
+	engine := New(store, WithClock(deps.NewFakeClock(t013At)), WithLogger(logger))
+
+	t.Cleanup(func() {
+		retryLoadRelease.open()
+		ctx, cancel := context.WithTimeout(context.Background(), t013Wait)
+		defer cancel()
+		_ = engine.Close(ctx)
+		_ = winnerDB.Close()
+		_ = db.Close()
+	})
+	return &t014TerminalWinnerRetryFixture{
+		db: db, winnerDB: winnerDB, store: store, winnerStore: winnerStore,
+		view: winnerStore, engine: engine, driver: wrappedDriver, logger: logger,
+	}
+}
+
+func (f *t014TerminalWinnerRetryFixture) seed(t *testing.T, taskID string, canonicalStatus TaskStatus) *Task {
+	t.Helper()
+	ctx := context.Background()
+	if result, err := f.store.CommitCreated(ctx, CreateTask{
+		TaskID: taskID, WorkerType: WorkerTypeCLI, ProjectID: "terminal-winner-retry",
+		RequestID: taskID, TenantID: LegacyTenantID, Prompt: "second authority conflict", CreatedAt: t013At,
+	}); err != nil || !result.Applied {
+		t.Fatalf("CommitCreated=%#v/%v", result, err)
+	}
+	if result, err := f.store.CommitDispatched(ctx, DispatchTask{
+		TaskID: taskID, ExpectedStatus: TaskStatusPending, DispatchedAt: t013At.Add(time.Second),
+	}); err != nil || !result.Applied {
+		t.Fatalf("CommitDispatched=%#v/%v", result, err)
+	}
+	if result, err := f.store.CommitRunning(ctx, RunTask{
+		TaskID: taskID, ExpectedStatus: TaskStatusDispatched, RunningAt: t013At.Add(2 * time.Second),
+	}); err != nil || !result.Applied {
+		t.Fatalf("CommitRunning=%#v/%v", result, err)
+	}
+	switch canonicalStatus {
+	case TaskStatusCancelling:
+		if result, err := f.store.RequestCancel(ctx, taskID, t013At.Add(3*time.Second)); err != nil || !result.Applied {
+			t.Fatalf("RequestCancel=%#v/%v", result, err)
+		}
+	case TaskStatusRetrying:
+		if result, err := f.store.CommitRetrying(ctx, RetryTask{
+			TaskID: taskID, ExpectedStatus: TaskStatusRunning, RetryingAt: t013At.Add(3 * time.Second),
+		}); err != nil || !result.Applied {
+			t.Fatalf("CommitRetrying=%#v/%v", result, err)
+		}
+	default:
+		t.Fatalf("unsupported canonical seed status %s", canonicalStatus)
+	}
+	task, err := f.view.Get(taskID)
+	if err != nil || task.Status != canonicalStatus {
+		t.Fatalf("seeded task=%#v err=%v, want %s", task, err, canonicalStatus)
+	}
+	return task
+}
+
+func t014LogMessageCount(logger *recordingLogger, message string) int {
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	count := 0
+	for _, entry := range logger.entries {
+		if entry.msg == message {
+			count++
+		}
+	}
+	return count
+}
+
 func t014CollidingTaskIDs() (string, string) {
 	probe := &LoomEngine{}
 	seen := make(map[any]string, lifecycleOrderingStripes)
@@ -528,6 +721,140 @@ func TestCancelProjectionTerminalWinnerConflictIsSatisfiedAndStateIsReleased(t *
 	)
 	if got := t013ArtifactCountByEvent(t, fixture.view, id, "task.failed_crash"); got != 1 {
 		t.Fatalf("task.failed_crash facts=%d, want exactly 1 terminal winner", got)
+	}
+}
+
+func TestFailedCrashRetryTreatsSecondTerminalAuthorityConflictAsSatisfied(t *testing.T) {
+	tests := []struct {
+		name                 string
+		canonicalStatus      TaskStatus
+		retryCanonical       bool
+		throughDeferredFlush bool
+	}{
+		{
+			name:                 "flush_deferred_failed_crash",
+			canonicalStatus:      TaskStatusCancelling,
+			throughDeferredFlush: true,
+		},
+		{
+			name:            "panic_retry_canonical_winner",
+			canonicalStatus: TaskStatusRetrying,
+			retryCanonical:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := t014NewTerminalWinnerRetryFixture(t)
+			taskID := "second-conflict-" + tt.name
+			canonical := fixture.seed(t, taskID, tt.canonicalStatus)
+			local := *canonical
+			local.Status = TaskStatusRunning
+			intent := failedCrashIntent{
+				task:                 &local,
+				expectedStatus:       TaskStatusRunning,
+				errMsg:               "losing failed_crash retry",
+				errorCode:            "losing_retry",
+				completedAt:          t013At.Add(4 * time.Second),
+				logFailure:           true,
+				retryCanonicalWinner: tt.retryCanonical,
+			}
+
+			events := &t013Events{}
+			fixture.engine.Events().Subscribe(events.record)
+			fixture.driver.arm()
+
+			type commitOutcome struct {
+				projection *failedCrashIntent
+				err        error
+			}
+			done := make(chan commitOutcome, 1)
+			if tt.throughDeferredFlush {
+				ordering := fixture.engine.lifecycleOrderingFor(taskID)
+				ordering.mu.Lock()
+				ordering.markProjectionPending(taskID)
+				if !ordering.deferFailedCrash(taskID, intent) {
+					ordering.mu.Unlock()
+					t.Fatal("failed_crash intent was not deferred")
+				}
+				ordering.mu.Unlock()
+				go func() {
+					done <- commitOutcome{err: fixture.engine.flushDeferredFailedCrash(taskID)}
+				}()
+			} else {
+				go func() {
+					ordering := fixture.engine.lifecycleOrderingFor(taskID)
+					ordering.mu.Lock()
+					projection, err := fixture.engine.commitFailedCrashLocked(intent)
+					ordering.mu.Unlock()
+					done <- commitOutcome{projection: projection, err: err}
+				}()
+			}
+
+			t013AwaitGate(t, "first failed_crash load", fixture.driver.firstLoadObserved)
+			t013AwaitGate(t, "retry canonical load barrier", fixture.driver.retryLoadBlocked)
+			if got := fixture.driver.taskLoads.Load(); got != 1 {
+				t.Fatalf("task loads before retry release=%d, want first load only", got)
+			}
+
+			winnerAt := t013At.Add(5 * time.Second)
+			winner, winnerErr := fixture.winnerStore.CommitFailedCrash(context.Background(), FailCrashedTask{
+				TaskID:         taskID,
+				ExpectedStatus: tt.canonicalStatus,
+				Error:          "canonical terminal winner",
+				CompletedAt:    winnerAt,
+			})
+			if winnerErr != nil || !winner.Applied {
+				t.Fatalf("external terminal winner=%#v err=%v, want applied", winner, winnerErr)
+			}
+			winnerTask := local
+			winnerTask.Status = tt.canonicalStatus
+			fixture.engine.projectFailedCrash(failedCrashIntent{
+				task:           &winnerTask,
+				expectedStatus: tt.canonicalStatus,
+				errMsg:         "canonical terminal winner",
+				errorCode:      "canonical_terminal_winner",
+				completedAt:    winnerAt,
+				logFailure:     true,
+			})
+			fixture.driver.retryLoadRelease.open()
+
+			var outcome commitOutcome
+			select {
+			case outcome = <-done:
+			case <-time.After(t013Wait):
+				t.Fatal("failed_crash retry did not finish after terminal winner")
+			}
+			if outcome.err != nil {
+				t.Errorf("second terminal authority conflict=%v, want satisfied nil error", outcome.err)
+			}
+			if outcome.projection != nil {
+				t.Errorf("losing retry projection=%#v, want nil", outcome.projection)
+			}
+			if pending := t014PendingProjectionStateCount(fixture.engine); pending != 0 {
+				t.Errorf("pending lifecycle projection states=%d, want 0", pending)
+			}
+
+			final, getErr := fixture.view.Get(taskID)
+			if getErr != nil || final.Status != TaskStatusFailedCrash || final.Error != "canonical terminal winner" {
+				t.Errorf("canonical winner task=%#v err=%v, want external failed_crash winner", final, getErr)
+			}
+			if got := t013ArtifactCountByEvent(t, fixture.view, taskID, "task.failed_crash"); got != 1 {
+				t.Errorf("task.failed_crash facts=%d, want exactly one", got)
+			}
+			if got := events.count(taskID, EventTaskFailedCrash); got != 1 {
+				t.Errorf("task.failed_crash events=%d, want exactly one", got)
+			}
+			if got := t014LogMessageCount(fixture.logger, "task failed crash"); got != 1 {
+				t.Errorf("task failed crash logs=%d, want exactly one winner projection", got)
+			}
+			if got := t014LogMessageCount(fixture.logger, "failed_crash authority commit failed"); got != 0 {
+				t.Errorf("loser authority error logs=%d, want none for satisfied conflict", got)
+			}
+			if got := fixture.driver.taskLoads.Load(); got != 2 {
+				t.Errorf("task loads=%d, want one initial conflict plus one bounded retry", got)
+			}
+		})
 	}
 }
 
