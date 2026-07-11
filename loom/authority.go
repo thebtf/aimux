@@ -774,7 +774,6 @@ func validateCreateTask(command CreateTask) error {
 		value string
 	}{
 		{name: "worker type", value: string(command.WorkerType)},
-		{name: "project id", value: command.ProjectID},
 		{name: "tenant id", value: command.TenantID},
 		{name: "prompt", value: command.Prompt},
 	}
