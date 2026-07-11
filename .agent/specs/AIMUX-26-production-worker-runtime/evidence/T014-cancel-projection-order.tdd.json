@@ -1,0 +1,38 @@
+{
+  "task_id": "T014-cancel-projection-order",
+  "completed_at": "2026-07-11T00:43:08.0575984Z",
+  "red": {
+    "command": "go test . -run '^TestCancelProjectionPrecedesConcurrentWorkerTerminalization$' -count=20",
+    "result": "failed as expected for both Cancel and CancelAllForProject because failed_crash committed before the blocked cancel_requested projection completed"
+  },
+  "green": {
+    "command": "go test . -run '^TestCancelProjectionPrecedesConcurrentWorkerTerminalization$' -count=1",
+    "result": "pass"
+  },
+  "race": {
+    "command": "go test -race . -run '^TestCancelProjectionPrecedesConcurrentWorkerTerminalization$' -count=1",
+    "result": "pass"
+  },
+  "focused_regression": {
+    "command": "go test . -run '^(TestTaskAuthorityIntegration_LiveDispatchCancelOrders|TestTaskAuthorityIntegration_CancelAllPersistsEachIntentBeforeSignalAndNeverPublishesCancelledEarly|TestTaskAuthorityIntegration_LiveTerminalRacesRemainImmutable|TestTaskAuthorityIntegration_RecoverCrashedCommitsOneTerminalFactBeforeEvent|TestCancelProjectionPrecedesConcurrentWorkerTerminalization)$' -count=1",
+    "result": "pass"
+  },
+  "build_and_static": {
+    "go_build": "pass",
+    "go_vet": "pass",
+    "targeted_coverage": "27.6 percent of loom statements"
+  },
+  "prove_it": {
+    "mutation": "replace the stable lifecycle stripe lookup with a fresh mutex per call",
+    "mutation_result": "oracle failed for both Cancel and CancelAllForProject with durable failed_crash before projection release",
+    "restore_result": "oracle passed after restoring shared stripe lookup"
+  },
+  "full_suite": {
+    "result": "known independent failures",
+    "details": [
+      "artifact terminal error_class expectations are not met by the separate storage batch",
+      "create-abort absence assertions expect ErrTaskNotFound while the combined overlay returns sql.ErrNoRows"
+    ]
+  },
+  "refactor": "not required; the green implementation is a bounded private ordering primitive with no public or schema changes"
+}
