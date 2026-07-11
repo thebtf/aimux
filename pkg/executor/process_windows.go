@@ -20,6 +20,26 @@ type processTree struct {
 	releaseOnce sync.Once
 }
 
+type windowsThreadOperations struct {
+	createSnapshot func() (windows.Handle, error)
+	thread32First  func(windows.Handle, *windows.ThreadEntry32) error
+	thread32Next   func(windows.Handle, *windows.ThreadEntry32) error
+	openThread     func(uint32, bool, uint32) (windows.Handle, error)
+	resumeThread   func(windows.Handle) (uint32, error)
+	closeHandle    func(windows.Handle) error
+}
+
+var systemWindowsThreadOperations = windowsThreadOperations{
+	createSnapshot: func() (windows.Handle, error) {
+		return windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	},
+	thread32First: windows.Thread32First,
+	thread32Next:  windows.Thread32Next,
+	openThread:    windows.OpenThread,
+	resumeThread:  windows.ResumeThread,
+	closeHandle:   windows.CloseHandle,
+}
+
 func prepareProcessTree(cmd *exec.Cmd) (*processTree, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -73,22 +93,26 @@ func resumePrimaryThread(processID uint32) error {
 }
 
 func snapshotThreadEntries() ([]windows.ThreadEntry32, error) {
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	return snapshotThreadEntriesWithOperations(systemWindowsThreadOperations)
+}
+
+func snapshotThreadEntriesWithOperations(operations windowsThreadOperations) ([]windows.ThreadEntry32, error) {
+	snapshot, err := operations.createSnapshot()
 	if err != nil {
 		return nil, fmt.Errorf("snapshot threads: %w", err)
 	}
-	defer windows.CloseHandle(snapshot)
+	defer operations.closeHandle(snapshot)
 
 	entries := make([]windows.ThreadEntry32, 0, 1)
 	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
-	if err := windows.Thread32First(snapshot, &entry); err != nil {
+	if err := operations.thread32First(snapshot, &entry); err != nil {
 		if !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
 			return nil, fmt.Errorf("enumerate first thread: %w", err)
 		}
 	} else {
 		for {
 			entries = append(entries, entry)
-			err := windows.Thread32Next(snapshot, &entry)
+			err := operations.thread32Next(snapshot, &entry)
 			if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
 				break
 			}
@@ -101,7 +125,11 @@ func snapshotThreadEntries() ([]windows.ThreadEntry32, error) {
 }
 
 func resumeThread(threadID uint32) error {
-	thread, err := windows.OpenThread(
+	return resumeThreadWithOperations(threadID, systemWindowsThreadOperations)
+}
+
+func resumeThreadWithOperations(threadID uint32, operations windowsThreadOperations) error {
+	thread, err := operations.openThread(
 		windows.THREAD_SUSPEND_RESUME,
 		false,
 		threadID,
@@ -109,8 +137,8 @@ func resumeThread(threadID uint32) error {
 	if err != nil {
 		return fmt.Errorf("open primary thread %d: %w", threadID, err)
 	}
-	previousSuspendCount, resumeErr := windows.ResumeThread(thread)
-	_ = windows.CloseHandle(thread)
+	defer operations.closeHandle(thread)
+	previousSuspendCount, resumeErr := operations.resumeThread(thread)
 	if resumeErr != nil {
 		return fmt.Errorf("resume primary thread %d: %w", threadID, resumeErr)
 	}

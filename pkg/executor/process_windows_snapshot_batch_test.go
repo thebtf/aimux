@@ -323,3 +323,28 @@ func TestPrimaryThreadBatcher_CloseReleasesQueuedWaiters(t *testing.T) {
 		t.Fatalf("requests retained after Close = %d, want 0", got)
 	}
 }
+
+func TestPrimaryThreadBatcher_ResumeAfterCloseFailsClosed(t *testing.T) {
+	var snapshotCalls atomic.Int32
+	batcher := newPrimaryThreadBatcher(
+		1,
+		1,
+		time.Millisecond,
+		func() ([]windows.ThreadEntry32, error) {
+			snapshotCalls.Add(1)
+			return nil, nil
+		},
+		func(uint32) error { return nil },
+	)
+	batcher.Close()
+
+	if err := batcher.resumeProcess(4200); !errors.Is(err, errPrimaryThreadBatcherClosed) {
+		t.Fatalf("resumeProcess after Close error = %v, want closed error", err)
+	}
+	if got := snapshotCalls.Load(); got != 0 {
+		t.Fatalf("snapshot calls after Close = %d, want 0", got)
+	}
+	if got := len(batcher.requests); got != 0 {
+		t.Fatalf("requests retained after resumeProcess on closed batcher = %d, want 0", got)
+	}
+}

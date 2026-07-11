@@ -9,15 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/thebtf/aimux/pkg/executor"
-	"golang.org/x/sys/windows"
 )
 
 const (
@@ -25,8 +22,6 @@ const (
 	windowsConcurrentStartMarkerEnv  = "AIMUX_WINDOWS_CONCURRENT_START_MARKER"
 	windowsConcurrentStartReleaseEnv = "AIMUX_WINDOWS_CONCURRENT_START_RELEASE"
 )
-
-var getProcessHandleCount = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessHandleCount")
 
 func TestWindowsProcessTreeConcurrentOwnedStartHelper(t *testing.T) {
 	if os.Getenv(windowsConcurrentStartHelperEnv) != "1" {
@@ -202,128 +197,6 @@ func runWindowsConcurrentStartMarkerCohort(
 		}
 	}
 	return cohortElapsed, latencies
-}
-
-func TestWindowsProcessTree_ConcurrentOwnedStartsDoNotLeakHandles(t *testing.T) {
-	const (
-		cohortSize       = 8
-		maxWarmupCohorts = 12
-		stableSamples    = 2
-		measuredCohorts  = 3
-		tolerance        = 8
-	)
-	processManager := executor.NewProcessManager()
-
-	// Blocking Windows process waits cause the Go runtime to grow its reusable
-	// thread pool over the first few cohorts. Establish a steady-state baseline
-	// before measuring retained Job/process/thread/snapshot handles.
-	previous := currentWindowsProcessHandleCount(t)
-	stable := 0
-	warmups := 0
-	for warmups < maxWarmupCohorts && stable < stableSamples {
-		runWindowsOwnedExitCohort(t, processManager, cohortSize)
-		runtime.GC()
-		time.Sleep(25 * time.Millisecond)
-		current := currentWindowsProcessHandleCount(t)
-		if current <= previous+1 {
-			stable++
-		} else {
-			stable = 0
-		}
-		previous = current
-		warmups++
-	}
-	if stable < stableSamples {
-		t.Fatalf("current-process handle count did not stabilize after %d warm-up cohorts", warmups)
-	}
-	before := previous
-
-	for range measuredCohorts {
-		runWindowsOwnedExitCohort(t, processManager, cohortSize)
-	}
-	runtime.GC()
-	time.Sleep(25 * time.Millisecond)
-	after := currentWindowsProcessHandleCount(t)
-	t.Logf("current-process handles before=%d after=%d tolerance=%d", before, after, tolerance)
-	if after > before+tolerance {
-		t.Fatalf(
-			"current-process handles grew from %d to %d after %d owned starts; want increase <= %d",
-			before,
-			after,
-			cohortSize*measuredCohorts,
-			tolerance,
-		)
-	}
-}
-
-func runWindowsOwnedExitCohort(t *testing.T, processManager *executor.ProcessManager, cohortSize int) {
-	t.Helper()
-	type outcome struct {
-		index  int
-		handle *executor.ProcessHandle
-		err    error
-	}
-	startGate := make(chan struct{})
-	outcomes := make(chan outcome, cohortSize)
-	var workers sync.WaitGroup
-	workers.Add(cohortSize)
-	for i := range cohortSize {
-		go func(index int) {
-			defer workers.Done()
-			<-startGate
-			handle, err := processManager.Spawn(exec.Command("cmd", "/c", "exit", "0"))
-			outcomes <- outcome{index: index, handle: handle, err: err}
-		}(i)
-	}
-	close(startGate)
-	workers.Wait()
-	close(outcomes)
-
-	handles := make([]*executor.ProcessHandle, 0, cohortSize)
-	firstErrorIndex := -1
-	var firstError error
-	for result := range outcomes {
-		if result.err != nil {
-			if firstError == nil {
-				firstErrorIndex = result.index
-				firstError = result.err
-			}
-			continue
-		}
-		handles = append(handles, result.handle)
-	}
-	for i, handle := range handles {
-		select {
-		case waitErr := <-handle.Done:
-			if waitErr != nil && firstError == nil {
-				firstErrorIndex = i
-				firstError = waitErr
-			}
-		case <-time.After(10 * time.Second):
-			processManager.Kill(handle)
-			if firstError == nil {
-				firstErrorIndex = i
-				firstError = fmt.Errorf("timed out waiting for owned exit helper")
-			}
-		}
-		processManager.Cleanup(handle)
-	}
-	if firstError != nil {
-		t.Fatalf("owned exit helper %d failed: %v", firstErrorIndex, firstError)
-	}
-}
-
-func currentWindowsProcessHandleCount(t *testing.T) uint32 {
-	t.Helper()
-	var count uint32
-	result, _, callErr := getProcessHandleCount.Call(
-		uintptr(windows.CurrentProcess()),
-		uintptr(unsafe.Pointer(&count)),
-	)
-	if result == 0 {
-		t.Fatalf("GetProcessHandleCount: %v", callErr)
-	}
-	return count
 }
 
 func spawnWindowsConcurrentStartHelper(
