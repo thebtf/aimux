@@ -440,8 +440,8 @@ func (s *TaskStore) ListArtifacts(taskID string, opts TaskArtifactListOptions) (
 	if hasMore {
 		items = items[:limit]
 	}
-	nextCursor := ""
-	if hasMore && len(items) > 0 {
+	nextCursor := opts.Cursor
+	if len(items) > 0 {
 		nextCursor = formatArtifactCursor(items[len(items)-1].Seq)
 	}
 	status := TaskArtifactProjectionEmpty

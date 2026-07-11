@@ -1,0 +1,76 @@
+{
+  "task_ids": [
+    "T016",
+    "T017",
+    "T018"
+  ],
+  "stack": "GO",
+  "completed_at": "2026-07-11T04:07:07.2046351Z",
+  "red": {
+    "observed_at": "2026-07-11T03:41:50.2330072Z",
+    "test_file": "loom/artifacts_replay_test.go",
+    "test_name": "TestArtifactReplay_DurableTailBookmarkSurvivesReopenAndEmptyPoll",
+    "failure_reason": "The current ListArtifacts result contract dropped next_cursor on both exhausted non-empty pages and on the following empty poll.",
+    "runner_stdout_excerpt": "two exhausted non-empty page next_cursor failures; empty tail poll returned empty instead of bookmark 4"
+  },
+  "green": {
+    "implementation_file": "loom/artifacts.go",
+    "implementation": "Initialize next_cursor from the supplied valid cursor and replace it with the last returned row cursor whenever the page is non-empty.",
+    "production_lines_changed": 2,
+    "migration_changes": 0,
+    "passed_tests": [
+      "TestArtifactReplay_DurableTailBookmarkSurvivesReopenAndEmptyPoll",
+      "TestArtifactReplay_100000RowsPreservesCountHashAndOrder",
+      "TestTaskStore_ListArtifacts_CursorPagesAreTaskScoped",
+      "TestTaskStore_AppendRuntimeEvent_FiltersByEventTypeChannelAndKeepsOrderedCursor",
+      "TestTaskStore_MigrateV10_FreshRepeatReopenAndConstraints",
+      "TestTaskStore_MigrateV10_ResumesInterruptedBackfillWithoutDataLoss"
+    ],
+    "regressed_tests": 0
+  },
+  "t017_characterization": {
+    "result": "NO_MIGRATION_CHANGE",
+    "reason": "Fresh/repeated/reopened/interrupted v10 migration and integrity proofs were already green before the cursor edit and remained green after it.",
+    "large_replay": {
+      "rows": 100000,
+      "count": "exact",
+      "hash": "exact independent SHA-256",
+      "global_seq": "strictly contiguous in the isolated fixture",
+      "event_seq": "1..100000 contiguous",
+      "integrity_check": "ok",
+      "foreign_key_check": "empty"
+    }
+  },
+  "t018_refactor": {
+    "applied": false,
+    "result": "NO_CHANGE",
+    "reason": "Source audit found one production next_cursor decision site; extracting a helper would add indirection without sharing an invariant."
+  },
+  "prove_it": {
+    "substituted_files": [
+      "loom/artifacts.go"
+    ],
+    "mutation": "Restored next_cursor initialization to empty and the old hasMore && len(items) > 0 condition.",
+    "failed_assertions": 3,
+    "runner_stdout_excerpt": "both exhausted pages lost the bookmark and the empty poll failed to echo it",
+    "restored_green": true
+  },
+  "verification": {
+    "focused_repeat": "tail bookmark test count=20 PASS",
+    "focused_matrix": "tail, 100000-row replay, existing cursor tests, and both v10 migration tests count=3 PASS",
+    "race": "go test -race -run '^TestArtifactReplay_' -count=1 -timeout 240s . PASS",
+    "loom_full": "go test ./... -count=1 PASS",
+    "loom_build": "go build ./... PASS",
+    "loom_vet": "go vet ./... PASS",
+    "root_full": "go test ./... -count=1 PASS on final rerun",
+    "root_build": "go build ./... PASS",
+    "root_vet": "go vet ./... PASS",
+    "transient_gate_note": "The first final root run had only TestShim_Latency fail at p95 202.5021ms versus 200ms; isolated rerun passed at p95 165.5045ms and one full serial rerun passed."
+  },
+  "coverage": {
+    "percent": 13.0,
+    "threshold": 80,
+    "status": "WARN",
+    "scope": "Two focused replay tests against the complete Loom package; informational threshold only."
+  }
+}

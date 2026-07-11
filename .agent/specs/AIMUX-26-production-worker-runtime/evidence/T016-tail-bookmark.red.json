@@ -1,0 +1,24 @@
+{
+  "task_id": "T016",
+  "observed_at": "2026-07-11T03:41:50.2330072Z",
+  "test_file": "loom/artifacts_replay_test.go",
+  "test_name": "TestArtifactReplay_DurableTailBookmarkSurvivesReopenAndEmptyPoll",
+  "invariant": "A polling caller can retain and reuse the opaque bookmark returned by ListArtifacts without decoding artifact rows, including across database close/reopen and empty tail polls.",
+  "runner_command": "go test -run '^TestArtifactReplay_DurableTailBookmarkSurvivesReopenAndEmptyPoll$' -count=1 -timeout 60s -v .",
+  "runner_workdir": "loom",
+  "failure_reason": "Both exhausted non-empty pages returned an empty next_cursor and the following empty poll failed to echo the supplied valid bookmark.",
+  "runner_stdout_excerpt": "exhausted non-empty page next_cursor is empty (twice); empty tail poll next_cursor = empty, want existing bookmark 4",
+  "characterization": {
+    "test_name": "TestArtifactReplay_100000RowsPreservesCountHashAndOrder",
+    "result": "PASS",
+    "proof": "100000 rows replayed with contiguous event_seq, strictly increasing global seq, exact independent SHA-256 hash, integrity_check=ok, and no foreign-key violations"
+  },
+  "migration_preflight": {
+    "tests": [
+      "TestTaskStore_MigrateV10_FreshRepeatReopenAndConstraints",
+      "TestTaskStore_MigrateV10_ResumesInterruptedBackfillWithoutDataLoss"
+    ],
+    "result": "PASS",
+    "decision": "characterization only; no v9/v10 migration edit authorized"
+  }
+}
