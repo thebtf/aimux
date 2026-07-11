@@ -43,6 +43,7 @@ const LegacyTenantID = "__legacy__"
 const (
 	DefaultMaxSubtaskDepth   = 8
 	DefaultMaxSubtaskBreadth = 16
+	lifecycleOrderingStripes = 256
 )
 
 // Config contains LoomEngine runtime limits.
@@ -126,6 +127,12 @@ type LoomEngine struct {
 	// section is short and avoids an unbounded per-root lock registry in the
 	// long-running daemon.
 	subtaskSubmitMu sync.Mutex
+
+	// lifecycleOrdering serializes the cancellation intent projection with any
+	// local failed_crash authority commit for the same task. A fixed stripe set
+	// keeps the ordering primitive bounded for the lifetime of the daemon.
+	lifecycleOrdering [lifecycleOrderingStripes]sync.Mutex
+
 	// T030 instruments — initialised in New() after options are applied.
 	taskSubmittedCounter otelmetric.Int64Counter
 	taskCompletedCounter otelmetric.Int64Counter
@@ -508,16 +515,21 @@ func (l *LoomEngine) Cancel(taskID string) error {
 	if err != nil {
 		return err
 	}
+	ordering := l.lifecycleOrderingFor(taskID)
+	ordering.Lock()
 	requestedAt := l.clock.Now().UTC()
 	intent, err := l.store.RequestCancel(context.Background(), taskID, requestedAt)
 	if err != nil {
+		ordering.Unlock()
 		return err
 	}
 	if !intent.Applied {
+		ordering.Unlock()
 		return fmt.Errorf("loom: cancel task %s: authority command was not applied", taskID)
 	}
 
 	if !intent.RequiresStop {
+		ordering.Unlock()
 		l.emitTaskEvent(task, EventTaskCancelled, TaskStatusCancelled, requestedAt)
 		l.taskCancelledCounter.Add(context.Background(), 1, otelmetric.WithAttributes(
 			attribute.String("worker_type", string(task.WorkerType)),
@@ -541,6 +553,7 @@ func (l *LoomEngine) Cancel(taskID string) error {
 	if cancel != nil {
 		cancel()
 	}
+	ordering.Unlock()
 	return nil
 }
 
@@ -579,8 +592,11 @@ func (l *LoomEngine) CancelAllForProject(projectID string) (int, error) {
 	var joined []error
 	signalled := 0
 	for _, candidate := range candidates {
+		ordering := l.lifecycleOrderingFor(candidate.task.ID)
+		ordering.Lock()
 		intent, requestErr := l.store.RequestCancel(context.Background(), candidate.task.ID, requestedAt)
 		if requestErr != nil {
+			ordering.Unlock()
 			if errors.Is(requestErr, ErrAuthorityConflict) {
 				continue
 			}
@@ -588,10 +604,12 @@ func (l *LoomEngine) CancelAllForProject(projectID string) (int, error) {
 			continue
 		}
 		if !intent.Applied || !intent.RequiresStop {
+			ordering.Unlock()
 			continue
 		}
 		l.emitTaskEvent(candidate.task, EventTaskCancelRequested, TaskStatusCancelling, requestedAt)
 		candidate.cancel()
+		ordering.Unlock()
 		signalled++
 	}
 
@@ -611,12 +629,15 @@ func (l *LoomEngine) RecoverCrashed() (int, error) {
 	var joined []error
 	recovered := 0
 	for _, task := range tasks {
+		ordering := l.lifecycleOrderingFor(task.ID)
+		ordering.Lock()
 		result, commitErr := l.store.CommitFailedCrash(context.Background(), FailCrashedTask{
 			TaskID:         task.ID,
 			ExpectedStatus: task.Status,
 			Error:          recoveryError,
 			CompletedAt:    recoveryAt,
 		})
+		ordering.Unlock()
 		if commitErr != nil {
 			if errors.Is(commitErr, ErrAuthorityConflict) {
 				continue
@@ -845,6 +866,8 @@ func (l *LoomEngine) logAuthorityCommitError(task *Task, operation string, statu
 }
 
 func (l *LoomEngine) commitFailedCrashAt(task *Task, expectedStatus TaskStatus, errMsg, errorCode string, completedAt time.Time) bool {
+	ordering := l.lifecycleOrderingFor(task.ID)
+	ordering.Lock()
 	result, err := l.store.CommitFailedCrash(context.Background(), FailCrashedTask{
 		TaskID:         task.ID,
 		ExpectedStatus: expectedStatus,
@@ -862,6 +885,7 @@ func (l *LoomEngine) commitFailedCrashAt(task *Task, expectedStatus TaskStatus, 
 		errMsg = unverifiedStopError
 		errorCode = "unverified_stop"
 	}
+	ordering.Unlock()
 	if err != nil {
 		l.logAuthorityCommitError(task, "failed_crash authority commit failed", expectedStatus, err)
 		return false
@@ -882,6 +906,19 @@ func (l *LoomEngine) commitFailedCrashAt(task *Task, expectedStatus TaskStatus, 
 		"error", errMsg,
 	)
 	return true
+}
+
+func (l *LoomEngine) lifecycleOrderingFor(taskID string) *sync.Mutex {
+	// FNV-1a is stable, allocation-free, and sufficient for spreading task IDs
+	// across a bounded set of private ordering stripes.
+	const offset32 = uint32(2166136261)
+	const prime32 = uint32(16777619)
+	hash := offset32
+	for i := 0; i < len(taskID); i++ {
+		hash ^= uint32(taskID[i])
+		hash *= prime32
+	}
+	return &l.lifecycleOrdering[hash%uint32(len(l.lifecycleOrdering))]
 }
 
 func (l *LoomEngine) reconcileCancellingWinner(task *Task, result CommitResult, err error, at time.Time) bool {

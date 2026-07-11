@@ -1,0 +1,9 @@
+{
+  "task_id": "T014-cancel-projection-order",
+  "observed_at": "2026-07-11T00:35:27.6307962Z",
+  "test_file": "loom/cancel_projection_order_test.go",
+  "test_name": "TestCancelProjectionPrecedesConcurrentWorkerTerminalization",
+  "failure_reason": "Both Cancel and CancelAllForProject allowed failed_crash to commit while the synchronous task.cancel_requested projection was blocked.",
+  "runner_command": "go test . -run '^TestCancelProjectionPrecedesConcurrentWorkerTerminalization$' -count=20",
+  "runner_stdout_excerpt": "task after concurrent terminalization: Status=failed_crash, want cancelling until projection release"
+}
