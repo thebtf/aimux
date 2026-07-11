@@ -69,9 +69,13 @@ func (tree *processTree) attach(cmd *exec.Cmd) error {
 }
 
 func resumePrimaryThread(processID uint32) error {
+	return processPrimaryThreadBatcher.resumeProcess(processID)
+}
+
+func snapshotThreadEntries() ([]windows.ThreadEntry32, error) {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
 	if err != nil {
-		return fmt.Errorf("snapshot threads: %w", err)
+		return nil, fmt.Errorf("snapshot threads: %w", err)
 	}
 	defer windows.CloseHandle(snapshot)
 
@@ -79,7 +83,7 @@ func resumePrimaryThread(processID uint32) error {
 	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
 	if err := windows.Thread32First(snapshot, &entry); err != nil {
 		if !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
-			return fmt.Errorf("enumerate first thread: %w", err)
+			return nil, fmt.Errorf("enumerate first thread: %w", err)
 		}
 	} else {
 		for {
@@ -89,15 +93,14 @@ func resumePrimaryThread(processID uint32) error {
 				break
 			}
 			if err != nil {
-				return fmt.Errorf("enumerate next thread: %w", err)
+				return nil, fmt.Errorf("enumerate next thread: %w", err)
 			}
 		}
 	}
+	return entries, nil
+}
 
-	threadID, err := selectSoleProcessThread(processID, entries)
-	if err != nil {
-		return err
-	}
+func resumeThread(threadID uint32) error {
 	thread, err := windows.OpenThread(
 		windows.THREAD_SUSPEND_RESUME,
 		false,
