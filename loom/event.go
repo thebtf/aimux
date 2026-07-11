@@ -14,14 +14,15 @@ import (
 type EventType string
 
 const (
-	EventTaskCreated     EventType = "task.created"
-	EventTaskDispatched  EventType = "task.dispatched"
-	EventTaskRunning     EventType = "task.running"
-	EventTaskCompleted   EventType = "task.completed"
-	EventTaskFailed      EventType = "task.failed"
-	EventTaskFailedCrash EventType = "task.failed_crash"
-	EventTaskRetrying    EventType = "task.retrying"
-	EventTaskCancelled   EventType = "task.cancelled"
+	EventTaskCreated         EventType = "task.created"
+	EventTaskDispatched      EventType = "task.dispatched"
+	EventTaskRunning         EventType = "task.running"
+	EventTaskCompleted       EventType = "task.completed"
+	EventTaskFailed          EventType = "task.failed"
+	EventTaskFailedCrash     EventType = "task.failed_crash"
+	EventTaskRetrying        EventType = "task.retrying"
+	EventTaskCancelRequested EventType = "task.cancel_requested"
+	EventTaskCancelled       EventType = "task.cancelled"
 	// EventTaskProgress fires once per AppendProgress call (DEF-13 / AIMUX-16
 	// CR-005). It is additive on the enum (NFR-6): existing subscribers continue
 	// to receive only the lifecycle events they were registered for and never

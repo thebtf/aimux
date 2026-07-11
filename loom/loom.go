@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,7 @@ const LegacyTenantID = "__legacy__"
 const (
 	DefaultMaxSubtaskDepth   = 8
 	DefaultMaxSubtaskBreadth = 16
+	lifecycleOrderingStripes = 256
 )
 
 // Config contains LoomEngine runtime limits.
@@ -94,6 +96,58 @@ type subtaskContext struct {
 	rootTaskID string
 }
 
+type failedCrashIntent struct {
+	task                 *Task
+	expectedStatus       TaskStatus
+	errMsg               string
+	errorCode            string
+	completedAt          time.Time
+	logFailure           bool
+	retryCanonicalWinner bool
+}
+
+type lifecycleProjectionState struct {
+	deferred *failedCrashIntent
+}
+
+type lifecycleOrderingStripe struct {
+	mu      sync.Mutex
+	pending map[string]*lifecycleProjectionState
+}
+
+// markProjectionPending records the short interval in which cancellation has
+// been committed but its externally visible event and worker signal have not
+// both completed. The caller must hold s.mu.
+func (s *lifecycleOrderingStripe) markProjectionPending(taskID string) {
+	if s.pending == nil {
+		s.pending = make(map[string]*lifecycleProjectionState)
+	}
+	s.pending[taskID] = &lifecycleProjectionState{}
+}
+
+// deferFailedCrash records at most one terminal intent while cancellation is
+// being projected. Additional contenders are accepted but cannot replace the
+// deterministic first winner. The caller must hold s.mu.
+func (s *lifecycleOrderingStripe) deferFailedCrash(taskID string, intent failedCrashIntent) bool {
+	state, pending := s.pending[taskID]
+	if !pending {
+		return false
+	}
+	if state.deferred == nil {
+		state.deferred = cloneFailedCrashIntent(intent)
+	}
+	return true
+}
+
+func cloneFailedCrashIntent(intent failedCrashIntent) *failedCrashIntent {
+	cloned := intent
+	if intent.task != nil {
+		task := *intent.task
+		cloned.task = &task
+	}
+	return &cloned
+}
+
 // LoomEngine is the central task mediator.
 // All tool handler work flows through LoomEngine which owns task creation,
 // dispatch, execution, persistence, and delivery.
@@ -125,6 +179,12 @@ type LoomEngine struct {
 	// section is short and avoids an unbounded per-root lock registry in the
 	// long-running daemon.
 	subtaskSubmitMu sync.Mutex
+
+	// lifecycleOrdering serializes the cancellation intent projection with any
+	// local failed_crash authority commit for the same task. A fixed stripe set
+	// keeps the ordering primitive bounded for the lifetime of the daemon.
+	lifecycleOrdering [lifecycleOrderingStripes]lifecycleOrderingStripe
+
 	// T030 instruments — initialised in New() after options are applied.
 	taskSubmittedCounter otelmetric.Int64Counter
 	taskCompletedCounter otelmetric.Int64Counter
@@ -280,36 +340,50 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		CreatedAt:    now,
 	}
 
-	if err := l.store.Create(task); err != nil {
+	created, err := l.store.CommitCreated(context.Background(), CreateTask{
+		TaskID:       task.ID,
+		WorkerType:   task.WorkerType,
+		ProjectID:    task.ProjectID,
+		RequestID:    task.RequestID,
+		ParentTaskID: task.ParentTaskID,
+		TenantID:     task.TenantID,
+		Prompt:       task.Prompt,
+		CWD:          task.CWD,
+		Env:          task.Env,
+		CLI:          task.CLI,
+		Role:         task.Role,
+		Model:        task.Model,
+		Effort:       task.Effort,
+		Timeout:      task.Timeout,
+		Metadata:     task.Metadata,
+		CreatedAt:    now,
+	})
+	if err != nil {
 		return "", fmt.Errorf("loom: persist task: %w", err)
 	}
-	l.appendLifecycleArtifact(context.Background(), task, string(EventTaskCreated), TaskStatusPending)
-
-	l.events.Emit(TaskEvent{
-		Type:      EventTaskCreated,
-		TaskID:    task.ID,
-		ProjectID: task.ProjectID,
-		RequestID: task.RequestID,
-		Status:    task.Status,
-		Timestamp: l.clock.Now().UTC(),
-	})
+	if !created.Applied {
+		return "", fmt.Errorf("loom: persist task: authority command was not applied")
+	}
+	l.emitTaskEvent(task, EventTaskCreated, TaskStatusPending, now)
 
 	// Transition pending → dispatched synchronously before launching goroutine.
-	// This ensures crash recovery (MarkCrashed) can pick up the task even if the
-	// process dies before the goroutine runs.
-	if err := l.store.UpdateStatus(task.ID, TaskStatusPending, TaskStatusDispatched); err != nil {
+	// This ensures RecoverCrashed can pick up the task even if the process dies
+	// before the goroutine runs.
+	dispatchedAt := l.clock.Now().UTC()
+	dispatched, err := l.store.CommitDispatched(context.Background(), DispatchTask{
+		TaskID:         task.ID,
+		ExpectedStatus: TaskStatusPending,
+		DispatchedAt:   dispatchedAt,
+	})
+	if err != nil {
 		return "", fmt.Errorf("loom: dispatch task: %w", err)
 	}
+	if !dispatched.Applied {
+		return "", fmt.Errorf("loom: dispatch task: authority command was not applied")
+	}
 	task.Status = TaskStatusDispatched
-	l.appendLifecycleArtifact(context.Background(), task, string(EventTaskDispatched), TaskStatusDispatched)
-	l.events.Emit(TaskEvent{
-		Type:      EventTaskDispatched,
-		TaskID:    task.ID,
-		ProjectID: task.ProjectID,
-		RequestID: task.RequestID,
-		Status:    task.Status,
-		Timestamp: l.clock.Now().UTC(),
-	})
+	task.DispatchedAt = timePointer(dispatchedAt)
+	l.emitTaskEvent(task, EventTaskDispatched, TaskStatusDispatched, dispatchedAt)
 
 	// T030: emit submit metrics after successful dispatch transition.
 	attrs := otelmetric.WithAttributes(
@@ -487,17 +561,52 @@ func (l *LoomEngine) ListAll(statuses ...TaskStatus) ([]*Task, error) {
 	return l.store.ListAll(statuses...)
 }
 
-// Cancel requests cancellation of a running task.
+// Cancel durably records cancellation intent before signalling a live worker.
 func (l *LoomEngine) Cancel(taskID string) error {
-	l.mu.RLock()
-	cancel, ok := l.cancels[taskID]
-	l.mu.RUnlock()
-
-	if !ok {
-		return fmt.Errorf("loom: task %s not cancellable (not running or not found)", taskID)
+	task, err := l.store.Get(taskID)
+	if err != nil {
+		return err
 	}
-	cancel()
-	return nil
+	ordering := l.lifecycleOrderingFor(taskID)
+	ordering.mu.Lock()
+	requestedAt := l.clock.Now().UTC()
+	intent, err := l.store.RequestCancel(context.Background(), taskID, requestedAt)
+	if err != nil {
+		ordering.mu.Unlock()
+		return err
+	}
+	if !intent.Applied {
+		ordering.mu.Unlock()
+		return fmt.Errorf("loom: cancel task %s: authority command was not applied", taskID)
+	}
+
+	if !intent.RequiresStop {
+		ordering.mu.Unlock()
+		l.emitTaskEvent(task, EventTaskCancelled, TaskStatusCancelled, requestedAt)
+		l.taskCancelledCounter.Add(context.Background(), 1, otelmetric.WithAttributes(
+			attribute.String("worker_type", string(task.WorkerType)),
+			attribute.String("project_id", task.ProjectID),
+		))
+		l.logger.InfoContext(context.Background(), "task cancelled",
+			"module", "loom",
+			"task_id", task.ID,
+			"project_id", task.ProjectID,
+			"worker_type", string(task.WorkerType),
+			"task_status", string(TaskStatusCancelled),
+			"request_id", task.RequestID,
+		)
+		return nil
+	}
+	ordering.markProjectionPending(taskID)
+	l.mu.RLock()
+	cancel := l.cancels[taskID]
+	l.mu.RUnlock()
+	ordering.mu.Unlock()
+	l.emitTaskEvent(task, EventTaskCancelRequested, TaskStatusCancelling, requestedAt)
+	if cancel != nil {
+		cancel()
+	}
+	return l.flushDeferredFailedCrash(taskID)
 }
 
 // CancelAllForProject cancels all running tasks for the given project.
@@ -511,51 +620,94 @@ func (l *LoomEngine) CancelAllForProject(projectID string) (int, error) {
 		return 0, fmt.Errorf("loom: list running tasks: %w", err)
 	}
 
-	// Collect which tasks we actually cancelled (have a live cancel func).
-	cancelled := make([]*Task, 0, len(running))
+	sort.Slice(running, func(i, j int) bool {
+		if running[i].CreatedAt.Equal(running[j].CreatedAt) {
+			return running[i].ID < running[j].ID
+		}
+		return running[i].CreatedAt.Before(running[j].CreatedAt)
+	})
+	type cancelCandidate struct {
+		task   *Task
+		cancel context.CancelFunc
+	}
+	candidates := make([]cancelCandidate, 0, len(running))
 
-	l.mu.Lock()
+	l.mu.RLock()
 	for _, task := range running {
 		if cancel, ok := l.cancels[task.ID]; ok {
-			cancel()
-			cancelled = append(cancelled, task)
+			candidates = append(candidates, cancelCandidate{task: task, cancel: cancel})
 		}
 	}
-	l.mu.Unlock()
+	l.mu.RUnlock()
 
-	// Emit TaskCancelled events and metrics for each cancelled task (outside the lock).
-	cancelCtx := context.Background()
-	for _, task := range cancelled {
-		l.events.Emit(TaskEvent{
-			Type:      EventTaskCancelled,
-			TaskID:    task.ID,
-			ProjectID: projectID,
-			RequestID: task.RequestID,
-			Status:    TaskStatusRunning, // will transition as context propagates
-			Timestamp: l.clock.Now().UTC(),
-		})
-		// T030: cancelled task counter.
-		l.taskCancelledCounter.Add(cancelCtx, 1, otelmetric.WithAttributes(
-			attribute.String("worker_type", string(task.WorkerType)),
-			attribute.String("project_id", task.ProjectID),
-		))
-		l.logger.InfoContext(cancelCtx, "task cancelled",
-			"module", "loom",
-			"task_id", task.ID,
-			"project_id", task.ProjectID,
-			"worker_type", string(task.WorkerType),
-			"task_status", string(TaskStatusRunning),
-			"request_id", task.RequestID,
-		)
+	requestedAt := l.clock.Now().UTC()
+	var joined []error
+	signalled := 0
+	for _, candidate := range candidates {
+		ordering := l.lifecycleOrderingFor(candidate.task.ID)
+		ordering.mu.Lock()
+		intent, requestErr := l.store.RequestCancel(context.Background(), candidate.task.ID, requestedAt)
+		if requestErr != nil {
+			ordering.mu.Unlock()
+			if errors.Is(requestErr, ErrAuthorityConflict) {
+				continue
+			}
+			joined = append(joined, fmt.Errorf("loom: cancel task %s: %w", candidate.task.ID, requestErr))
+			continue
+		}
+		if !intent.Applied || !intent.RequiresStop {
+			ordering.mu.Unlock()
+			continue
+		}
+		ordering.markProjectionPending(candidate.task.ID)
+		ordering.mu.Unlock()
+		l.emitTaskEvent(candidate.task, EventTaskCancelRequested, TaskStatusCancelling, requestedAt)
+		candidate.cancel()
+		signalled++
+		if flushErr := l.flushDeferredFailedCrash(candidate.task.ID); flushErr != nil {
+			joined = append(joined, fmt.Errorf("loom: cancel task %s: %w", candidate.task.ID, flushErr))
+		}
 	}
 
-	return len(cancelled), nil
+	return signalled, errors.Join(joined...)
 }
 
-// RecoverCrashed marks all dispatched/running tasks as failed_crash.
+// RecoverCrashed atomically records one failed_crash fact for every task whose
+// active execution was interrupted by daemon restart.
 // Called once on daemon startup.
 func (l *LoomEngine) RecoverCrashed() (int, error) {
-	return l.store.MarkCrashed()
+	tasks, err := l.store.listRecoveryCandidates()
+	if err != nil {
+		return 0, fmt.Errorf("loom: list recovery candidates: %w", err)
+	}
+	recoveryAt := l.clock.Now().UTC()
+	const recoveryError = "task interrupted by daemon restart"
+	var joined []error
+	recovered := 0
+	for _, task := range tasks {
+		intent := failedCrashIntent{task: task, expectedStatus: task.Status, errMsg: recoveryError, completedAt: recoveryAt}
+		ordering := l.lifecycleOrderingFor(task.ID)
+		ordering.mu.Lock()
+		if ordering.deferFailedCrash(task.ID, intent) {
+			ordering.mu.Unlock()
+			continue
+		}
+		projection, commitErr := l.commitFailedCrashLocked(intent)
+		ordering.mu.Unlock()
+		if commitErr != nil {
+			if errors.Is(commitErr, ErrAuthorityConflict) {
+				continue
+			}
+			joined = append(joined, fmt.Errorf("loom: recover task %s: %w", task.ID, commitErr))
+			continue
+		}
+		if projection == nil {
+			continue
+		}
+		l.projectFailedCrash(*projection)
+		recovered++
+	}
+	return recovered, errors.Join(joined...)
 }
 
 // Import upserts a historical task into Loom persistence without dispatching it.
@@ -612,25 +764,6 @@ func (l *LoomEngine) AppendProgress(taskID, line string) error {
 	return nil
 }
 
-func (l *LoomEngine) appendLifecycleArtifact(ctx context.Context, task *Task, eventType string, status TaskStatus) {
-	if task == nil {
-		return
-	}
-	_, err := l.store.AppendArtifact(task.ID, TaskArtifactAppend{
-		Kind:      TaskArtifactKindLifecycle,
-		EventType: eventType,
-		Summary:   "task " + string(status),
-		Payload: map[string]any{
-			"status":     string(status),
-			"project_id": task.ProjectID,
-			"request_id": task.RequestID,
-		},
-	})
-	if err != nil {
-		l.logArtifactProjectionError(ctx, task, "lifecycle", err)
-	}
-}
-
 func (l *LoomEngine) appendProgressArtifact(ctx context.Context, taskID string, info ProgressInfo) {
 	if taskID == "" {
 		return
@@ -658,47 +791,6 @@ func (l *LoomEngine) appendProgressArtifact(ctx context.Context, taskID string, 
 	}
 }
 
-func (l *LoomEngine) appendTerminalArtifact(ctx context.Context, task *Task, eventType string, status TaskStatus, errorClass, errMsg string) {
-	if task == nil {
-		return
-	}
-	current, err := l.store.Get(task.ID)
-	if err != nil {
-		current = task
-	}
-	summary := "task " + string(status)
-	if errMsg != "" {
-		summary = errMsg
-	} else if current.Error != "" {
-		summary = current.Error
-	}
-	payload := map[string]any{
-		"status":     string(status),
-		"project_id": current.ProjectID,
-		"request_id": current.RequestID,
-	}
-	if errorClass != "" {
-		payload["error_class"] = errorClass
-	}
-	if current.LastOutputLine != "" {
-		payload["last_output_line"] = current.LastOutputLine
-		payload["progress_lines"] = current.ProgressLines
-	}
-	if current.ProgressUpdatedAt != nil {
-		payload["progress_updated_at"] = current.ProgressUpdatedAt.UTC().Format(time.RFC3339)
-	}
-	_, appendErr := l.store.AppendArtifact(task.ID, TaskArtifactAppend{
-		Kind:      TaskArtifactKindTerminal,
-		EventType: eventType,
-		Summary:   summary,
-		Payload:   payload,
-		Redacted:  strings.Contains(summary, "[REDACTED]"),
-	})
-	if appendErr != nil {
-		l.logArtifactProjectionError(ctx, task, "terminal", appendErr)
-	}
-}
-
 func (l *LoomEngine) logArtifactProjectionError(ctx context.Context, task *Task, kind string, err error) {
 	if task == nil {
 		return
@@ -715,20 +807,255 @@ func (l *LoomEngine) logArtifactProjectionError(ctx context.Context, task *Task,
 	)
 }
 
-func classifyTaskError(errMsg string) string {
-	switch {
-	case strings.Contains(errMsg, "no worker registered"):
-		return "worker_unavailable"
-	case strings.Contains(errMsg, "gate rejected"):
-		return "quality_gate"
-	default:
-		return "worker_error"
+const unverifiedStopError = "task cancellation completed without verified stop evidence"
+
+func (l *LoomEngine) emitTaskEvent(task *Task, eventType EventType, status TaskStatus, at time.Time) {
+	if task == nil {
+		return
 	}
+	l.events.Emit(TaskEvent{
+		Type:      eventType,
+		TaskID:    task.ID,
+		ProjectID: task.ProjectID,
+		RequestID: task.RequestID,
+		Status:    status,
+		Timestamp: at.UTC(),
+	})
 }
 
-func (l *LoomEngine) isTerminalTask(taskID string) bool {
-	current, err := l.store.Get(taskID)
-	return err == nil && current.Status.IsTerminal()
+func (l *LoomEngine) recordTaskFailed(task *Task) {
+	if task == nil {
+		return
+	}
+	l.taskFailedCounter.Add(context.Background(), 1, otelmetric.WithAttributes(
+		attribute.String("worker_type", string(task.WorkerType)),
+		attribute.String("project_id", task.ProjectID),
+	))
+}
+
+func (l *LoomEngine) logAuthorityCommitError(task *Task, operation string, status TaskStatus, err error) {
+	if task == nil || err == nil || errors.Is(err, ErrAuthorityConflict) {
+		return
+	}
+	l.logger.ErrorContext(context.Background(), operation,
+		"module", "loom",
+		"task_id", task.ID,
+		"project_id", task.ProjectID,
+		"worker_type", string(task.WorkerType),
+		"task_status", string(status),
+		"request_id", task.RequestID,
+		"error_code", "authority_commit",
+		"error", err,
+	)
+}
+
+// commitFailedCrashAt returns true when this intent was either applied now or
+// accepted into an in-flight cancellation projection. In the deferred case it
+// means handled, not that this contender became the deterministic winner.
+func (l *LoomEngine) commitFailedCrashAt(task *Task, expectedStatus TaskStatus, errMsg, errorCode string, completedAt time.Time) bool {
+	return l.commitFailedCrashIntent(failedCrashIntent{
+		task:           task,
+		expectedStatus: expectedStatus,
+		errMsg:         errMsg,
+		errorCode:      errorCode,
+		completedAt:    completedAt,
+		logFailure:     true,
+	})
+}
+
+func (l *LoomEngine) commitPanicFailedCrashAt(task *Task, expectedStatus TaskStatus, errMsg string, completedAt time.Time) bool {
+	return l.commitFailedCrashIntent(failedCrashIntent{
+		task:                 task,
+		expectedStatus:       expectedStatus,
+		errMsg:               errMsg,
+		errorCode:            "dispatch_panic",
+		completedAt:          completedAt,
+		logFailure:           true,
+		retryCanonicalWinner: true,
+	})
+}
+
+func (l *LoomEngine) commitFailedCrashIntent(intent failedCrashIntent) bool {
+	if intent.task == nil {
+		return false
+	}
+	ordering := l.lifecycleOrderingFor(intent.task.ID)
+	ordering.mu.Lock()
+	if ordering.deferFailedCrash(intent.task.ID, intent) {
+		ordering.mu.Unlock()
+		return true
+	}
+	projection, err := l.commitFailedCrashLocked(intent)
+	ordering.mu.Unlock()
+	if err != nil {
+		l.logAuthorityCommitError(intent.task, "failed_crash authority commit failed", intent.expectedStatus, err)
+		return false
+	}
+	if projection == nil {
+		return false
+	}
+	l.projectFailedCrash(*projection)
+	return true
+}
+
+// commitFailedCrashLocked performs only canonical persistence. Event delivery,
+// metrics, and logging are deliberately projected after the ordering stripe is
+// released so arbitrary subscribers never execute under the stripe lock.
+func (l *LoomEngine) commitFailedCrashLocked(intent failedCrashIntent) (*failedCrashIntent, error) {
+	result, err := l.store.CommitFailedCrash(context.Background(), FailCrashedTask{
+		TaskID:         intent.task.ID,
+		ExpectedStatus: intent.expectedStatus,
+		Error:          intent.errMsg,
+		CompletedAt:    intent.completedAt,
+	})
+	if errors.Is(err, ErrAuthorityConflict) {
+		winner := result.Winner.Task.Status
+		if winner.IsTerminal() {
+			return nil, nil
+		}
+		retryWinner := winner == TaskStatusCancelling || intent.retryCanonicalWinner
+		if retryWinner && winner != intent.expectedStatus && !winner.IsTerminal() {
+			intent.expectedStatus = winner
+			if winner == TaskStatusCancelling {
+				intent.completedAt = l.clock.Now().UTC()
+				intent.errMsg = unverifiedStopError
+				intent.errorCode = "unverified_stop"
+			}
+			result, err = l.store.CommitFailedCrash(context.Background(), FailCrashedTask{
+				TaskID:         intent.task.ID,
+				ExpectedStatus: intent.expectedStatus,
+				Error:          intent.errMsg,
+				CompletedAt:    intent.completedAt,
+			})
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !result.Applied {
+		return nil, nil
+	}
+	return cloneFailedCrashIntent(intent), nil
+}
+
+func (l *LoomEngine) projectFailedCrash(intent failedCrashIntent) {
+	if intent.task == nil {
+		return
+	}
+	l.emitTaskEvent(intent.task, EventTaskFailedCrash, TaskStatusFailedCrash, intent.completedAt)
+	l.recordTaskFailed(intent.task)
+	if !intent.logFailure {
+		return
+	}
+	l.logger.ErrorContext(context.Background(), "task failed crash",
+		"module", "loom",
+		"task_id", intent.task.ID,
+		"project_id", intent.task.ProjectID,
+		"worker_type", string(intent.task.WorkerType),
+		"task_status", string(TaskStatusFailedCrash),
+		"request_id", intent.task.RequestID,
+		"error_code", intent.errorCode,
+		"error", intent.errMsg,
+	)
+}
+
+func (l *LoomEngine) flushDeferredFailedCrash(taskID string) error {
+	ordering := l.lifecycleOrderingFor(taskID)
+	ordering.mu.Lock()
+	state, pending := ordering.pending[taskID]
+	if !pending {
+		ordering.mu.Unlock()
+		return nil
+	}
+	delete(ordering.pending, taskID)
+	if len(ordering.pending) == 0 {
+		ordering.pending = nil
+	}
+	var projection *failedCrashIntent
+	var err error
+	if state.deferred != nil {
+		projection, err = l.commitFailedCrashLocked(*state.deferred)
+	}
+	ordering.mu.Unlock()
+	if err != nil {
+		if state.deferred != nil {
+			l.logAuthorityCommitError(state.deferred.task, "deferred failed_crash authority commit failed", state.deferred.expectedStatus, err)
+		}
+		return fmt.Errorf("flush deferred failed_crash: %w", err)
+	}
+	if projection != nil {
+		l.projectFailedCrash(*projection)
+	}
+	return nil
+}
+
+func (l *LoomEngine) lifecycleOrderingFor(taskID string) *lifecycleOrderingStripe {
+	// FNV-1a is stable, allocation-free, and sufficient for spreading task IDs
+	// across a bounded set of private ordering stripes.
+	const offset32 = uint32(2166136261)
+	const prime32 = uint32(16777619)
+	hash := offset32
+	for i := 0; i < len(taskID); i++ {
+		hash ^= uint32(taskID[i])
+		hash *= prime32
+	}
+	return &l.lifecycleOrdering[hash%uint32(len(l.lifecycleOrdering))]
+}
+
+func (l *LoomEngine) lifecycleProjectionPending(taskID string) bool {
+	ordering := l.lifecycleOrderingFor(taskID)
+	ordering.mu.Lock()
+	_, pending := ordering.pending[taskID]
+	ordering.mu.Unlock()
+	return pending
+}
+
+func (l *LoomEngine) reconcileCancellingWinner(task *Task, result CommitResult, err error, at time.Time) bool {
+	if !errors.Is(err, ErrAuthorityConflict) {
+		return false
+	}
+	if result.Winner.Task.Status == TaskStatusCancelling {
+		l.commitFailedCrashAt(task, TaskStatusCancelling, unverifiedStopError, "unverified_stop", at)
+	}
+	return true
+}
+
+func (l *LoomEngine) loadRunningTask(task *Task, phase string) (*Task, bool) {
+	current, err := l.store.Get(task.ID)
+	if err != nil {
+		l.logger.ErrorContext(context.Background(), phase+": store.Get failed",
+			"module", "loom",
+			"task_id", task.ID,
+			"project_id", task.ProjectID,
+			"worker_type", string(task.WorkerType),
+			"task_status", string(TaskStatusRunning),
+			"request_id", task.RequestID,
+			"error_code", "store_get",
+			"error", err,
+		)
+		l.failTask(task, TaskStatusRunning, fmt.Sprintf("%s: reload task failed: %v", phase, err))
+		return nil, false
+	}
+	if current.Status == TaskStatusCancelling {
+		l.commitFailedCrashAt(task, TaskStatusCancelling, unverifiedStopError, "unverified_stop", l.clock.Now().UTC())
+		return nil, false
+	}
+	if current.Status != TaskStatusRunning {
+		return nil, false
+	}
+	return current, true
+}
+
+func (l *LoomEngine) stopAfterWorkerReturn(task *Task) bool {
+	current, err := l.store.Get(task.ID)
+	if err != nil {
+		return false
+	}
+	if current.Status == TaskStatusCancelling {
+		l.commitFailedCrashAt(task, TaskStatusCancelling, unverifiedStopError, "unverified_stop", l.clock.Now().UTC())
+		return true
+	}
+	return current.Status != TaskStatusRunning
 }
 
 // failTask is a best-effort helper that marks a task as failed in the store
@@ -738,52 +1065,25 @@ func (l *LoomEngine) isTerminalTask(taskID string) bool {
 // emits a fully-populated TaskEvent regardless of store availability.
 func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) {
 	ctx := context.Background()
-	if l.isTerminalTask(task.ID) {
+	completedAt := l.clock.Now().UTC()
+	result, err := l.store.CommitFailed(ctx, FailTask{
+		TaskID:         task.ID,
+		ExpectedStatus: fromStatus,
+		Error:          errMsg,
+		CompletedAt:    completedAt,
+	})
+	if err != nil {
+		if l.reconcileCancellingWinner(task, result, err, l.clock.Now().UTC()) {
+			return
+		}
+		l.logAuthorityCommitError(task, "failTask authority commit failed", fromStatus, err)
 		return
 	}
-	if err := l.store.SetResult(task.ID, "", errMsg); err != nil {
-		l.logger.ErrorContext(ctx, "failTask: store.SetResult failed",
-			"module", "loom",
-			"task_id", task.ID,
-			"project_id", task.ProjectID,
-			"worker_type", string(task.WorkerType),
-			"task_status", string(fromStatus),
-			"request_id", task.RequestID,
-			"error_code", "store_set_result",
-			"error", err,
-		)
+	if !result.Applied {
+		return
 	}
-	statusUpdated := false
-	if err := l.store.UpdateStatus(task.ID, fromStatus, TaskStatusFailed); err != nil {
-		l.logger.ErrorContext(ctx, "failTask: store.UpdateStatus failed",
-			"module", "loom",
-			"task_id", task.ID,
-			"project_id", task.ProjectID,
-			"worker_type", string(task.WorkerType),
-			"task_status", string(fromStatus),
-			"request_id", task.RequestID,
-			"error_code", "store_update_status",
-			"error", err,
-		)
-	} else {
-		statusUpdated = true
-	}
-	if statusUpdated {
-		l.appendTerminalArtifact(ctx, task, string(EventTaskFailed), TaskStatusFailed, classifyTaskError(errMsg), errMsg)
-	}
-	l.events.Emit(TaskEvent{
-		Type:      EventTaskFailed,
-		TaskID:    task.ID,
-		ProjectID: task.ProjectID,
-		RequestID: task.RequestID,
-		Status:    TaskStatusFailed,
-		Timestamp: l.clock.Now().UTC(),
-	})
-	// T030: failed task counter.
-	l.taskFailedCounter.Add(ctx, 1, otelmetric.WithAttributes(
-		attribute.String("worker_type", string(task.WorkerType)),
-		attribute.String("project_id", task.ProjectID),
-	))
+	l.emitTaskEvent(task, EventTaskFailed, TaskStatusFailed, completedAt)
+	l.recordTaskFailed(task)
 	l.logger.ErrorContext(ctx, "task failed",
 		"module", "loom",
 		"task_id", task.ID,
@@ -805,74 +1105,23 @@ func (l *LoomEngine) dispatch(task *Task) {
 	// Panic recovery: ensure any panic in worker or gate is caught, task is
 	// marked failed_crash, and the process is not terminated.
 	defer func() {
-		if r := recover(); r != nil {
-			if l.isTerminalTask(task.ID) {
+		r := recover()
+		if r == nil {
+			return
+		}
+		panicMsg := fmt.Sprintf("panic: %v", r)
+		expectedStatus := task.Status
+		current, err := l.store.Get(task.ID)
+		if err != nil {
+			l.logAuthorityCommitError(task, "dispatch panic: load canonical task failed", task.Status, err)
+		} else {
+			if current.Status.IsTerminal() {
 				return
 			}
-			panicCtx := context.Background()
-			stack := debug.Stack()
-			panicMsg := fmt.Sprintf("panic: %v", r)
-			l.logger.ErrorContext(panicCtx, "dispatch panic",
-				"module", "loom",
-				"task_id", task.ID,
-				"project_id", task.ProjectID,
-				"worker_type", string(task.WorkerType),
-				"task_status", "unknown",
-				"request_id", task.RequestID,
-				"error_code", "dispatch_panic",
-				"error", panicMsg,
-				"stack", string(stack),
-			)
-			if err := l.store.SetResult(task.ID, "", panicMsg); err != nil {
-				l.logger.ErrorContext(panicCtx, "dispatch panic: store.SetResult failed",
-					"module", "loom",
-					"task_id", task.ID,
-					"project_id", task.ProjectID,
-					"worker_type", string(task.WorkerType),
-					"task_status", string(TaskStatusFailedCrash),
-					"request_id", task.RequestID,
-					"error_code", "store_set_result",
-					"error", err,
-				)
-			}
-			// Best-effort: try both running→failed_crash and dispatched→failed_crash
-			// since we don't know exact current status at panic time.
-			statusUpdated := false
-			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusFailedCrash); err != nil {
-				if err2 := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusFailedCrash); err2 != nil {
-					l.logger.ErrorContext(panicCtx, "dispatch panic: could not mark failed_crash",
-						"module", "loom",
-						"task_id", task.ID,
-						"project_id", task.ProjectID,
-						"worker_type", string(task.WorkerType),
-						"task_status", string(TaskStatusFailedCrash),
-						"request_id", task.RequestID,
-						"error_code", "failed_crash_transition",
-						"error", fmt.Sprintf("running→failed_crash: %v; dispatched→failed_crash: %v", err, err2),
-					)
-				} else {
-					statusUpdated = true
-				}
-			} else {
-				statusUpdated = true
-			}
-			if statusUpdated {
-				l.appendTerminalArtifact(panicCtx, task, string(EventTaskFailedCrash), TaskStatusFailedCrash, "panic", panicMsg)
-			}
-			l.events.Emit(TaskEvent{
-				Type:      EventTaskFailedCrash,
-				TaskID:    task.ID,
-				ProjectID: task.ProjectID,
-				RequestID: task.RequestID,
-				Status:    TaskStatusFailedCrash,
-				Timestamp: l.clock.Now().UTC(),
-			})
-			// T030: panic counts as a failed task (failed_crash subtype).
-			l.taskFailedCounter.Add(panicCtx, 1, otelmetric.WithAttributes(
-				attribute.String("worker_type", string(task.WorkerType)),
-				attribute.String("project_id", task.ProjectID),
-			))
-			l.logger.ErrorContext(panicCtx, "task failed crash",
+			expectedStatus = current.Status
+		}
+		if l.commitPanicFailedCrashAt(task, expectedStatus, panicMsg, l.clock.Now().UTC()) {
+			l.logger.ErrorContext(context.Background(), "dispatch panic stack",
 				"module", "loom",
 				"task_id", task.ID,
 				"project_id", task.ProjectID,
@@ -880,7 +1129,7 @@ func (l *LoomEngine) dispatch(task *Task) {
 				"task_status", string(TaskStatusFailedCrash),
 				"request_id", task.RequestID,
 				"error_code", "dispatch_panic",
-				"error", panicMsg,
+				"stack", string(debug.Stack()),
 			)
 		}
 	}()
@@ -897,75 +1146,56 @@ func (l *LoomEngine) dispatch(task *Task) {
 		return
 	}
 
-	// Transition: dispatched → running
-	if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
-		l.logger.ErrorContext(context.Background(), "dispatch: UpdateStatus(dispatched→running) failed",
-			"module", "loom",
-			"task_id", task.ID,
-			"project_id", task.ProjectID,
-			"worker_type", string(task.WorkerType),
-			"task_status", string(TaskStatusDispatched),
-			"request_id", task.RequestID,
-			"error_code", "store_update_status",
-			"error", err,
-		)
-		l.failTask(task, TaskStatusDispatched, fmt.Sprintf("dispatch: transition to running failed: %v", err))
-		return
-	}
-	task.Status = TaskStatusRunning
-	l.appendLifecycleArtifact(context.Background(), task, string(EventTaskRunning), TaskStatusRunning)
-
-	// Emit running event after successful dispatched→running transition.
-	l.events.Emit(TaskEvent{
-		Type:      EventTaskRunning,
-		TaskID:    task.ID,
-		ProjectID: task.ProjectID,
-		RequestID: task.RequestID,
-		Status:    TaskStatusRunning,
-		Timestamp: l.clock.Now().UTC(),
-	})
-
 	// Create task-scoped context — NOT derived from caller's context.
 	// FR-4: session disconnect does not cancel running tasks.
 	var taskCtx context.Context
 	var cancel context.CancelFunc
-
 	if task.Timeout > 0 {
 		taskCtx, cancel = context.WithTimeout(context.Background(), time.Duration(task.Timeout)*time.Second)
 	} else {
 		taskCtx, cancel = context.WithCancel(context.Background())
 	}
-
 	l.mu.Lock()
 	l.cancels[task.ID] = cancel
 	l.mu.Unlock()
-
 	defer func() {
-		cancel()
+		if !l.lifecycleProjectionPending(task.ID) {
+			cancel()
+		}
+		// lifecycleProjectionPending releases the stripe before this lock.
+		// Cancel takes the opposite data path (stripe then l.mu.RLock), so the
+		// two locks are never held in inverse order.
 		l.mu.Lock()
 		delete(l.cancels, task.ID)
 		l.mu.Unlock()
 	}()
 
-	// Reload task from store to get latest state (in case of retry).
-	latest, err := l.store.Get(task.ID)
+	runningAt := l.clock.Now().UTC()
+	running, err := l.store.CommitRunning(context.Background(), RunTask{
+		TaskID:         task.ID,
+		ExpectedStatus: TaskStatusDispatched,
+		RunningAt:      runningAt,
+	})
 	if err != nil {
-		l.logger.ErrorContext(taskCtx, "dispatch: store.Get failed",
-			"module", "loom",
-			"task_id", task.ID,
-			"project_id", task.ProjectID,
-			"worker_type", string(task.WorkerType),
-			"task_status", string(TaskStatusRunning),
-			"request_id", task.RequestID,
-			"error_code", "store_get",
-			"error", err,
-		)
-		l.failTask(task, TaskStatusRunning, fmt.Sprintf("dispatch: reload task failed: %v", err))
+		if l.reconcileCancellingWinner(task, running, err, l.clock.Now().UTC()) {
+			return
+		}
+		l.logAuthorityCommitError(task, "dispatch running authority commit failed", TaskStatusDispatched, err)
+		return
+	}
+	if !running.Applied {
+		return
+	}
+	task.Status = TaskStatusRunning
+	l.emitTaskEvent(task, EventTaskRunning, TaskStatusRunning, runningAt)
+
+	latest, ok := l.loadRunningTask(task, "dispatch")
+	if !ok {
 		return
 	}
 
 	result, execErr := worker.Execute(taskCtx, latest)
-	if l.isTerminalTask(task.ID) {
+	if l.stopAfterWorkerReturn(task) {
 		return
 	}
 	if execErr != nil {
@@ -996,48 +1226,29 @@ func (l *LoomEngine) dispatch(task *Task) {
 				"task_status", string(TaskStatusRunning),
 				"request_id", task.RequestID,
 			)
-			if err := l.store.SetResult(task.ID, result.Content, ""); err != nil {
-				l.logger.ErrorContext(gateCtx, "dispatch complete: store.SetResult failed",
-					"module", "loom",
-					"task_id", task.ID,
-					"project_id", task.ProjectID,
-					"worker_type", string(task.WorkerType),
-					"task_status", string(TaskStatusRunning),
-					"request_id", task.RequestID,
-					"error_code", "store_set_result",
-					"error", err,
-				)
-				// Abort: do not emit EventTaskCompleted — persisted state is not completed.
-				return
-			}
-			if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusCompleted); err != nil {
-				l.logger.ErrorContext(gateCtx, "dispatch complete: store.UpdateStatus failed",
-					"module", "loom",
-					"task_id", task.ID,
-					"project_id", task.ProjectID,
-					"worker_type", string(task.WorkerType),
-					"task_status", string(TaskStatusRunning),
-					"request_id", task.RequestID,
-					"error_code", "store_update_status",
-					"error", err,
-				)
-				// Abort: do not emit EventTaskCompleted — status transition failed.
-				return
-			}
-			l.appendTerminalArtifact(gateCtx, task, string(EventTaskCompleted), TaskStatusCompleted, "", "")
-			l.events.Emit(TaskEvent{
-				Type:      EventTaskCompleted,
-				TaskID:    task.ID,
-				ProjectID: task.ProjectID,
-				RequestID: task.RequestID,
-				Status:    TaskStatusCompleted,
-				Timestamp: l.clock.Now().UTC(),
+			completedAt := l.clock.Now().UTC()
+			completed, err := l.store.CommitCompleted(gateCtx, CompleteTask{
+				TaskID:         task.ID,
+				ExpectedStatus: TaskStatusRunning,
+				Result:         result.Content,
+				CompletedAt:    completedAt,
 			})
+			if err != nil {
+				if l.reconcileCancellingWinner(task, completed, err, l.clock.Now().UTC()) {
+					return
+				}
+				l.logAuthorityCommitError(task, "completion authority commit failed", TaskStatusRunning, err)
+				return
+			}
+			if !completed.Applied {
+				return
+			}
+			l.emitTaskEvent(task, EventTaskCompleted, TaskStatusCompleted, completedAt)
 			// T030: completed task counter + end-to-end duration.
 			l.taskCompletedCounter.Add(gateCtx, 1, attrs)
 			var taskDurationMS int64
 			if latest.DispatchedAt != nil {
-				taskDurationMS = l.clock.Now().Sub(*latest.DispatchedAt).Milliseconds()
+				taskDurationMS = completedAt.Sub(*latest.DispatchedAt).Milliseconds()
 				l.taskDurationHist.Record(gateCtx, taskDurationMS, attrs)
 			}
 			// CR-MED-1 fix: include duration_ms in the canonical 8-field log.
@@ -1073,100 +1284,74 @@ func (l *LoomEngine) dispatch(task *Task) {
 		}
 
 		// Retry: running → retrying → dispatched → running.
-		// BUG-002 fix: each transition failure is now a hard stop. Previously the
-		// errors were swallowed with log.Printf and execution continued on stale
-		// state, leaving tasks permanently in `retrying`.
-		if err := l.store.UpdateStatus(task.ID, TaskStatusRunning, TaskStatusRetrying); err != nil {
-			l.logger.ErrorContext(gateCtx, "retry: UpdateStatus(running→retrying) failed",
-				"module", "loom",
-				"task_id", task.ID,
-				"project_id", task.ProjectID,
-				"worker_type", string(task.WorkerType),
-				"task_status", string(TaskStatusRunning),
-				"request_id", task.RequestID,
-				"error_code", "store_update_status",
-				"error", err,
-			)
-			l.failTask(task, TaskStatusRunning, fmt.Sprintf("retry: UpdateStatus(running→retrying) failed: %v", err))
+		retryingAt := l.clock.Now().UTC()
+		retrying, err := l.store.CommitRetrying(gateCtx, RetryTask{
+			TaskID:         task.ID,
+			ExpectedStatus: TaskStatusRunning,
+			RetryingAt:     retryingAt,
+		})
+		if err != nil {
+			if l.reconcileCancellingWinner(task, retrying, err, l.clock.Now().UTC()) {
+				return
+			}
+			l.logAuthorityCommitError(task, "retrying authority commit failed", TaskStatusRunning, err)
+			return
+		}
+		if !retrying.Applied {
 			return
 		}
 		task.Status = TaskStatusRetrying
-		l.appendLifecycleArtifact(gateCtx, task, string(EventTaskRetrying), TaskStatusRetrying)
-		if err := l.store.IncrementRetries(task.ID); err != nil {
-			l.logger.ErrorContext(gateCtx, "retry: IncrementRetries failed",
-				"module", "loom",
-				"task_id", task.ID,
-				"project_id", task.ProjectID,
-				"worker_type", string(task.WorkerType),
-				"task_status", string(TaskStatusRetrying),
-				"request_id", task.RequestID,
-				"error_code", "store_increment_retries",
-				"error", err,
-			)
-			l.failTask(task, TaskStatusRetrying, fmt.Sprintf("retry: IncrementRetries failed: %v", err))
+		l.emitTaskEvent(task, EventTaskRetrying, TaskStatusRetrying, retryingAt)
+
+		dispatchedAt := l.clock.Now().UTC()
+		dispatched, err := l.store.CommitDispatched(gateCtx, DispatchTask{
+			TaskID:         task.ID,
+			ExpectedStatus: TaskStatusRetrying,
+			DispatchedAt:   dispatchedAt,
+		})
+		if err != nil {
+			if l.reconcileCancellingWinner(task, dispatched, err, l.clock.Now().UTC()) {
+				return
+			}
+			l.logAuthorityCommitError(task, "retry dispatch authority commit failed", TaskStatusRetrying, err)
 			return
 		}
-
-		// Emit retrying event after successful transition.
-		l.events.Emit(TaskEvent{
-			Type:      EventTaskRetrying,
-			TaskID:    task.ID,
-			ProjectID: task.ProjectID,
-			RequestID: task.RequestID,
-			Status:    TaskStatusRetrying,
-			Timestamp: l.clock.Now().UTC(),
-		})
-
-		if err := l.store.UpdateStatus(task.ID, TaskStatusRetrying, TaskStatusDispatched); err != nil {
-			l.logger.ErrorContext(gateCtx, "retry: UpdateStatus(retrying→dispatched) failed",
-				"module", "loom",
-				"task_id", task.ID,
-				"project_id", task.ProjectID,
-				"worker_type", string(task.WorkerType),
-				"task_status", string(TaskStatusRetrying),
-				"request_id", task.RequestID,
-				"error_code", "store_update_status",
-				"error", err,
-			)
-			l.failTask(task, TaskStatusRetrying, fmt.Sprintf("retry: UpdateStatus(retrying→dispatched) failed: %v", err))
+		if !dispatched.Applied {
 			return
 		}
 		task.Status = TaskStatusDispatched
-		l.appendLifecycleArtifact(gateCtx, task, string(EventTaskDispatched), TaskStatusDispatched)
-		if err := l.store.UpdateStatus(task.ID, TaskStatusDispatched, TaskStatusRunning); err != nil {
-			l.logger.ErrorContext(gateCtx, "retry: UpdateStatus(dispatched→running) failed",
-				"module", "loom",
-				"task_id", task.ID,
-				"project_id", task.ProjectID,
-				"worker_type", string(task.WorkerType),
-				"task_status", string(TaskStatusDispatched),
-				"request_id", task.RequestID,
-				"error_code", "store_update_status",
-				"error", err,
-			)
-			l.failTask(task, TaskStatusDispatched, fmt.Sprintf("retry: UpdateStatus(dispatched→running) failed: %v", err))
+		task.DispatchedAt = timePointer(dispatchedAt)
+		l.emitTaskEvent(task, EventTaskDispatched, TaskStatusDispatched, dispatchedAt)
+
+		runningAt := l.clock.Now().UTC()
+		running, err := l.store.CommitRunning(gateCtx, RunTask{
+			TaskID:         task.ID,
+			ExpectedStatus: TaskStatusDispatched,
+			RunningAt:      runningAt,
+		})
+		if err != nil {
+			if l.reconcileCancellingWinner(task, running, err, l.clock.Now().UTC()) {
+				return
+			}
+			l.logAuthorityCommitError(task, "retry running authority commit failed", TaskStatusDispatched, err)
+			return
+		}
+		if !running.Applied {
 			return
 		}
 		task.Status = TaskStatusRunning
-		l.appendLifecycleArtifact(gateCtx, task, string(EventTaskRunning), TaskStatusRunning)
+		l.emitTaskEvent(task, EventTaskRunning, TaskStatusRunning, runningAt)
 
-		latest, err = l.store.Get(task.ID)
-		if err != nil {
-			l.logger.ErrorContext(taskCtx, "dispatch retry: store.Get failed",
-				"module", "loom",
-				"task_id", task.ID,
-				"project_id", task.ProjectID,
-				"worker_type", string(task.WorkerType),
-				"task_status", string(TaskStatusRunning),
-				"request_id", task.RequestID,
-				"error_code", "store_get",
-				"error", err,
-			)
-			l.failTask(task, TaskStatusRunning, fmt.Sprintf("dispatch retry: reload task failed: %v", err))
+		var runnable bool
+		latest, runnable = l.loadRunningTask(task, "dispatch retry")
+		if !runnable {
 			return
 		}
 
 		result, execErr = worker.Execute(taskCtx, latest)
+		if l.stopAfterWorkerReturn(task) {
+			return
+		}
 		if execErr != nil {
 			l.failTask(task, TaskStatusRunning, execErr.Error())
 			return

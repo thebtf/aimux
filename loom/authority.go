@@ -142,6 +142,37 @@ type PendingActionAttempt struct {
 	AuthorityResult
 }
 
+type CreateTask struct {
+	TaskID       string
+	WorkerType   WorkerType
+	ProjectID    string
+	RequestID    string
+	ParentTaskID string
+	TenantID     string
+	Prompt       string
+	CWD          string
+	Env          map[string]string
+	CLI          string
+	Role         string
+	Model        string
+	Effort       string
+	Timeout      int
+	Metadata     map[string]any
+	CreatedAt    time.Time
+}
+
+type RunTask struct {
+	TaskID         string
+	ExpectedStatus TaskStatus
+	RunningAt      time.Time
+}
+
+type RetryTask struct {
+	TaskID         string
+	ExpectedStatus TaskStatus
+	RetryingAt     time.Time
+}
+
 type DispatchTask struct {
 	TaskID         string
 	ExpectedStatus TaskStatus
@@ -732,6 +763,325 @@ func (s *TaskStore) RequestCancel(
 func timePointer(at time.Time) *time.Time {
 	value := at.UTC()
 	return &value
+}
+
+func validateCreateTask(command CreateTask) error {
+	if err := validateAuthorityTaskID(command.TaskID); err != nil {
+		return err
+	}
+	required := []struct {
+		name  string
+		value string
+	}{
+		{name: "worker type", value: string(command.WorkerType)},
+		{name: "tenant id", value: command.TenantID},
+		{name: "prompt", value: command.Prompt},
+	}
+	for _, field := range required {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("loom authority: CommitCreated missing %s", field.name)
+		}
+	}
+	if command.ParentTaskID != "" && strings.TrimSpace(command.ParentTaskID) == "" {
+		return errors.New("loom authority: CommitCreated invalid parent task id")
+	}
+	if command.Timeout < 0 {
+		return errors.New("loom authority: CommitCreated timeout must not be negative")
+	}
+	return validateAuthorityTime("created_at", command.CreatedAt)
+}
+
+func (s *TaskStore) CommitCreated(ctx context.Context, command CreateTask) (CommitResult, error) {
+	if err := validateCreateTask(command); err != nil {
+		return CommitResult{}, err
+	}
+	envJSON, err := marshalJSON(command.Env)
+	if err != nil {
+		return CommitResult{}, fmt.Errorf("loom authority: marshal create env: %w", err)
+	}
+	metadataJSON, err := marshalJSON(command.Metadata)
+	if err != nil {
+		return CommitResult{}, fmt.Errorf("loom authority: marshal create metadata: %w", err)
+	}
+	createdAt := command.CreatedAt.UTC()
+
+	tx, err := beginAuthorityTransaction(ctx, s.db)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	defer tx.rollback()
+
+	existing, found, err := loadAuthorityTask(ctx, tx, command.TaskID)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	if found {
+		result, conflictErr := finishAuthorityConflict(
+			tx,
+			existing,
+			nil,
+			[]AuthorityConflict{authorityConflict(AuthorityConflictTaskStatus, nil)},
+		)
+		return CommitResult{AuthorityResult: result}, conflictErr
+	}
+
+	lastSeenAt := command.CreatedAt.UTC().Format(time.RFC3339)
+	if err := execOneAuthorityRow(
+		ctx,
+		tx,
+		`INSERT INTO tasks
+			(id,status,worker_type,project_id,request_id,parent_task_id,prompt,cwd,env,cli,role,model,
+			 effort,timeout,metadata,result,error,retries,created_at,dispatched_at,cancel_requested_at,completed_at,
+			 daemon_uuid,last_seen_at,engine_name,tenant_id)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		command.TaskID,
+		TaskStatusPending,
+		command.WorkerType,
+		command.ProjectID,
+		command.RequestID,
+		nullableString(command.ParentTaskID),
+		command.Prompt,
+		command.CWD,
+		envJSON,
+		command.CLI,
+		command.Role,
+		command.Model,
+		command.Effort,
+		command.Timeout,
+		metadataJSON,
+		"",
+		"",
+		0,
+		createdAt,
+		nil,
+		nil,
+		nil,
+		s.daemonUUID,
+		lastSeenAt,
+		s.engineName,
+		command.TenantID,
+	); err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+
+	task, found, err := loadAuthorityTask(ctx, tx, command.TaskID)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	if !found {
+		result, finishErr := finishAuthorityError(tx, errors.New("loom authority: created task missing before commit"))
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	closed, err := closeOpenAuthorityActions(ctx, tx, command.TaskID, createdAt)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	if closed != 0 {
+		result, finishErr := finishAuthorityError(tx, fmt.Errorf("loom authority: create action fence closed %d rows", closed))
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	artifactSeq, err := appendAuthorityArtifact(
+		ctx,
+		tx,
+		command.TaskID,
+		"lifecycle",
+		"task.created",
+		map[string]any{
+			"status":              string(TaskStatusPending),
+			"closed_action_count": int64(0),
+		},
+		createdAt,
+	)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	result, err := commitAuthorityResult(tx, authorityAppliedResult(task, nil, artifactSeq, 0))
+	if err != nil {
+		return CommitResult{}, err
+	}
+	return CommitResult{AuthorityResult: result}, nil
+}
+
+func (s *TaskStore) CommitRunning(ctx context.Context, command RunTask) (CommitResult, error) {
+	if err := validateAuthorityTaskID(command.TaskID); err != nil {
+		return CommitResult{}, err
+	}
+	if command.ExpectedStatus != TaskStatusDispatched {
+		return CommitResult{}, fmt.Errorf("loom authority: CommitRunning expected status %q is illegal", command.ExpectedStatus)
+	}
+	if err := validateAuthorityTime("running_at", command.RunningAt); err != nil {
+		return CommitResult{}, err
+	}
+	runningAt := command.RunningAt.UTC()
+
+	tx, err := beginAuthorityTransaction(ctx, s.db)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	defer tx.rollback()
+	task, found, err := loadAuthorityTask(ctx, tx, command.TaskID)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	if !found {
+		result, finishErr := finishAuthorityNotFound(tx)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	if task.Status != command.ExpectedStatus {
+		result, conflictErr := finishAuthorityConflict(
+			tx,
+			task,
+			nil,
+			[]AuthorityConflict{authorityConflict(AuthorityConflictTaskStatus, nil)},
+		)
+		return CommitResult{AuthorityResult: result}, conflictErr
+	}
+	if task.DispatchedAt == nil || runningAt.Before(*task.DispatchedAt) {
+		result, conflictErr := finishAuthorityConflict(
+			tx,
+			task,
+			nil,
+			[]AuthorityConflict{authorityConflict(AuthorityConflictDispatchTime, nil)},
+		)
+		return CommitResult{AuthorityResult: result}, conflictErr
+	}
+	if _, err := loadOpenAuthorityActionIDs(ctx, tx, command.TaskID); err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	if err := execOneAuthorityRow(
+		ctx,
+		tx,
+		"UPDATE tasks SET status=? WHERE id=? AND status=?",
+		TaskStatusRunning,
+		command.TaskID,
+		task.Status,
+	); err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	closed, err := closeOpenAuthorityActions(ctx, tx, command.TaskID, runningAt)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	artifactSeq, err := appendAuthorityArtifact(
+		ctx,
+		tx,
+		command.TaskID,
+		"lifecycle",
+		"task.running",
+		map[string]any{
+			"status":              string(TaskStatusRunning),
+			"closed_action_count": closed,
+		},
+		runningAt,
+	)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	task.Status = TaskStatusRunning
+	result, err := commitAuthorityResult(tx, authorityAppliedResult(task, nil, artifactSeq, closed))
+	if err != nil {
+		return CommitResult{}, err
+	}
+	return CommitResult{AuthorityResult: result}, nil
+}
+
+func (s *TaskStore) CommitRetrying(ctx context.Context, command RetryTask) (CommitResult, error) {
+	if err := validateAuthorityTaskID(command.TaskID); err != nil {
+		return CommitResult{}, err
+	}
+	if command.ExpectedStatus != TaskStatusRunning {
+		return CommitResult{}, fmt.Errorf("loom authority: CommitRetrying expected status %q is illegal", command.ExpectedStatus)
+	}
+	if err := validateAuthorityTime("retrying_at", command.RetryingAt); err != nil {
+		return CommitResult{}, err
+	}
+	retryingAt := command.RetryingAt.UTC()
+
+	tx, err := beginAuthorityTransaction(ctx, s.db)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	defer tx.rollback()
+	task, found, err := loadAuthorityTask(ctx, tx, command.TaskID)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	if !found {
+		result, finishErr := finishAuthorityNotFound(tx)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	if task.Status != command.ExpectedStatus {
+		result, conflictErr := finishAuthorityConflict(
+			tx,
+			task,
+			nil,
+			[]AuthorityConflict{authorityConflict(AuthorityConflictTaskStatus, nil)},
+		)
+		return CommitResult{AuthorityResult: result}, conflictErr
+	}
+	if task.DispatchedAt == nil || retryingAt.Before(*task.DispatchedAt) {
+		result, conflictErr := finishAuthorityConflict(
+			tx,
+			task,
+			nil,
+			[]AuthorityConflict{authorityConflict(AuthorityConflictDispatchTime, nil)},
+		)
+		return CommitResult{AuthorityResult: result}, conflictErr
+	}
+	if _, err := loadOpenAuthorityActionIDs(ctx, tx, command.TaskID); err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	var retryCount int64
+	if err := tx.conn.QueryRowContext(
+		ctx,
+		"UPDATE tasks SET status=?,retries=retries+1 WHERE id=? AND status=? RETURNING retries",
+		TaskStatusRetrying,
+		command.TaskID,
+		task.Status,
+	).Scan(&retryCount); err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	closed, err := closeOpenAuthorityActions(ctx, tx, command.TaskID, retryingAt)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	artifactSeq, err := appendAuthorityArtifact(
+		ctx,
+		tx,
+		command.TaskID,
+		"lifecycle",
+		"task.retrying",
+		map[string]any{
+			"status":              string(TaskStatusRetrying),
+			"retry_count":         retryCount,
+			"closed_action_count": closed,
+		},
+		retryingAt,
+	)
+	if err != nil {
+		result, finishErr := finishAuthorityError(tx, err)
+		return CommitResult{AuthorityResult: result}, finishErr
+	}
+	task.Status = TaskStatusRetrying
+	result, err := commitAuthorityResult(tx, authorityAppliedResult(task, nil, artifactSeq, closed))
+	if err != nil {
+		return CommitResult{}, err
+	}
+	return CommitResult{AuthorityResult: result}, nil
 }
 
 func (s *TaskStore) CommitDispatched(ctx context.Context, command DispatchTask) (CommitResult, error) {

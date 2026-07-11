@@ -380,7 +380,7 @@ func TestLoomEngine_ArtifactLifecycle_DistinctPromptsProduceDistinctArtifacts(t 
 	}
 }
 
-func TestLoomEngine_ArtifactTerminal_FailedTaskIncludesErrorAndLastProgress(t *testing.T) {
+func TestLoomEngine_ArtifactTerminal_FailedTaskKeepsSanitizedDetailOnlyInTaskRow(t *testing.T) {
 	store := newTestStore(t)
 	engine := New(store)
 	defer func() {
@@ -403,6 +403,9 @@ func TestLoomEngine_ArtifactTerminal_FailedTaskIncludesErrorAndLastProgress(t *t
 	if strings.Contains(task.LastOutputLine, "sk-svcacct-") {
 		t.Fatalf("failed task LastOutputLine leaked raw secret: %q", task.LastOutputLine)
 	}
+	if task.Error != "worker failed with [REDACTED]" {
+		t.Fatalf("failed task Error = %q; want sanitized task-row detail", task.Error)
+	}
 
 	terminalPage, err := store.ListArtifacts(taskID, TaskArtifactListOptions{
 		Kinds: []TaskArtifactKind{TaskArtifactKindTerminal},
@@ -410,18 +413,21 @@ func TestLoomEngine_ArtifactTerminal_FailedTaskIncludesErrorAndLastProgress(t *t
 	if err != nil {
 		t.Fatalf("ListArtifacts terminal: %v", err)
 	}
-	if len(terminalPage.Items) == 0 {
-		t.Fatalf("terminal artifact missing for failed task")
+	if len(terminalPage.Items) != 1 {
+		t.Fatalf("failed task terminal artifacts = %d; want exactly 1", len(terminalPage.Items))
 	}
-	terminal := terminalPage.Items[len(terminalPage.Items)-1]
+	terminal := terminalPage.Items[0]
 	if terminal.Kind != TaskArtifactKindTerminal {
 		t.Fatalf("terminal artifact kind = %q; want %q", terminal.Kind, TaskArtifactKindTerminal)
 	}
-	if terminal.Payload["error_class"] != "worker_error" {
-		t.Fatalf("terminal error_class = %v; want worker_error", terminal.Payload["error_class"])
+	if terminal.EventType != string(EventTaskFailed) {
+		t.Fatalf("terminal artifact event = %q; want %q", terminal.EventType, EventTaskFailed)
 	}
-	if terminal.Payload["last_output_line"] != task.LastOutputLine {
-		t.Fatalf("terminal last_output_line payload = %v; want %q", terminal.Payload["last_output_line"], task.LastOutputLine)
+	if len(terminal.Payload) != 3 ||
+		terminal.Payload["status"] != string(TaskStatusFailed) ||
+		terminal.Payload["error_code"] != "task_failed" ||
+		terminal.Payload["closed_action_count"] != float64(0) {
+		t.Fatalf("terminal artifact payload = %#v; want exact canonical task.failed payload", terminal.Payload)
 	}
 	if strings.Contains(terminal.Summary, "Bearer abcdef") {
 		t.Fatalf("terminal artifact summary leaked bearer token: %q", terminal.Summary)
@@ -436,7 +442,7 @@ func TestLoomEngine_ArtifactTerminal_FailedTaskIncludesErrorAndLastProgress(t *t
 	}
 }
 
-func TestLoomEngine_ArtifactTerminal_NoWorkerWritesFailureArtifact(t *testing.T) {
+func TestLoomEngine_ArtifactTerminal_NoWorkerWritesCanonicalFailureArtifact(t *testing.T) {
 	store := newTestStore(t)
 	engine := New(store)
 	defer func() {
@@ -457,11 +463,18 @@ func TestLoomEngine_ArtifactTerminal_NoWorkerWritesFailureArtifact(t *testing.T)
 	if err != nil {
 		t.Fatalf("ListArtifacts terminal: %v", err)
 	}
-	if len(page.Items) == 0 {
-		t.Fatalf("terminal artifact missing for no-worker failure")
+	if len(page.Items) != 1 {
+		t.Fatalf("no-worker terminal artifacts = %d; want exactly 1", len(page.Items))
 	}
-	if page.Items[len(page.Items)-1].Payload["error_class"] != "worker_unavailable" {
-		t.Fatalf("no-worker error_class = %v; want worker_unavailable", page.Items[len(page.Items)-1].Payload["error_class"])
+	terminal := page.Items[0]
+	if terminal.Kind != TaskArtifactKindTerminal || terminal.EventType != string(EventTaskFailed) {
+		t.Fatalf("no-worker terminal artifact kind/event = %q/%q; want %q/%q", terminal.Kind, terminal.EventType, TaskArtifactKindTerminal, EventTaskFailed)
+	}
+	if len(terminal.Payload) != 3 ||
+		terminal.Payload["status"] != string(TaskStatusFailed) ||
+		terminal.Payload["error_code"] != "task_failed" ||
+		terminal.Payload["closed_action_count"] != float64(0) {
+		t.Fatalf("no-worker terminal payload = %#v; want exact canonical task.failed payload", terminal.Payload)
 	}
 }
 

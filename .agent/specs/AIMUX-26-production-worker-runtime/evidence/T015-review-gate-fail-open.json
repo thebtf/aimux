@@ -1,0 +1,43 @@
+{
+  "finding_id": "review-gate-fail-open",
+  "observed_at": "2026-07-11T01:57:33.158726Z",
+  "aimux_task_id": "019f4ee4-069c-782d-85dc-ad82961b92a2",
+  "surface": "task(task_class=review, gate=true)",
+  "reproducer": {
+    "tool": "mcp__aimux__task",
+    "arguments": {
+      "task_class": "review",
+      "target": "f6cdd7776bcb9889e87558ce3602784bfc004a21..926e33e7242b3034720dd980a4f11b397cc63caa",
+      "gate": true,
+      "timeout_seconds": 180,
+      "prompt": "Lite acceptance review of the exact T015 dead-helper-removal commit; return ACCEPT or REVISE with evidence; do not modify files."
+    }
+  },
+  "sanitized_actual": {
+    "task_status": "completed",
+    "task_class": "review",
+    "worker_type": "review",
+    "decision": "allow",
+    "blocking": false,
+    "confidence_score": 1,
+    "passes_completed": [],
+    "findings": null,
+    "summary": "",
+    "reason": "structural review pass: CLI codex exited with code 1 after two MCP transport failures: Auth(AuthorizationRequired)"
+  },
+  "attempt_errors": [
+    "2026-07-11T01:57:13.180410Z: reviewer transport closed during Auth(AuthorizationRequired)",
+    "2026-07-11T01:57:33.158726Z: reviewer transport closed during Auth(AuthorizationRequired)"
+  ],
+  "expected_fail_closed_contract": {
+    "when": "the delegated reviewer exits non-zero, authentication is required, or passes_completed is empty",
+    "must_not": "return decision=allow, blocking=false, or a completed acceptance verdict",
+    "must": "return a failed/degraded non-acceptance result with the worker error preserved and require a successful review pass before allow"
+  },
+  "classification": {
+    "severity": "HIGH",
+    "status": "OPEN",
+    "t015_acceptance_effect": "DEGRADED_NO_VERDICT",
+    "scope_boundary": "evidence only in this worktree; server fix requires a separate maker/checker task"
+  }
+}
