@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/executor/code"
@@ -14,16 +16,151 @@ import (
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/parser"
 	"github.com/thebtf/aimux/pkg/tenant"
+	"github.com/thebtf/aimux/pkg/workerruntime"
 )
 
 type leafOutputAdapter func(task *loom.Task, parsed string) (string, map[string]any, error)
 
 type profileTaskWorker struct {
-	server     *Server
-	workerType loom.WorkerType
-	taskClass  string
-	defaultCLI string
-	adapt      leafOutputAdapter
+	server         *Server
+	workerType     loom.WorkerType
+	taskClass      string
+	defaultCLI     string
+	adapt          leafOutputAdapter
+	newEventWriter func(taskID string) (*workerruntime.EventWriter, error)
+	dispatchLeaf   fallback.DispatchFn
+}
+
+type loomTaskEventSink struct {
+	engine *loom.LoomEngine
+	taskID string
+}
+
+// taskProgressSampler keeps the legacy status tail live without making the
+// transport callback wait on SQLite. It owns one bounded latest-value lane and
+// one joined goroutine per active task, never one goroutine per output event.
+type taskProgressSampler struct {
+	engine *loom.LoomEngine
+	taskID string
+	lines  chan string
+	done   chan struct{}
+	mu     sync.Mutex
+	closed bool
+}
+
+func newTaskProgressSampler(engine *loom.LoomEngine, taskID string) *taskProgressSampler {
+	if engine == nil || strings.TrimSpace(taskID) == "" {
+		return nil
+	}
+	sampler := &taskProgressSampler{
+		engine: engine,
+		taskID: taskID,
+		lines:  make(chan string, 1),
+		done:   make(chan struct{}),
+	}
+	go func() {
+		defer close(sampler.done)
+		for line := range sampler.lines {
+			_ = sampler.engine.AppendProgress(sampler.taskID, line)
+		}
+	}()
+	return sampler
+}
+
+func (sampler *taskProgressSampler) Offer(line string) {
+	if sampler == nil || strings.TrimSpace(line) == "" {
+		return
+	}
+	sampler.mu.Lock()
+	defer sampler.mu.Unlock()
+	if sampler.closed {
+		return
+	}
+	select {
+	case sampler.lines <- line:
+		return
+	default:
+	}
+	select {
+	case <-sampler.lines:
+	default:
+	}
+	select {
+	case sampler.lines <- line:
+	default:
+	}
+}
+
+func (sampler *taskProgressSampler) Close() {
+	if sampler == nil {
+		return
+	}
+	sampler.mu.Lock()
+	if !sampler.closed {
+		sampler.closed = true
+		close(sampler.lines)
+	}
+	sampler.mu.Unlock()
+	<-sampler.done
+}
+
+func (sink loomTaskEventSink) AppendRuntimeEvents(ctx context.Context, batch []workerruntime.RuntimeEvent) error {
+	if sink.engine == nil {
+		return fmt.Errorf("loom runtime-event sink unavailable")
+	}
+	appends := make([]loom.TaskRuntimeEventAppend, 0, len(batch))
+	for _, event := range batch {
+		payload := make(map[string]any, len(event.Payload)+3)
+		for key, value := range event.Payload {
+			payload[key] = value
+		}
+		payload["provider"] = event.Provider
+		payload["ingest_ordinal"] = event.IngestOrdinal
+		if event.Terminal {
+			payload["terminal"] = true
+		}
+		appends = append(appends, loom.TaskRuntimeEventAppend{
+			EventType:     runtimeEventType(event.Type),
+			Channel:       runtimeEventChannel(event),
+			Summary:       runtimeEventSummary(event),
+			Payload:       payload,
+			ContentLength: int64(runtimeEventContentLength(event)),
+			Redacted:      event.Redacted,
+			Truncated:     event.Truncated,
+		})
+	}
+	_, err := sink.engine.AppendRuntimeEventsContext(ctx, sink.taskID, appends)
+	return err
+}
+
+func runtimeEventType(eventType string) string {
+	if eventType == "provider_event_unknown" || eventType == "command_output_delta" {
+		return "raw"
+	}
+	return eventType
+}
+
+func runtimeEventChannel(event workerruntime.RuntimeEvent) string {
+	if event.Type == "provider_event_unknown" {
+		return "stdout"
+	}
+	switch event.Channel {
+	case "assistant":
+		return "stdout"
+	case "process.stdout":
+		return "stdout"
+	case "process.stderr":
+		return "stderr"
+	default:
+		return event.Channel
+	}
+}
+
+func (sink loomTaskEventSink) Checkpoint(ctx context.Context) error {
+	if sink.engine == nil {
+		return fmt.Errorf("loom runtime-event sink unavailable")
+	}
+	return sink.engine.CheckpointWAL(ctx)
 }
 
 type tenantAwareSubtaskLoom struct {
@@ -97,6 +234,24 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		}
 		return nil, extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable: %v", cli, err), err)
 	}
+	writer, err := w.eventWriter(task.ID)
+	if err != nil {
+		return nil, artifactSinkUnavailableError(err)
+	}
+	progress := newTaskProgressSampler(w.server.loom, task.ID)
+	execCtx, cancelExecution := context.WithCancel(ctx)
+	var cancelOnce sync.Once
+	stopFailureMonitor := make(chan struct{})
+	failureMonitorDone := make(chan struct{})
+	go func() {
+		defer close(failureMonitorDone)
+		select {
+		case <-writer.Failure():
+			cancelOnce.Do(cancelExecution)
+		case <-stopFailureMonitor:
+		case <-ctx.Done():
+		}
+	}()
 
 	spec := picker.TaskSpec{
 		TaskClass:      w.taskClass,
@@ -109,11 +264,21 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		SessionID:      sessionIDFromTaskMetadata(task.Metadata),
 		SessionResume:  sessionResumeFromTaskMetadata(task.Metadata),
 		TimeoutSeconds: task.Timeout,
-		OnOutput:       w.progressSink(task.ID, profile.OutputFormat),
 	}
-	raw, selectedCLI, failedAttempts, err := w.dispatch(ctx, cli, task.Metadata, spec)
-	if err != nil {
-		return nil, err
+	raw, selectedCLI, failedAttempts, dispatchErr := w.dispatch(execCtx, cli, task.Metadata, spec, writer, progress, task.ID)
+
+	flushCtx, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
+	flushErr := writer.CloseAndFlush(flushCtx)
+	cancelFlush()
+	progress.Close()
+	close(stopFailureMonitor)
+	<-failureMonitorDone
+	cancelOnce.Do(cancelExecution)
+	if flushErr != nil {
+		return nil, artifactSinkUnavailableError(flushErr)
+	}
+	if dispatchErr != nil {
+		return nil, dispatchErr
 	}
 	selectedProfile := profile
 	if selectedCLI != cli {
@@ -151,6 +316,43 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		Content:  content,
 		Metadata: metadata,
 	}, nil
+}
+
+func (w profileTaskWorker) eventWriter(taskID string) (*workerruntime.EventWriter, error) {
+	if w.newEventWriter != nil {
+		return w.newEventWriter(taskID)
+	}
+	if w.server == nil || w.server.loom == nil {
+		return nil, fmt.Errorf("profile task worker requires Loom runtime-event sink")
+	}
+	return workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(loomTaskEventSink{
+		engine: w.server.loom,
+		taskID: taskID,
+	}))
+}
+
+func artifactSinkUnavailableError(cause error) *extypes.CLIError {
+	err := extypes.NewUnknown(workerruntime.ErrArtifactSinkUnavailable.Error(), cause)
+	err.Retryable = false
+	return err
+}
+
+func runtimeEventSummary(event workerruntime.RuntimeEvent) string {
+	for _, key := range []string{"text", "status", "message"} {
+		if value, ok := event.Payload[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return event.Type
+}
+
+func runtimeEventContentLength(event workerruntime.RuntimeEvent) int {
+	for _, key := range []string{"text", "status", "message"} {
+		if value, ok := event.Payload[key].(string); ok {
+			return len(value)
+		}
+	}
+	return 0
 }
 
 // progressSink returns an OnOutput callback that forwards each leaf-CLI stdout
@@ -295,16 +497,52 @@ func runtimeRawEvent(line string, frame map[string]any) loom.TaskRuntimeEventApp
 	}
 }
 
-func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, metadata map[string]any, spec picker.TaskSpec) (string, string, []fallback.FailedAttempt, error) {
+func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, metadata map[string]any, spec picker.TaskSpec, writer *workerruntime.EventWriter, progress *taskProgressSampler, taskID string) (string, string, []fallback.FailedAttempt, error) {
+	dispatch := w.dispatchLeaf
+	if dispatch == nil {
+		dispatch = w.server.taskDispatch
+	}
+	providerDispatch := func(ctx context.Context, cli string, selected picker.TaskSpec) (string, error) {
+		profile, err := w.server.registry.Get(cli)
+		if err != nil || profile == nil {
+			if err == nil {
+				err = fmt.Errorf("profile is nil")
+			}
+			return "", extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable during dispatch: %v", cli, err), err)
+		}
+		selected.OnOutput = w.writerOutputSink(writer, progress, taskID, cli, profile.OutputFormat)
+		return dispatch(ctx, cli, selected)
+	}
 	if w.server != nil && w.server.fallbackPicker != nil {
-		result, err := w.server.fallbackPicker.RunPrimary(ctx, primaryCLI, spec, fallbackOptionsFromTaskMetadata(metadata), w.server.taskDispatch)
+		result, err := w.server.fallbackPicker.RunPrimary(ctx, primaryCLI, spec, fallbackOptionsFromTaskMetadata(metadata), providerDispatch)
 		if err != nil {
 			return "", primaryCLI, nil, err
 		}
 		return result.Content, result.SelectedCLI, result.FailedAttempts, nil
 	}
-	raw, err := w.server.taskDispatch(ctx, primaryCLI, spec)
+	raw, err := providerDispatch(ctx, primaryCLI, spec)
 	return raw, primaryCLI, nil, err
+}
+
+func (w profileTaskWorker) writerOutputSink(writer *workerruntime.EventWriter, progress *taskProgressSampler, taskID, provider, outputFormat string) func(string) {
+	if writer == nil {
+		return nil
+	}
+	format := strings.ToLower(strings.TrimSpace(outputFormat))
+	if format != "jsonl" {
+		format = "text"
+	}
+	return func(line string) {
+		if strings.TrimSpace(line) == "" {
+			return
+		}
+		writer.AdmitOutput(provider, format, line)
+		progressLine := normalizeProgressLine(outputFormat, line)
+		if progressLine == "" {
+			progressLine = line
+		}
+		progress.Offer(progressLine)
+	}
 }
 
 func fallbackOptionsFromTaskMetadata(metadata map[string]any) fallback.RunOptions {

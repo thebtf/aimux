@@ -144,10 +144,16 @@ func (l *LoomEngine) AppendRuntimeEvent(taskID string, input TaskRuntimeEventApp
 // AppendRuntimeEvents persists one atomic runtime-event batch and publishes a
 // payload-free wake-up only after the committed rows are visible to readers.
 func (l *LoomEngine) AppendRuntimeEvents(taskID string, batch []TaskRuntimeEventAppend) ([]TaskArtifact, error) {
+	return l.AppendRuntimeEventsContext(context.Background(), taskID, batch)
+}
+
+// AppendRuntimeEventsContext is the cancellation-aware form used by bounded
+// runtime writers. It preserves the same atomic commit-before-notify contract.
+func (l *LoomEngine) AppendRuntimeEventsContext(ctx context.Context, taskID string, batch []TaskRuntimeEventAppend) ([]TaskArtifact, error) {
 	if l == nil || l.store == nil {
 		return nil, fmt.Errorf("loom: append runtime events: engine unavailable")
 	}
-	result, err := l.store.appendRuntimeEvents(taskID, batch)
+	result, err := l.store.appendRuntimeEventsContext(ctx, taskID, batch)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +188,13 @@ func (s *TaskStore) AppendRuntimeEvent(taskID string, input TaskRuntimeEventAppe
 // AppendRuntimeEvents persists a normalized runtime-event batch in one pinned
 // SQLite transaction and returns only rows from the successful commit.
 func (s *TaskStore) AppendRuntimeEvents(taskID string, batch []TaskRuntimeEventAppend) ([]TaskArtifact, error) {
-	result, err := s.appendRuntimeEvents(taskID, batch)
+	return s.AppendRuntimeEventsContext(context.Background(), taskID, batch)
+}
+
+// AppendRuntimeEventsContext persists an atomic runtime-event batch while
+// honoring caller cancellation before commit.
+func (s *TaskStore) AppendRuntimeEventsContext(ctx context.Context, taskID string, batch []TaskRuntimeEventAppend) ([]TaskArtifact, error) {
+	result, err := s.appendRuntimeEventsContext(ctx, taskID, batch)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +251,16 @@ func prepareTaskArtifactAppend(input TaskArtifactAppend) (preparedTaskArtifactAp
 }
 
 func (s *TaskStore) appendRuntimeEvents(taskID string, batch []TaskRuntimeEventAppend) (runtimeEventBatchResult, error) {
+	return s.appendRuntimeEventsContext(context.Background(), taskID, batch)
+}
+
+func (s *TaskStore) appendRuntimeEventsContext(ctx context.Context, taskID string, batch []TaskRuntimeEventAppend) (runtimeEventBatchResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return runtimeEventBatchResult{}, err
+	}
 	if strings.TrimSpace(taskID) == "" {
 		return runtimeEventBatchResult{}, fmt.Errorf("loom store: append runtime events: missing task id")
 	}
@@ -262,7 +284,7 @@ func (s *TaskStore) appendRuntimeEvents(taskID string, batch []TaskRuntimeEventA
 		}
 		prepared = append(prepared, artifact)
 	}
-	return s.appendPreparedArtifacts(taskID, prepared)
+	return s.appendPreparedArtifactsContext(ctx, taskID, prepared)
 }
 
 // AppendArtifact persists one projection row for a Loom task. It validates that
@@ -285,6 +307,18 @@ func (s *TaskStore) AppendArtifact(taskID string, input TaskArtifactAppend) (Tas
 func (s *TaskStore) appendPreparedArtifacts(taskID string, batch []preparedTaskArtifactAppend) (runtimeEventBatchResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	return s.appendPreparedArtifactsContext(ctx, taskID, batch)
+}
+
+func (s *TaskStore) appendPreparedArtifactsContext(ctx context.Context, taskID string, batch []preparedTaskArtifactAppend) (runtimeEventBatchResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
 	tx, err := beginAuthorityTransaction(ctx, s.db)
 	if err != nil {
 		return runtimeEventBatchResult{}, fmt.Errorf("loom store: append artifacts begin: %w", err)
@@ -356,6 +390,38 @@ func (s *TaskStore) appendPreparedArtifacts(taskID string, batch []preparedTaskA
 		return runtimeEventBatchResult{}, fmt.Errorf("loom store: append artifacts commit: %w", err)
 	}
 	return result, nil
+}
+
+// CheckpointWAL performs a narrow passive checkpoint without exposing the
+// underlying *sql.DB outside Loom.
+func (l *LoomEngine) CheckpointWAL(ctx context.Context) error {
+	if l == nil || l.store == nil {
+		return fmt.Errorf("loom: checkpoint WAL: engine unavailable")
+	}
+	return l.store.CheckpointWAL(ctx)
+}
+
+// CheckpointWAL requests a passive SQLite WAL checkpoint.
+func (s *TaskStore) CheckpointWAL(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("loom store: checkpoint WAL: store unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, taskStorePragmaTimeout)
+		defer cancel()
+	}
+	var busy, logFrames, checkpointedFrames int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &logFrames, &checkpointedFrames); err != nil {
+		return fmt.Errorf("loom store: checkpoint WAL: %w", err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("loom store: checkpoint WAL: SQLITE_BUSY (%d log frames, %d checkpointed)", logFrames, checkpointedFrames)
+	}
+	return nil
 }
 
 // ListArtifacts returns a deterministic page of artifact rows for one Loom

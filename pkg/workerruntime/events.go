@@ -53,8 +53,12 @@ type AdmissionStatus string
 type AdmissionResult struct {
 	Status          AdmissionStatus `json:"status"`
 	IngestOrdinal   uint64          `json:"ingest_ordinal"`
+	AdmittedEvents  uint64          `json:"admitted_events"`
+	AdmittedBytes   uint64          `json:"admitted_bytes"`
 	CoalescedEvents uint64          `json:"coalesced_events"`
 	CoalescedBytes  uint64          `json:"coalesced_bytes"`
+	DroppedEvents   uint64          `json:"dropped_events"`
+	DroppedBytes    uint64          `json:"dropped_bytes"`
 }
 
 type eventNormalizerConfig struct {
@@ -497,6 +501,7 @@ type eventPumpConfig struct {
 	MaxBytes             int
 	ControlReserveEvents int
 	ControlReserveBytes  int
+	CoalesceMaxBytes     int
 }
 
 func defaultEventPumpConfig() eventPumpConfig {
@@ -505,6 +510,7 @@ func defaultEventPumpConfig() eventPumpConfig {
 		MaxBytes:             defaultPumpMaxBytes,
 		ControlReserveEvents: defaultPumpReserveEvents,
 		ControlReserveBytes:  defaultPumpReserveBytes,
+		CoalesceMaxBytes:     defaultPumpMaxBytes - defaultPumpReserveBytes,
 	}
 }
 
@@ -521,6 +527,8 @@ type eventPump struct {
 	totalBytes     int
 	ordinaryEvents int
 	ordinaryBytes  int
+	peakEvents     int
+	peakBytes      int
 }
 
 type pumpEntry struct {
@@ -543,6 +551,13 @@ func newEventPump(config eventPumpConfig) (*eventPump, error) {
 	}
 	if config.ControlReserveBytes <= 0 || config.ControlReserveBytes >= config.MaxBytes {
 		return nil, errors.New("control byte reserve must be positive and smaller than the byte limit")
+	}
+	ordinaryByteCapacity := config.MaxBytes - config.ControlReserveBytes
+	if config.CoalesceMaxBytes == 0 {
+		config.CoalesceMaxBytes = ordinaryByteCapacity
+	}
+	if config.CoalesceMaxBytes <= 0 || config.CoalesceMaxBytes > ordinaryByteCapacity {
+		return nil, errors.New("coalesced entry byte limit must be positive and within ordinary byte capacity")
 	}
 	return &eventPump{config: config}, nil
 }
@@ -568,11 +583,14 @@ func (pump *eventPump) admit(event RuntimeEvent) AdmissionResult {
 	}
 
 	if result, handled := pump.coalesce(owned, size, control); handled {
+		pump.updatePeaks()
 		return result
 	}
 	if !pump.hasCapacity(control, size, 1) {
 		if !control {
 			pump.recordDrop(owned.Provider, uint64(size))
+			pump.updatePeaks()
+			return AdmissionResult{Status: admissionRejectedQuota, DroppedEvents: 1, DroppedBytes: uint64(size)}
 		}
 		return AdmissionResult{Status: admissionRejectedQuota}
 	}
@@ -590,10 +608,20 @@ func (pump *eventPump) admit(event RuntimeEvent) AdmissionResult {
 		pump.ordinaryEvents++
 		pump.ordinaryBytes += size
 	}
-	return AdmissionResult{Status: admissionAdmitted, IngestOrdinal: pump.nextOrdinal}
+	pump.updatePeaks()
+	return AdmissionResult{
+		Status:         admissionAdmitted,
+		IngestOrdinal:  pump.nextOrdinal,
+		AdmittedEvents: 1,
+		AdmittedBytes:  uint64(size),
+	}
 }
 
 func (pump *eventPump) drain(limit int) []RuntimeEvent {
+	return pump.drainBounded(limit, int(^uint(0)>>1))
+}
+
+func (pump *eventPump) drainBounded(maxEvents, maxBytes int) []RuntimeEvent {
 	pump.mu.Lock()
 	defer pump.mu.Unlock()
 	queued := len(pump.entries) - pump.head
@@ -601,17 +629,34 @@ func (pump *eventPump) drain(limit int) []RuntimeEvent {
 	if pump.pending != nil {
 		available++
 	}
-	if limit <= 0 || available == 0 {
+	if maxEvents <= 0 || maxBytes <= 0 || available == 0 {
 		return nil
 	}
-	if limit > available {
-		limit = available
+	if maxEvents > available {
+		maxEvents = available
 	}
-	result := make([]RuntimeEvent, limit)
-	drainEntries := limit
-	if drainEntries > queued {
-		drainEntries = queued
+	drainEntries := 0
+	drainBytes := 0
+	for drainEntries < queued && drainEntries < maxEvents {
+		entry := &pump.entries[pump.head+drainEntries]
+		if drainEntries > 0 && drainBytes+entry.size > maxBytes {
+			break
+		}
+		if drainEntries == 0 && entry.size > maxBytes {
+			break
+		}
+		drainBytes += entry.size
+		drainEntries++
 	}
+	includePending := drainEntries < maxEvents && drainEntries == queued && pump.pending != nil && drainBytes <= maxBytes
+	resultSize := drainEntries
+	if includePending {
+		resultSize++
+	}
+	if resultSize == 0 {
+		return nil
+	}
+	result := make([]RuntimeEvent, resultSize)
 	for index := 0; index < drainEntries; index++ {
 		entryIndex := pump.head + index
 		entry := &pump.entries[entryIndex]
@@ -627,7 +672,7 @@ func (pump *eventPump) drain(limit int) []RuntimeEvent {
 		pump.entries[entryIndex] = pumpEntry{}
 	}
 	pump.head += drainEntries
-	if drainEntries < limit && pump.pending != nil {
+	if includePending {
 		result[drainEntries] = pump.pending.event
 		pump.pending = nil
 	}
@@ -640,6 +685,35 @@ func (pump *eventPump) close() {
 	pump.mu.Lock()
 	pump.closed = true
 	pump.mu.Unlock()
+}
+
+func (pump *eventPump) stats() (events, bytes int, closed bool) {
+	pump.mu.Lock()
+	defer pump.mu.Unlock()
+	events = len(pump.entries) - pump.head
+	if pump.pending != nil {
+		events++
+	}
+	return events, pump.totalBytes, pump.closed
+}
+
+func (pump *eventPump) peaks() (events, bytes int) {
+	pump.mu.Lock()
+	defer pump.mu.Unlock()
+	return pump.peakEvents, pump.peakBytes
+}
+
+func (pump *eventPump) updatePeaks() {
+	events := len(pump.entries) - pump.head
+	if pump.pending != nil {
+		events++
+	}
+	if events > pump.peakEvents {
+		pump.peakEvents = events
+	}
+	if pump.totalBytes > pump.peakBytes {
+		pump.peakBytes = pump.totalBytes
+	}
 }
 
 func (pump *eventPump) hasCapacity(control bool, byteDelta, eventDelta int) bool {
@@ -661,9 +735,12 @@ func (pump *eventPump) coalesce(event RuntimeEvent, size int, control bool) (Adm
 	if text, ok := exactTextPayload(event.Payload); ok && isDeltaEvent(event) && tail.textOnly &&
 		tail.event.Provider == event.Provider && tail.event.Channel == event.Channel && tail.event.Type == event.Type &&
 		!tail.event.Terminal && !tail.event.internalGap {
+		if tail.size+size > pump.config.CoalesceMaxBytes {
+			return AdmissionResult{}, false
+		}
 		if !pump.hasCapacity(false, size, 0) {
 			pump.recordDrop(event.Provider, uint64(size))
-			return AdmissionResult{Status: admissionRejectedQuota}, true
+			return AdmissionResult{Status: admissionRejectedQuota, DroppedEvents: 1, DroppedBytes: uint64(size)}, true
 		}
 		pump.nextOrdinal++
 		tail.text = append(tail.text, text...)
@@ -694,10 +771,13 @@ func (pump *eventPump) coalesce(event RuntimeEvent, size int, control bool) (Adm
 	if err != nil {
 		return AdmissionResult{Status: admissionRejectedInvalid}, true
 	}
+	if aggregateSize > pump.config.CoalesceMaxBytes {
+		return AdmissionResult{}, false
+	}
 	delta := aggregateSize - tail.size
 	if !pump.hasCapacity(false, delta, 0) {
 		pump.recordDrop(event.Provider, uint64(size))
-		return AdmissionResult{Status: admissionRejectedQuota}, true
+		return AdmissionResult{Status: admissionRejectedQuota, DroppedEvents: 1, DroppedBytes: uint64(size)}, true
 	}
 	pump.nextOrdinal++
 	tail.event.Payload = aggregate

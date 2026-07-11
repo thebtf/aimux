@@ -4,11 +4,18 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/thebtf/aimux/loom"
+	"github.com/thebtf/aimux/pkg/config"
+	"github.com/thebtf/aimux/pkg/driver"
+	"github.com/thebtf/aimux/pkg/executor/picker"
+	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/tenant"
+	"github.com/thebtf/aimux/pkg/workerruntime"
 )
 
 func TestTenantAwareSubtaskLoomEnforcesTenantQuota(t *testing.T) {
@@ -197,5 +204,198 @@ func TestProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail(t *tes
 	}
 	if task.LastOutputLine == "" || strings.Contains(task.LastOutputLine, "sk-proj-") {
 		t.Fatalf("progress tail = %q; want parsed redacted text", task.LastOutputLine)
+	}
+}
+
+type t019ServerFailingSink struct {
+	mu       sync.Mutex
+	attempts int
+}
+
+func (sink *t019ServerFailingSink) AppendRuntimeEvents(context.Context, []workerruntime.RuntimeEvent) error {
+	sink.mu.Lock()
+	sink.attempts++
+	sink.mu.Unlock()
+	return errors.New("SQLITE_BUSY: injected server outage")
+}
+
+func (sink *t019ServerFailingSink) Checkpoint(context.Context) error { return nil }
+
+func (sink *t019ServerFailingSink) Attempts() int {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	return sink.attempts
+}
+
+func TestProfileTaskWorker_ArtifactSinkFailureCancelsOnceAndSkipsProviderFallback(t *testing.T) {
+	srv := testServerWithLoom(t)
+	profiles := map[string]*config.CLIProfile{}
+	for _, cli := range []string{"codex", "grok"} {
+		binary := fakeExecutable(t, t.TempDir(), cli)
+		profiles[cli] = &config.CLIProfile{
+			Name:         cli,
+			Binary:       binary,
+			ResolvedPath: binary,
+			OutputFormat: "text",
+			Capabilities: []string{"code", "task", "review"},
+		}
+	}
+	srv.cfg.CLIProfiles = profiles
+	srv.cfg.Executor.Picker = picker.DefaultPickerConfig()
+	srv.registry = driver.NewRegistry(profiles)
+	for cli := range profiles {
+		srv.registry.SetAvailable(cli, true)
+	}
+	srv.fallbackPicker = buildFallbackPicker(srv)
+
+	sink := &t019ServerFailingSink{}
+	var dispatches atomic.Int32
+	worker := profileTaskWorker{
+		server:     srv,
+		workerType: loom.WorkerTypeCLI,
+		taskClass:  "code",
+		defaultCLI: "codex",
+		newEventWriter: func(string) (*workerruntime.EventWriter, error) {
+			var elapsed time.Duration
+			config := workerruntime.DefaultEventWriterConfig(sink)
+			config.FlushWindow = time.Nanosecond
+			config.Now = func() time.Time { return time.Unix(0, 0).Add(elapsed) }
+			config.Wait = func(_ context.Context, delay time.Duration) error {
+				elapsed += delay
+				return nil
+			}
+			return workerruntime.NewEventWriter(config)
+		},
+		dispatchLeaf: func(ctx context.Context, _ string, spec picker.TaskSpec) (string, error) {
+			dispatches.Add(1)
+			if spec.OnOutput == nil {
+				return "", errors.New("missing output callback")
+			}
+			spec.OnOutput("streamed before outage")
+			<-ctx.Done()
+			return "", extypes.NewCanceled("provider cancelled", ctx.Err())
+		},
+	}
+	task := &loom.Task{
+		ID:       "artifact-sink-failure-task",
+		CLI:      "codex",
+		Prompt:   "exercise bounded writer failure",
+		Metadata: map[string]any{"fallback_enabled": true, "max_attempts": 3},
+	}
+
+	type outcome struct {
+		result *loom.WorkerResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := worker.Execute(context.Background(), task)
+		done <- outcome{result: result, err: err}
+	}()
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not cancel after artifact sink retry exhaustion")
+	}
+	if got.result != nil {
+		t.Fatalf("result = %#v, want nil", got.result)
+	}
+	var cliErr *extypes.CLIError
+	if !errors.As(got.err, &cliErr) || cliErr.Code != extypes.CLIErrorCodeUnknown || cliErr.Message != "artifact_sink_unavailable" || cliErr.Retryable {
+		t.Fatalf("error = %#v, want non-retryable Unknown artifact_sink_unavailable", got.err)
+	}
+	if dispatches.Load() != 1 {
+		t.Fatalf("provider dispatches = %d, want exactly one with no fallback", dispatches.Load())
+	}
+	if sink.Attempts() != 8 {
+		t.Fatalf("sink attempts = %d, want 8", sink.Attempts())
+	}
+}
+
+type t019ServerRecordingSink struct {
+	mu     sync.Mutex
+	events []workerruntime.RuntimeEvent
+}
+
+func (sink *t019ServerRecordingSink) AppendRuntimeEvents(_ context.Context, batch []workerruntime.RuntimeEvent) error {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	sink.events = append(sink.events, batch...)
+	return nil
+}
+
+func (sink *t019ServerRecordingSink) Checkpoint(context.Context) error { return nil }
+
+func (sink *t019ServerRecordingSink) Providers() []string {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	providers := make([]string, len(sink.events))
+	for i, event := range sink.events {
+		providers[i] = event.Provider
+	}
+	return providers
+}
+
+func TestProfileTaskWorker_FallbackCallbacksPreserveAttemptProviderIdentity(t *testing.T) {
+	srv := testServerWithLoom(t)
+	profiles := map[string]*config.CLIProfile{}
+	for _, cli := range []string{"codex", "grok"} {
+		binary := fakeExecutable(t, t.TempDir(), cli)
+		profiles[cli] = &config.CLIProfile{
+			Name:         cli,
+			Binary:       binary,
+			ResolvedPath: binary,
+			OutputFormat: "text",
+			Capabilities: []string{"code", "task", "review"},
+		}
+	}
+	srv.cfg.CLIProfiles = profiles
+	srv.cfg.Executor.Picker = picker.DefaultPickerConfig()
+	srv.registry = driver.NewRegistry(profiles)
+	for cli := range profiles {
+		srv.registry.SetAvailable(cli, true)
+	}
+	srv.fallbackPicker = buildFallbackPicker(srv)
+
+	sink := &t019ServerRecordingSink{}
+	writer, err := workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(sink))
+	if err != nil {
+		t.Fatalf("NewEventWriter: %v", err)
+	}
+	worker := profileTaskWorker{
+		server: srv,
+		dispatchLeaf: func(_ context.Context, cli string, spec picker.TaskSpec) (string, error) {
+			if spec.OnOutput == nil {
+				return "", errors.New("missing output callback")
+			}
+			spec.OnOutput(cli + " output")
+			if cli == "codex" {
+				return "", extypes.NewRateLimit("primary rate limited", nil)
+			}
+			return "grok final", nil
+		},
+	}
+	raw, selected, failed, err := worker.dispatch(
+		context.Background(),
+		"codex",
+		map[string]any{"fallback_enabled": true, "max_attempts": 2},
+		picker.TaskSpec{TaskClass: "code", Prompt: "fallback identity"},
+		writer,
+		nil,
+		"fallback-provider-task",
+	)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if raw != "grok final" || selected != "grok" || len(failed) != 1 || failed[0].CLI != "codex" {
+		t.Fatalf("dispatch result = raw %q selected %q failed %#v", raw, selected, failed)
+	}
+	if err := writer.CloseAndFlush(context.Background()); err != nil {
+		t.Fatalf("CloseAndFlush: %v", err)
+	}
+	providers := sink.Providers()
+	if len(providers) != 2 || providers[0] != "codex" || providers[1] != "grok" {
+		t.Fatalf("persisted providers = %v, want [codex grok]", providers)
 	}
 }
