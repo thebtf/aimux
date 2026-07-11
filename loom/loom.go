@@ -764,25 +764,6 @@ func (l *LoomEngine) AppendProgress(taskID, line string) error {
 	return nil
 }
 
-func (l *LoomEngine) appendLifecycleArtifact(ctx context.Context, task *Task, eventType string, status TaskStatus) {
-	if task == nil {
-		return
-	}
-	_, err := l.store.AppendArtifact(task.ID, TaskArtifactAppend{
-		Kind:      TaskArtifactKindLifecycle,
-		EventType: eventType,
-		Summary:   "task " + string(status),
-		Payload: map[string]any{
-			"status":     string(status),
-			"project_id": task.ProjectID,
-			"request_id": task.RequestID,
-		},
-	})
-	if err != nil {
-		l.logArtifactProjectionError(ctx, task, "lifecycle", err)
-	}
-}
-
 func (l *LoomEngine) appendProgressArtifact(ctx context.Context, taskID string, info ProgressInfo) {
 	if taskID == "" {
 		return
@@ -810,47 +791,6 @@ func (l *LoomEngine) appendProgressArtifact(ctx context.Context, taskID string, 
 	}
 }
 
-func (l *LoomEngine) appendTerminalArtifact(ctx context.Context, task *Task, eventType string, status TaskStatus, errorClass, errMsg string) {
-	if task == nil {
-		return
-	}
-	current, err := l.store.Get(task.ID)
-	if err != nil {
-		current = task
-	}
-	summary := "task " + string(status)
-	if errMsg != "" {
-		summary = errMsg
-	} else if current.Error != "" {
-		summary = current.Error
-	}
-	payload := map[string]any{
-		"status":     string(status),
-		"project_id": current.ProjectID,
-		"request_id": current.RequestID,
-	}
-	if errorClass != "" {
-		payload["error_class"] = errorClass
-	}
-	if current.LastOutputLine != "" {
-		payload["last_output_line"] = current.LastOutputLine
-		payload["progress_lines"] = current.ProgressLines
-	}
-	if current.ProgressUpdatedAt != nil {
-		payload["progress_updated_at"] = current.ProgressUpdatedAt.UTC().Format(time.RFC3339)
-	}
-	_, appendErr := l.store.AppendArtifact(task.ID, TaskArtifactAppend{
-		Kind:      TaskArtifactKindTerminal,
-		EventType: eventType,
-		Summary:   summary,
-		Payload:   payload,
-		Redacted:  strings.Contains(summary, "[REDACTED]"),
-	})
-	if appendErr != nil {
-		l.logArtifactProjectionError(ctx, task, "terminal", appendErr)
-	}
-}
-
 func (l *LoomEngine) logArtifactProjectionError(ctx context.Context, task *Task, kind string, err error) {
 	if task == nil {
 		return
@@ -865,17 +805,6 @@ func (l *LoomEngine) logArtifactProjectionError(ctx context.Context, task *Task,
 		"error_code", "artifact_projection",
 		"error", err,
 	)
-}
-
-func classifyTaskError(errMsg string) string {
-	switch {
-	case strings.Contains(errMsg, "no worker registered"):
-		return "worker_unavailable"
-	case strings.Contains(errMsg, "gate rejected"):
-		return "quality_gate"
-	default:
-		return "worker_error"
-	}
 }
 
 const unverifiedStopError = "task cancellation completed without verified stop evidence"

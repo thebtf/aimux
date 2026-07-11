@@ -1,0 +1,75 @@
+{
+  "task_id": "T015",
+  "group_id": "G003",
+  "base_commit": "f6cdd7776bcb9889e87558ce3602784bfc004a21",
+  "code_commit_before_evidence_amend": "926e33e7242b3034720dd980a4f11b397cc63caa",
+  "completed_at": "2026-07-11T01:58:37.8069059Z",
+  "refactor": {
+    "file": "loom/loom.go",
+    "deleted_lines": 71,
+    "deleted_symbols": [
+      "appendLifecycleArtifact",
+      "appendTerminalArtifact",
+      "classifyTaskError"
+    ],
+    "public_api_changed": false,
+    "schema_changed": false,
+    "test_files_changed_by_t015": false
+  },
+  "source_audit": {
+    "command": "rg -n 'appendLifecycleArtifact|appendTerminalArtifact|classifyTaskError|l.store.Create|l.store.UpdateStatus|l.store.SetResult|l.store.IncrementRetries' loom/loom.go",
+    "result": "NO_LIVE_SPLIT_PATH_MATCHES",
+    "retained_projection_helpers": [
+      "emitTaskEvent",
+      "recordTaskFailed",
+      "appendProgressArtifact",
+      "structured logging and metrics"
+    ]
+  },
+  "prove_it_restoration_mutations": [
+    {
+      "mutation": "replace atomic CommitCreated with split TaskStore.Create then AppendArtifact(task.created)",
+      "command": "go test . -run '^TestTaskAuthorityIntegration_CreateAndCreatedFactAreAtomicAcrossRestart$' -count=1 -timeout 60s",
+      "expected_failure": "artifact abort left a durable pending row visible immediately and after restart",
+      "restored": true
+    },
+    {
+      "mutation": "run UpdateStatus(pending,dispatched) before CommitDispatched",
+      "command": "go test . -run '^TestTaskAuthorityIntegration_InitialDispatchArtifactAbortRollsBackAndEmitsNothing$' -count=1 -timeout 60s",
+      "expected_failure": "CommitDispatched hit authority conflict and durable dispatched state survived the artifact-abort scenario",
+      "restored": true
+    },
+    {
+      "mutation": "emit cancel_requested and signal every CancelAll candidate before RequestCancel authority",
+      "command": "go test . -run '^TestTaskAuthorityIntegration_CancelAllPersistsEachIntentBeforeSignalAndNeverPublishesCancelledEarly$' -count=1 -timeout 60s",
+      "expected_failure": "six signal checkpoints instead of two; running rows and zero durable cancel facts were observed at early signal",
+      "restored": true
+    },
+    {
+      "mutation": "restore split SetResult then UpdateStatus(failed) before CommitFailed",
+      "command": "go test . -run '^TestTaskAuthorityIntegration_LiveTerminalRacesRemainImmutable$' -count=1 -timeout 120s",
+      "expected_failure": "failure-before-cancel had no canonical terminal artifact or terminal event",
+      "restored": true
+    }
+  ],
+  "verification": {
+    "g003_focused": "go test . -run 'TestTaskAuthorityIntegration|TestCreate|TestDispatch|TestLifecycle|TestRetry|TestCancel|TestCancelAllForProject|TestRecoverCrashed' -count=1 -timeout 300s: pass in 6.213s",
+    "loom_full": "go test ./... -count=1 -timeout 300s: pass in 30.855s",
+    "loom_build": "go build ./...: pass",
+    "root_build": "go build ./...: pass",
+    "root_full_same_production_snapshot": "go test ./... -count=1 -timeout 600s: pass in 75.6s",
+    "root_and_loom_vet_same_production_snapshot": "pass",
+    "diff_check": "pass"
+  },
+  "test_inventory": {
+    "before_t015": 242,
+    "after_t015": 242,
+    "sorted_signature_sha1": "fa049f5b793b19e3727fca8704b68f35840885b0"
+  },
+  "lite_review": {
+    "aimux_task_id": "019f4ee4-069c-782d-85dc-ad82961b92a2",
+    "status": "DEGRADED_NO_VERDICT",
+    "reason": "review gate returned allow after Codex reviewer failed with AuthorizationRequired and passes_completed was empty; fail-open result is not accepted as SS-1 evidence",
+    "cross_family_verdict": "BLOCKED_PENDING_EXTERNAL_CHECKER"
+  }
+}
