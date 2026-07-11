@@ -2,6 +2,10 @@ package pipe_test
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -10,6 +14,36 @@ import (
 	"github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+const (
+	pipeCancelPartialOutputHelperEnv     = "AIMUX_PIPE_CANCEL_PARTIAL_OUTPUT_HELPER"
+	pipeCancelPartialOutputHelperAddrEnv = "AIMUX_PIPE_CANCEL_PARTIAL_OUTPUT_HELPER_ADDR"
+)
+
+// TestPipeExecutorCancelPartialOutputHelper is re-executed in an isolated
+// subprocess. It acknowledges only after line1 has been written to stdout, so
+// the parent can cancel without assuming anything about process startup time.
+func TestPipeExecutorCancelPartialOutputHelper(t *testing.T) {
+	if os.Getenv(pipeCancelPartialOutputHelperEnv) != "1" {
+		return
+	}
+
+	conn, err := net.Dial("tcp", os.Getenv(pipeCancelPartialOutputHelperAddrEnv))
+	if err != nil {
+		t.Fatalf("dial parent acknowledgement listener: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := fmt.Fprintln(os.Stdout, "line1"); err != nil {
+		t.Fatalf("write partial stdout: %v", err)
+	}
+	if _, err := conn.Write([]byte{1}); err != nil {
+		t.Fatalf("acknowledge partial stdout write: %v", err)
+	}
+
+	// The parent holds the connection open until it cancels this process.
+	_, _ = io.Copy(io.Discard, conn)
+}
 
 func echoCommand() (string, []string) {
 	if runtime.GOOS == "windows" {
@@ -194,31 +228,73 @@ func TestPipeSession_ShutdownKillsSession(t *testing.T) {
 }
 
 func TestPipeExecutor_Run_CancelReturnsPartialOutput(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("uses cmd /c and ping -n — Windows-only syntax")
-	}
-	e := pipe.New()
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	// Output "line1", then sleep ~3s, then output "line2".
-	// Context cancels after 1s — we expect partial output containing "line1" but not "line2".
-	result, err := e.Run(ctx, types.SpawnArgs{
-		Command:        "cmd",
-		Args:           []string{"/c", "echo line1 && ping -n 4 127.0.0.1 >nul && echo line2"},
-		TimeoutSeconds: 30,
-	})
-
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("expected result, got error: %v", err)
+		t.Fatalf("listen for child acknowledgement: %v", err)
 	}
-	if !result.Partial {
+	defer listener.Close()
+	if tcpListener, ok := listener.(*net.TCPListener); ok {
+		if err := tcpListener.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			t.Fatalf("set acknowledgement listener deadline: %v", err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type runOutcome struct {
+		result *types.Result
+		err    error
+	}
+	outcomeCh := make(chan runOutcome, 1)
+	go func() {
+		result, runErr := pipe.New().Run(ctx, types.SpawnArgs{
+			Command: os.Args[0],
+			Args: []string{
+				"-test.run=^TestPipeExecutorCancelPartialOutputHelper$",
+				"-test.count=1",
+			},
+			Env: map[string]string{
+				pipeCancelPartialOutputHelperEnv:     "1",
+				pipeCancelPartialOutputHelperAddrEnv: listener.Addr().String(),
+			},
+			TimeoutSeconds: 30,
+		})
+		outcomeCh <- runOutcome{result: result, err: runErr}
+	}()
+
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("accept child acknowledgement: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatalf("set child acknowledgement deadline: %v", err)
+	}
+	ack := []byte{0}
+	if _, err := io.ReadFull(conn, ack); err != nil {
+		t.Fatalf("read child acknowledgement: %v", err)
+	}
+	cancel()
+
+	var outcome runOutcome
+	select {
+	case outcome = <-outcomeCh:
+	case <-time.After(30 * time.Second):
+		t.Fatal("pipe executor did not return after cancellation")
+	}
+	if outcome.err != nil {
+		t.Fatalf("expected partial result, got error: %v", outcome.err)
+	}
+	if outcome.result == nil {
+		t.Fatal("expected partial result, got nil")
+	}
+	if !outcome.result.Partial {
 		t.Error("expected Partial=true")
 	}
-	if result.Content == "" {
-		t.Error("expected non-empty partial content")
+	if outcome.result.ExitCode != 130 {
+		t.Errorf("ExitCode = %d, want 130", outcome.result.ExitCode)
 	}
-	if !strings.Contains(result.Content, "line1") {
-		t.Errorf("expected content to contain 'line1', got: %q", result.Content)
+	if !strings.Contains(outcome.result.Content, "line1") {
+		t.Errorf("expected content to contain confirmed stdout write, got %q", outcome.result.Content)
 	}
 }
