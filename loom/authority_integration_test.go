@@ -534,7 +534,7 @@ func TestTaskAuthorityIntegration_CreateAndCreatedFactAreAtomicAcrossRestart(t *
 	if id != "" {
 		t.Errorf("Submit task id=%q, want empty on atomic create abort", id)
 	}
-	if task, getErr := fixture.view.Get("id-0"); !errors.Is(getErr, ErrTaskNotFound) || task != nil {
+	if task, getErr := fixture.view.Get("id-0"); !isNoRows(getErr) || task != nil {
 		t.Errorf("durable task after abort=%#v err=%v, want absent", task, getErr)
 	}
 	if artifacts := t013Artifacts(t, fixture.view, "id-0"); len(artifacts) != 0 {
@@ -553,7 +553,7 @@ func TestTaskAuthorityIntegration_CreateAndCreatedFactAreAtomicAcrossRestart(t *
 	if openErr != nil {
 		t.Fatal(openErr)
 	}
-	if task, getErr := restarted.Get("id-0"); !errors.Is(getErr, ErrTaskNotFound) || task != nil {
+	if task, getErr := restarted.Get("id-0"); !isNoRows(getErr) || task != nil {
 		t.Errorf("restarted store task=%#v err=%v, want absent", task, getErr)
 	}
 }

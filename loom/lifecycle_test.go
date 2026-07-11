@@ -443,7 +443,7 @@ func TestTaskLifecycleAuthority_AdditiveSurface(t *testing.T) {
 		if abortErr == nil || errors.Is(abortErr, ErrAuthorityConflict) || !strings.Contains(abortErr.Error(), "T013_REFLECT_CREATE_ABORT") || !reflect.DeepEqual(aborted, CommitResult{}) {
 			t.Errorf("aborted CommitCreated=%#v err=%v, want wholly zero/non-conflict abort", aborted, abortErr)
 		}
-		if task, err := fixture.view.Get("reflect-abort"); task != nil || !errors.Is(err, ErrTaskNotFound) {
+		if task, err := fixture.view.Get("reflect-abort"); task != nil || !isNoRows(err) {
 			t.Errorf("aborted create task=%#v err=%v, want absent", task, err)
 		}
 		if artifacts := t013Artifacts(t, fixture.view, "reflect-abort"); len(artifacts) != 0 {
