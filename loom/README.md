@@ -14,8 +14,10 @@ Key properties:
 - **Submit returns immediately.** Dispatch happens in a background goroutine whose
   lifetime is independent of the caller's context. A disconnecting HTTP client or
   cancelled request does NOT cancel an already-dispatched task.
-- **All state is persisted.** Tasks survive process restart. `RecoverCrashed` marks
-  in-flight tasks as `failed_crash` on the next daemon boot.
+- **All lifecycle truth is persisted.** Authority commits write the task state
+  and matching lifecycle fact before subscribers observe an event.
+- **Restart reconciliation is explicit.** `RecoverCrashed` terminalizes every
+  interrupted active state through per-task authority commits on the next boot.
 - **Pluggable workers.** Register any type that satisfies `Worker` — subprocess
   wrappers, HTTP clients, pure-function executors, or composed bases.
 - **Quality gate.** Worker results are validated before the task is marked
@@ -156,8 +158,23 @@ unsubscribe := engine.Events().Subscribe(func(e loom.TaskEvent) {
 defer unsubscribe()
 ```
 
-Delivery is synchronous on the dispatch goroutine. Subscribers must return
+Delivery is synchronous on the emitting goroutine. Subscribers must return
 quickly — offload heavy work to their own goroutine.
+
+### Cancellation
+
+`Cancel(taskID)` durably records intent before signalling execution. A pending
+task commits directly to `cancelled`, appends the durable `task.cancelled`
+authority artifact, and emits `EventTaskCancelled`. An active
+`dispatched|running|input_required|retrying` task commits `cancelling` and
+`task.cancel_requested` first; durable active `cancelled` then requires valid
+`StopEvidence` through `CommitCancelled`. That authority commit currently has no
+EventBus `EventTaskCancelled` projection. The legacy `Worker` path cannot invent
+stop proof, so a worker return or panic after active cancellation becomes
+`failed_crash`/`unverified_stop` and emits `EventTaskFailedCrash` instead.
+
+`CancelAllForProject` applies the same commit-before-signal rule to each
+snapshotted running task and never signals a task whose authority commit failed.
 
 ### Crash Recovery
 
@@ -168,7 +185,10 @@ n, err := engine.RecoverCrashed()
 log.Printf("marked %d crashed tasks as failed_crash", n)
 ```
 
-This marks any tasks still in `dispatched` or `running` state as `failed_crash`.
+One invocation timestamp is used while `dispatched`, `running`,
+`input_required`, `retrying`, and `cancelling` candidates are committed
+individually to `failed_crash` with a matching authority fact before event
+delivery. A repeated call is idempotent.
 
 ## Dependencies
 

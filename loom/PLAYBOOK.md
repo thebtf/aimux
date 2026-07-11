@@ -360,10 +360,9 @@ func wireChain(engine *loom.LoomEngine) {
 }
 ```
 
-**Critical:** Submit inside an event handler MUST be in a goroutine. The event
-handler is called synchronously on the dispatch goroutine. Calling Submit inside
-the handler directly can cause a deadlock on the event bus's internal locks if
-other goroutines are concurrently subscribing.
+**Critical:** Event handlers run synchronously on the goroutine that emitted the
+event. Keep handlers bounded; offload follow-up submissions so cancellation,
+recovery, and dispatch callers are not delayed by downstream work.
 
 ---
 
@@ -469,9 +468,9 @@ These are common mistakes. Avoid them.
 ### Anti-pattern 1: Blocking in an event handler
 
 ```go
-// WRONG — blocks the dispatch goroutine
+// WRONG — blocks whichever cancellation, recovery, or dispatch path emitted it
 engine.Events().Subscribe(func(e loom.TaskEvent) {
-    result := callSomeSlowAPI()  // this blocks dispatch of ALL tasks
+    result := callSomeSlowAPI()
     log.Println(result)
 })
 
@@ -484,8 +483,9 @@ engine.Events().Subscribe(func(e loom.TaskEvent) {
 })
 ```
 
-The event bus delivers events synchronously on the dispatch goroutine. Blocking
-the handler blocks ALL task dispatches, not just the one that emitted the event.
+The event bus delivers events synchronously on the emitting goroutine. Blocking
+the handler delays that lifecycle path and every later subscriber for the same
+event.
 
 ### Anti-pattern 2: Calling Submit from inside Execute synchronously
 
@@ -508,24 +508,30 @@ func (w *myWorker) Execute(ctx context.Context, task *loom.Task) (*loom.WorkerRe
 }
 ```
 
-### Anti-pattern 3: Using the caller's context for long-running work
+### Anti-pattern 3: Assuming the caller's context owns worker lifetime
 
 ```go
-// WRONG — if the HTTP handler context times out, the worker is cancelled
+// WRONG ASSUMPTION — request cancellation does not stop an accepted Loom task.
 func handler(w http.ResponseWriter, r *http.Request) {
-    engine.Submit(r.Context(), req)  // r.Context() cancels when request ends
+    engine.Submit(r.Context(), req)
+    // Returning from the handler does not cancel the worker.
 }
 
-// CORRECT — Submit with a background context; RequestID extracted separately
+// CORRECT — submit with tracing metadata, then call Cancel explicitly when the
+// product contract requires the accepted task to stop.
 func handler(w http.ResponseWriter, r *http.Request) {
     ctx := loom.WithRequestID(context.Background(), r.Header.Get("X-Request-ID"))
-    engine.Submit(ctx, req)  // background context; task survives request end
+    taskID, _ := engine.Submit(ctx, req)
+    if shouldStopTask(r) {
+        _ = engine.Cancel(taskID)
+    }
 }
 ```
 
-The `ctx` passed to `Submit` is only used to extract `RequestIDKey` and emit
-metrics. It is NOT the task's execution context. Even so, passing a
-short-lived context is a code smell — use `context.Background()` as the base.
+The `ctx` passed to `Submit` is only used for submission/tracing work; it is not
+the worker's execution context. Disconnect and request timeout therefore do not
+produce cancellation intent. `Cancel`/`CancelAllForProject` are the explicit
+durable paths.
 
 ### Anti-pattern 4: Subscribing inside a Worker
 
@@ -581,7 +587,7 @@ engine.RegisterWorker(WorkerTypeCLISlow, slowWorker)
 ### Anti-pattern 7: Not calling RecoverCrashed on startup
 
 ```go
-// WRONG — tasks from the previous run stay in 'dispatched' or 'running' forever
+// WRONG — active tasks from the previous run stay non-terminal forever.
 engine, _ := loom.NewEngine(db, "daemon-name")
 engine.RegisterWorker(...)
 // start accepting new tasks...
@@ -596,9 +602,10 @@ log.Printf("recovered %d crashed tasks", n)
 engine.RegisterWorker(...)
 ```
 
-Without `RecoverCrashed`, tasks that were in-flight during a daemon crash
-remain stuck in `dispatched` or `running` forever. They will never be retried
-and will never time out — they just sit there.
+Without `RecoverCrashed`, `dispatched`, `running`, `input_required`,
+`retrying`, and `cancelling` tasks from the previous daemon remain non-terminal.
+Recovery commits each one independently to `failed_crash` with its action fence
+and terminal fact before event delivery.
 
 ---
 

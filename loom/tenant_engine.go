@@ -138,7 +138,9 @@ func (t *TenantScopedLoomEngine) List(projectID string, statuses ...TaskStatus) 
 	return t.engine.store.ListForTenant(projectID, t.tenantID, statuses...)
 }
 
-// Cancel requests cancellation of a running task owned by this tenant.
+// Cancel requests canonical cancellation of an eligible task owned by this
+// tenant. Pending tasks can terminalize directly; eligible active tasks commit
+// cancelling before any live execution signal.
 // Returns ErrTaskNotFound when the task does not exist OR is owned by a different
 // tenant (CHK079: 404, not 403 — no existence disclosure).
 func (t *TenantScopedLoomEngine) Cancel(taskID string) error {

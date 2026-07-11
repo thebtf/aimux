@@ -42,10 +42,10 @@ func redactErrorMsg(s string) string {
 }
 
 func init() {
-	// Safety: MarkCrashed bulk-updates rows to failed_crash via raw SQL (bypassing
-	// UpdateStatus) for performance during startup crash recovery. This init assertion
-	// ensures the state machine still permits these transitions so the raw SQL cannot
-	// silently diverge from CanTransitionTo validation if validTransitions is updated.
+	// Safety: the legacy TaskStore.MarkCrashed compatibility helper bulk-updates
+	// dispatched/running rows via raw SQL. Production daemon recovery uses
+	// LoomEngine.RecoverCrashed and per-task authority commits instead. This
+	// assertion keeps the legacy helper aligned with the state machine.
 	for _, from := range []TaskStatus{TaskStatusDispatched, TaskStatusRunning} {
 		allowed := false
 		for _, to := range validTransitions[from] {
@@ -1424,14 +1424,14 @@ func (s *TaskStore) IncrementRetries(id string) error {
 	return nil
 }
 
-// MarkCrashed sets status='failed_crash' for all dispatched or running tasks.
-// Returns the number of tasks marked.
+// MarkCrashed is a legacy direct-store compatibility helper that sets
+// status='failed_crash' for dispatched/running tasks owned by this store's
+// engine. It returns the number of rows marked.
 //
-// Raw SQL is used intentionally: on daemon startup this bulk-updates every
-// in-flight row in a single statement, which is both simpler and faster than
-// iterating with UpdateStatus. The init() assertion above ensures the state
-// machine continues to permit these transitions so the raw SQL can never
-// silently diverge from CanTransitionTo validation.
+// It intentionally preserves its historical raw-SQL behavior, but it does not
+// write authority facts, fence open actions, cover input_required/retrying/
+// cancelling, or emit events. New production startup code must call
+// LoomEngine.RecoverCrashed instead.
 func (s *TaskStore) MarkCrashed() (int, error) {
 	res, err := s.db.Exec(
 		`UPDATE tasks SET status = 'failed_crash' WHERE status IN ('dispatched', 'running') AND engine_name = ?`,

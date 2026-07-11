@@ -29,9 +29,14 @@ permanently unavailable. Decide whether to resubmit with corrected input.
 
 ### `failed_crash`
 
-The daemon process died (OS kill, OOM, power loss) while the task was in
-`dispatched` or `running` state. On the next daemon startup, `RecoverCrashed()`
-found the task in a non-terminal state and marked it `failed_crash`.
+Loom uses `failed_crash` when execution ended without trustworthy completion or
+stop proof. This includes:
+
+- a daemon restart that finds `dispatched`, `running`, `input_required`,
+  `retrying`, or `cancelling` work;
+- a recovered worker or quality-gate panic;
+- an active cancellation whose legacy `Worker` returns or crashes without valid
+  `StopEvidence`. This case carries the `unverified_stop` error class.
 
 **The task may have partially executed.** The worker may have spawned a
 subprocess, made an HTTP call, or mutated external state before the crash.
@@ -42,17 +47,33 @@ have already produced side effects. Resubmitting an idempotent task is safe;
 resubmitting a non-idempotent task (one that sends emails, charges cards, writes
 to external APIs without deduplication) may cause duplicate effects.
 
-### `cancelled` (event-only in the current API)
+### `cancelled`
 
-The task was explicitly cancelled via `engine.Cancel(taskID)` or
-`engine.CancelAllForProject(projectID)`. The task's worker received context
-cancellation and is expected to return an error. In the current API, the task will
-transition to `failed` in the store (the `task.cancelled` lifecycle event is
-still emitted for observability).
+`cancelled` is a stored terminal status, not an early signal:
 
-**Operator action:** Cancellation is intentional. No action required unless
-you want to understand why it was cancelled (check logs for `task.cancelled`
-events with the corresponding `request_id`).
+- A `pending` task can commit directly to `cancelled` because no execution
+  exists; `Cancel` also emits `EventTaskCancelled` for this no-stop path.
+- An active task first commits `cancelling` and `task.cancel_requested` before
+  its cancel function is signalled. It reaches `cancelled` only when
+  `CommitCancelled` accepts valid `StopEvidence` observed no earlier than the
+  durable cancel request. That command appends the durable `task.cancelled`
+  authority artifact but currently does not emit `EventTaskCancelled` through
+  the Loom EventBus.
+
+The current legacy `Worker` integration does not fabricate stop proof from a
+context error or worker return. Active cancellation without valid proof becomes
+`failed_crash`/`unverified_stop` instead.
+
+**Operator action:** A terminal `cancelled` task needs no recovery. A
+`failed_crash` task with `unverified_stop` needs the same side-effect review as
+other uncertain executions.
+
+### `cancelling` (non-terminal)
+
+`cancelling` means durable cancellation intent exists, but stop truth is not yet
+known. Subscribers observe `task.cancel_requested` only after this state and its
+authority fact commit. Do not treat the signal or the worker's context error as
+proof that the underlying execution stopped.
 
 ---
 
@@ -79,13 +100,23 @@ engine.RegisterWorker(loom.WorkerTypeCLI, myWorker)
 // now start accepting requests
 ```
 
-`RecoverCrashed()` issues a single SQL UPDATE:
-```sql
-UPDATE tasks SET status = 'failed_crash'
-WHERE status IN ('dispatched', 'running')
+`RecoverCrashed()` captures one UTC timestamp for the invocation and lists
+engine-owned candidates in deterministic `created_at`/ID order from:
+
+```text
+dispatched | running | input_required | retrying | cancelling
 ```
 
-It returns the count of rows updated. A count of 0 on a clean startup is normal.
+Each candidate goes through `CommitFailedCrash` independently. The task row,
+open-action fence, and one `task.failed_crash` authority fact use the same
+recovery timestamp and commit before the subscriber event is emitted. A
+per-task authority conflict is skipped; an infrastructure error is joined while
+later candidates continue. The return value counts successful commits. A count
+of 0 on a clean or already-recovered startup is normal.
+
+Do not substitute `TaskStore.MarkCrashed` for this startup path. That exported
+legacy helper preserves the old raw-SQL behavior for compatibility; it does not
+write authority facts, fence actions, cover all active states, or emit events.
 
 ---
 
@@ -94,12 +125,12 @@ It returns the count of rows updated. A count of 0 on a clean startup is normal.
 ### Step 1: Check how many tasks were affected
 
 ```go
-tasks, err := engine.List("", loom.TaskStatusFailedCrash)
+tasks, err := engine.ListEngine(loom.TaskStatusFailedCrash)
+if err != nil {
+    log.Fatalf("list recovered tasks: %v", err)
+}
 log.Printf("%d tasks marked failed_crash", len(tasks))
 ```
-
-Note: `List` requires a `projectID`. To list across all projects you need to
-query the store directly or maintain a project registry.
 
 ### Step 2: Investigate each failed_crash task
 
@@ -145,11 +176,10 @@ for _, t := range crashedTasks {
 
 ## Cleanup Strategies
 
-Terminal tasks (`completed`, `failed`, `failed_crash`) accumulate in the store
-indefinitely. A cancelled task normally reaches `failed` after the worker
-observes context cancellation; `cancelled` itself is an event type, not a stored
-task status in the current API. Implement a periodic cleanup job to keep the
-database small.
+Terminal tasks (`completed`, `failed`, `failed_crash`, `cancelled`) accumulate
+in the store indefinitely. Implement a periodic cleanup job to keep the database
+small. Treat `failed_crash`/`unverified_stop` as uncertain execution, not as a
+routine cancellation record.
 
 ### Recommended retention
 
@@ -158,7 +188,7 @@ database small.
 | `completed` | 7–30 days (depends on audit requirements) |
 | `failed` | 30 days (for debugging) |
 | `failed_crash` | 90 days (for post-mortems) |
-| Cancelled tasks stored as `failed` | 7 days when cancellation is routine |
+| `cancelled` | 7 days when cancellation is routine |
 
 ### Cleanup query
 
@@ -203,9 +233,10 @@ decision.
 
 **Q: What is the difference between `failed` and `failed_crash`?**
 
-`failed` = worker returned an error or gate rejected after all retries (task ran
-to completion). `failed_crash` = process died mid-flight; we don't know how far
-the task got.
+`failed` = worker returned an error or the gate rejected after all retries.
+`failed_crash` = Loom lacks trustworthy completion/stop truth after restart,
+panic, or active cancellation without valid stop evidence; the task may have
+partially executed.
 
 **Q: Can a `failed_crash` task be re-queued in-place (same ID)?**
 

@@ -19,6 +19,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Tenant and progress schema migrations** — automatic `tenant_id`,
   `last_output_line`, `progress_lines`, and `progress_updated_at` migrations.
 
+### Changed
+
+- **Canonical lifecycle authority** — task creation, dispatch, running, retry,
+  terminal, cancellation, and restart recovery now commit task state plus the
+  matching authority fact before subscriber events.
+- **Truthful cancellation** — active cancellation commits
+  `task.cancel_requested`/`cancelling` before signal; terminal `cancelled`
+  requires valid stop evidence, while an unproved legacy-worker stop becomes
+  `failed_crash`/`unverified_stop`.
+- **Per-task crash recovery** — `RecoverCrashed` now covers `dispatched`,
+  `running`, `input_required`, `retrying`, and `cancelling` with one invocation
+  timestamp and one atomic terminal fact per recovered task.
+
 ### Documentation
 
 - Added `USAGE.md` as the consumer-facing guide for using `loom` as a standalone

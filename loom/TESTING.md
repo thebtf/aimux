@@ -327,7 +327,7 @@ if task.Error == "" {
 ### Context Cancellation
 
 ```go
-ctx, cancel := context.WithCancel(context.Background())
+ctx, cancelSubmit := context.WithCancel(context.Background())
 
 id, _ := engine.Submit(ctx, loom.TaskRequest{
     WorkerType: loom.WorkerTypeCLI,
@@ -335,15 +335,29 @@ id, _ := engine.Submit(ctx, loom.TaskRequest{
     Prompt:     "work",
 })
 
-// Cancel the running task via engine (not via ctx — ctx only affects Submit itself).
+// Cancelling the caller context does not cancel the accepted Loom task.
+cancelSubmit()
+
+// Request durable cancellation through the engine.
 time.Sleep(10 * time.Millisecond) // let dispatch start
 engine.Cancel(id)
 
-waitForStatus(t, engine, id, loom.TaskStatusFailed, 2*time.Second)
+waitForStatus(t, engine, id, loom.TaskStatusFailedCrash, 2*time.Second)
+task, _ := engine.Get(id)
+if task.Error != "task cancellation completed without verified stop evidence" {
+    t.Fatalf("unexpected cancellation result: %q", task.Error)
+}
 ```
 
 Note: cancelling the Submit `ctx` does NOT cancel the task. Use `engine.Cancel(id)`
-to cancel a running task.
+to request cancellation. A pending task can become `cancelled` immediately.
+For active tasks, the current legacy `Worker` path cannot supply `StopEvidence`,
+so a worker return after cancellation must become
+`failed_crash`/`unverified_stop` rather than fictional `cancelled`. Test the
+positive active-`cancelled` path separately at the authority seam by passing
+valid `StopEvidence` to `CommitCancelled`. That assertion covers the durable
+status and authority artifact; the current engine does not emit
+`EventTaskCancelled` for this active authority command.
 
 ### QualityGate Rejection
 

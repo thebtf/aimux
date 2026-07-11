@@ -21,23 +21,19 @@ const (
 )
 
 // validTransitions defines the state machine.
-// State machine from spec:
+// Canonical state machine:
 //
-//	pending → dispatched → running → completed (terminal)
-//	              │         │     → failed (terminal)
-//	              │         │     → retrying → dispatched (loop, max 2)
-//	              │         │                → failed (NEW-001 v0.1.1 PRC #2)
-//	              │ → failed (terminal, e.g. no worker registered)
-//	[crash restart]
-//	dispatched → failed_crash (terminal)
-//	running → failed_crash (terminal)
+//	pending        → dispatched | failed | cancelled
+//	dispatched     → running | failed | failed_crash | cancelling
+//	running        → completed | failed | failed_crash | retrying | input_required | cancelling
+//	input_required → running | failed | failed_crash | cancelling
+//	retrying       → dispatched | failed | failed_crash | cancelling
+//	cancelling     → cancelled | failed_crash
 //
 // NEW-001 fix (v0.1.1 PRC #2): retrying → failed is a valid transition.
-// The BUG-002 retry-path fix introduced paths where failTask is called with
-// fromStatus = TaskStatusRetrying (when IncrementRetries or retrying→dispatched
-// fails). failTask's internal UpdateStatus(retrying→failed) would be rejected
-// by CanTransitionTo, leaving tasks permanently stuck in retrying. The PRC #2
-// bug-hunter audit caught this regression before merge.
+// Authority failure paths may call failTask with fromStatus=TaskStatusRetrying;
+// CommitFailed must retain that legal source or tasks can remain stuck in the
+// transient retry state.
 var validTransitions = map[TaskStatus][]TaskStatus{
 	TaskStatusPending:       {TaskStatusDispatched, TaskStatusFailed, TaskStatusCancelled},
 	TaskStatusDispatched:    {TaskStatusRunning, TaskStatusFailed, TaskStatusFailedCrash, TaskStatusCancelling},

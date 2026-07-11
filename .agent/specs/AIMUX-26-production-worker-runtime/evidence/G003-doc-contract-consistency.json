@@ -1,0 +1,83 @@
+{
+  "task_id": "G003-doc-contract-consistency",
+  "base_commit": "14ca144ff55958b8f990b8ccac24f43e19d4aa58",
+  "amended_from_commit": "8e1d307fa36402344784c04f899babf74e494e87",
+  "scope": "documentation_and_source_comments_only",
+  "verified_contract": {
+    "cancel_request": "pending -> cancelled; dispatched|running|input_required|retrying -> cancelling before signal",
+    "active_cancel_terminal": "cancelled requires valid StopEvidence; unproved legacy Worker stop -> failed_crash/unverified_stop",
+    "artifact_event_distinction": "pending Cancel appends task.cancelled and emits EventTaskCancelled; active CommitCancelled appends the durable task.cancelled authority artifact but currently has no EventBus projection",
+    "recovery": "one invocation timestamp; dispatched|running|input_required|retrying|cancelling -> per-task CommitFailedCrash"
+  },
+  "source_anchors": [
+    "loom/authority.go:648-760",
+    "loom/authority.go:1342-1425",
+    "loom/loom.go:564-609",
+    "loom/authority_integration_test.go:658-789",
+    "loom/loom.go:1013-1056",
+    "loom/store.go:1220-1232"
+  ],
+  "checks": [
+    {
+      "name": "stale_claim_patterns",
+      "result": "PASS",
+      "detail": "zero current Loom docs/comments claim event-only cancelled, signal-time task.cancelled, active CommitCancelled EventBus emission, two-state recovery, or raw-SQL production recovery"
+    },
+    {
+      "name": "required_term_matrix",
+      "result": "PASS",
+      "detail": "CONTRACT, RECOVERY, README, and USAGE name task.cancel_requested, cancelling, and failed_crash; all recovery guides name the five active states"
+    },
+    {
+      "name": "authority_artifact_vs_event_bus",
+      "result": "PASS",
+      "detail": "public docs distinguish the durable active task.cancelled authority artifact from EventTaskCancelled, whose only production emitter is the pending/no-stop Cancel branch"
+    },
+    {
+      "name": "testing_snippet_binding",
+      "result": "PASS",
+      "detail": "the context-cancellation example calls cancelSubmit and has no unused local binding"
+    },
+    {
+      "name": "amendment_runtime_diff",
+      "result": "PASS",
+      "detail": "the amendment from 8e1d307 changes Markdown and JSON only; zero Go files changed"
+    },
+    {
+      "name": "diff_check",
+      "result": "PASS"
+    },
+    {
+      "name": "focused_cancel_recovery_authority_tests",
+      "result": "PASS",
+      "command": "cd loom && go test ./... -run '<focused cancellation/recovery/authority matrix>' -count=1"
+    },
+    {
+      "name": "loom_full",
+      "result": "PASS",
+      "command": "cd loom && go test ./... -count=1"
+    },
+    {
+      "name": "loom_build_vet",
+      "result": "PASS",
+      "commands": [
+        "cd loom && go build ./...",
+        "cd loom && go vet ./..."
+      ]
+    },
+    {
+      "name": "root_full",
+      "result": "PASS",
+      "command": "go test ./... -count=1"
+    },
+    {
+      "name": "root_build_vet",
+      "result": "PASS",
+      "commands": [
+        "go build ./...",
+        "go vet ./..."
+      ]
+    }
+  ],
+  "historical_note": "Existing versioned CHANGELOG entries retain historical behavior; Unreleased records the current authority-first contract."
+}

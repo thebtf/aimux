@@ -17,7 +17,8 @@ Loom is a persistent task mediator:
 3. A registered `Worker` executes the task in a background goroutine.
 4. Loom persists status, result, error, retries, progress, and timestamps.
 5. Subscribers receive lifecycle events.
-6. Startup recovery marks interrupted in-flight tasks as `failed_crash`.
+6. Startup recovery commits interrupted active tasks to `failed_crash` with one
+   durable authority fact per task.
 
 The caller's context is used for submission and tracing metadata. It does not
 own the worker lifetime. A disconnected HTTP client, CLI session, or MCP
@@ -130,11 +131,31 @@ filters `Get` and `List`, verifies ownership before `Cancel`, and returns
 submission, Loom returns `ErrLoomQuotaExceeded` and emits an `AuditEvent` through
 the configured `AuditEmitter`.
 
+### Cancellation
+
+Cancellation intent is durable before execution is signalled:
+
+- `pending` moves directly to terminal `cancelled` because it has no live
+  execution;
+- `dispatched`, `running`, `input_required`, and `retrying` move to
+  `cancelling` and append `task.cancel_requested` before Loom invokes a captured
+  cancel function;
+- durable active `cancelled` and its `task.cancelled` authority artifact require
+  valid `StopEvidence` through `CommitCancelled`; that store command currently
+  has no EventBus `EventTaskCancelled` projection.
+
+The current legacy `Worker` integration does not treat context cancellation or
+worker return as stop proof. If active cancellation wins and the worker returns
+or panics without valid evidence, the terminal result is
+`failed_crash`/`unverified_stop`.
+
 ### Crash Recovery
 
 Call `RecoverCrashed()` once during daemon startup before registering workers or
-accepting new submissions. It marks tasks left in `dispatched` or `running` as
-`failed_crash`.
+accepting new submissions. It uses one invocation timestamp and routes
+`dispatched`, `running`, `input_required`, `retrying`, and `cancelling`
+candidates through per-task `CommitFailedCrash` authority commits. Task state,
+open-action fence, and the `task.failed_crash` fact commit before event delivery.
 
 Do not blindly resubmit `failed_crash` tasks. They may have partially executed.
 Resubmit only when the worker is idempotent or external evidence proves that the
@@ -165,11 +186,14 @@ side effect did not happen.
   engines sharing the database.
 - `Count(TaskFilter) (int, error)` returns an engine-scoped SQL count.
 - `CountAll() (int, error)` returns a cross-engine SQL count.
-- `Cancel(taskID string) error` signals one running task.
-- `CancelAllForProject(projectID string) (int, error)` signals running tasks
-  for a project.
-- `RecoverCrashed() (int, error)` marks interrupted dispatched/running tasks
-  as `failed_crash`.
+- `Cancel(taskID string) error` durably cancels `pending` directly or commits
+  `dispatched|running|input_required|retrying` to `cancelling` before signalling
+  live execution.
+- `CancelAllForProject(projectID string) (int, error)` applies the same
+  commit-before-signal rule to snapshotted running tasks for a project.
+- `RecoverCrashed() (int, error)` commits interrupted
+  `dispatched|running|input_required|retrying|cancelling` tasks to
+  `failed_crash` and returns the number of successful authority commits.
 - `Close(ctx context.Context) error` stops accepting submissions and waits for
   dispatch goroutines before the caller closes the database.
 - `AppendProgress(taskID, line string) error` records one progress line for a
@@ -227,8 +251,18 @@ Event types:
 - `task.failed`
 - `task.failed_crash`
 - `task.retrying`
+- `task.cancel_requested`
 - `task.cancelled`
 - `task.progress`
+- `task.artifacts_appended`
+
+`task.cancel_requested` is the post-commit lifecycle event for active
+`cancelling` state; it is emitted before the live cancel signal.
+`EventTaskCancelled` is currently emitted only by `Cancel` for a
+pending-not-started task. `CommitCancelled` uses the same `task.cancelled` string
+for the durable active authority artifact after valid stop evidence, but does
+not project that command onto the EventBus. `task.artifacts_appended` is a
+payload-free post-commit wake-up for durable runtime-event batches.
 
 ### Observability
 
@@ -243,6 +277,8 @@ structured logs through `deps.Logger`. Metrics use `worker_type` and
 - Call `RecoverCrashed()` exactly once during startup.
 - Call `Close(ctx)` before closing the underlying database.
 - Keep event subscribers fast.
+- Do not interpret `task.cancel_requested` or a worker context error as proof
+  that an active execution stopped.
 - Use different `WorkerType` values for different worker implementations.
 - Treat `failed_crash` as an operator decision point, not an auto-retry signal.
 - Use tenant-scoped wrappers for multi-tenant callers.
