@@ -382,7 +382,7 @@ func appendNormalizedRuntimeOutput(engine *loom.LoomEngine, taskID, outputFormat
 		return
 	}
 	normalized := normalizeProgressLine(outputFormat, line)
-	if normalized == "" {
+	if strings.TrimSpace(normalized) == "" {
 		return
 	}
 	events := runtimeEventsFromOutputLine(outputFormat, line)
