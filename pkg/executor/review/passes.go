@@ -104,6 +104,31 @@ type passResponse struct {
 	Summary  string    `json:"summary"`
 }
 
+// SanitizePassOutput validates and canonicalizes one durable review-pass result.
+func SanitizePassOutput(raw string) (string, error) {
+	var response passResponse
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		return "", types.NewUserInputError("review pass output must be structured JSON", nil)
+	}
+	response.Summary = strings.TrimSpace(sanitizePublicReviewText(response.Summary))
+	if response.Summary == "" {
+		return "", types.NewUserInputError("review pass output requires a non-empty summary", nil)
+	}
+	for i := range response.Findings {
+		response.Findings[i].Severity = Severity(sanitizePublicReviewText(string(response.Findings[i].Severity)))
+		response.Findings[i].File = sanitizePublicReviewText(response.Findings[i].File)
+		response.Findings[i].Body = sanitizePublicReviewText(response.Findings[i].Body)
+		if err := validateFinding(response.Findings[i]); err != nil {
+			return "", types.NewUserInputError("review pass output contains an invalid finding", nil)
+		}
+	}
+	content, err := json.Marshal(response)
+	if err != nil {
+		return "", types.NewUnknown("review pass output serialization failed", err)
+	}
+	return string(content), nil
+}
+
 // NewPasses constructs a multi-pass review runner.
 func NewPasses(client LoomClient) (*Passes, error) {
 	if client == nil {

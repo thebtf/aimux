@@ -656,13 +656,9 @@ func serverDefaultTimeoutSeconds(s *Server) int {
 }
 
 func adaptReviewPassOutput(task *loom.Task, parsed string) (string, map[string]any, error) {
-	trimmed := strings.TrimSpace(parsed)
-	var passJSON struct {
-		Findings []review.Finding `json:"findings"`
-		Summary  string           `json:"summary"`
-	}
-	if err := json.Unmarshal([]byte(trimmed), &passJSON); err == nil && strings.TrimSpace(passJSON.Summary) != "" {
-		return trimmed, map[string]any{}, nil
+	content, err := review.SanitizePassOutput(parsed)
+	if err == nil {
+		return content, map[string]any{}, nil
 	}
 
 	pass := reviewPassFromTask(task)

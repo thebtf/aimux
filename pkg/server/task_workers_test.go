@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,7 +15,9 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/executor/picker"
+	"github.com/thebtf/aimux/pkg/executor/review"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
+	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/workerruntime"
 )
@@ -101,14 +105,17 @@ func TestAdaptReviewPassOutputFailsClosedOnMalformedJSON(t *testing.T) {
 }
 
 func TestAdaptReviewPassOutputAcceptsStructuredJSON(t *testing.T) {
-	input := `{"findings":[],"summary":"review pass complete"}`
+	input := `{"findings":[],"summary":"review pass complete sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 PRIVATE_REASONING_SENTINEL"}`
 
 	content, meta, err := adaptReviewPassOutput(&loom.Task{}, input)
 	if err != nil {
 		t.Fatalf("adaptReviewPassOutput: %v", err)
 	}
-	if content != input {
-		t.Fatalf("content = %q, want original JSON", content)
+	if strings.Contains(content, "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") || strings.Contains(content, "PRIVATE_REASONING_SENTINEL") {
+		t.Fatalf("content leaked review-private text: %q", content)
+	}
+	if !json.Valid([]byte(content)) {
+		t.Fatalf("content is not canonical JSON: %q", content)
 	}
 	if meta == nil {
 		t.Fatal("meta is nil, want empty map")
@@ -133,6 +140,55 @@ func TestAdaptReviewPassOutputRejectsEmptySummary(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "non-empty summary") {
 		t.Fatalf("error = %q, want non-empty summary detail", err)
+	}
+}
+
+func TestProfileTaskWorkerReviewLeavesRedactBeforeStatusContent(t *testing.T) {
+	srv := testServerWithLoom(t)
+	srv.registry.SetAvailable("codex", true)
+	line := 17
+	outputs := map[loom.WorkerType]string{
+		review.WorkerTypeReviewStructural:  `{"summary":"structural sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 PRIVATE_REASONING_SENTINEL","findings":[{"severity":"error","file":"pkg/structural.go","line":17,"body":"public structural finding"}]}`,
+		review.WorkerTypeReviewBehavioural: `{"summary":"behavioural sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 hidden-thought-trace","findings":[{"severity":"warning","file":"pkg/behaviour.go","line":17,"body":"public behavioural finding"}]}`,
+		review.WorkerTypeReviewAdversarial: `{"summary":"adversarial sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 internal-reasoning","findings":[{"severity":"info","file":"pkg/adversarial.go","line":17,"body":"public adversarial finding"}]}`,
+	}
+	for workerType, raw := range outputs {
+		srv.loom.RegisterWorker(workerType, profileTaskWorker{
+			server:     srv,
+			workerType: workerType,
+			taskClass:  "review",
+			defaultCLI: "codex",
+			adapt:      adaptReviewPassOutput,
+			dispatchLeaf: func(_ context.Context, _ string, _ picker.TaskSpec) (string, error) {
+				return raw, nil
+			},
+		})
+		taskID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
+			WorkerType: workerType,
+			ProjectID:  "review-redaction",
+			Prompt:     "review",
+			Metadata:   map[string]any{"review_pass": string(workerType)},
+		})
+		if err != nil {
+			t.Fatalf("Submit %s: %v", workerType, err)
+		}
+		task := waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusCompleted)
+		status := loomStatusResult(srv, task, budget.BudgetParams{IncludeContent: true}, taskID)
+		content, _ := status["content"].(string)
+		for _, leaked := range []string{"sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "PRIVATE_REASONING_SENTINEL", "hidden-thought-trace", "internal-reasoning"} {
+			if strings.Contains(content, leaked) || strings.Contains(fmt.Sprint(task.Metadata), leaked) {
+				t.Fatalf("%s durable leaf leaked %q", workerType, leaked)
+			}
+		}
+		var pass struct {
+			Findings []review.Finding `json:"findings"`
+		}
+		if err := json.Unmarshal([]byte(content), &pass); err != nil {
+			t.Fatalf("%s status content is not JSON: %v", workerType, err)
+		}
+		if len(pass.Findings) != 1 || pass.Findings[0].Line == nil || *pass.Findings[0].Line != line || pass.Findings[0].File == "" || pass.Findings[0].Body == "" {
+			t.Fatalf("%s finding = %#v, want retained public finding", workerType, pass.Findings)
+		}
 	}
 }
 

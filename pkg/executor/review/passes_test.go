@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -72,6 +73,33 @@ func TestPassesRunDispatchesAllPassesWithMetadata(t *testing.T) {
 	assertSubmission(t, client.submissions[0], WorkerTypeReviewStructural, PassStructural)
 	assertSubmission(t, client.submissions[1], WorkerTypeReviewBehavioural, PassBehavioural)
 	assertSubmission(t, client.submissions[2], WorkerTypeReviewAdversarial, PassAdversarial)
+}
+
+func TestSanitizePassOutputRedactsDurableLeafFields(t *testing.T) {
+	line := 17
+	raw := passJSON("public summary "+testReviewSecret+" PRIVATE_REASONING_SENTINEL", []Finding{{
+		Severity: SeverityError,
+		File:     "pkg/review.go",
+		Line:     &line,
+		Body:     "public finding " + testReviewSecret + " hidden-thought-trace",
+	}})
+
+	content, err := SanitizePassOutput(raw)
+	if err != nil {
+		t.Fatalf("SanitizePassOutput: %v", err)
+	}
+	for _, leaked := range []string{testReviewSecret, "PRIVATE_REASONING_SENTINEL", "hidden-thought-trace"} {
+		if strings.Contains(content, leaked) {
+			t.Fatalf("sanitized leaf content leaked %q: %s", leaked, content)
+		}
+	}
+	var got passResponse
+	if err := json.Unmarshal([]byte(content), &got); err != nil {
+		t.Fatalf("sanitized leaf JSON: %v", err)
+	}
+	if len(got.Findings) != 1 || got.Findings[0].Severity != SeverityError || got.Findings[0].File != "pkg/review.go" || got.Findings[0].Line == nil || *got.Findings[0].Line != line {
+		t.Fatalf("finding = %#v, want preserved public shape", got.Findings)
+	}
 }
 
 func TestPassesRunPropagatesWorkflowRecipeGuidanceToLeafTasks(t *testing.T) {
