@@ -207,6 +207,105 @@ func TestProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail(t *tes
 	}
 }
 
+func TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput(t *testing.T) {
+	for _, output := range []struct {
+		name   string
+		format string
+		line   string
+	}{
+		{
+			name:   "private_json",
+			format: "json",
+			line:   `{"reasoning":"private chain","api_key":"sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"}`,
+		},
+		{
+			name:   "unsupported_jsonl",
+			format: "jsonl",
+			line:   `{"type":"future.private","payload":"do not expose"}`,
+		},
+	} {
+		for _, sinkKind := range []string{"direct", "writer"} {
+			t.Run(output.name+"/"+sinkKind, func(t *testing.T) {
+				srv := testServerWithLoom(t)
+				_, projectID := projectCtxAndID("proj-runtime-progress-rejected")
+				taskID, _ := submitBlockingLoomTask(t, srv, projectID, "")
+				waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusRunning)
+
+				worker := profileTaskWorker{server: srv}
+				switch sinkKind {
+				case "direct":
+					worker.progressSink(taskID, output.format)(output.line)
+				case "writer":
+					progress := newTaskProgressSampler(srv.loom, taskID)
+					writer, err := workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(&t019ServerRecordingSink{}))
+					if err != nil {
+						t.Fatalf("NewEventWriter: %v", err)
+					}
+					worker.writerOutputSink(writer, progress, taskID, "codex", output.format)(output.line)
+					if err := writer.CloseAndFlush(context.Background()); err != nil {
+						t.Fatalf("CloseAndFlush: %v", err)
+					}
+					progress.Close()
+				}
+
+				task, err := srv.loom.Get(taskID)
+				if err != nil {
+					t.Fatalf("loom.Get(%s): %v", taskID, err)
+				}
+				if task.ProgressUpdatedAt != nil || task.LastOutputLine != "" {
+					t.Fatalf("rejected structured output persisted as progress: updated=%v line=%q", task.ProgressUpdatedAt, task.LastOutputLine)
+				}
+			})
+		}
+	}
+}
+
+func TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON(t *testing.T) {
+	for _, output := range []struct {
+		name   string
+		format string
+		line   string
+		want   string
+	}{
+		{name: "text", format: "text", line: "plain progress", want: "plain progress"},
+		{name: "json", format: "json", line: `{"content":"safe structured progress"}`, want: "safe structured progress"},
+	} {
+		for _, sinkKind := range []string{"direct", "writer"} {
+			t.Run(output.name+"/"+sinkKind, func(t *testing.T) {
+				srv := testServerWithLoom(t)
+				_, projectID := projectCtxAndID("proj-runtime-progress-safe")
+				taskID, _ := submitBlockingLoomTask(t, srv, projectID, "")
+				waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusRunning)
+
+				worker := profileTaskWorker{server: srv}
+				switch sinkKind {
+				case "direct":
+					worker.progressSink(taskID, output.format)(output.line)
+				case "writer":
+					progress := newTaskProgressSampler(srv.loom, taskID)
+					writer, err := workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(&t019ServerRecordingSink{}))
+					if err != nil {
+						t.Fatalf("NewEventWriter: %v", err)
+					}
+					worker.writerOutputSink(writer, progress, taskID, "codex", output.format)(output.line)
+					if err := writer.CloseAndFlush(context.Background()); err != nil {
+						t.Fatalf("CloseAndFlush: %v", err)
+					}
+					progress.Close()
+				}
+
+				task, err := srv.loom.Get(taskID)
+				if err != nil {
+					t.Fatalf("loom.Get(%s): %v", taskID, err)
+				}
+				if task.ProgressUpdatedAt == nil || task.LastOutputLine != output.want {
+					t.Fatalf("safe output progress = updated=%v line=%q, want non-nil/%q", task.ProgressUpdatedAt, task.LastOutputLine, output.want)
+				}
+			})
+		}
+	}
+}
+
 type t019ServerFailingSink struct {
 	mu       sync.Mutex
 	attempts int

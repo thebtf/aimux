@@ -1,0 +1,30 @@
+{
+  "task_id": "CR-001.fix-runtime-safety.amendment",
+  "completed_at": "2026-07-13",
+  "red": {
+    "command": "go test ./pkg/server -run '^TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput$' -count=1",
+    "result": "failed as expected: both direct and writer progress sinks persisted private JSON and unsupported JSONL as non-empty progress"
+  },
+  "green": {
+    "command": "go test ./pkg/server -run '^(TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput|TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON|TestProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail)$' -count=1",
+    "result": "pass"
+  },
+  "race": {
+    "command": "go test -race ./pkg/server -run '^(TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput|TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON|TestProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail)$' -count=1",
+    "result": "pass"
+  },
+  "build": {
+    "command": "go build ./...",
+    "result": "pass"
+  },
+  "diff": {
+    "command": "git diff --check",
+    "result": "pass"
+  },
+  "prove_it": {
+    "mutation": "replace the direct progress-sink empty-normalization return with the prior raw-line fallback",
+    "result": "the rejected-output regression failed for private JSON and unsupported JSONL on the direct sink",
+    "restore": "restored the return guard and reran the focused green command successfully"
+  },
+  "change": "both task-worker progress paths now drop empty normalized structured output; text and parser-extracted safe JSON continue to advance progress"
+}

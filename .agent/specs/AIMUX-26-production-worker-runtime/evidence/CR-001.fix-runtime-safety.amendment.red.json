@@ -1,0 +1,14 @@
+{
+  "task_id": "CR-001.fix-runtime-safety.amendment",
+  "base_commit": "5b716c5",
+  "test_file": "pkg/server/task_workers_test.go",
+  "test_name": "TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput",
+  "command": "go test ./pkg/server -run '^TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput$' -count=1",
+  "result": "FAIL",
+  "proved_old_behavior": [
+    "private json with no public content reached the direct and writer progress tails",
+    "unsupported jsonl frames reached the direct and writer progress tails",
+    "each rejected frame set ProgressUpdatedAt and persisted a non-empty LastOutputLine through the raw fallback"
+  ],
+  "failure_excerpt": "rejected structured output persisted as progress"
+}

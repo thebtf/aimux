@@ -379,7 +379,7 @@ func (w profileTaskWorker) progressSink(taskID, outputFormat string) func(string
 		appendRuntimeEventsForLine(engine, taskID, outputFormat, line)
 		progressLine := normalizeProgressLine(outputFormat, line)
 		if progressLine == "" {
-			progressLine = line
+			return
 		}
 		_ = engine.AppendProgress(taskID, progressLine)
 	}
@@ -542,7 +542,7 @@ func (w profileTaskWorker) writerOutputSink(writer *workerruntime.EventWriter, p
 		writer.AdmitOutput(provider, format, line)
 		progressLine := normalizeProgressLine(outputFormat, line)
 		if progressLine == "" {
-			progressLine = line
+			return
 		}
 		progress.Offer(progressLine)
 	}
