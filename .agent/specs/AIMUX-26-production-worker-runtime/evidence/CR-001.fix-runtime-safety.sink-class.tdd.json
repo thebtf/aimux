@@ -1,0 +1,23 @@
+{
+  "task_id": "CR-001.fix-runtime-safety.sink-class",
+  "status": "PASS",
+  "base_commit": "a4298dbe6d7a121a8f3450bb93f974fdfc065ee4",
+  "implementation": "Both direct and workflow sinks call the shared normalize-before-persist helper; only safely extracted agent-message text retains its semantic runtime event.",
+  "acceptance": {
+    "rejected_structured_output": "zero runtime artifacts and zero progress tail for private JSON and unsupported JSONL on both direct and workflow sinks",
+    "safe_output": "blank-format text, text, and extracted JSON persist one normalized runtime artifact and normalized progress"
+  },
+  "prove_it": {
+    "mutation": "replace the empty-normalization return with raw-line fallback",
+    "command": "$env:GOCACHE='D:\\tmp\\aimux-gocache-runtime-sink-class'; go test ./pkg/server -run '^TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput$' -count=1 -timeout 180s",
+    "exit_code": 1,
+    "result": "all direct and workflow private/unsupported cases persisted raw progress",
+    "restored_green": true
+  },
+  "verification": {
+    "focused_normal": "$env:GOCACHE='D:\\tmp\\aimux-gocache-runtime-sink-class'; go test ./pkg/server -run '^(TestProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail|TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput|TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON|TestProfileTaskWorkerOutputSink_(NormalizesJSONWithoutChangingText|UnsupportedFormatFailsClosed)|TestProfileTaskWorker_ArtifactSinkFailureCancelsOnceAndSkipsProviderFallback|TestProfileTaskWorker_FallbackCallbacksPreserveAttemptProviderIdentity)$' -count=1 -timeout 180s",
+    "focused_race": "$env:GOCACHE='D:\\tmp\\aimux-gocache-runtime-sink-class'; go test -race ./pkg/server -run '^(TestProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail|TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput|TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON)$' -count=1 -timeout 180s",
+    "build": "$env:GOCACHE='D:\\tmp\\aimux-gocache-runtime-sink-class'; go build ./...",
+    "diff_check": "git diff --check"
+  }
+}

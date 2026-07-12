@@ -373,16 +373,25 @@ func (w profileTaskWorker) progressSink(taskID, outputFormat string) func(string
 	}
 	engine := w.server.loom
 	return func(line string) {
-		if strings.TrimSpace(line) == "" {
-			return
-		}
-		appendRuntimeEventsForLine(engine, taskID, outputFormat, line)
-		progressLine := normalizeProgressLine(outputFormat, line)
-		if progressLine == "" {
-			return
-		}
-		_ = engine.AppendProgress(taskID, progressLine)
+		appendNormalizedRuntimeOutput(engine, taskID, outputFormat, line)
 	}
+}
+
+func appendNormalizedRuntimeOutput(engine *loom.LoomEngine, taskID, outputFormat, line string) {
+	if engine == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	normalized := normalizeProgressLine(outputFormat, line)
+	if normalized == "" {
+		return
+	}
+	events := runtimeEventsFromOutputLine(outputFormat, line)
+	if len(events) == 1 && events[0].EventType == "text_delta" {
+		_, _ = engine.AppendRuntimeEvent(taskID, events[0])
+	} else {
+		appendRuntimeEventsForLine(engine, taskID, "text", normalized)
+	}
+	_ = engine.AppendProgress(taskID, normalized)
 }
 
 func appendRuntimeEventsForLine(engine *loom.LoomEngine, taskID, outputFormat, line string) {

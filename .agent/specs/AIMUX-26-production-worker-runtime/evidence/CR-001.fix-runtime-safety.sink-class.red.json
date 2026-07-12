@@ -1,0 +1,17 @@
+{
+  "task_id": "CR-001.fix-runtime-safety.sink-class",
+  "status": "RED_CONFIRMED",
+  "base_commit": "a4298dbe6d7a121a8f3450bb93f974fdfc065ee4",
+  "scope": [
+    "pkg/server/task_workers.go",
+    "pkg/server/task_workflow_worker.go",
+    "pkg/server/task_workers_test.go"
+  ],
+  "command": "$env:GOCACHE='D:\\tmp\\aimux-gocache-runtime-sink-class'; go test ./pkg/server -run '^(TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput|TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON)$' -count=1 -timeout 180s",
+  "exit_code": 1,
+  "observed_failures": [
+    "direct private JSON and unsupported JSONL persisted raw runtime artifacts",
+    "workflow private JSON and unsupported JSONL fell back to raw progress",
+    "safe JSON runtime artifacts retained the raw envelope instead of extracted content"
+  ]
+}

@@ -256,12 +256,7 @@ func (s *workflowRecipeExecutorSender) progressSink(outputFormat string) func(st
 		if strings.TrimSpace(line) == "" {
 			return
 		}
-		appendRuntimeEventsForLine(s.server.loom, s.task.ID, outputFormat, line)
-		progressLine := normalizeProgressLine(outputFormat, line)
-		if progressLine == "" {
-			progressLine = line
-		}
-		_ = s.server.loom.AppendProgress(s.task.ID, progressLine)
+		appendNormalizedRuntimeOutput(s.server.loom, s.task.ID, outputFormat, line)
 	}
 }
 

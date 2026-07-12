@@ -224,7 +224,7 @@ func TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput(t *tes
 			line:   `{"type":"future.private","payload":"do not expose"}`,
 		},
 	} {
-		for _, sinkKind := range []string{"direct", "writer"} {
+		for _, sinkKind := range []string{"direct", "workflow"} {
 			t.Run(output.name+"/"+sinkKind, func(t *testing.T) {
 				srv := testServerWithLoom(t)
 				_, projectID := projectCtxAndID("proj-runtime-progress-rejected")
@@ -235,17 +235,12 @@ func TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput(t *tes
 				switch sinkKind {
 				case "direct":
 					worker.progressSink(taskID, output.format)(output.line)
-				case "writer":
-					progress := newTaskProgressSampler(srv.loom, taskID)
-					writer, err := workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(&t019ServerRecordingSink{}))
+				case "workflow":
+					task, err := srv.loom.Get(taskID)
 					if err != nil {
-						t.Fatalf("NewEventWriter: %v", err)
+						t.Fatalf("loom.Get(%s): %v", taskID, err)
 					}
-					worker.writerOutputSink(writer, progress, taskID, "codex", output.format)(output.line)
-					if err := writer.CloseAndFlush(context.Background()); err != nil {
-						t.Fatalf("CloseAndFlush: %v", err)
-					}
-					progress.Close()
+					(&workflowRecipeExecutorSender{server: srv, task: task}).progressSink(output.format)(output.line)
 				}
 
 				task, err := srv.loom.Get(taskID)
@@ -254,6 +249,13 @@ func TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput(t *tes
 				}
 				if task.ProgressUpdatedAt != nil || task.LastOutputLine != "" {
 					t.Fatalf("rejected structured output persisted as progress: updated=%v line=%q", task.ProgressUpdatedAt, task.LastOutputLine)
+				}
+				artifacts, err := srv.loom.ListArtifacts(taskID, loom.TaskArtifactListOptions{Kinds: []loom.TaskArtifactKind{loom.TaskArtifactKindRuntime}})
+				if err != nil {
+					t.Fatalf("ListArtifacts runtime: %v", err)
+				}
+				if len(artifacts.Items) != 0 {
+					t.Fatalf("rejected structured output persisted as runtime artifacts: %#v", artifacts.Items)
 				}
 			})
 		}
@@ -267,10 +269,11 @@ func TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON(t *testing.T) {
 		line   string
 		want   string
 	}{
+		{name: "blank_format", format: "", line: "default progress", want: "default progress"},
 		{name: "text", format: "text", line: "plain progress", want: "plain progress"},
 		{name: "json", format: "json", line: `{"content":"safe structured progress"}`, want: "safe structured progress"},
 	} {
-		for _, sinkKind := range []string{"direct", "writer"} {
+		for _, sinkKind := range []string{"direct", "workflow"} {
 			t.Run(output.name+"/"+sinkKind, func(t *testing.T) {
 				srv := testServerWithLoom(t)
 				_, projectID := projectCtxAndID("proj-runtime-progress-safe")
@@ -281,17 +284,12 @@ func TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON(t *testing.T) {
 				switch sinkKind {
 				case "direct":
 					worker.progressSink(taskID, output.format)(output.line)
-				case "writer":
-					progress := newTaskProgressSampler(srv.loom, taskID)
-					writer, err := workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(&t019ServerRecordingSink{}))
+				case "workflow":
+					task, err := srv.loom.Get(taskID)
 					if err != nil {
-						t.Fatalf("NewEventWriter: %v", err)
+						t.Fatalf("loom.Get(%s): %v", taskID, err)
 					}
-					worker.writerOutputSink(writer, progress, taskID, "codex", output.format)(output.line)
-					if err := writer.CloseAndFlush(context.Background()); err != nil {
-						t.Fatalf("CloseAndFlush: %v", err)
-					}
-					progress.Close()
+					(&workflowRecipeExecutorSender{server: srv, task: task}).progressSink(output.format)(output.line)
 				}
 
 				task, err := srv.loom.Get(taskID)
@@ -300,6 +298,13 @@ func TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON(t *testing.T) {
 				}
 				if task.ProgressUpdatedAt == nil || task.LastOutputLine != output.want {
 					t.Fatalf("safe output progress = updated=%v line=%q, want non-nil/%q", task.ProgressUpdatedAt, task.LastOutputLine, output.want)
+				}
+				artifacts, err := srv.loom.ListArtifacts(taskID, loom.TaskArtifactListOptions{Kinds: []loom.TaskArtifactKind{loom.TaskArtifactKindRuntime}})
+				if err != nil {
+					t.Fatalf("ListArtifacts runtime: %v", err)
+				}
+				if len(artifacts.Items) != 1 || artifacts.Items[0].Summary != output.want {
+					t.Fatalf("safe output runtime artifacts = %#v; want one normalized %q artifact", artifacts.Items, output.want)
 				}
 			})
 		}
