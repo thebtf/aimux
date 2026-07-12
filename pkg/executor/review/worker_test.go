@@ -15,6 +15,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const (
+	testReviewPrivateReasoning = "PRIVATE_REASONING_SENTINEL"
+	testReviewHiddenThought    = "hidden-thought-trace"
+)
+
 func TestReviewWorkerExecuteRecordsAggregateMetadata(t *testing.T) {
 	runner := &recordingPassRunner{results: []PassResult{
 		{Name: PassStructural, Summary: "structure clean"},
@@ -80,6 +85,93 @@ func TestReviewWorkerAggregateMetadataUsesSafeBoundedReason(t *testing.T) {
 	assertSafeBoundedReviewReason(t, reason)
 	if taskReason, _ := task.Metadata["reason"].(string); taskReason != reason {
 		t.Fatalf("task reason = %q, worker result reason = %q", taskReason, reason)
+	}
+}
+
+func TestReviewWorkerDurableResultsRedactAllReviewText(t *testing.T) {
+	line := 17
+	tainted := func(s, private string) string {
+		return s + " " + testReviewSecret + " " + private
+	}
+	tests := []struct {
+		name     string
+		metadata map[string]any
+		results  []PassResult
+		err      error
+		assert   func(*testing.T, *loom.Task)
+	}{
+		{
+			name:     "final aggregate",
+			metadata: map[string]any{"target": "HEAD"},
+			results: []PassResult{
+				{Name: PassStructural, Summary: tainted("structural private summary", testReviewPrivateReasoning), Findings: []Finding{
+					{Severity: SeverityError, File: "pkg/safe.go", Line: &line, Body: "useful public reasoning " + testReviewSecret},
+					{Severity: Severity(tainted("warning", testReviewHiddenThought)), File: tainted("pkg/typed.go", testReviewPrivateReasoning), Line: &line, Body: tainted("typed-field private finding", testReviewHiddenThought)},
+				}},
+				{Name: PassBehavioural, Summary: tainted("behavioural private summary", testReviewHiddenThought)},
+				{Name: PassAdversarial, Summary: "useful adversarial summary " + testReviewSecret},
+			},
+			assert: func(t *testing.T, task *loom.Task) {
+				var aggregate AggregatedFindings
+				if err := json.Unmarshal([]byte(task.Result), &aggregate); err != nil {
+					t.Fatalf("decode durable aggregate: %v", err)
+				}
+				if !aggregate.Blocking || aggregate.Findings[0].Line == nil || *aggregate.Findings[0].Line != line {
+					t.Fatalf("aggregate = %#v, want blocking verdict and preserved line", aggregate)
+				}
+			},
+		},
+		{
+			name:     "partial fail-closed gate",
+			metadata: map[string]any{"target": "HEAD", "gate": true},
+			results: []PassResult{{Name: PassStructural, Summary: tainted("partial private summary", testReviewHiddenThought), Findings: []Finding{
+				{
+					Severity: Severity(tainted("warning", testReviewPrivateReasoning)),
+					File:     tainted("pkg/partial.go", testReviewHiddenThought),
+					Line:     &line,
+					Body:     tainted("partial private finding", testReviewPrivateReasoning),
+				},
+				{Severity: SeverityInfo, File: "pkg/credential.go", Line: &line, Body: "useful credential evidence " + testReviewSecret},
+			}}},
+			err: errors.New(tainted("behavioural backend unavailable", testReviewPrivateReasoning)),
+			assert: func(t *testing.T, task *loom.Task) {
+				decision := decodeReviewDecision(t, task.Result)
+				if decision.Decision != DecisionBlock || !decision.Blocking || decision.ReviewComplete || decision.ConfidenceScore != 0 {
+					t.Fatalf("decision = %#v, want incomplete fail-closed block", decision)
+				}
+				if len(decision.PassesCompleted) != 1 || decision.PassesCompleted[0] != PassStructural {
+					t.Fatalf("passes_completed = %#v, want preserved structural partial", decision.PassesCompleted)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := newReviewWorkerEngine(t)
+			worker, err := NewReviewWorker(ReviewWorkerConfig{PassRunner: &recordingPassRunner{results: tt.results, err: tt.err}})
+			if err != nil {
+				t.Fatalf("NewReviewWorker returned error: %v", err)
+			}
+			engine.RegisterWorker(WorkerTypeReview, worker)
+			taskID, err := engine.Submit(context.Background(), loom.TaskRequest{
+				WorkerType: WorkerTypeReview,
+				ProjectID:  "project-1",
+				RequestID:  "request-1",
+				Prompt:     "review HEAD",
+				Metadata:   tt.metadata,
+			})
+			if err != nil {
+				t.Fatalf("Submit review root: %v", err)
+			}
+			task := waitReviewTaskStatus(t, engine, taskID, loom.TaskStatusCompleted)
+			assertSafeDurableReviewContent(t, task.Result)
+			if reason := fmt.Sprint(task.Metadata["reason"]); strings.Contains(reason, testReviewSecret) ||
+				strings.Contains(reason, testReviewPrivateReasoning) || strings.Contains(reason, testReviewHiddenThought) {
+				t.Errorf("durable reason metadata leaked sensitive review text: %q", reason)
+			}
+			tt.assert(t, task)
+		})
 	}
 }
 
@@ -423,5 +515,27 @@ func assertMetadataPasses(t *testing.T, raw any, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("passes metadata = %#v, want %#v", got, want)
 		}
+	}
+}
+
+func assertSafeDurableReviewContent(t *testing.T, content string) {
+	t.Helper()
+	for _, raw := range []string{testReviewSecret, testReviewPrivateReasoning, testReviewHiddenThought} {
+		if strings.Contains(content, raw) {
+			t.Errorf("durable review content leaked %q: %s", raw, content)
+		}
+	}
+	for _, marker := range []string{"[REDACTED:openai-key-project]", "[REDACTED:private-reasoning]"} {
+		if !strings.Contains(content, marker) {
+			t.Errorf("durable review content = %s, want %q", content, marker)
+		}
+	}
+	for _, useful := range []string{"useful", "pkg/"} {
+		if !strings.Contains(content, useful) {
+			t.Errorf("durable review content lost non-sensitive %q text: %s", useful, content)
+		}
+	}
+	if !json.Valid([]byte(content)) {
+		t.Fatalf("durable review content is not valid JSON: %s", content)
 	}
 }

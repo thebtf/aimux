@@ -38,11 +38,14 @@ func (Aggregator) Aggregate(results []PassResult) AggregatedFindings {
 		if result.Name != "" {
 			passesCompleted = append(passesCompleted, result.Name)
 		}
-		if summary := strings.TrimSpace(result.Summary); summary != "" {
+		if summary := strings.TrimSpace(sanitizePublicReviewText(result.Summary)); summary != "" {
 			summaries = append(summaries, fmt.Sprintf("%s: %s", result.Name, summary))
 		}
 
 		for _, finding := range result.Findings {
+			finding.Severity = Severity(sanitizePublicReviewText(string(finding.Severity)))
+			finding.File = sanitizePublicReviewText(finding.File)
+			finding.Body = sanitizePublicReviewText(finding.Body)
 			if isHigherSeverity(finding.Severity, severity) {
 				severity = finding.Severity
 			}
