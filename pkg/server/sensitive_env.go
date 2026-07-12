@@ -1,6 +1,11 @@
 package server
 
-import "strings"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"sort"
+	"strings"
+)
 
 // sensitiveEnvSuffixes lists the suffixes (upper-cased) that identify environment
 // variables containing secrets. Any env var whose upper-cased name ends with one
@@ -45,4 +50,24 @@ func FilterSensitive(env map[string]string) map[string]string {
 		}
 	}
 	return out
+}
+
+// EnvMetadata returns value-free environment provenance for durable task metadata.
+func EnvMetadata(env map[string]string) (keys []string, fingerprint string) {
+	if len(env) == 0 {
+		return nil, ""
+	}
+	filtered := FilterSensitive(env)
+	keys = make([]string, 0, len(env))
+	for key := range filtered {
+		keys = append(keys, key)
+	}
+	for key := range env {
+		if _, nonSensitive := filtered[key]; !nonSensitive {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	sum := sha256.Sum256([]byte(strings.Join(keys, "\x00")))
+	return keys, hex.EncodeToString(sum[:])
 }

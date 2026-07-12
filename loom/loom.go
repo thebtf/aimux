@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -157,6 +158,7 @@ type LoomEngine struct {
 	events     *EventBus
 	workers    map[WorkerType]Worker
 	cancels    map[string]context.CancelFunc
+	workerEnv  map[string]map[string]string
 	mu         sync.RWMutex
 	config     Config
 	maxRetries int
@@ -206,6 +208,7 @@ func New(store *TaskStore, opts ...Option) *LoomEngine {
 		gate:       NewQualityGate(),
 		workers:    make(map[WorkerType]Worker),
 		cancels:    make(map[string]context.CancelFunc),
+		workerEnv:  make(map[string]map[string]string),
 		config:     DefaultConfig(),
 		maxRetries: 2,
 		logger:     deps.NoopLogger(),
@@ -330,14 +333,16 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 		TenantID:     tenantID,
 		Prompt:       req.Prompt,
 		CWD:          req.CWD,
-		Env:          req.Env,
-		CLI:          req.CLI,
-		Role:         req.Role,
-		Model:        req.Model,
-		Effort:       req.Effort,
-		Timeout:      req.Timeout,
-		Metadata:     req.Metadata,
-		CreatedAt:    now,
+		// Session environment is execution-only: never serialize its values into
+		// the durable task row.
+		Env:       map[string]string{},
+		CLI:       req.CLI,
+		Role:      req.Role,
+		Model:     req.Model,
+		Effort:    req.Effort,
+		Timeout:   req.Timeout,
+		Metadata:  req.Metadata,
+		CreatedAt: now,
 	}
 
 	created, err := l.store.CommitCreated(context.Background(), CreateTask{
@@ -363,6 +368,11 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	}
 	if !created.Applied {
 		return "", fmt.Errorf("loom: persist task: authority command was not applied")
+	}
+	if len(req.Env) > 0 {
+		l.mu.Lock()
+		l.workerEnv[task.ID] = maps.Clone(req.Env)
+		l.mu.Unlock()
 	}
 	l.emitTaskEvent(task, EventTaskCreated, TaskStatusPending, now)
 
@@ -566,6 +576,9 @@ func (l *LoomEngine) Cancel(taskID string) error {
 	task, err := l.store.Get(taskID)
 	if err != nil {
 		return err
+	}
+	if task.EngineName != l.store.engineName {
+		return ErrTaskNotFound
 	}
 	ordering := l.lifecycleOrderingFor(taskID)
 	ordering.mu.Lock()
@@ -1046,6 +1059,9 @@ func (l *LoomEngine) loadRunningTask(task *Task, phase string) (*Task, bool) {
 	if current.Status != TaskStatusRunning {
 		return nil, false
 	}
+	l.mu.RLock()
+	current.Env = maps.Clone(l.workerEnv[task.ID])
+	l.mu.RUnlock()
 	return current, true
 }
 
@@ -1102,6 +1118,11 @@ func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) 
 // dispatch runs the worker for a task in a background goroutine.
 // Task arrives already in TaskStatusDispatched (transitioned synchronously by Submit).
 func (l *LoomEngine) dispatch(task *Task) {
+	defer func() {
+		l.mu.Lock()
+		delete(l.workerEnv, task.ID)
+		l.mu.Unlock()
+	}()
 	// Decrement the WaitGroup exactly once when this goroutine exits.
 	// Paired with the l.wg.Add(1) performed at the start of Submit (under mu).
 	defer l.wg.Done()

@@ -361,6 +361,141 @@ func TestCancel_CrossTenantReturns404(t *testing.T) {
 	}
 }
 
+func TestTenantScopedCancelRejectsForeignEngineTaskWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name   string
+		cancel func(*LoomEngine, *TenantScopedLoomEngine, string) error
+	}{
+		{
+			name: "tenant-scoped",
+			cancel: func(_ *LoomEngine, scoped *TenantScopedLoomEngine, taskID string) error {
+				return scoped.Cancel(taskID)
+			},
+		},
+		{
+			name: "raw-engine",
+			cancel: func(engine *LoomEngine, _ *TenantScopedLoomEngine, taskID string) error {
+				return engine.Cancel(taskID)
+			},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			db := newTestDB(t)
+			engineA, err := NewEngine(db, "engine-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			engineB, err := NewEngine(db, "engine-b")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			worker := &foreignCancelProbeWorker{
+				started:   make(chan struct{}, 1),
+				cancelled: make(chan struct{}, 1),
+				release:   make(chan struct{}, 1),
+			}
+			engineB.RegisterWorker(WorkerTypeThinker, worker)
+
+			const tenantID = "shared-tenant"
+			engineATenant := NewTenantScopedEngine(engineA, tenantID, nil)
+			engineBTenant := NewTenantScopedEngine(engineB, tenantID, nil)
+			taskID, err := engineBTenant.Submit(context.Background(), TaskRequest{
+				WorkerType: WorkerTypeThinker,
+				ProjectID:  "shared-project",
+				Prompt:     "finish on engine B",
+			})
+			if err != nil {
+				t.Fatalf("engineBTenant.Submit: %v", err)
+			}
+			select {
+			case <-worker.started:
+			case <-time.After(3 * time.Second):
+				t.Fatal("engine B worker did not start")
+			}
+
+			before, err := engineB.Get(taskID)
+			if err != nil {
+				t.Fatalf("engineB.Get before cancel: %v", err)
+			}
+			if before.Status != TaskStatusRunning {
+				t.Fatalf("status before cancel = %s, want running", before.Status)
+			}
+			artifactsBefore, err := engineB.ListArtifacts(taskID, TaskArtifactListOptions{Limit: 100})
+			if err != nil {
+				t.Fatalf("ListArtifacts before cancel: %v", err)
+			}
+
+			var engineAEvents []TaskEvent
+			unsubscribe := engineA.Events().Subscribe(func(event TaskEvent) {
+				if event.TaskID == taskID {
+					engineAEvents = append(engineAEvents, event)
+				}
+			})
+			defer unsubscribe()
+
+			err = testCase.cancel(engineA, engineATenant, taskID)
+			if !errors.Is(err, ErrTaskNotFound) {
+				t.Errorf("foreign cancel error = %v, want ErrTaskNotFound", err)
+			}
+			select {
+			case <-worker.cancelled:
+				t.Error("foreign cancel signalled engine B worker")
+			default:
+			}
+
+			after, err := engineB.Get(taskID)
+			if err != nil {
+				t.Fatalf("engineB.Get after cancel: %v", err)
+			}
+			if after.Status != before.Status || after.CancelRequestedAt != nil || after.Result != before.Result || after.Error != before.Error {
+				t.Errorf("foreign cancel mutated task: before=%#v after=%#v", before, after)
+			}
+			artifactsAfter, err := engineB.ListArtifacts(taskID, TaskArtifactListOptions{Limit: 100})
+			if err != nil {
+				t.Fatalf("ListArtifacts after cancel: %v", err)
+			}
+			if len(artifactsAfter.Items) != len(artifactsBefore.Items) {
+				t.Errorf("foreign cancel changed artifact count from %d to %d", len(artifactsBefore.Items), len(artifactsAfter.Items))
+			}
+			if len(engineAEvents) != 0 {
+				t.Errorf("foreign cancel emitted engine A events: %#v", engineAEvents)
+			}
+
+			worker.release <- struct{}{}
+			waitForTerminal(t, engineB, taskID, 3*time.Second)
+			completed, err := engineB.Get(taskID)
+			if err != nil {
+				t.Fatalf("engineB.Get completed task: %v", err)
+			}
+			if completed.Status != TaskStatusCompleted || completed.Result != "engine B completed" {
+				t.Fatalf("engine B task = status %s result %q, want completed normally", completed.Status, completed.Result)
+			}
+		})
+	}
+}
+
+type foreignCancelProbeWorker struct {
+	started   chan struct{}
+	cancelled chan struct{}
+	release   chan struct{}
+}
+
+func (w *foreignCancelProbeWorker) Execute(ctx context.Context, _ *Task) (*WorkerResult, error) {
+	w.started <- struct{}{}
+	select {
+	case <-ctx.Done():
+		w.cancelled <- struct{}{}
+		return nil, ctx.Err()
+	case <-w.release:
+		return &WorkerResult{Content: "engine B completed"}, nil
+	}
+}
+
+func (w *foreignCancelProbeWorker) Type() WorkerType { return WorkerTypeThinker }
+
 // ---- T023: TestLegacyDefault_PreservedBehavior ----
 
 // TestLegacyDefault_PreservedBehavior verifies that when tenantID == LegacyTenantID,

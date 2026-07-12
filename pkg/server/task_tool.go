@@ -385,6 +385,12 @@ func parseTaskToolRequest(ctx context.Context, req mcp.CallToolRequest) (TaskReq
 	if sessionKey, ok := worktreeSessionKeyFromContext(ctx); ok {
 		metadata[worktreeSessionMetadataKey] = sessionKey
 	}
+	if env := sessionEnvFromContext(ctx); len(env) > 0 {
+		keys, fingerprint := EnvMetadata(env)
+		metadata["task_env_source"] = "mux_project_context"
+		metadata["task_env_keys"] = keys
+		metadata["task_env_keyset_fingerprint"] = fingerprint
+	}
 	soloMode := strings.EqualFold(navigatorOverride, "none")
 	if soloMode {
 		metadata["solo_mode"] = true

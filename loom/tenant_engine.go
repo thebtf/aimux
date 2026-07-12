@@ -144,9 +144,10 @@ func (t *TenantScopedLoomEngine) List(projectID string, statuses ...TaskStatus) 
 // Returns ErrTaskNotFound when the task does not exist OR is owned by a different
 // tenant (CHK079: 404, not 403 — no existence disclosure).
 func (t *TenantScopedLoomEngine) Cancel(taskID string) error {
-	// Verify tenant ownership via GetForTenant before signalling cancellation.
-	// GetForTenant returns ErrTaskNotFound for missing or cross-tenant tasks.
-	if _, err := t.engine.store.GetForTenant(taskID, t.tenantID); err != nil {
+	// Verify tenant and engine ownership before signalling cancellation.
+	// GetForTenantInEngine returns ErrTaskNotFound for missing, cross-tenant,
+	// or cross-engine tasks.
+	if _, err := t.engine.store.GetForTenantInEngine(taskID, t.tenantID); err != nil {
 		return err // already wrapped as ErrTaskNotFound
 	}
 	return t.engine.Cancel(taskID)
