@@ -529,8 +529,11 @@ func (w profileTaskWorker) writerOutputSink(writer *workerruntime.EventWriter, p
 		return nil
 	}
 	format := strings.ToLower(strings.TrimSpace(outputFormat))
-	if format != "jsonl" {
+	switch format {
+	case "":
 		format = "text"
+	case "json":
+		format = "jsonl"
 	}
 	return func(line string) {
 		if strings.TrimSpace(line) == "" {

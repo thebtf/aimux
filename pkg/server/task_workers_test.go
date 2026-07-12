@@ -337,6 +337,80 @@ func (sink *t019ServerRecordingSink) Providers() []string {
 	return providers
 }
 
+func TestProfileTaskWorkerOutputSink_NormalizesJSONWithoutChangingText(t *testing.T) {
+	tests := []struct {
+		name     string
+		format   string
+		line     string
+		wantType string
+		wantText bool
+		redacted bool
+	}{
+		{
+			name:     "json_is_structural",
+			format:   "json",
+			line:     `{"reasoning":"private chain","api_key":"sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"}`,
+			wantType: "provider_event_unknown",
+			redacted: true,
+		},
+		{
+			name:     "text_stays_text",
+			format:   "text",
+			line:     "plain output",
+			wantType: "command_output_delta",
+			wantText: true,
+		},
+		{
+			name:     "blank_defaults_to_text",
+			line:     "legacy output",
+			wantType: "command_output_delta",
+			wantText: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &t019ServerRecordingSink{}
+			writer, err := workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(sink))
+			if err != nil {
+				t.Fatalf("NewEventWriter: %v", err)
+			}
+			profileTaskWorker{}.writerOutputSink(writer, nil, "format-safety-task", "claude", tt.format)(tt.line)
+			if err := writer.CloseAndFlush(context.Background()); err != nil {
+				t.Fatalf("CloseAndFlush: %v", err)
+			}
+
+			sink.mu.Lock()
+			events := append([]workerruntime.RuntimeEvent(nil), sink.events...)
+			sink.mu.Unlock()
+			if len(events) != 1 {
+				t.Fatalf("events = %#v, want one", events)
+			}
+			event := events[0]
+			if event.Type != tt.wantType || event.Redacted != tt.redacted {
+				t.Fatalf("event = %#v, want type %q redacted=%v", event, tt.wantType, tt.redacted)
+			}
+			_, hasText := event.Payload["text"]
+			if hasText != tt.wantText {
+				t.Fatalf("event payload = %#v, text field present=%v want %v", event.Payload, hasText, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestProfileTaskWorkerOutputSink_UnsupportedFormatFailsClosed(t *testing.T) {
+	sink := &t019ServerRecordingSink{}
+	writer, err := workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(sink))
+	if err != nil {
+		t.Fatalf("NewEventWriter: %v", err)
+	}
+	profileTaskWorker{}.writerOutputSink(writer, nil, "format-safety-task", "future-provider", "yaml")("private: do not persist")
+
+	if err := writer.CloseAndFlush(context.Background()); !errors.Is(err, workerruntime.ErrArtifactSinkUnavailable) {
+		t.Fatalf("CloseAndFlush error = %v, want ErrArtifactSinkUnavailable", err)
+	}
+}
+
 func TestProfileTaskWorker_FallbackCallbacksPreserveAttemptProviderIdentity(t *testing.T) {
 	srv := testServerWithLoom(t)
 	profiles := map[string]*config.CLIProfile{}

@@ -334,6 +334,66 @@ func TestEventWriter_SemanticQuotaExhaustionFailsInsteadOfReportingSuccess(t *te
 	}
 }
 
+func TestEventWriter_RejectedInvalidDurableEventsFailInsteadOfReportingSuccess(t *testing.T) {
+	tests := []struct {
+		name  string
+		event RuntimeEvent
+	}{
+		{
+			name: "semantic",
+			event: RuntimeEvent{
+				Provider: "codex",
+				Channel:  "tool",
+				Type:     "tool_result",
+				Payload:  map[string]any{"result": func() {}},
+			},
+		},
+		{
+			name: "status",
+			event: RuntimeEvent{
+				Provider: "codex",
+				Channel:  "system",
+				Type:     "status",
+				Payload:  map[string]any{"status": func() {}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writer, err := NewEventWriter(DefaultEventWriterConfig(&t019RecordingSink{}))
+			if err != nil {
+				t.Fatalf("NewEventWriter: %v", err)
+			}
+			if result := writer.Admit(tt.event); result.Status != admissionRejectedInvalid {
+				t.Fatalf("Admit = %#v, want rejected_invalid", result)
+			}
+			if err := writer.CloseAndFlush(context.Background()); !errors.Is(err, ErrArtifactSinkUnavailable) {
+				t.Fatalf("CloseAndFlush error = %v, want ErrArtifactSinkUnavailable", err)
+			}
+		})
+	}
+}
+
+func TestEventWriter_ValidStatusEventStillFlushes(t *testing.T) {
+	writer, err := NewEventWriter(DefaultEventWriterConfig(&t019RecordingSink{}))
+	if err != nil {
+		t.Fatalf("NewEventWriter: %v", err)
+	}
+	result := writer.Admit(RuntimeEvent{
+		Provider: "codex",
+		Channel:  "system",
+		Type:     "status",
+		Payload:  map[string]any{"status": "running"},
+	})
+	if result.Status != admissionAdmitted {
+		t.Fatalf("Admit = %#v, want admitted", result)
+	}
+	if err := writer.CloseAndFlush(context.Background()); err != nil {
+		t.Fatalf("CloseAndFlush: %v", err)
+	}
+}
+
 type t019BlockingSink struct {
 	entered chan struct{}
 	release chan struct{}

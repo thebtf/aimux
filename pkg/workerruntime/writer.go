@@ -210,8 +210,8 @@ func (writer *EventWriter) Admit(event RuntimeEvent) AdmissionResult {
 	}
 	result := writer.pump.admit(event)
 	writer.recordAdmission(result)
-	if result.Status == admissionRejectedQuota && (isControlEvent(event) || isDurableSemanticEvent(event)) {
-		writer.fail(errors.New("durable event admission capacity exhausted"))
+	if (result.Status == admissionRejectedQuota || result.Status == admissionRejectedInvalid) && (isControlEvent(event) || isDurableSemanticEvent(event)) {
+		writer.fail(fmt.Errorf("durable event admission %s", result.Status))
 		writer.signal()
 	}
 	if result.Status == admissionAdmitted || result.Status == admissionCoalesced {
@@ -226,10 +226,14 @@ func (writer *EventWriter) AdmitOutput(provider, format, line string) []Admissio
 	}
 	normalizer, err := writer.normalizer(provider, format)
 	if err != nil {
+		writer.fail(err)
+		writer.signal()
 		return []AdmissionResult{{Status: admissionRejectedInvalid}}
 	}
 	events, err := normalizer.feed("process.stdout", append([]byte(line), '\n'))
 	if err != nil {
+		writer.fail(err)
+		writer.signal()
 		return []AdmissionResult{{Status: admissionRejectedInvalid}}
 	}
 	results := make([]AdmissionResult, 0, len(events))
