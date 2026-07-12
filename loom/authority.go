@@ -1192,9 +1192,11 @@ func (s *TaskStore) commitTerminalAuthority(
 	ctx context.Context,
 	command terminalAuthorityCommand,
 ) (AuthorityResult, error) {
-	// Error text is part of both the durable row and the returned canonical
-	// winner. Scrub it once before either sink can observe it.
-	command.taskError = redactErrorMsg(command.taskError)
+	// Terminal content and errors are part of both the durable row and the
+	// returned canonical winner. Scrub them once before either sink can observe
+	// them, preserving structured JSON when it is safe to do so.
+	command.result = sanitizeTerminalResult(command.result)
+	command.taskError = sanitizeTerminalText(command.taskError)
 	tx, err := beginAuthorityTransaction(ctx, s.db)
 	if err != nil {
 		return AuthorityResult{}, err
@@ -1584,7 +1586,7 @@ func sanitizeAuthorityJSONValue(value any) (any, bool) {
 		}
 		return result, changed
 	case string:
-		redacted := redactErrorMsg(typed)
+		redacted := sanitizeTerminalText(typed)
 		return redacted, redacted != typed
 	default:
 		return value, false

@@ -954,6 +954,7 @@ func (l *LoomEngine) commitFailedCrashLocked(intent failedCrashIntent) (*failedC
 	if !result.Applied {
 		return nil, nil
 	}
+	intent.errMsg = result.Winner.Task.Error
 	return cloneFailedCrashIntent(intent), nil
 }
 
@@ -1114,7 +1115,7 @@ func (l *LoomEngine) failTask(task *Task, fromStatus TaskStatus, errMsg string) 
 		"task_status", string(TaskStatusFailed),
 		"request_id", task.RequestID,
 		"error_code", "task_failed",
-		"error", errMsg,
+		"error", result.Winner.Task.Error,
 	)
 }
 

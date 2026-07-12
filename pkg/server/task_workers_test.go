@@ -633,3 +633,65 @@ func TestProfileTaskWorker_FallbackCallbacksPreserveAttemptProviderIdentity(t *t
 		t.Fatalf("persisted providers = %v, want [codex grok]", providers)
 	}
 }
+
+func TestProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage(t *testing.T) {
+	const secret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const privateReasoning = "PRIVATE_REASONING_SENTINEL"
+	srv, db := testServerWithLoomDB(t)
+	profiles := map[string]*config.CLIProfile{}
+	for _, cli := range []string{"codex", "grok"} {
+		binary := fakeExecutable(t, t.TempDir(), cli)
+		profiles[cli] = &config.CLIProfile{Name: cli, Binary: binary, ResolvedPath: binary, OutputFormat: "text", Capabilities: []string{"code"}}
+	}
+	srv.cfg.CLIProfiles = profiles
+	srv.cfg.Executor.Picker = picker.DefaultPickerConfig()
+	srv.registry = driver.NewRegistry(profiles)
+	for cli := range profiles {
+		srv.registry.SetAvailable(cli, true)
+	}
+	srv.fallbackPicker = buildFallbackPicker(srv)
+	sink := &t019ServerRecordingSink{}
+	worker := profileTaskWorker{
+		server:     srv,
+		workerType: loom.WorkerTypeCLI,
+		taskClass:  "code",
+		defaultCLI: "codex",
+		newEventWriter: func(string) (*workerruntime.EventWriter, error) {
+			return workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(sink))
+		},
+		dispatchLeaf: func(_ context.Context, cli string, _ picker.TaskSpec) (string, error) {
+			if cli == "codex" {
+				return "", extypes.NewRateLimit("provider stderr: "+secret+" "+privateReasoning, nil)
+			}
+			return "safe fallback output", nil
+		},
+	}
+	srv.loom.RegisterWorker(loom.WorkerTypeCLI, worker)
+	taskID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  "fallback-metadata",
+		Prompt:     "test",
+		Metadata:   map[string]any{"fallback_enabled": true, "max_attempts": 2},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	task := waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusCompleted)
+	var metadataJSON string
+	if err := db.QueryRow(`SELECT metadata FROM tasks WHERE id=?`, taskID).Scan(&metadataJSON); err != nil {
+		t.Fatalf("query durable metadata: %v", err)
+	}
+	for name, value := range map[string]string{"sqlite": metadataJSON, "loom task": fmt.Sprintf("%v", task.Metadata), "public metadata": fmt.Sprintf("%v", taskSnapshotMetadataPayload(task.Metadata))} {
+		if strings.Contains(value, secret) || strings.Contains(value, privateReasoning) {
+			t.Fatalf("%s leaked fallback failure: %q", name, value)
+		}
+	}
+	attempts, ok := task.Metadata["failed_attempts"].([]any)
+	if !ok || len(attempts) != 1 {
+		t.Fatalf("failed_attempts = %#v, want one attempt", task.Metadata["failed_attempts"])
+	}
+	attempt, ok := attempts[0].(map[string]any)
+	if !ok || attempt["CLI"] != "codex" || attempt["Code"] != extypes.CLIErrorCodeRateLimit.String() {
+		t.Fatalf("failed_attempt = %#v, want codex rate-limit provenance", attempts[0])
+	}
+}

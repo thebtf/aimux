@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // storeSecretPatterns are compiled once at init and applied to error messages
@@ -29,8 +30,7 @@ var storeSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)Authorization:\s*[^\s]{20,}`),     // auth-header
 }
 
-// redactErrorMsg scrubs known secret patterns from an error message before
-// persisting it to the tasks.error column. The result column is NOT redacted.
+// redactErrorMsg scrubs known secret patterns from an error message.
 func redactErrorMsg(s string) string {
 	if s == "" {
 		return s
@@ -39,6 +39,39 @@ func redactErrorMsg(s string) string {
 		s = re.ReplaceAllString(s, "[REDACTED]")
 	}
 	return s
+}
+
+// sanitizeTerminalText removes secrets and provider-private reasoning from a
+// terminal plain-text sink. A private marker taints the whole field because
+// its payload boundary is not reliable.
+func sanitizeTerminalText(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	s = redactErrorMsg(s)
+	var normalized strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			normalized.WriteRune(unicode.ToLower(r))
+		}
+	}
+	for _, privateKind := range []string{
+		"privatereasoning", "hiddenreasoning", "internalreasoning", "chainofthought",
+		"privatethought", "hiddenthought", "internalthought",
+	} {
+		if strings.Contains(normalized.String(), privateKind) {
+			return "[REDACTED:private-reasoning]"
+		}
+	}
+	return s
+}
+
+// sanitizeTerminalResult preserves valid JSON's structure while applying the
+// authority's structural and value sanitization; plain text is sanitized as a
+// single terminal field.
+func sanitizeTerminalResult(s string) string {
+	if sanitized, err := sanitizeAuthorityJSON(s); err == nil {
+		return sanitized
+	}
+	return sanitizeTerminalText(s)
 }
 
 func init() {
@@ -1056,8 +1089,8 @@ func (s *TaskStore) Import(task *Task) error {
 		task.Effort,
 		task.Timeout,
 		metaJSON,
-		task.Result,
-		redactErrorMsg(task.Error),
+		sanitizeTerminalResult(task.Result),
+		sanitizeTerminalText(task.Error),
 		task.Retries,
 		createdAt,
 		task.DispatchedAt,
@@ -1377,7 +1410,7 @@ func (s *TaskStore) SetResult(id string, result string, errMsg string) error {
 		`UPDATE tasks
 		 SET result = ?, error = ?, completed_at = ?
 		 WHERE id = ? AND status IN ('pending', 'dispatched', 'running', 'retrying')`,
-		result, redactErrorMsg(errMsg), now, id,
+		sanitizeTerminalResult(result), sanitizeTerminalText(errMsg), now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("loom store: set result: %w", err)

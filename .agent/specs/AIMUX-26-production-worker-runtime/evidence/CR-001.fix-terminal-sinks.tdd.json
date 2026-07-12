@@ -1,0 +1,22 @@
+{
+  "task_id": "CR-001.fix-terminal-sinks",
+  "stack": "GO",
+  "red": {
+    "observed_at": "2026-07-12T23:06:27.0917055Z",
+    "test_files": ["pkg/server/loom_jobs_test.go", "loom/engine_metrics_test.go"],
+    "test_names": ["TestLoomTerminalResultSanitizesDurableAndStatusSinks", "TestFailTaskSanitizesDurableErrorAndLog", "TestProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage"],
+    "failure_reason": "Unsanitized terminal content reached SQLite, provider failure text reached the canonical error/log path, and successful fallback metadata retained raw failed-attempt text."
+  },
+  "green": {
+    "observed_at": "2026-07-12T23:10:00Z",
+    "passed_tests": 5,
+    "regressed_tests": 0,
+    "runner_stdout_excerpt": "pkg/server focused terminal and fallback metadata tests: ok; loom focused terminal, legacy, and failed-crash tests: ok"
+  },
+  "prove_it": {
+    "substituted_files": ["loom/store.go", "pkg/server/task_workers.go"],
+    "failed_tests": 2,
+    "runner_stdout_excerpt": "unsafe terminal-result substitution leaked SQLite content; unsafe failed-attempt substitution leaked SQLite metadata; terminal-text substitution failed to build because its private-marker dependency became unused.",
+    "reverted_at": "2026-07-12T23:16:00Z"
+  }
+}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/thebtf/aimux/pkg/driver"
 	"github.com/thebtf/aimux/pkg/logger"
 	"github.com/thebtf/aimux/pkg/routing"
+	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/mcp-mux/muxcore"
@@ -47,6 +49,11 @@ func (w *blockingLoomWorker) Execute(ctx context.Context, _ *loom.Task) (*loom.W
 }
 
 func testServerWithLoom(t *testing.T) *Server {
+	srv, _ := testServerWithLoomDB(t)
+	return srv
+}
+
+func testServerWithLoomDB(t *testing.T) (*Server, *sql.DB) {
 	t.Helper()
 
 	cfg := &config.Config{
@@ -97,7 +104,15 @@ func testServerWithLoom(t *testing.T) *Server {
 		_ = log.Close()
 		_ = db.Close()
 	})
-	return srv
+	return srv, db
+}
+
+type terminalSinkLoomWorker struct{ content string }
+
+func (w *terminalSinkLoomWorker) Type() loom.WorkerType { return loom.WorkerTypeCLI }
+
+func (w *terminalSinkLoomWorker) Execute(context.Context, *loom.Task) (*loom.WorkerResult, error) {
+	return &loom.WorkerResult{Content: w.content}, nil
 }
 
 func projectCtx(projectID string) context.Context {
@@ -487,6 +502,70 @@ func TestSessionsInfo_OperatorSeesLoomTasksForOtherTenantSession(t *testing.T) {
 		}
 	}
 	t.Fatalf("operator info did not include other tenant task %s: %v", taskID, jobs)
+}
+
+func TestLoomTerminalResultSanitizesDurableAndStatusSinks(t *testing.T) {
+	const secret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const privateReasoning = "PRIVATE_REASONING_SENTINEL"
+	srv, db := testServerWithLoomDB(t)
+	content := `{"summary":"useful safe summary","credential":"` + secret + `","analysis":"` + privateReasoning + `","nested":{"note":"still useful"}}`
+	srv.loom.RegisterWorker(loom.WorkerTypeCLI, &terminalSinkLoomWorker{content: content})
+
+	taskID, err := srv.loom.Submit(context.Background(), loom.TaskRequest{
+		WorkerType: loom.WorkerTypeCLI,
+		ProjectID:  "terminal-sinks",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var task *loom.Task
+	for time.Now().Before(deadline) {
+		task, err = srv.loom.Get(taskID)
+		if err != nil {
+			t.Fatalf("loom.Get: %v", err)
+		}
+		if task.Status == loom.TaskStatusCompleted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if task == nil || task.Status != loom.TaskStatusCompleted {
+		t.Fatalf("task status = %v, want completed", task)
+	}
+
+	var stored string
+	if err := db.QueryRow(`SELECT result FROM tasks WHERE id=?`, taskID).Scan(&stored); err != nil {
+		t.Fatalf("query durable result: %v", err)
+	}
+	for name, value := range map[string]string{"sqlite": stored} {
+		if strings.Contains(value, secret) || strings.Contains(value, privateReasoning) {
+			t.Fatalf("%s leaked terminal content: %q", name, value)
+		}
+	}
+	if !strings.Contains(stored, "useful safe summary") || !strings.Contains(stored, "still useful") {
+		t.Fatalf("durable result lost safe content: %q", stored)
+	}
+
+	defaultResult := loomStatusResult(srv, task, budget.BudgetParams{}, taskID)
+	if _, ok := defaultResult["content"]; ok {
+		t.Fatalf("default status unexpectedly included content: %v", defaultResult)
+	}
+	tailResult := loomStatusResult(srv, task, budget.BudgetParams{Tail: len(content)}, taskID)
+	includeResult := loomStatusResult(srv, task, budget.BudgetParams{IncludeContent: true}, taskID)
+	for name, value := range map[string]any{"tail": tailResult["content_tail"], "include": includeResult["content"]} {
+		text, ok := value.(string)
+		if !ok {
+			t.Fatalf("%s content = %T, want string", name, value)
+		}
+		if strings.Contains(text, secret) || strings.Contains(text, privateReasoning) {
+			t.Fatalf("%s leaked terminal content: %q", name, text)
+		}
+		if !strings.Contains(text, "useful safe summary") || !strings.Contains(text, "still useful") {
+			t.Fatalf("%s lost safe content: %q", name, text)
+		}
+	}
 }
 
 func TestSessionsKill_FailsLoomTasksBySessionMetadata(t *testing.T) {

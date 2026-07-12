@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -107,6 +108,38 @@ func waitForTaskStatus(t testing.TB, store *TaskStore, taskID string, want TaskS
 }
 
 // ---- state machine tests ----
+
+func TestLegacyResultWritersSanitizeTerminalContent(t *testing.T) {
+	const secret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const privateReasoning = "PRIVATE_REASONING_SENTINEL"
+	content := `{"summary":"useful safe summary","credential":"` + secret + `","analysis":"` + privateReasoning + `"}`
+	store := newTestStore(t)
+
+	imported := makeTask("legacy-import", "legacy", TaskStatusCompleted)
+	imported.Result = content
+	if err := store.Import(imported); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	active := makeTask("legacy-set-result", "legacy", TaskStatusRunning)
+	if err := store.Create(active); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.SetResult(active.ID, content, "provider stderr: "+secret+" "+privateReasoning); err != nil {
+		t.Fatalf("SetResult: %v", err)
+	}
+	for _, id := range []string{imported.ID, active.ID} {
+		task, err := store.Get(id)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", id, err)
+		}
+		if strings.Contains(task.Result, secret) || strings.Contains(task.Result, privateReasoning) || !strings.Contains(task.Result, "useful safe summary") {
+			t.Fatalf("%s result = %q, want sanitized useful JSON", id, task.Result)
+		}
+		if id == active.ID && (strings.Contains(task.Error, secret) || strings.Contains(task.Error, privateReasoning)) {
+			t.Fatalf("%s error leaked: %q", id, task.Error)
+		}
+	}
+}
 
 func TestTaskTransitions_Valid(t *testing.T) {
 	cases := []struct {

@@ -1,0 +1,23 @@
+{
+  "task_id": "CR-001.fix-terminal-sinks",
+  "observed_at": "2026-07-12T23:06:27.0917055Z",
+  "test_files": [
+    "pkg/server/loom_jobs_test.go",
+    "loom/engine_metrics_test.go"
+  ],
+  "test_names": [
+    "TestLoomTerminalResultSanitizesDurableAndStatusSinks",
+    "TestFailTaskSanitizesDurableErrorAndLog",
+    "TestProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage"
+  ],
+  "failure_reason": "Generic terminal result leaked credential and private-reasoning sentinels from SQLite; failed task error retained private-reasoning sentinel.",
+  "commands": [
+    "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-gocache'; go test ./pkg/server -run '^TestLoomTerminalResultSanitizesDurableAndStatusSinks$' -count=1",
+    "Push-Location loom; go test . -run '^TestFailTaskSanitizesDurableErrorAndLog$' -count=1; Pop-Location"
+  ],
+  "runner_stdout_excerpt": [
+    "sqlite leaked terminal content: credential and PRIVATE_REASONING_SENTINEL",
+    "canonical failed task leaked error: provider stderr: [REDACTED] PRIVATE_REASONING_SENTINEL",
+    "sqlite leaked fallback failure: failed_attempts.Message contained credential and PRIVATE_REASONING_SENTINEL"
+  ]
+}

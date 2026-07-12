@@ -2,6 +2,8 @@ package loom
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -319,6 +321,108 @@ func TestEngine_FailedTask_LogsErrorCodeField(t *testing.T) {
 			t.Errorf("\"task failed\" log missing field %q", field)
 		}
 	}
+}
+
+func TestFailTaskSanitizesDurableErrorAndLog(t *testing.T) {
+	const secret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const privateReasoning = "PRIVATE_REASONING_SENTINEL"
+	store := newTestStore(t)
+	logger := &recordingLogger{}
+	engine := New(store, WithLogger(logger))
+	engine.RegisterWorker(WorkerTypeCLI, &testWorker{
+		wtype: WorkerTypeCLI,
+		err:   errors.New("provider stderr: " + secret + " " + privateReasoning),
+	})
+
+	taskID, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "terminal-errors",
+		Prompt:     "test",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	task := waitForTaskStatus(t, store, taskID, TaskStatusFailed)
+	if task.Error == "" {
+		t.Fatal("task error is empty")
+	}
+	if strings.Contains(task.Error, secret) || strings.Contains(task.Error, privateReasoning) {
+		t.Fatalf("canonical failed task leaked error: %q", task.Error)
+	}
+	var durableError string
+	if err := store.db.QueryRow(`SELECT error FROM tasks WHERE id=?`, taskID).Scan(&durableError); err != nil {
+		t.Fatalf("query durable error: %v", err)
+	}
+	if strings.Contains(durableError, secret) || strings.Contains(durableError, privateReasoning) {
+		t.Fatalf("sqlite leaked terminal error: %q", durableError)
+	}
+	var eventType string
+	if err := store.db.QueryRow(`SELECT event_type FROM task_artifacts WHERE task_id=? ORDER BY seq DESC LIMIT 1`, taskID).Scan(&eventType); err != nil {
+		t.Fatalf("query terminal artifact: %v", err)
+	}
+	if eventType != "task.failed" {
+		t.Fatalf("terminal artifact = %q, want task.failed", eventType)
+	}
+
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	for _, entry := range logger.entries {
+		if entry.msg != "task failed" {
+			continue
+		}
+		for i := 0; i+1 < len(entry.args); i += 2 {
+			if entry.args[i] == "error" {
+				value, ok := entry.args[i+1].(string)
+				if !ok {
+					t.Fatalf("logged error = %T, want string", entry.args[i+1])
+				}
+				if strings.Contains(value, secret) || strings.Contains(value, privateReasoning) {
+					t.Fatalf("log leaked terminal error: %q", value)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("task failed log has no error field")
+}
+
+func TestFailedCrashSanitizesDurableErrorAndLog(t *testing.T) {
+	const secret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const privateReasoning = "PRIVATE_REASONING_SENTINEL"
+	store := newTestStore(t)
+	logger := &recordingLogger{}
+	engine := New(store, WithLogger(logger))
+	task := makeTask("failed-crash-sanitized", "terminal-errors", TaskStatusRunning)
+	if err := store.Create(task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !engine.commitFailedCrashAt(task, TaskStatusRunning, "recovery stderr: "+secret+" "+privateReasoning, "recovery", time.Now().UTC()) {
+		t.Fatal("commitFailedCrashAt returned false")
+	}
+	stored, err := store.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Status != TaskStatusFailedCrash || strings.Contains(stored.Error, secret) || strings.Contains(stored.Error, privateReasoning) {
+		t.Fatalf("failed crash task = %#v", stored)
+	}
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	for _, entry := range logger.entries {
+		if entry.msg != "task failed crash" {
+			continue
+		}
+		for i := 0; i+1 < len(entry.args); i += 2 {
+			if entry.args[i] == "error" {
+				text, _ := entry.args[i+1].(string)
+				if strings.Contains(text, secret) || strings.Contains(text, privateReasoning) {
+					t.Fatalf("failed crash log leaked: %q", text)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("task failed crash log has no error")
 }
 
 // TestEngine_GatePass_LogsCanonicalFields verifies that "quality gate pass"

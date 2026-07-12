@@ -307,7 +307,7 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 	metadata["cli"] = selectedCLI
 	metadata["output_format"] = selectedProfile.OutputFormat
 	if len(failedAttempts) > 0 {
-		metadata["failed_attempts"] = failedAttempts
+		metadata["failed_attempts"] = sanitizeFailedAttempts(failedAttempts)
 	}
 	if sessionID != "" {
 		metadata["cli_session_id"] = sessionID
@@ -316,6 +316,14 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		Content:  content,
 		Metadata: metadata,
 	}, nil
+}
+
+func sanitizeFailedAttempts(attempts []fallback.FailedAttempt) []fallback.FailedAttempt {
+	sanitized := append([]fallback.FailedAttempt(nil), attempts...)
+	for i := range sanitized {
+		sanitized[i].Message = review.SanitizePublicReason(sanitized[i].Message)
+	}
+	return sanitized
 }
 
 func (w profileTaskWorker) eventWriter(taskID string) (*workerruntime.EventWriter, error) {
