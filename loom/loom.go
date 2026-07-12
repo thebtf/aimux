@@ -369,11 +369,6 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	if !created.Applied {
 		return "", fmt.Errorf("loom: persist task: authority command was not applied")
 	}
-	if len(req.Env) > 0 {
-		l.mu.Lock()
-		l.workerEnv[task.ID] = maps.Clone(req.Env)
-		l.mu.Unlock()
-	}
 	l.emitTaskEvent(task, EventTaskCreated, TaskStatusPending, now)
 
 	// Transition pending → dispatched synchronously before launching goroutine.
@@ -390,6 +385,14 @@ func (l *LoomEngine) Submit(ctx context.Context, req TaskRequest) (string, error
 	}
 	if !dispatched.Applied {
 		return "", fmt.Errorf("loom: dispatch task: authority command was not applied")
+	}
+	// The execution-only environment is handed to the dispatch goroutine only
+	// after its durable dispatch fact commits. Earlier failures must retain no
+	// raw environment values in this long-lived engine.
+	if len(req.Env) > 0 {
+		l.mu.Lock()
+		l.workerEnv[task.ID] = maps.Clone(req.Env)
+		l.mu.Unlock()
 	}
 	task.Status = TaskStatusDispatched
 	task.DispatchedAt = timePointer(dispatchedAt)

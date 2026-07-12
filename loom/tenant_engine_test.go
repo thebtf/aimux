@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/thebtf/aimux/loom/deps"
 )
 
 // fakeAuditEmitter records emitted events for test assertion.
@@ -360,6 +364,91 @@ func TestCancel_CrossTenantReturns404(t *testing.T) {
 		}
 	}
 }
+
+func TestLoomSubmitDispatchFailureDropsEnvBeforeRestartOrSubtask(t *testing.T) {
+	db := newTestDB(t)
+	engine, err := NewEngine(db, "test", WithIDGenerator(deps.NewSequentialIDGenerator()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TRIGGER abort_initial_dispatch BEFORE INSERT ON task_artifacts
+		WHEN NEW.task_id='id-0' AND NEW.event_type='task.dispatched'
+		BEGIN SELECT RAISE(ABORT,'DISPATCH_ENV_CLEANUP'); END`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const secret = "dispatch-only-secret"
+	if _, err := engine.Submit(context.Background(), TaskRequest{
+		WorkerType: WorkerTypeThinker,
+		ProjectID:  "env-cleanup",
+		Prompt:     "must not dispatch",
+		Env:        map[string]string{"API_KEY": secret},
+	}); err == nil || !strings.Contains(err.Error(), "DISPATCH_ENV_CLEANUP") {
+		t.Fatalf("Submit error = %v, want dispatch failure", err)
+	}
+	engine.mu.RLock()
+	workerEnvCount := len(engine.workerEnv)
+	engine.mu.RUnlock()
+	if workerEnvCount != 0 {
+		t.Fatalf("workerEnv entries after failed dispatch = %d, want 0", workerEnvCount)
+	}
+	pending, err := engine.Get("id-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending.Env) != 0 || pending.Env["API_KEY"] == secret {
+		t.Fatalf("failed dispatch persisted env = %#v", pending.Env)
+	}
+	if err := engine.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.Exec("DROP TRIGGER abort_initial_dispatch"); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewEngine(db, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close(context.Background()) })
+	restarted.mu.RLock()
+	workerEnvCount = len(restarted.workerEnv)
+	restarted.mu.RUnlock()
+	if workerEnvCount != 0 {
+		t.Fatalf("workerEnv entries after restart = %d, want 0", workerEnvCount)
+	}
+	worker := &envProbeWorker{tasks: make(chan *Task, 1)}
+	restarted.RegisterWorker(WorkerTypeThinker, worker)
+	childID, err := restarted.Submit(context.Background(), TaskRequest{
+		WorkerType:   WorkerTypeThinker,
+		ParentTaskID: "id-0",
+		Prompt:       "child must not inherit parent env",
+	})
+	if err != nil {
+		t.Fatalf("Submit child: %v", err)
+	}
+	select {
+	case child := <-worker.tasks:
+		if len(child.Env) != 0 || child.Env["API_KEY"] == secret {
+			t.Fatalf("child inherited env = %#v", child.Env)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("child worker did not run")
+	}
+	waitForTerminal(t, restarted, childID, 3*time.Second)
+}
+
+type envProbeWorker struct{ tasks chan *Task }
+
+func (w *envProbeWorker) Execute(_ context.Context, task *Task) (*WorkerResult, error) {
+	cp := *task
+	cp.Env = maps.Clone(task.Env)
+	w.tasks <- &cp
+	return &WorkerResult{Content: "ok"}, nil
+}
+
+func (w *envProbeWorker) Type() WorkerType { return WorkerTypeThinker }
 
 func TestTenantScopedCancelRejectsForeignEngineTaskWithoutMutation(t *testing.T) {
 	tests := []struct {

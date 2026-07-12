@@ -24,6 +24,13 @@ var sensitiveEnvExceptions = map[string]struct{}{
 	"SSH_AUTH_SOCK": {},
 }
 
+const (
+	// Env metadata is provenance only. Keep its durable key list bounded even
+	// when callers provide an adversarial environment.
+	maxEnvMetadataKeys     = 32
+	maxEnvMetadataKeyBytes = 1024
+)
+
 // FilterSensitive returns a copy of env with sensitive keys removed.
 // Keys whose upper-cased name ends with any of sensitiveEnvSuffixes are dropped,
 // unless they appear in sensitiveEnvExceptions. The original map is not modified.
@@ -57,17 +64,21 @@ func EnvMetadata(env map[string]string) (keys []string, fingerprint string) {
 	if len(env) == 0 {
 		return nil, ""
 	}
-	filtered := FilterSensitive(env)
-	keys = make([]string, 0, len(env))
-	for key := range filtered {
-		keys = append(keys, key)
-	}
 	for key := range env {
-		if _, nonSensitive := filtered[key]; !nonSensitive {
-			keys = append(keys, key)
-		}
+		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	sum := sha256.Sum256([]byte(strings.Join(keys, "\x00")))
-	return keys, hex.EncodeToString(sum[:])
+	fingerprint = hex.EncodeToString(sum[:])
+
+	bounded := make([]string, 0, min(len(keys), maxEnvMetadataKeys))
+	keyBytes := 0
+	for _, key := range keys {
+		if len(bounded) == maxEnvMetadataKeys || keyBytes+len(key) > maxEnvMetadataKeyBytes {
+			break
+		}
+		bounded = append(bounded, key)
+		keyBytes += len(key)
+	}
+	return bounded, fingerprint
 }
