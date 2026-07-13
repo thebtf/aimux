@@ -42,6 +42,26 @@ func (e *delayedCancellationPipeExecutor) IsAlive() types.HealthStatus { return 
 func (e *delayedCancellationPipeExecutor) Close() error                { return e.inner.Close() }
 
 func (e *delayedCancellationPipeExecutor) SendEvents(ctx context.Context, id types.ExecutionID, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	return e.sendEvents(ctx, func(innerCtx context.Context) (*types.Response, error) {
+		return e.inner.SendEvents(innerCtx, id, msg, sink)
+	})
+}
+
+func (e *delayedCancellationPipeExecutor) AcquireProcessEvidenceLease(id types.ExecutionID) (any, <-chan types.ProcessTreeEvidence, bool) {
+	return e.inner.AcquireProcessEvidenceLease(id)
+}
+
+func (e *delayedCancellationPipeExecutor) SendEventsWithProcessEvidenceLease(ctx context.Context, id types.ExecutionID, lease any, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	return e.sendEvents(ctx, func(innerCtx context.Context) (*types.Response, error) {
+		return e.inner.SendEventsWithProcessEvidenceLease(innerCtx, id, lease, msg, sink)
+	})
+}
+
+func (e *delayedCancellationPipeExecutor) ReleaseProcessEvidenceLease(id types.ExecutionID, lease any) {
+	e.inner.ReleaseProcessEvidenceLease(id, lease)
+}
+
+func (e *delayedCancellationPipeExecutor) sendEvents(ctx context.Context, run func(context.Context) (*types.Response, error)) (*types.Response, error) {
 	innerCtx, innerCancel := context.WithCancel(context.Background())
 	defer innerCancel()
 	type outcome struct {
@@ -50,7 +70,7 @@ func (e *delayedCancellationPipeExecutor) SendEvents(ctx context.Context, id typ
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		response, err := e.inner.SendEvents(innerCtx, id, msg, sink)
+		response, err := run(innerCtx)
 		done <- outcome{response: response, err: err}
 	}()
 
@@ -68,15 +88,6 @@ func (e *delayedCancellationPipeExecutor) SendEvents(ctx context.Context, id typ
 
 func (e *delayedCancellationPipeExecutor) ProcessTreeEvidence(ctx context.Context, id types.ExecutionID) (types.ProcessTreeEvidence, error) {
 	return e.inner.ProcessTreeEvidence(ctx, id)
-}
-func (e *delayedCancellationPipeExecutor) HoldProcessEvidence(id types.ExecutionID) bool {
-	return e.inner.HoldProcessEvidence(id)
-}
-func (e *delayedCancellationPipeExecutor) ProcessEvidenceReady(id types.ExecutionID) <-chan types.ProcessTreeEvidence {
-	return e.inner.ProcessEvidenceReady(id)
-}
-func (e *delayedCancellationPipeExecutor) ReleaseProcessEvidence(id types.ExecutionID) {
-	e.inner.ReleaseProcessEvidence(id)
 }
 
 func TestSwarmPipeDrainCancellationHelper(t *testing.T) {

@@ -128,6 +128,69 @@ func TestSwarmReadyExactLeaseWinsDeadline(t *testing.T) {
 	}
 }
 
+func TestSwarmTimerFinalReadAdmitsEvidencePublishedAtDeadline(t *testing.T) {
+	previousTimeout := processEvidenceCaptureTimeout
+	previousHook := beforeProcessEvidenceDeadlineFinalRead
+	processEvidenceCaptureTimeout = time.Millisecond
+	entered, release := make(chan struct{}), make(chan struct{})
+	beforeProcessEvidenceDeadlineFinalRead = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() {
+		processEvidenceCaptureTimeout = previousTimeout
+		beforeProcessEvidenceDeadlineFinalRead = previousHook
+	})
+
+	exec := &blockingExactEvidenceExecutor{ready: make(chan types.ProcessTreeEvidence, 1)}
+	s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	h, err := s.Get(context.Background(), "deadline-final-read", Stateful, WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := make(chan types.ExecutorEvent, 1)
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := s.Execute(context.Background(), h, "scope", "deadline-final-read", types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+			if event.Terminal {
+				terminal <- event
+			}
+			return true
+		}))
+		done <- runErr
+	}()
+	<-entered // timer branch won; the final receive is deliberately still blocked.
+	exec.ready <- types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 18, StartFingerprint: "deadline", TreeID: "tree"}, Stopped: true}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if event := <-terminal; event.Type != "completed" {
+		t.Fatalf("terminal = %#v, want completed from final timer-branch read", event)
+	}
+}
+
+func TestSwarmPipeAbortReturnsBeforeEvidenceDeadline(t *testing.T) {
+	previous := processEvidenceCaptureTimeout
+	processEvidenceCaptureTimeout = time.Second
+	t.Cleanup(func() { processEvidenceCaptureTimeout = previous })
+	s := New(func(string) (types.ExecutorV2, error) {
+		return aimexecutor.NewCLIPipeAdapter(pipeexecutor.New()), nil
+	}, nil)
+	h, err := s.Get(context.Background(), "pipe-abort", Stateful, WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = s.Execute(context.Background(), h, "scope", "pipe-abort", types.Message{Spawn: &types.SpawnArgs{Command: "aimux-command-that-does-not-exist"}}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true }))
+	if err == nil {
+		t.Fatal("invalid executable unexpectedly succeeded")
+	}
+	if elapsed := time.Since(started); elapsed >= processEvidenceCaptureTimeout/2 {
+		t.Fatalf("startup error waited %s for evidence deadline", elapsed)
+	}
+}
+
 type completedSession struct{}
 
 func (*completedSession) ID() string { return "session" }

@@ -27,6 +27,14 @@ const cancellationResolutionTimeout = 10 * time.Second
 // are never used as terminal-finality sources.
 var processEvidenceCaptureTimeout = cancellationResolutionTimeout
 
+// beforeProcessEvidenceDeadlineFinalRead is a package-private deterministic
+// test seam for the timer-selected boundary. Production leaves it nil.
+var beforeProcessEvidenceDeadlineFinalRead func()
+
+// beforeOwnedLeaseExecution is a package-private deterministic test seam after
+// acquisition and before the only lease-consuming execution call.
+var beforeOwnedLeaseExecution func()
+
 // ExecutionInspection is an in-memory, fenced snapshot. It intentionally
 // carries no durable binding; CR-003 owns recovery and persistence.
 type ExecutionInspection struct {
@@ -94,6 +102,14 @@ type processEvidenceLease interface {
 	HoldProcessEvidence(types.ExecutionID) bool
 	ProcessEvidenceReady(types.ExecutionID) <-chan types.ProcessTreeEvidence
 	ReleaseProcessEvidence(types.ExecutionID)
+}
+
+// ownedProcessEvidenceLease is private plumbing for the concrete stateless
+// pipe path. The opaque value binds acquisition, one execution, and release.
+type ownedProcessEvidenceLease interface {
+	AcquireProcessEvidenceLease(types.ExecutionID) (any, <-chan types.ProcessTreeEvidence, bool)
+	SendEventsWithProcessEvidenceLease(context.Context, types.ExecutionID, any, types.Message, types.ExecutorEventSink) (*types.Response, error)
+	ReleaseProcessEvidenceLease(types.ExecutionID, any)
 }
 
 // Execute admits one exact execution for a live handle generation. Swarm owns
@@ -166,7 +182,15 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 
 	admission := types.ExecutorEventSinkFunc(record.tryAdmit)
 	var evidenceReady <-chan types.ProcessTreeEvidence
-	if holder, ok := exec.(processEvidenceLease); ok {
+	var ownedLease ownedProcessEvidenceLease
+	var lease any
+	if holder, ok := exec.(ownedProcessEvidenceLease); ok {
+		lease, evidenceReady, record.exactProcessEvidence = holder.AcquireProcessEvidenceLease(id)
+		if record.exactProcessEvidence {
+			ownedLease = holder
+			defer holder.ReleaseProcessEvidenceLease(id, lease)
+		}
+	} else if holder, ok := exec.(processEvidenceLease); ok {
 		record.exactProcessEvidence = holder.HoldProcessEvidence(id)
 		if record.exactProcessEvidence {
 			evidenceReady = holder.ProcessEvidenceReady(id)
@@ -175,7 +199,14 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	}
 	var response *types.Response
 	if native, ok := exec.(types.EventExecutor); ok {
-		response, err = native.SendEvents(execCtx, id, msg, admission)
+		if ownedLease != nil {
+			if beforeOwnedLeaseExecution != nil {
+				beforeOwnedLeaseExecution()
+			}
+			response, err = ownedLease.SendEventsWithProcessEvidenceLease(execCtx, id, lease, msg, admission)
+		} else {
+			response, err = native.SendEvents(execCtx, id, msg, admission)
+		}
 	} else {
 		response, err = exec.SendStream(execCtx, msg, func(chunk types.Chunk) {
 			if !chunk.Done {
@@ -465,6 +496,9 @@ func (record *executionRecord) captureProcessEvidence(ready <-chan types.Process
 	case evidence, ok := <-ready:
 		accept(evidence, ok)
 	case <-timer.C:
+		if beforeProcessEvidenceDeadlineFinalRead != nil {
+			beforeProcessEvidenceDeadlineFinalRead()
+		}
 		select {
 		case evidence, ok := <-ready:
 			accept(evidence, ok)

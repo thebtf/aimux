@@ -44,17 +44,22 @@ type Executor struct {
 	evidence      map[types.ExecutionID]processEvidence
 	evidenceOrder []types.ExecutionID
 	reservations  map[types.ExecutionID]processEvidenceReservation
+	nextLease     uint64
 	// finalEvidence is a package-private deterministic test seam for the
 	// exact final ProcessManager snapshot.
 	finalEvidence func(types.ProcessTreeEvidence) types.ProcessTreeEvidence
-	stdinPipe     func(*exec.Cmd) (io.WriteCloser, error)
+	// commitEvidence is a package-private test seam for attachment failure
+	// after SpawnWithDrain has created an owned process.
+	commitEvidence func() error
+	stdinPipe      func(*exec.Cmd) (io.WriteCloser, error)
 }
 
 type processEvidence struct {
 	tree   types.ProcessTreeEvidence
 	handle *executor.ProcessHandle
 	final  bool // final false stays false; it is evictable but never refreshed.
-	holds  int  // Swarm owns short outcome-copy holds across SendEvents return.
+	holds  int  // Swarm owns one short outcome-copy hold across SendEvents return.
+	lease  uint64
 	ready  chan types.ProcessTreeEvidence
 }
 
@@ -62,68 +67,69 @@ type processEvidence struct {
 // record. It counts against the same bound as retained records so a rejected
 // execution never reaches cmd.Start.
 type processEvidenceReservation struct {
-	holds int
-	ready chan types.ProcessTreeEvidence
+	holds    int
+	lease    uint64
+	consumed bool
+	ready    chan types.ProcessTreeEvidence
 }
+
+// processEvidenceLease is deliberately opaque outside this package. It is
+// transported as any by the adapter/Swarm private plumbing, but a caller
+// cannot manufacture a matching non-zero token.
+type processEvidenceLease struct{ token uint64 }
 
 // New creates a pipe executor.
 func New() *Executor {
 	return &Executor{evidence: make(map[types.ExecutionID]processEvidence), reservations: make(map[types.ExecutionID]processEvidenceReservation)}
 }
 
-// HoldProcessEvidence keeps an exact stateless result available until Swarm has
-// copied it into its terminal record. Its true result is the runtime-qualified
-// exact-final handoff paired with ReleaseProcessEvidence.
-func (e *Executor) HoldProcessEvidence(id types.ExecutionID) bool {
+// AcquireProcessEvidenceLease is private Swarm plumbing. The opaque return
+// value authorizes exactly one matching SendEventsWithProcessEvidenceLease call.
+func (e *Executor) AcquireProcessEvidenceLease(id types.ExecutionID) (any, <-chan types.ProcessTreeEvidence, bool) {
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
-	if _, exists := e.evidence[id]; exists {
-		return false
+	e.nextLease++
+	lease := processEvidenceLease{token: e.nextLease}
+	if err := e.reserveProcessEvidenceLocked(id, 1, lease.token, false); err != nil {
+		return nil, nil, false
 	}
-	if _, exists := e.reservations[id]; exists {
-		return false
-	}
-	return e.reserveProcessEvidenceLocked(id, 1) == nil
+	return lease, e.reservations[id].ready, true
 }
 
-// ReleaseProcessEvidence makes a final result reclaimable once its immutable
-// snapshot has been consumed by Swarm.
-func (e *Executor) ReleaseProcessEvidence(id types.ExecutionID) {
-	e.evidenceMu.Lock()
-	defer e.evidenceMu.Unlock()
-	if record, ok := e.evidence[id]; ok {
-		if record.holds > 1 {
-			record.holds--
-			e.evidence[id] = record
-		} else if record.holds == 1 {
-			record.holds = 0
-			e.evidence[id] = record
-		}
+// ReleaseProcessEvidenceLease is private Swarm plumbing. A stale token cannot
+// release a newer reservation or retained process generation with the same ID.
+func (e *Executor) ReleaseProcessEvidenceLease(id types.ExecutionID, opaque any) {
+	lease, ok := opaque.(processEvidenceLease)
+	if !ok || lease.token == 0 {
 		return
 	}
-	if reservation, ok := e.reservations[id]; ok {
-		if reservation.holds > 1 {
-			reservation.holds--
-			e.reservations[id] = reservation
-		} else {
-			delete(e.reservations, id)
-		}
+	e.evidenceMu.Lock()
+	defer e.evidenceMu.Unlock()
+	if record, ok := e.evidence[id]; ok && record.lease == lease.token {
+		record.holds = 0
+		e.evidence[id] = record
+		return
+	}
+	if reservation, ok := e.reservations[id]; ok && reservation.lease == lease.token {
+		close(reservation.ready)
+		delete(e.reservations, id)
 	}
 }
 
-// ProcessEvidenceReady exposes the private one-shot exact-final future held by
-// a successful lease. It is fulfilled by finalizeProcessEvidence, never by a
-// Swarm-created capture goroutine.
-func (e *Executor) ProcessEvidenceReady(id types.ExecutionID) <-chan types.ProcessTreeEvidence {
+func (e *Executor) consumeProcessEvidenceLease(id types.ExecutionID, opaque any) (processEvidenceLease, error) {
+	lease, ok := opaque.(processEvidenceLease)
+	if !ok || lease.token == 0 {
+		return processEvidenceLease{}, fmt.Errorf("pipe: invalid process evidence lease")
+	}
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
-	if record, ok := e.evidence[id]; ok {
-		return record.ready
+	reservation, ok := e.reservations[id]
+	if !ok || reservation.lease != lease.token || reservation.consumed {
+		return processEvidenceLease{}, fmt.Errorf("pipe: invalid or consumed process evidence lease for execution %q", id)
 	}
-	if reservation, ok := e.reservations[id]; ok {
-		return reservation.ready
-	}
-	return nil
+	reservation.consumed = true
+	e.reservations[id] = reservation
+	return lease, nil
 }
 
 // ProcessTreeEvidence reports the exact managed process generation retained for
@@ -145,19 +151,13 @@ func (e *Executor) ProcessTreeEvidence(_ context.Context, id types.ExecutionID) 
 func (e *Executor) reserveProcessEvidence(id types.ExecutionID) error {
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
-	if reservation, ok := e.reservations[id]; ok {
-		// A positive HoldProcessEvidence lease owns this reservation for the
-		// immediately following Swarm SendEvents call. A bare reservation is a
-		// concurrent direct caller and remains a duplicate rejection.
-		if reservation.holds > 0 {
-			return nil
-		}
+	if _, ok := e.reservations[id]; ok {
 		return fmt.Errorf("pipe: duplicate process evidence for execution %q", id)
 	}
-	return e.reserveProcessEvidenceLocked(id, 0)
+	return e.reserveProcessEvidenceLocked(id, 0, 0, true)
 }
 
-func (e *Executor) reserveProcessEvidenceLocked(id types.ExecutionID, holds int) error {
+func (e *Executor) reserveProcessEvidenceLocked(id types.ExecutionID, holds int, lease uint64, consumed bool) error {
 	if _, exists := e.evidence[id]; exists {
 		return fmt.Errorf("pipe: duplicate process evidence for execution %q", id)
 	}
@@ -169,17 +169,22 @@ func (e *Executor) reserveProcessEvidenceLocked(id types.ExecutionID, holds int)
 			return fmt.Errorf("pipe: process evidence capacity reached with live executions")
 		}
 	}
-	e.reservations[id] = processEvidenceReservation{holds: holds, ready: make(chan types.ProcessTreeEvidence, 1)}
+	e.reservations[id] = processEvidenceReservation{holds: holds, lease: lease, consumed: consumed, ready: make(chan types.ProcessTreeEvidence, 1)}
 	return nil
 }
 
-func (e *Executor) rollbackProcessEvidenceReservation(id types.ExecutionID) {
+func (e *Executor) rollbackProcessEvidenceReservation(id types.ExecutionID, lease processEvidenceLease) {
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
+	reservation, ok := e.reservations[id]
+	if !ok || reservation.lease != lease.token {
+		return
+	}
+	close(reservation.ready)
 	delete(e.reservations, id)
 }
 
-func (e *Executor) commitProcessEvidenceReservation(id types.ExecutionID, h *executor.ProcessHandle) error {
+func (e *Executor) commitProcessEvidenceReservation(id types.ExecutionID, h *executor.ProcessHandle, lease processEvidenceLease) error {
 	evidence := types.ProcessTreeEvidence{Process: types.ProcessIdentity{
 		PID: h.PID, StartFingerprint: fmt.Sprintf("%d", h.StartedAt.UnixNano()),
 		TreeID: fmt.Sprintf("pipe:%d:%d", h.PID, h.StartedAt.UnixNano()),
@@ -187,11 +192,11 @@ func (e *Executor) commitProcessEvidenceReservation(id types.ExecutionID, h *exe
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
 	reservation, exists := e.reservations[id]
-	if !exists {
+	if !exists || reservation.lease != lease.token || !reservation.consumed {
 		return fmt.Errorf("pipe: missing process evidence reservation for execution %q", id)
 	}
 	e.evidenceOrder = append(e.evidenceOrder, id)
-	e.evidence[id] = processEvidence{tree: evidence, handle: h, holds: reservation.holds, ready: reservation.ready}
+	e.evidence[id] = processEvidence{tree: evidence, handle: h, holds: reservation.holds, lease: reservation.lease, ready: reservation.ready}
 	delete(e.reservations, id)
 	return nil
 }
@@ -202,8 +207,8 @@ func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.Proce
 	if err := e.reserveProcessEvidence(id); err != nil {
 		return err
 	}
-	if err := e.commitProcessEvidenceReservation(id, h); err != nil {
-		e.rollbackProcessEvidenceReservation(id)
+	if err := e.commitProcessEvidenceReservation(id, h, processEvidenceLease{}); err != nil {
+		e.rollbackProcessEvidenceReservation(id, processEvidenceLease{})
 		return err
 	}
 	return nil
@@ -406,16 +411,31 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 // SendEvents streams raw bytes from both pipes. It deliberately does not use
 // IOManager: line framing would turn invalid or unterminated bytes into text.
 func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
-	if err := executionID.Validate(); err != nil {
+	if err := e.reserveProcessEvidence(executionID); err != nil {
 		return nil, err
 	}
-	if err := e.reserveProcessEvidence(executionID); err != nil {
+	return e.sendEvents(ctx, executionID, processEvidenceLease{}, msg, sink)
+}
+
+// SendEventsWithProcessEvidenceLease is private Swarm plumbing. It consumes a
+// matching lease before stdin creation or process spawn.
+func (e *Executor) SendEventsWithProcessEvidenceLease(ctx context.Context, executionID types.ExecutionID, opaque any, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	lease, err := e.consumeProcessEvidenceLease(executionID, opaque)
+	if err != nil {
+		return nil, err
+	}
+	return e.sendEvents(ctx, executionID, lease, msg, sink)
+}
+
+func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID, lease processEvidenceLease, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	if err := executionID.Validate(); err != nil {
+		e.rollbackProcessEvidenceReservation(executionID, lease)
 		return nil, err
 	}
 	reserved := true
 	defer func() {
 		if reserved {
-			e.rollbackProcessEvidenceReservation(executionID)
+			e.rollbackProcessEvidenceReservation(executionID, lease)
 		}
 	}()
 	if sink == nil {
@@ -447,7 +467,12 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 		return nil, types.NewExecutorError("failed to start "+args.Command, err, "")
 	}
 	defer executor.SharedPM.Cleanup(h)
-	if err := e.commitProcessEvidenceReservation(executionID, h); err != nil {
+	if e.commitEvidence != nil {
+		err = e.commitEvidence()
+	} else {
+		err = e.commitProcessEvidenceReservation(executionID, h, lease)
+	}
+	if err != nil {
 		h.MarkDrained()
 		if stdin != nil {
 			_ = stdin.Close()

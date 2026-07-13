@@ -2,6 +2,10 @@ package pipe
 
 import (
 	"context"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -12,6 +16,113 @@ import (
 	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+const processEvidenceLeaseHelperEnv = "AIMUX_PIPE_PROCESS_EVIDENCE_LEASE_HELPER"
+const processEvidenceLeaseFileEnv = "AIMUX_PIPE_PROCESS_EVIDENCE_LEASE_FILE"
+
+func TestProcessEvidenceLeaseSideEffectHelper(t *testing.T) {
+	if os.Getenv(processEvidenceLeaseHelperEnv) != "1" {
+		return
+	}
+	if err := os.WriteFile(os.Getenv(processEvidenceLeaseFileEnv), []byte("started"), 0o600); err != nil {
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+func processEvidenceLeaseMessage(file string) types.Message {
+	return types.Message{Spawn: &types.SpawnArgs{
+		Command: os.Args[0],
+		Args:    []string{"-test.run=^TestProcessEvidenceLeaseSideEffectHelper$", "-test.count=1"},
+		Env: map[string]string{
+			processEvidenceLeaseHelperEnv: "1",
+			processEvidenceLeaseFileEnv:   file,
+		},
+	}}
+}
+
+func TestProcessEvidenceLeaseRejectsUnownedAndInvalidConsumersBeforeSideEffects(t *testing.T) {
+	e := New()
+	file := t.TempDir() + string(os.PathSeparator) + "started"
+	lease, _, ok := e.AcquireProcessEvidenceLease("owned")
+	if !ok {
+		t.Fatal("acquire lease")
+	}
+	var stdinCalls atomic.Int32
+	e.stdinPipe = func(*exec.Cmd) (io.WriteCloser, error) {
+		stdinCalls.Add(1)
+		return nil, errors.New("unexpected stdin setup")
+	}
+	direct := processEvidenceLeaseMessage(file)
+	direct.Spawn.Stdin = "attacker"
+	if _, err := e.SendEvents(context.Background(), "owned", direct, nil); err == nil {
+		t.Fatal("unowned direct caller consumed held lease")
+	}
+	if stdinCalls.Load() != 0 {
+		t.Fatalf("unowned caller reached stdin setup %d times", stdinCalls.Load())
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("unowned caller performed side effect: %v", err)
+	}
+	if _, err := e.SendEventsWithProcessEvidenceLease(context.Background(), "owned", struct{}{}, processEvidenceLeaseMessage(file), nil); err == nil {
+		t.Fatal("wrong lease consumed reservation")
+	}
+	if _, err := e.SendEventsWithProcessEvidenceLease(context.Background(), "owned", lease, processEvidenceLeaseMessage(file), nil); err != nil {
+		t.Fatalf("owned execution: %v", err)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("owned execution did not start helper: %v", err)
+	}
+	if _, err := e.SendEventsWithProcessEvidenceLease(context.Background(), "owned", lease, processEvidenceLeaseMessage(file), nil); err == nil {
+		t.Fatal("consumed lease started a second process")
+	}
+	e.ReleaseProcessEvidenceLease("owned", lease)
+}
+
+func TestProcessEvidenceLeaseAbortClosesFutureAndOldReleaseCannotTouchNewGeneration(t *testing.T) {
+	e := New()
+	old, _, ok := e.AcquireProcessEvidenceLease("same")
+	if !ok {
+		t.Fatal("acquire old lease")
+	}
+	e.ReleaseProcessEvidenceLease("same", old)
+	newLease, ready, ok := e.AcquireProcessEvidenceLease("same")
+	if !ok {
+		t.Fatal("acquire new lease")
+	}
+	e.ReleaseProcessEvidenceLease("same", old)
+	if _, err := e.SendEvents(context.Background(), "same", processEvidenceLeaseMessage(t.TempDir()+string(os.PathSeparator)+"stale"), nil); err == nil {
+		t.Fatal("old release removed newer lease")
+	}
+	e.stdinPipe = func(*exec.Cmd) (io.WriteCloser, error) { return nil, errors.New("stdin failed") }
+	if _, err := e.SendEventsWithProcessEvidenceLease(context.Background(), "same", newLease, types.Message{Spawn: &types.SpawnArgs{Command: os.Args[0], Stdin: "x"}}, nil); err == nil {
+		t.Fatal("stdin setup failure unexpectedly succeeded")
+	}
+	if _, open := <-ready; open {
+		t.Fatal("aborted lease published process evidence")
+	}
+	if _, _, ok := e.AcquireProcessEvidenceLease("same"); !ok {
+		t.Fatal("aborted lease did not reclaim capacity")
+	}
+}
+
+func TestProcessEvidenceLeaseCommitFailureClosesFuture(t *testing.T) {
+	e := New()
+	e.commitEvidence = func() error { return errors.New("attach failed") }
+	lease, ready, ok := e.AcquireProcessEvidenceLease("attach-failure")
+	if !ok {
+		t.Fatal("acquire lease")
+	}
+	if _, err := e.SendEventsWithProcessEvidenceLease(context.Background(), "attach-failure", lease, processEvidenceLeaseMessage(t.TempDir()+string(os.PathSeparator)+"unused"), nil); err == nil {
+		t.Fatal("commit failure unexpectedly succeeded")
+	}
+	if _, open := <-ready; open {
+		t.Fatal("commit failure left evidence future open")
+	}
+	if _, _, ok := e.AcquireProcessEvidenceLease("attach-failure"); !ok {
+		t.Fatal("commit failure did not reclaim capacity")
+	}
+}
 
 func TestProcessEvidenceRetentionNeverEvictsLiveRecords(t *testing.T) {
 	e := New()
@@ -74,13 +185,24 @@ func TestProcessEvidenceRetentionEvictsFinalUnconfirmedRecords(t *testing.T) {
 func TestProcessEvidenceRetentionHoldsFinalSnapshotUntilReleased(t *testing.T) {
 	e := New()
 	const pinned = types.ExecutionID("pinned")
-	e.HoldProcessEvidence(pinned)
+	pinnedLease, _, ok := e.AcquireProcessEvidenceLease(pinned)
+	if !ok {
+		t.Fatal("acquire pinned lease")
+	}
+	pinnedToken, err := e.consumeProcessEvidenceLease(pinned, pinnedLease)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < processEvidenceLimit; i++ {
 		id := types.ExecutionID(string(rune('a' + i)))
+		lease := processEvidenceLease{}
 		if i == 0 {
 			id = pinned
+			lease = pinnedToken
+		} else if err := e.reserveProcessEvidence(id); err != nil {
+			t.Fatalf("reserve %d: %v", i, err)
 		}
-		if err := e.retainProcessEvidence(id, &executor.ProcessHandle{PID: i + 1, StartedAt: time.Unix(0, int64(i+1))}); err != nil {
+		if err := e.commitProcessEvidenceReservation(id, &executor.ProcessHandle{PID: i + 1, StartedAt: time.Unix(0, int64(i+1))}, lease); err != nil {
 			t.Fatalf("retain %d: %v", i, err)
 		}
 		e.finalizeProcessEvidence(id)
@@ -91,7 +213,7 @@ func TestProcessEvidenceRetentionHoldsFinalSnapshotUntilReleased(t *testing.T) {
 	if _, err := e.ProcessTreeEvidence(nil, pinned); err != nil {
 		t.Fatalf("held final evidence was evicted: %v", err)
 	}
-	e.ReleaseProcessEvidence(pinned)
+	e.ReleaseProcessEvidenceLease(pinned, pinnedLease)
 	if err := e.retainProcessEvidence("after-release", &executor.ProcessHandle{PID: 1000, StartedAt: time.Now()}); err != nil {
 		t.Fatalf("released final evidence was not reclaimable: %v", err)
 	}
@@ -119,14 +241,16 @@ func TestProcessTreeEvidenceDoesNotTreatRootExitAsManagedTreeStop(t *testing.T) 
 func TestProcessEvidenceReservationsAreHardBoundedAndReusable(t *testing.T) {
 	e := New()
 	var acquired atomic.Int32
+	var leases sync.Map
 	var wg sync.WaitGroup
 	for i := 0; i < processEvidenceLimit*2; i++ {
 		id := types.ExecutionID("reservation-" + string(rune(i)))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if e.HoldProcessEvidence(id) {
+			if lease, _, ok := e.AcquireProcessEvidenceLease(id); ok {
 				acquired.Add(1)
+				leases.Store(id, lease)
 			}
 		}()
 	}
@@ -141,12 +265,16 @@ func TestProcessEvidenceReservationsAreHardBoundedAndReusable(t *testing.T) {
 		t.Fatalf("retained reservations = %d, want %d", reserved, processEvidenceLimit)
 	}
 	for i := 0; i < processEvidenceLimit*2; i++ {
-		e.ReleaseProcessEvidence(types.ExecutionID("reservation-" + string(rune(i))))
+		id := types.ExecutionID("reservation-" + string(rune(i)))
+		if lease, ok := leases.Load(id); ok {
+			e.ReleaseProcessEvidenceLease(id, lease)
+		}
 	}
-	if !e.HoldProcessEvidence("reusable") {
+	lease, _, ok := e.AcquireProcessEvidenceLease("reusable")
+	if !ok {
 		t.Fatal("released reservation capacity was not reusable")
 	}
-	e.ReleaseProcessEvidence("reusable")
+	e.ReleaseProcessEvidenceLease("reusable", lease)
 }
 
 func TestSendEventsSpawnFailureRollsBackReservation(t *testing.T) {
@@ -160,10 +288,11 @@ func TestSendEventsSpawnFailureRollsBackReservation(t *testing.T) {
 	if reserved != 0 {
 		t.Fatalf("spawn failure left %d reservations", reserved)
 	}
-	if !e.HoldProcessEvidence("reusable-after-spawn-failure") {
+	lease, _, ok := e.AcquireProcessEvidenceLease("reusable-after-spawn-failure")
+	if !ok {
 		t.Fatal("spawn failure reservation capacity was not reusable")
 	}
-	e.ReleaseProcessEvidence("reusable-after-spawn-failure")
+	e.ReleaseProcessEvidenceLease("reusable-after-spawn-failure", lease)
 }
 
 func TestSwarmNaturalRootExitWithUnconfirmedPipeTreeFails(t *testing.T) {

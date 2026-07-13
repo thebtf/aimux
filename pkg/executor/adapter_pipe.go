@@ -179,31 +179,32 @@ func (a *CLIPipeAdapter) ProcessTreeEvidence(ctx context.Context, id types.Execu
 	return provider.ProcessTreeEvidence(ctx, id)
 }
 
-type processEvidenceHolder interface {
-	HoldProcessEvidence(types.ExecutionID) bool
-	ProcessEvidenceReady(types.ExecutionID) <-chan types.ProcessTreeEvidence
-	ReleaseProcessEvidence(types.ExecutionID)
+type ownedProcessEvidenceExecutor interface {
+	AcquireProcessEvidenceLease(types.ExecutionID) (any, <-chan types.ProcessTreeEvidence, bool)
+	SendEventsWithProcessEvidenceLease(context.Context, types.ExecutionID, any, types.Message, types.ExecutorEventSink) (*types.Response, error)
+	ReleaseProcessEvidenceLease(types.ExecutionID, any)
 }
 
-// HoldProcessEvidence and ReleaseProcessEvidence are private Swarm plumbing
-// forwarded only to stateless legacy executors that retain exact process state.
-func (a *CLIPipeAdapter) HoldProcessEvidence(id types.ExecutionID) bool {
-	if holder, ok := a.legacy.(processEvidenceHolder); ok && a.session == nil {
-		return holder.HoldProcessEvidence(id)
+// AcquireProcessEvidenceLease, SendEventsWithProcessEvidenceLease, and
+// ReleaseProcessEvidenceLease are private Swarm plumbing. They intentionally
+// have no fallback: a leased call must never become an unowned SendEvents call.
+func (a *CLIPipeAdapter) AcquireProcessEvidenceLease(id types.ExecutionID) (any, <-chan types.ProcessTreeEvidence, bool) {
+	if holder, ok := a.legacy.(ownedProcessEvidenceExecutor); ok && a.session == nil {
+		return holder.AcquireProcessEvidenceLease(id)
 	}
-	return false
+	return nil, nil, false
 }
 
-func (a *CLIPipeAdapter) ProcessEvidenceReady(id types.ExecutionID) <-chan types.ProcessTreeEvidence {
-	if holder, ok := a.legacy.(processEvidenceHolder); ok && a.session == nil {
-		return holder.ProcessEvidenceReady(id)
+func (a *CLIPipeAdapter) SendEventsWithProcessEvidenceLease(ctx context.Context, id types.ExecutionID, lease any, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	if holder, ok := a.legacy.(ownedProcessEvidenceExecutor); ok && a.session == nil {
+		return holder.SendEventsWithProcessEvidenceLease(ctx, id, lease, msg, sink)
 	}
-	return nil
+	return nil, fmt.Errorf("pipe adapter: process evidence lease unavailable")
 }
 
-func (a *CLIPipeAdapter) ReleaseProcessEvidence(id types.ExecutionID) {
-	if holder, ok := a.legacy.(processEvidenceHolder); ok && a.session == nil {
-		holder.ReleaseProcessEvidence(id)
+func (a *CLIPipeAdapter) ReleaseProcessEvidenceLease(id types.ExecutionID, lease any) {
+	if holder, ok := a.legacy.(ownedProcessEvidenceExecutor); ok && a.session == nil {
+		holder.ReleaseProcessEvidenceLease(id, lease)
 	}
 }
 
