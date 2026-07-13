@@ -72,7 +72,9 @@ type ExecutionCanceller interface {
 }
 
 // ProcessEvidenceProvider is an optional ExecutorV2 capability for inspecting
-// the process generation and tree owned by an execution.
+// the process generation and tree owned by an execution. Implementations must
+// return promptly when ctx is cancelled; callers still independently bound the
+// inspection because this does not imply exact finality at executor return.
 type ProcessEvidenceProvider interface {
 	ProcessTreeEvidence(ctx context.Context, executionID ExecutionID) (ProcessTreeEvidence, error)
 }

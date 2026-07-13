@@ -62,17 +62,19 @@ func New() *Executor {
 	return &Executor{evidence: make(map[types.ExecutionID]processEvidence), evidenceHolds: make(map[types.ExecutionID]int)}
 }
 
-// HoldProcessEvidence keeps an exact result available until Swarm has copied
-// it into its terminal record. It is paired with ReleaseProcessEvidence.
-func (e *Executor) HoldProcessEvidence(id types.ExecutionID) {
+// HoldProcessEvidence keeps an exact stateless result available until Swarm has
+// copied it into its terminal record. Its true result is the runtime-qualified
+// exact-final handoff paired with ReleaseProcessEvidence.
+func (e *Executor) HoldProcessEvidence(id types.ExecutionID) bool {
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
 	if record, ok := e.evidence[id]; ok {
 		record.holds++
 		e.evidence[id] = record
-		return
+		return true
 	}
 	e.evidenceHolds[id]++
+	return true
 }
 
 // ReleaseProcessEvidence makes a final result reclaimable once its immutable

@@ -22,6 +22,11 @@ const maxTerminalExecutions = 256
 // native cancellers that honor their context contract.
 const cancellationResolutionTimeout = 10 * time.Second
 
+// processEvidenceCaptureTimeout uses the cancellation-resolution policy because
+// process evidence is optional inspection work, never a reason to hold a
+// terminal indefinitely. Tests shorten it through this package-private seam.
+var processEvidenceCaptureTimeout = cancellationResolutionTimeout
+
 // ExecutionInspection is an in-memory, fenced snapshot. It intentionally
 // carries no durable binding; CR-003 owns recovery and persistence.
 type ExecutionInspection struct {
@@ -84,7 +89,9 @@ const (
 // adapter. The lease keeps the exact final snapshot available until Swarm has
 // copied it into its immutable execution record; it is not a public capability.
 type processEvidenceLease interface {
-	HoldProcessEvidence(types.ExecutionID)
+	// HoldProcessEvidence reports whether this runtime acquired the stateless
+	// exact-final handoff. Inspection capability alone is not enough.
+	HoldProcessEvidence(types.ExecutionID) bool
 	ReleaseProcessEvidence(types.ExecutionID)
 }
 
@@ -159,7 +166,7 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	admission := types.ExecutorEventSinkFunc(record.tryAdmit)
 	var releaseEvidence func()
 	if holder, ok := exec.(processEvidenceLease); ok {
-		holder.HoldProcessEvidence(id)
+		record.exactProcessEvidence = holder.HoldProcessEvidence(id)
 		releaseEvidence = func() { holder.ReleaseProcessEvidence(id) }
 		defer releaseEvidence()
 	}
@@ -176,8 +183,8 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	if s.beforeOutcomeCapture != nil {
 		s.beforeOutcomeCapture()
 	}
-	record.captureProcessEvidence()
 	record.markExecutionReturned(response, err)
+	record.captureProcessEvidence()
 	if s.postExecutorReturn != nil {
 		s.postExecutorReturn()
 	}
@@ -433,11 +440,26 @@ func (record *executionRecord) captureProcessEvidence() {
 	if !ok {
 		return
 	}
-	evidence, err := provider.ProcessTreeEvidence(context.Background(), record.id)
+	ctx, cancel := context.WithTimeout(context.Background(), processEvidenceCaptureTimeout)
+	defer cancel()
+	type captureResult struct {
+		evidence types.ProcessTreeEvidence
+		err      error
+	}
+	resultCh := make(chan captureResult, 1)
+	go func() {
+		evidence, err := provider.ProcessTreeEvidence(ctx, record.id)
+		resultCh <- captureResult{evidence: evidence, err: err}
+	}()
+	var result captureResult
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return
+	}
 	record.mu.Lock()
-	record.exactProcessEvidence = true
-	if err == nil && evidence.Process.Validate() == nil {
-		record.processEvidence = evidence
+	if result.err == nil && result.evidence.Process.Validate() == nil {
+		record.processEvidence = result.evidence
 		record.hasProcessEvidence = true
 	}
 	record.mu.Unlock()

@@ -95,6 +95,17 @@ func TestCLIPipeAdapterProcessTreeEvidenceForwardsOnlyStatelessProvider(t *testi
 	}
 }
 
+func TestCLIPipeAdapterHoldProcessEvidenceQualifiesOnlyStatelessPipe(t *testing.T) {
+	legacy := pipe.New()
+	if !executor.NewCLIPipeAdapter(legacy).HoldProcessEvidence("stateless") {
+		t.Fatal("stateless pipe adapter did not acquire exact evidence handoff")
+	}
+	executor.NewCLIPipeAdapter(legacy).ReleaseProcessEvidence("stateless")
+	if executor.NewCLIPipeAdapterWithSession(legacy, &mockSession{}).HoldProcessEvidence("session") {
+		t.Fatal("session-bound pipe adapter falsely acquired exact evidence handoff")
+	}
+}
+
 func TestCLIPipeAdapterSendEventsLegacyFallbackIsExplicitlyTextOnly(t *testing.T) {
 	mock := &mockLegacyExecutor{outputLines: []string{"line"}, result: &types.Result{Content: "line\n"}}
 	adapter := executor.NewCLIPipeAdapter(mock)

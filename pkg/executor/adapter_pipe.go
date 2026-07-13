@@ -180,16 +180,17 @@ func (a *CLIPipeAdapter) ProcessTreeEvidence(ctx context.Context, id types.Execu
 }
 
 type processEvidenceHolder interface {
-	HoldProcessEvidence(types.ExecutionID)
+	HoldProcessEvidence(types.ExecutionID) bool
 	ReleaseProcessEvidence(types.ExecutionID)
 }
 
 // HoldProcessEvidence and ReleaseProcessEvidence are private Swarm plumbing
 // forwarded only to stateless legacy executors that retain exact process state.
-func (a *CLIPipeAdapter) HoldProcessEvidence(id types.ExecutionID) {
+func (a *CLIPipeAdapter) HoldProcessEvidence(id types.ExecutionID) bool {
 	if holder, ok := a.legacy.(processEvidenceHolder); ok && a.session == nil {
-		holder.HoldProcessEvidence(id)
+		return holder.HoldProcessEvidence(id)
 	}
+	return false
 }
 
 func (a *CLIPipeAdapter) ReleaseProcessEvidence(id types.ExecutionID) {
