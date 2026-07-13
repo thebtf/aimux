@@ -46,7 +46,10 @@ func TestSanitizeTerminalResultAmbiguousJSON(t *testing.T) {
 		want  string
 	}{
 		{"duplicate_sensitive_key", `{"credential":"short-secret","credential":"other"}`, invalidStructured},
+		{"duplicate_safe_key", `{"provider":"codex","provider":"other"}`, invalidStructured},
 		{"malformed_sensitive_object", `{"credential":"short-secret",`, invalidStructured},
+		{"malformed_escaped_sensitive_object", `{"cre\\u0064ential":"short-secret",`, invalidStructured},
+		{"malformed_nested_array", `[{"provider":"codex"},{"reasoning":"` + terminalSinksPrivate + `",]`, invalidStructured},
 		{"valid_sensitive_object", `{"credential":"short-secret","provider":"codex"}`, `{"credential":"[REDACTED]","provider":"codex"}`},
 		{"valid_safe_object", `{"provider":"codex","exit_code":0}`, `{"provider":"codex","exit_code":0}`},
 		{"valid_scalar", `"safe scalar"`, `"safe scalar"`},
@@ -57,6 +60,74 @@ func TestSanitizeTerminalResultAmbiguousJSON(t *testing.T) {
 				t.Fatalf("sanitizeTerminalResult(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+type terminalSinksTypedMetadata struct {
+	Credential string `json:"credential"`
+	Nested     any    `json:"nested"`
+}
+
+type terminalSinksMetadataAlias map[string]any
+
+func TestSanitizeTaskMetadataForStorageNormalizesTypedValues(t *testing.T) {
+	metadata := map[string]any{
+		"typed_map":   terminalSinksMetadataAlias{"token": "short-secret"},
+		"typed_slice": []terminalSinksTypedMetadata{{Credential: "short-secret"}},
+		"pointer":     &terminalSinksTypedMetadata{Nested: json.RawMessage(`{"analysis":"` + terminalSinksPrivate + `"}`)},
+		"large":       json.Number("9007199254740993"),
+	}
+	sanitized, err := sanitizeTaskMetadataForStorage(metadata)
+	if err != nil {
+		t.Fatalf("sanitizeTaskMetadataForStorage: %v", err)
+	}
+	assertTerminalSinksSafe(t, "typed metadata", stringifyTerminalSinks(sanitized))
+	if got, ok := sanitized["large"].(json.Number); !ok || got.String() != "9007199254740993" {
+		t.Fatalf("large = %#v, want exact json.Number", sanitized["large"])
+	}
+}
+
+func TestSanitizeTaskMetadataForStorageRejectsCycles(t *testing.T) {
+	cycle := map[string]any{}
+	cycle["self"] = cycle
+	if _, err := sanitizeTaskMetadataForStorage(cycle); err == nil {
+		t.Fatal("sanitizeTaskMetadataForStorage(cycle) = nil error, want rejection")
+	}
+}
+
+func TestTaskStoreMetadataWritersRejectCyclesWithoutMutation(t *testing.T) {
+	store := newTestStore(t)
+	active := makeTask("cycle-metadata-active", "metadata-sinks", TaskStatusRunning)
+	active.Metadata = map[string]any{"provider": "codex"}
+	if err := store.Create(active); err != nil {
+		t.Fatalf("Create safe task: %v", err)
+	}
+	cycle := map[string]any{}
+	cycle["self"] = cycle
+	if err := store.SetMetadata(active.ID, cycle); err == nil {
+		t.Fatal("SetMetadata(cycle) = nil error, want rejection")
+	}
+	stored, err := store.Get(active.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Metadata["provider"] != "codex" {
+		t.Fatalf("metadata after rejected cycle = %#v, want unchanged", stored.Metadata)
+	}
+	for _, task := range []*Task{
+		makeTask("cycle-metadata-create", "metadata-sinks", TaskStatusPending),
+		makeTask("cycle-metadata-import", "metadata-sinks", TaskStatusCompleted),
+	} {
+		task.Metadata = cycle
+		var err error
+		if task.Status == TaskStatusPending {
+			err = store.Create(task)
+		} else {
+			err = store.Import(task)
+		}
+		if err == nil {
+			t.Fatalf("%s(cycle) = nil error, want rejection", task.Status)
+		}
 	}
 }
 

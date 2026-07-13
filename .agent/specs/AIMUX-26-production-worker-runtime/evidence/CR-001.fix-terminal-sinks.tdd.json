@@ -86,5 +86,51 @@
       "status": "WARN",
       "note": "Focused package measurement only; the task specification does not set a blocking coverage threshold."
     }
+  },
+  "second_amendment": {
+    "red": {
+      "observed_at": "2026-07-13T04:07:00+03:00",
+      "tests": ["TestSanitizeTerminalResultAmbiguousJSON", "TestSanitizeTaskMetadataForStorageNormalizesTypedValues", "TestSanitizeTaskMetadataForStorageRejectsCycles", "TestReviewGatePublicSurfacesFailClosedWhenAllPassesUnavailable", "TestReviewGatePublicSurfacesPropagateRetryPolicyToEveryLeaf"],
+      "result": "RED: missing cycle-aware metadata normalization contract; persisted json.Number confidence and retry controls failed public server assertions."
+    },
+    "green": {
+      "observed_at": "2026-07-13T04:09:00+03:00",
+      "commands": [
+        "$env:GOCACHE='D:\\tmp\\aimux26-green-loom3'; go test . -run 'Test(TaskStore_FailActiveSanitizesDurableAndLog|SanitizeTerminalResultAmbiguousJSON|SanitizeTaskMetadataForStorage|TaskStoreMetadataWritersRejectCyclesWithoutMutation|LoomEngine_SubmitSanitizesGenericWorkerMetadata|TaskStore_MetadataSinksSanitizeGenericMetadata)' -count=1",
+        "$env:GOCACHE='D:\\tmp\\aimux26-green-all'; go test ./pkg/server ./pkg/executor/review -run 'Test(PersistedMetadataNumbersPreservePublicControls|TaskSnapshotResourceProjectsSanitizedTypedWorkerMetadata|ReviewGatePublicSurfaces(FailClosedWhenAllPassesUnavailable|PropagateRetryPolicyToEveryLeaf)|PersistedJSONNumberReviewControls)' -count=1"
+      ],
+      "result": "PASS: terminal malformed/duplicate policy, typed metadata through Submit/replay/resource, cycle rejection, public review controls, and review timeout controls passed."
+    },
+    "refactor": {
+      "applied": false,
+      "reason": "One canonical encoding/json normalization boundary plus local numeric readers is the smallest repair; extracting a new policy layer would add indirection without another consumer."
+    },
+    "prove_it": {
+      "mutations": [
+        {"mutation": "replace invalid structured terminal marker with plain terminal text", "result": "FAIL named TestSanitizeTerminalResultAmbiguousJSON assertions for duplicate, escaped malformed, and nested-array content"},
+        {"mutation": "return raw metadata before normalization", "result": "FAIL named typed metadata leak and TestSanitizeTaskMetadataForStorageRejectsCycles assertions"},
+        {"mutation": "reject json.Number in server metadataInt", "result": "FAIL named persisted rounds/max_attempts assertions"}
+      ],
+      "result": "PASS: all mutations were restored exactly; the first numeric mutation's unused import compile failure was discarded and replaced by the assertion-level mutation above."
+    },
+    "race": {
+      "commands": [
+        "$env:GOCACHE='D:\\tmp\\aimux26-race-loom'; go test -race . -run 'Test(TaskStore_FailActiveSanitizesDurableAndLog|SanitizeTerminalResultAmbiguousJSON|SanitizeTaskMetadataForStorage|TaskStoreMetadataWritersRejectCyclesWithoutMutation|LoomEngine_SubmitSanitizesGenericWorkerMetadata|TaskStore_MetadataSinksSanitizeGenericMetadata|FailTaskSanitizesDurableErrorAndLog|LegacyResultWritersSanitizeTerminalContent|LoomEngine_FailActivePreventsLateWorkerResultOverwrite|LoomEngine_Cancel|SanitizeAuthorityJSON_RejectsDuplicateObjectKeys)' -count=1",
+        "$env:GOCACHE='D:\\tmp\\aimux26-race-server'; go test -race ./pkg/server -run 'Test(LoomTerminalResultSanitizesDurableAndStatusSinks|SessionsKill_FailsLoomTasksBySessionMetadata|SessionsCancel_FailsPendingLoomTask|AdaptReviewPassOutputFailsClosedOnMalformedJSON|AdaptReviewPassOutputAcceptsStructuredJSON|ProfileTaskWorkerReviewLeavesRedactBeforeStatusContent|ProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail|ProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput|ProfileTaskWorkerProgressSinksKeepTextAndSafeJSON|ProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage|ReviewGatePublicSurfaces(FailClosedWhenAllPassesUnavailable|PropagateRetryPolicyToEveryLeaf)|PersistedMetadataNumbersPreservePublicControls|TaskSnapshotResourceProjectsSanitizedTypedWorkerMetadata)' -count=1",
+        "$env:GOCACHE='D:\\tmp\\aimux26-race-review'; go test -race ./pkg/executor/review -run '^TestPersistedJSONNumberReviewControls$' -count=1"
+      ],
+      "result": "PASS"
+    },
+    "coverage": {
+      "command": "$env:GOCACHE='D:\\tmp\\aimux26-coverage'; go test . -cover -run 'Test(TaskStore_FailActiveSanitizesDurableAndLog|SanitizeTerminalResultAmbiguousJSON|SanitizeTaskMetadataForStorage|TaskStoreMetadataWritersRejectCyclesWithoutMutation|LoomEngine_SubmitSanitizesGenericWorkerMetadata|TaskStore_MetadataSinksSanitizeGenericMetadata)' -count=1",
+      "percent": 29.1,
+      "threshold": 80,
+      "status": "WARN",
+      "note": "Focused Loom package coverage; the CR has no blocking coverage threshold."
+    },
+    "build": {
+      "commands": ["$env:GOCACHE='D:\\tmp\\aimux26-build-root'; go build ./...", "$env:GOCACHE='D:\\tmp\\aimux26-build-loom'; go build ./...", "git diff --check"],
+      "result": "PASS"
+    }
   }
 }

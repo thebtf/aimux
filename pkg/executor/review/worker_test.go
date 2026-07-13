@@ -539,3 +539,16 @@ func assertSafeDurableReviewContent(t *testing.T, content string) {
 		t.Fatalf("durable review content is not valid JSON: %s", content)
 	}
 }
+
+func TestPersistedJSONNumberReviewControls(t *testing.T) {
+	metadata := map[string]any{"max_attempts": json.Number("2"), "timeout_seconds": json.Number("17")}
+	if got, want := timeoutSeconds(metadata, 0, 3), 17; got != want {
+		t.Fatalf("timeoutSeconds = %d, want %d", got, want)
+	}
+	if got, ok := metadataInt(metadata, "max_attempts"); !ok || got != 2 {
+		t.Fatalf("max_attempts = %d/%v, want 2/true", got, ok)
+	}
+	if got := timeoutSeconds(map[string]any{"timeout_seconds": json.Number("1.5")}, 0, 3); got != 3 {
+		t.Fatalf("fractional timeout_seconds = %d, want default 3", got)
+	}
+}

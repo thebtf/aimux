@@ -40,5 +40,26 @@
       "generic metadata task leaked credential and private reasoning",
       "direct/replay task leaked token and converted 9007199254740993 to 9007199254740992"
     ]
+  },
+  "second_amendment_red": {
+    "observed_at": "2026-07-13T04:07:00+03:00",
+    "test_file": "loom/terminal_sinks_amendment_test.go",
+    "test_names": [
+      "TestSanitizeTerminalResultAmbiguousJSON",
+      "TestSanitizeTaskMetadataForStorageNormalizesTypedValues",
+      "TestSanitizeTaskMetadataForStorageRejectsCycles",
+      "TestReviewGatePublicSurfacesFailClosedWhenAllPassesUnavailable",
+      "TestReviewGatePublicSurfacesPropagateRetryPolicyToEveryLeaf"
+    ],
+    "commands": [
+      "$env:GOCACHE='D:\\tmp\\aimux26-red-loom'; go test . -run 'Test(SanitizeTerminalResultAmbiguousJSON|SanitizeTaskMetadataForStorage)' -count=1",
+      "$env:GOCACHE='D:\\tmp\\aimux26-red-server'; go test ./pkg/server -run 'TestReviewGatePublicSurfaces(FailClosedWhenAllPassesUnavailable|PropagateRetryPolicyToEveryLeaf)' -count=1"
+    ],
+    "failure_reason": "The new metadata normalization contract did not exist; candidate public review surfaces misread persisted json.Number controls, returning confidence 1 instead of 0 and omitting max_attempts.",
+    "runner_stdout_excerpt": [
+      "undefined: sanitizeTaskMetadataForStorage",
+      "terminal confidence_score = 1, want 0 for zero-pass gate",
+      "review_structural max_attempts = <nil>, want 2"
+    ]
   }
 }

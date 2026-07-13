@@ -796,11 +796,15 @@ func (s *TaskStore) CommitCreated(ctx context.Context, command CreateTask) (Comm
 	if err := validateCreateTask(command); err != nil {
 		return CommitResult{}, err
 	}
+	metadata, err := sanitizeTaskMetadataForStorage(command.Metadata)
+	if err != nil {
+		return CommitResult{}, fmt.Errorf("loom authority: normalize create metadata: %w", err)
+	}
 	envJSON, err := marshalJSON(command.Env)
 	if err != nil {
 		return CommitResult{}, fmt.Errorf("loom authority: marshal create env: %w", err)
 	}
-	metadataJSON, err := marshalJSON(command.Metadata)
+	metadataJSON, err := marshalJSON(metadata)
 	if err != nil {
 		return CommitResult{}, fmt.Errorf("loom authority: marshal create metadata: %w", err)
 	}
@@ -1592,6 +1596,27 @@ func sanitizeAuthorityJSONValue(value any) (any, bool) {
 	default:
 		return value, false
 	}
+}
+
+// sanitizeTaskMetadataForStorage normalizes all supported Go values through
+// encoding/json before the shared structural sanitizer sees them. That makes
+// typed values safe and rejects cycles before any durable mutation.
+func sanitizeTaskMetadataForStorage(metadata map[string]any) (map[string]any, error) {
+	if metadata == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("invalid task metadata: %w", err)
+	}
+	var normalized map[string]any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&normalized); err != nil {
+		return nil, fmt.Errorf("decode task metadata: %w", err)
+	}
+	sanitized, _ := sanitizeAuthorityJSONValue(normalized)
+	return sanitized.(map[string]any), nil
 }
 
 func authoritySensitiveJSONKey(key string) bool {

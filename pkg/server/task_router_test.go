@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -13,6 +14,26 @@ import (
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/server/classifier"
 )
+
+func TestPersistedMetadataNumbersPreservePublicControls(t *testing.T) {
+	task := &loom.Task{Metadata: map[string]any{
+		"confidence_score": json.Number("0.25"),
+		"rounds":           json.Number("3"),
+		"max_attempts":     json.Number("2"),
+	}}
+	result := buildTaskResult(task, "", 1, nil)
+	if result.ConfidenceScore != 0.25 || result.Rounds != 3 {
+		t.Fatalf("TaskResult = %#v, want persisted confidence and rounds", result)
+	}
+	if got := fallbackOptionsFromTaskMetadata(task.Metadata).MaxAttempts; got != 2 {
+		t.Fatalf("max_attempts = %d, want 2", got)
+	}
+	for _, value := range []json.Number{"2.5", "9223372036854775808"} {
+		if _, ok := metadataInt(map[string]any{"value": value}, "value"); ok {
+			t.Fatalf("metadataInt(%q) accepted non-integral or out-of-range value", value)
+		}
+	}
+}
 
 func TestTaskRouterDispatchExplicitTaskClass(t *testing.T) {
 	t.Parallel()

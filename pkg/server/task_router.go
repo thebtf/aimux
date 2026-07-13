@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -469,6 +472,9 @@ func metadataFloat(metadata map[string]any, key string) (float64, bool) {
 		return float64(typed), true
 	case int64:
 		return float64(typed), true
+	case json.Number:
+		value, err := typed.Float64()
+		return value, err == nil
 	default:
 		return 0, false
 	}
@@ -483,10 +489,26 @@ func metadataInt(metadata map[string]any, key string) (int, bool) {
 	case int:
 		return typed, true
 	case int64:
-		return int(typed), true
+		return intFromInt64(typed)
 	case float64:
+		if math.Trunc(typed) != typed || typed < math.MinInt || typed > math.MaxInt {
+			return 0, false
+		}
 		return int(typed), true
+	case json.Number:
+		value, err := strconv.ParseInt(typed.String(), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return intFromInt64(value)
 	default:
 		return 0, false
 	}
+}
+
+func intFromInt64(value int64) (int, bool) {
+	if value < int64(math.MinInt) || value > int64(math.MaxInt) {
+		return 0, false
+	}
+	return int(value), true
 }

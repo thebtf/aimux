@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -319,11 +321,27 @@ func metadataInt(metadata map[string]any, key string) (int, bool) {
 	case int:
 		return value, true
 	case int64:
-		return int(value), true
+		return reviewMetadataIntFromInt64(value)
 	case float64:
+		if math.Trunc(value) != value || value < math.MinInt || value > math.MaxInt {
+			return 0, false
+		}
 		return int(value), true
+	case json.Number:
+		parsed, err := strconv.ParseInt(value.String(), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return reviewMetadataIntFromInt64(parsed)
 	}
 	return 0, false
+}
+
+func reviewMetadataIntFromInt64(value int64) (int, bool) {
+	if value < int64(math.MinInt) || value > int64(math.MaxInt) {
+		return 0, false
+	}
+	return int(value), true
 }
 
 const minSecondsPerReviewPass = 90

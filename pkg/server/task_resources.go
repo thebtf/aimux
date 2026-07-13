@@ -441,6 +441,9 @@ func cloneTaskResourceMetadataValue(value any) (any, bool) {
 		return v, true
 	case float64:
 		return v, true
+	case json.Number:
+		parsed, err := v.Float64()
+		return parsed, err == nil
 	case []string:
 		out := make([]string, len(v))
 		copy(out, v)
@@ -451,6 +454,10 @@ func cloneTaskResourceMetadataValue(value any) (any, bool) {
 			switch typed := item.(type) {
 			case string, bool, int, int64, float64:
 				out = append(out, typed)
+			case json.Number:
+				if parsed, err := typed.Float64(); err == nil {
+					out = append(out, parsed)
+				}
 			}
 		}
 		return out, true

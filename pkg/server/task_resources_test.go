@@ -342,6 +342,47 @@ func TestTaskSnapshotResourceBoundsAndRedactsReviewReason(t *testing.T) {
 	assertSafeReviewReasonProjection(t, reason, rawSecret)
 }
 
+type typedMetadataResourcePayload struct {
+	Credential string `json:"credential"`
+}
+
+type typedMetadataResourceWorker struct{}
+
+func (typedMetadataResourceWorker) Type() loom.WorkerType { return "typed-metadata-resource" }
+
+func (typedMetadataResourceWorker) Execute(context.Context, *loom.Task) (*loom.WorkerResult, error) {
+	return &loom.WorkerResult{Content: "safe", Metadata: map[string]any{
+		"rounds":  3,
+		"details": &typedMetadataResourcePayload{Credential: "short-secret"},
+	}}, nil
+}
+
+func TestTaskSnapshotResourceProjectsSanitizedTypedWorkerMetadata(t *testing.T) {
+	srv := testServerWithLoom(t)
+	srv.loom.RegisterWorker(typedMetadataResourceWorker{}.Type(), typedMetadataResourceWorker{})
+	ctx, projectID := projectCtxAndID("typed-worker-resource")
+	taskID, err := srv.loom.Submit(ctx, loom.TaskRequest{
+		WorkerType: typedMetadataResourceWorker{}.Type(),
+		ProjectID:  projectID,
+		Prompt:     "typed worker metadata",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	task := waitForTaskResourceStatus(t, srv, taskID, loom.TaskStatusCompleted)
+	if raw, err := json.Marshal(task.Metadata); err != nil || strings.Contains(string(raw), "short-secret") {
+		t.Fatalf("replayed metadata = %s/%v, want sanitized", raw, err)
+	}
+	resource := readTaskSnapshotResource(t, srv, ctx, "aimux://tasks/"+taskID)
+	metadata, ok := resource["metadata"].(map[string]any)
+	if !ok || metadata["rounds"] != float64(3) {
+		t.Fatalf("resource metadata = %#v, want allowlisted rounds", resource["metadata"])
+	}
+	if _, exists := metadata["details"]; exists {
+		t.Fatalf("resource exposed non-allowlisted typed details: %#v", metadata)
+	}
+}
+
 func TestTaskSnapshotPayloadReviewSummaryExcludesRawDecisionEvidence(t *testing.T) {
 	tests := []struct {
 		name          string

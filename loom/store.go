@@ -30,8 +30,6 @@ var storeSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)Authorization:\s*[^\s]{20,}`),     // auth-header
 }
 
-var terminalJSONKeyPattern = regexp.MustCompile(`(?i)"([^"\\]+)"\s*:`)
-
 // redactErrorMsg scrubs known secret patterns from an error message.
 func redactErrorMsg(s string) string {
 	if s == "" {
@@ -72,31 +70,10 @@ func sanitizeTerminalText(s string) string {
 func sanitizeTerminalResult(s string) string {
 	if sanitized, err := sanitizeAuthorityJSON(s); err == nil {
 		return sanitized
-	} else if errors.Is(err, errAuthorityJSONDuplicateKey) || terminalJSONLikeSensitive(s) {
+	} else if trimmed := strings.TrimSpace(s); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		return "[REDACTED:invalid-structured-terminal-content]"
 	}
 	return sanitizeTerminalText(s)
-}
-
-func terminalJSONLikeSensitive(s string) bool {
-	trimmed := strings.TrimSpace(s)
-	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
-		return false
-	}
-	for _, key := range terminalJSONKeyPattern.FindAllStringSubmatch(trimmed, -1) {
-		if authoritySensitiveJSONKey(key[1]) {
-			return true
-		}
-	}
-	return false
-}
-
-func sanitizeTaskMetadata(metadata map[string]any) map[string]any {
-	if len(metadata) == 0 {
-		return metadata
-	}
-	sanitized, _ := sanitizeAuthorityJSONValue(metadata)
-	return sanitized.(map[string]any)
 }
 
 func init() {
@@ -979,12 +956,15 @@ func (s *TaskStore) SetDaemonUUID(uuid string) {
 
 // Create inserts a new task into the store.
 func (s *TaskStore) Create(task *Task) error {
-	task.Metadata = sanitizeTaskMetadata(task.Metadata)
+	metadata, err := sanitizeTaskMetadataForStorage(task.Metadata)
+	if err != nil {
+		return fmt.Errorf("loom store: normalize metadata: %w", err)
+	}
 	envJSON, err := marshalJSON(task.Env)
 	if err != nil {
 		return fmt.Errorf("loom store: marshal env: %w", err)
 	}
-	metaJSON, err := marshalJSON(task.Metadata)
+	metaJSON, err := marshalJSON(metadata)
 	if err != nil {
 		return fmt.Errorf("loom store: marshal metadata: %w", err)
 	}
@@ -1025,6 +1005,7 @@ func (s *TaskStore) Create(task *Task) error {
 	if err != nil {
 		return fmt.Errorf("loom store: insert task: %w", err)
 	}
+	task.Metadata = metadata
 	return nil
 }
 
@@ -1046,12 +1027,15 @@ func (s *TaskStore) Import(task *Task) error {
 		return fmt.Errorf("loom store: import task %s: missing worker type", task.ID)
 	}
 
-	task.Metadata = sanitizeTaskMetadata(task.Metadata)
+	metadata, err := sanitizeTaskMetadataForStorage(task.Metadata)
+	if err != nil {
+		return fmt.Errorf("loom store: import normalize metadata: %w", err)
+	}
 	envJSON, err := marshalJSON(task.Env)
 	if err != nil {
 		return fmt.Errorf("loom store: import marshal env: %w", err)
 	}
-	metaJSON, err := marshalJSON(task.Metadata)
+	metaJSON, err := marshalJSON(metadata)
 	if err != nil {
 		return fmt.Errorf("loom store: import marshal metadata: %w", err)
 	}
@@ -1134,6 +1118,7 @@ func (s *TaskStore) Import(task *Task) error {
 	if err != nil {
 		return fmt.Errorf("loom store: import task: %w", err)
 	}
+	task.Metadata = metadata
 	return nil
 }
 
@@ -1450,8 +1435,11 @@ func (s *TaskStore) SetResult(id string, result string, errMsg string) error {
 
 // SetMetadata stores the latest worker metadata for an active task.
 func (s *TaskStore) SetMetadata(id string, metadata map[string]any) error {
-	metadata = sanitizeTaskMetadata(metadata)
-	metaJSON, err := marshalJSON(metadata)
+	sanitized, err := sanitizeTaskMetadataForStorage(metadata)
+	if err != nil {
+		return fmt.Errorf("loom store: normalize metadata: %w", err)
+	}
+	metaJSON, err := marshalJSON(sanitized)
 	if err != nil {
 		return fmt.Errorf("loom store: marshal metadata: %w", err)
 	}
