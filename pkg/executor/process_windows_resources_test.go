@@ -138,6 +138,26 @@ func TestProcessTreeTerminateRequiresObservedJobCompletion(t *testing.T) {
 	}
 }
 
+func TestProcessTreeTerminateDefaultsPartialJobOperations(t *testing.T) {
+	const job = windows.Handle(101)
+	terminated := 0
+	tree := &processTree{job: job, jobOps: windowsJobOperations{
+		terminate: func(got windows.Handle, code uint32) error {
+			if got != job || code != 1 {
+				t.Fatalf("TerminateJobObject(%d, %d)", got, code)
+			}
+			terminated++
+			return errors.New("terminate failed")
+		},
+	}}
+	if tree.terminate() {
+		t.Fatal("failed termination was reported as observed")
+	}
+	if terminated != 1 {
+		t.Fatalf("custom terminate calls = %d, want 1", terminated)
+	}
+}
+
 func TestResumeThreadWithOperations_ClosesAcquiredThreadExactlyOnce(t *testing.T) {
 	wantOpenErr := errors.New("open failed")
 	wantResumeErr := errors.New("resume failed")

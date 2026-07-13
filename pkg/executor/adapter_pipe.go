@@ -179,6 +179,25 @@ func (a *CLIPipeAdapter) ProcessTreeEvidence(ctx context.Context, id types.Execu
 	return provider.ProcessTreeEvidence(ctx, id)
 }
 
+type processEvidenceHolder interface {
+	HoldProcessEvidence(types.ExecutionID)
+	ReleaseProcessEvidence(types.ExecutionID)
+}
+
+// HoldProcessEvidence and ReleaseProcessEvidence are private Swarm plumbing
+// forwarded only to stateless legacy executors that retain exact process state.
+func (a *CLIPipeAdapter) HoldProcessEvidence(id types.ExecutionID) {
+	if holder, ok := a.legacy.(processEvidenceHolder); ok && a.session == nil {
+		holder.HoldProcessEvidence(id)
+	}
+}
+
+func (a *CLIPipeAdapter) ReleaseProcessEvidence(id types.ExecutionID) {
+	if holder, ok := a.legacy.(processEvidenceHolder); ok && a.session == nil {
+		holder.ReleaseProcessEvidence(id)
+	}
+}
+
 // IsAlive returns HealthAlive when the adapter is session-bound and the session
 // process is alive, or when the stateless pipe executor reports itself as available.
 func (a *CLIPipeAdapter) IsAlive() types.HealthStatus {

@@ -46,28 +46,46 @@ type executionKey struct {
 }
 
 type executionRecord struct {
-	handle             *Handle
-	id                 types.ExecutionID
-	tenantID           string
-	scope              string
-	generation         uint64
-	executor           types.ExecutorV2
-	sink               types.ExecutorEventSink
-	cancel             context.CancelFunc
-	cancellation       types.CancellationEvidence
-	processEvidence    types.ProcessTreeEvidence
-	hasProcessEvidence bool
-	executionDone      chan struct{}
-	executionReturned  bool
-	naturalSuccess     bool
-	cancelDone         chan struct{}
-	terminalDone       chan struct{}
-	cancellationErr    error
-	terminal           bool
-	cancelled          bool
-	truncated          bool
-	admitted           bool
-	mu                 sync.Mutex
+	handle               *Handle
+	id                   types.ExecutionID
+	tenantID             string
+	scope                string
+	generation           uint64
+	executor             types.ExecutorV2
+	sink                 types.ExecutorEventSink
+	cancel               context.CancelFunc
+	cancellation         types.CancellationEvidence
+	processEvidence      types.ProcessTreeEvidence
+	hasProcessEvidence   bool
+	executionDone        chan struct{}
+	executionReturned    bool
+	outcome              executionOutcome
+	exactProcessEvidence bool
+	cancelDone           chan struct{}
+	terminalDone         chan struct{}
+	cancellationErr      error
+	terminal             bool
+	cancelled            bool
+	truncated            bool
+	admitted             bool
+	mu                   sync.Mutex
+}
+
+type executionOutcome uint8
+
+const (
+	executionOutcomeUnknown executionOutcome = iota
+	executionOutcomeCompleted
+	executionOutcomeFailed
+	executionOutcomeCancelled
+)
+
+// processEvidenceLease is private plumbing between Swarm and the concrete pipe
+// adapter. The lease keeps the exact final snapshot available until Swarm has
+// copied it into its immutable execution record; it is not a public capability.
+type processEvidenceLease interface {
+	HoldProcessEvidence(types.ExecutionID)
+	ReleaseProcessEvidence(types.ExecutionID)
 }
 
 // Execute admits one exact execution for a live handle generation. Swarm owns
@@ -139,6 +157,12 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	h.mu.Unlock()
 
 	admission := types.ExecutorEventSinkFunc(record.tryAdmit)
+	var releaseEvidence func()
+	if holder, ok := exec.(processEvidenceLease); ok {
+		holder.HoldProcessEvidence(id)
+		releaseEvidence = func() { holder.ReleaseProcessEvidence(id) }
+		defer releaseEvidence()
+	}
 	var response *types.Response
 	if native, ok := exec.(types.EventExecutor); ok {
 		response, err = native.SendEvents(execCtx, id, msg, admission)
@@ -149,10 +173,14 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 			}
 		})
 	}
+	if s.beforeOutcomeCapture != nil {
+		s.beforeOutcomeCapture()
+	}
+	record.captureProcessEvidence()
+	record.markExecutionReturned(response, err)
 	if s.postExecutorReturn != nil {
 		s.postExecutorReturn()
 	}
-	record.markExecutionReturned(response, err)
 	if record.wasTruncated() {
 		if response == nil {
 			response = &types.Response{}
@@ -192,11 +220,7 @@ func (s *Swarm) Cancel(ctx context.Context, h *Handle, scope string, id types.Ex
 
 func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reason string) (types.CancellationEvidence, error) {
 	record.mu.Lock()
-	if done := record.cancelDone; done != nil {
-		record.mu.Unlock()
-		return record.waitCancellation(ctx, done)
-	}
-	if record.terminal || record.executionReturned {
+	if record.terminal {
 		evidence := record.cancellation
 		if evidence.ExecutionID == "" {
 			evidence.ExecutionID = record.id
@@ -205,12 +229,36 @@ func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reaso
 		record.mu.Unlock()
 		return evidence, cancelErr
 	}
+	if record.executionReturned {
+		done := record.terminalDone
+		record.mu.Unlock()
+		return record.waitTerminal(ctx, done)
+	}
+	if done := record.cancelDone; done != nil {
+		record.mu.Unlock()
+		return record.waitCancellation(ctx, done)
+	}
 	record.cancellation = types.CancellationEvidence{ExecutionID: record.id}
 	record.cancelDone = make(chan struct{})
 	done := record.cancelDone
 	record.mu.Unlock()
 	go record.resolveCancellation(reason)
 	return record.waitCancellation(ctx, done)
+}
+
+func (record *executionRecord) waitTerminal(ctx context.Context, done <-chan struct{}) (types.CancellationEvidence, error) {
+	select {
+	case <-done:
+		record.mu.Lock()
+		evidence, cancelErr := record.cancellation, record.cancellationErr
+		if evidence.ExecutionID == "" {
+			evidence.ExecutionID = record.id
+		}
+		record.mu.Unlock()
+		return evidence, cancelErr
+	case <-ctx.Done():
+		return types.CancellationEvidence{ExecutionID: record.id}, ctx.Err()
+	}
 }
 
 func (record *executionRecord) waitCancellation(ctx context.Context, done <-chan struct{}) (types.CancellationEvidence, error) {
@@ -239,30 +287,14 @@ func (record *executionRecord) resolveCancellation(reason string) {
 			evidence.ExecutionID = record.id
 		}
 	}
-	var processEvidence types.ProcessTreeEvidence
-	var processErr error
-	if !evidence.NativeAcknowledged {
-		if provider, ok := record.executor.(types.ProcessEvidenceProvider); ok {
-			select {
-			case <-record.executionDone:
-				processEvidence, processErr = provider.ProcessTreeEvidence(ctx, record.id)
-			case <-ctx.Done():
-				processErr = ctx.Err()
-			}
+	if _, ok := record.executor.(types.ProcessEvidenceProvider); ok {
+		select {
+		case <-record.executionDone:
+		case <-ctx.Done():
 		}
 	}
 	record.mu.Lock()
 	record.cancellation = evidence
-	if processErr == nil && processEvidence.Process.Validate() == nil {
-		record.processEvidence = processEvidence
-		record.hasProcessEvidence = true
-	}
-	// A successful stopped-tree proof still wins terminal classification even
-	// when a native cancellation call returned an error; callers receive that
-	// native error unchanged through cancellationErr.
-	if !record.terminal && !record.naturalSuccess && (evidence.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped) {
-		record.cancelled = true
-	}
 	record.cancellationErr = cancelErr
 	close(record.cancelDone)
 	record.mu.Unlock()
@@ -276,10 +308,10 @@ func (s *Swarm) Inspect(ctx context.Context, h *Handle, scope string, id types.E
 		return ExecutionInspection{}, err
 	}
 	record.mu.Lock()
-	cancellationStarted := record.cancelDone != nil
+	waitTerminal := record.executionReturned && !record.terminal || record.cancelDone != nil
 	terminalDone := record.terminalDone
 	record.mu.Unlock()
-	if cancellationStarted {
+	if waitTerminal {
 		select {
 		case <-terminalDone:
 		case <-ctx.Done():
@@ -363,14 +395,16 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 		record.truncated = true
 	}
 	eventType := "completed"
-	if record.cancelled && !record.naturalSuccess && (record.cancellation.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped) {
+	cancellationProven := record.cancellation.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped
+	if record.outcome == executionOutcomeCancelled && cancellationProven {
 		eventType = "cancelled"
 	} else if response != nil && response.Error != nil && response.Error.Type == types.ErrorTypeTimeout {
 		eventType = "timeout"
-	} else if runErr != nil || response != nil && response.ExitCode != 0 {
+	} else if record.outcome != executionOutcomeCompleted || record.exactProcessEvidence && (!record.hasProcessEvidence || !record.processEvidence.Stopped) {
 		eventType = "failed"
 	}
 	record.terminal = true
+	record.cancelled = eventType == "cancelled"
 	record.admitted = record.sink.TryAdmit(types.ExecutorEvent{
 		Channel:   "terminal",
 		Type:      eventType,
@@ -387,14 +421,36 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 func (record *executionRecord) markExecutionReturned(response *types.Response, runErr error) {
 	record.mu.Lock()
 	if !record.executionReturned {
-		record.naturalSuccess = executionSucceeded(response, runErr)
-		if record.naturalSuccess {
-			record.cancelled = false
-		}
+		record.outcome = classifyExecutionOutcome(response, runErr, record.cancelDone != nil)
 		record.executionReturned = true
 		close(record.executionDone)
 	}
 	record.mu.Unlock()
+}
+
+func (record *executionRecord) captureProcessEvidence() {
+	provider, ok := record.executor.(types.ProcessEvidenceProvider)
+	if !ok {
+		return
+	}
+	evidence, err := provider.ProcessTreeEvidence(context.Background(), record.id)
+	record.mu.Lock()
+	record.exactProcessEvidence = true
+	if err == nil && evidence.Process.Validate() == nil {
+		record.processEvidence = evidence
+		record.hasProcessEvidence = true
+	}
+	record.mu.Unlock()
+}
+
+func classifyExecutionOutcome(response *types.Response, runErr error, cancellationRequested bool) executionOutcome {
+	if cancellationRequested && (errors.Is(runErr, context.Canceled) || response != nil && response.Error != nil && errors.Is(response.Error, context.Canceled)) {
+		return executionOutcomeCancelled
+	}
+	if executionSucceeded(response, runErr) {
+		return executionOutcomeCompleted
+	}
+	return executionOutcomeFailed
 }
 
 func executionSucceeded(response *types.Response, runErr error) bool {

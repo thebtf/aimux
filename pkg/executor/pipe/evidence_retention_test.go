@@ -1,10 +1,13 @@
 package pipe
 
 import (
+	"context"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor"
+	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/types"
 )
 
@@ -66,6 +69,35 @@ func TestProcessEvidenceRetentionEvictsFinalUnconfirmedRecords(t *testing.T) {
 	}
 }
 
+func TestProcessEvidenceRetentionHoldsFinalSnapshotUntilReleased(t *testing.T) {
+	e := New()
+	const pinned = types.ExecutionID("pinned")
+	e.HoldProcessEvidence(pinned)
+	for i := 0; i < processEvidenceLimit; i++ {
+		id := types.ExecutionID(string(rune('a' + i)))
+		if i == 0 {
+			id = pinned
+		}
+		if err := e.retainProcessEvidence(id, &executor.ProcessHandle{PID: i + 1, StartedAt: time.Unix(0, int64(i+1))}); err != nil {
+			t.Fatalf("retain %d: %v", i, err)
+		}
+		e.finalizeProcessEvidence(id)
+	}
+	if err := e.retainProcessEvidence("while-held", &executor.ProcessHandle{PID: 999, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("final evidence evicted before its Swarm handoff: %v", err)
+	}
+	if _, err := e.ProcessTreeEvidence(nil, pinned); err != nil {
+		t.Fatalf("held final evidence was evicted: %v", err)
+	}
+	e.ReleaseProcessEvidence(pinned)
+	if err := e.retainProcessEvidence("after-release", &executor.ProcessHandle{PID: 1000, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("released final evidence was not reclaimable: %v", err)
+	}
+	if _, err := e.ProcessTreeEvidence(nil, pinned); err == nil {
+		t.Fatal("released final evidence was retained over replacement")
+	}
+}
+
 func TestProcessTreeEvidenceDoesNotTreatRootExitAsManagedTreeStop(t *testing.T) {
 	e := New()
 	h := &executor.ProcessHandle{PID: 17, StartedAt: time.Now()}
@@ -79,5 +111,37 @@ func TestProcessTreeEvidenceDoesNotTreatRootExitAsManagedTreeStop(t *testing.T) 
 	}
 	if evidence.Stopped {
 		t.Fatalf("root exit fabricated whole-tree stop evidence: %#v", evidence)
+	}
+}
+
+func TestSwarmNaturalRootExitWithUnconfirmedPipeTreeFails(t *testing.T) {
+	e := New()
+	e.finalEvidence = func(evidence types.ProcessTreeEvidence) types.ProcessTreeEvidence {
+		evidence.Stopped = false
+		return evidence
+	}
+	s := swarm.New(func(string) (types.ExecutorV2, error) {
+		return executor.NewCLIPipeAdapter(e), nil
+	}, nil)
+	h, err := s.Get(context.Background(), "unconfirmed-pipe", swarm.Stateful, swarm.WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, args := "sh", []string{"-c", "exit 0"}
+	if runtime.GOOS == "windows" {
+		command, args = "cmd", []string{"/c", "exit", "0"}
+	}
+	terminal := make(chan types.ExecutorEvent, 1)
+	_, err = s.Execute(context.Background(), h, "scope", "unconfirmed-pipe", types.Message{Spawn: &types.SpawnArgs{Command: command, Args: args}}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+		if event.Terminal {
+			terminal <- event
+		}
+		return true
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event := <-terminal; event.Type == "completed" {
+		t.Fatalf("terminal = %#v, want fail-closed result for unconfirmed exact pipe tree", event)
 	}
 }

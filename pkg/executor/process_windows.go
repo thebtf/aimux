@@ -201,16 +201,19 @@ func (tree *processTree) terminate() bool {
 		}
 		operations := tree.jobOps
 		if operations.terminate == nil {
-			operations = systemWindowsJobOperations
+			operations.terminate = systemWindowsJobOperations.terminate
+		}
+		if operations.wait == nil {
+			operations.wait = systemWindowsJobOperations.wait
+		}
+		if operations.close == nil {
+			operations.close = systemWindowsJobOperations.close
 		}
 		if operations.terminate(job, 1) == nil {
 			status, err := operations.wait(job, processTreeJobWaitTimeout)
 			if err == nil && status == uint32(windows.WAIT_OBJECT_0) {
 				tree.stopObserved.Store(true)
 			}
-		}
-		if operations.close == nil {
-			operations.close = systemWindowsJobOperations.close
 		}
 		_ = operations.close(job)
 	})

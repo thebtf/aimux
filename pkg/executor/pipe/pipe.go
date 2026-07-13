@@ -43,6 +43,10 @@ type Executor struct {
 	evidenceMu    sync.Mutex
 	evidence      map[types.ExecutionID]processEvidence
 	evidenceOrder []types.ExecutionID
+	evidenceHolds map[types.ExecutionID]int
+	// finalEvidence is a package-private deterministic test seam for the
+	// exact final ProcessManager snapshot.
+	finalEvidence func(types.ProcessTreeEvidence) types.ProcessTreeEvidence
 	stdinPipe     func(*exec.Cmd) (io.WriteCloser, error)
 }
 
@@ -50,11 +54,47 @@ type processEvidence struct {
 	tree   types.ProcessTreeEvidence
 	handle *executor.ProcessHandle
 	final  bool // final false stays false; it is evictable but never refreshed.
+	holds  int  // Swarm owns short outcome-copy holds across SendEvents return.
 }
 
 // New creates a pipe executor.
 func New() *Executor {
-	return &Executor{evidence: make(map[types.ExecutionID]processEvidence)}
+	return &Executor{evidence: make(map[types.ExecutionID]processEvidence), evidenceHolds: make(map[types.ExecutionID]int)}
+}
+
+// HoldProcessEvidence keeps an exact result available until Swarm has copied
+// it into its terminal record. It is paired with ReleaseProcessEvidence.
+func (e *Executor) HoldProcessEvidence(id types.ExecutionID) {
+	e.evidenceMu.Lock()
+	defer e.evidenceMu.Unlock()
+	if record, ok := e.evidence[id]; ok {
+		record.holds++
+		e.evidence[id] = record
+		return
+	}
+	e.evidenceHolds[id]++
+}
+
+// ReleaseProcessEvidence makes a final result reclaimable once its immutable
+// snapshot has been consumed by Swarm.
+func (e *Executor) ReleaseProcessEvidence(id types.ExecutionID) {
+	e.evidenceMu.Lock()
+	defer e.evidenceMu.Unlock()
+	if record, ok := e.evidence[id]; ok {
+		if record.holds > 1 {
+			record.holds--
+			e.evidence[id] = record
+		} else if record.holds == 1 {
+			record.holds = 0
+			e.evidence[id] = record
+		}
+		return
+	}
+	if e.evidenceHolds[id] > 1 {
+		e.evidenceHolds[id]--
+	} else {
+		delete(e.evidenceHolds, id)
+	}
 }
 
 // ProcessTreeEvidence reports the exact managed process generation retained for
@@ -91,7 +131,7 @@ func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.Proce
 					record.tree.Stopped = true
 					e.evidence[candidate] = record
 				}
-				if !record.final {
+				if !record.final || record.holds != 0 {
 					continue
 				}
 				delete(e.evidence, candidate)
@@ -105,7 +145,8 @@ func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.Proce
 		}
 	}
 	e.evidenceOrder = append(e.evidenceOrder, id)
-	e.evidence[id] = processEvidence{tree: evidence, handle: h}
+	e.evidence[id] = processEvidence{tree: evidence, handle: h, holds: e.evidenceHolds[id]}
+	delete(e.evidenceHolds, id)
 	return nil
 }
 
@@ -121,6 +162,9 @@ func (e *Executor) finalizeProcessEvidence(id types.ExecutionID) {
 	}
 	if !record.tree.Stopped && record.handle.TreeStopped() {
 		record.tree.Stopped = true
+	}
+	if e.finalEvidence != nil {
+		record.tree = e.finalEvidence(record.tree)
 	}
 	record.final = true
 	e.evidence[id] = record
