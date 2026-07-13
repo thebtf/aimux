@@ -57,8 +57,9 @@ type executionRecord struct {
 }
 
 // Execute admits one exact execution for a live handle generation. Swarm owns
-// the terminal winner; executors may propose output but cannot publish a second
-// terminal or emit after cancellation.
+// the terminal winner; executors may propose output but cannot publish a
+// terminal. Cancellation starts process shutdown, while Execute keeps the
+// admission window open until the executor has drained and returned.
 func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.ExecutionID, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
 	if err := id.Validate(); err != nil {
 		return nil, err
@@ -138,8 +139,7 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 		}
 		response.Partial = true
 	}
-	terminal := record.terminalEvent(response, err)
-	terminalAdmitted := record.publishTerminal(terminal)
+	terminalAdmitted := record.finalizeTerminal(response, err)
 	s.complete(record, key)
 	h.mu.Lock()
 	h.lastUsedAt = time.Now()
@@ -177,10 +177,6 @@ func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reaso
 	if record.cancelled {
 		evidence := record.cancellation
 		record.mu.Unlock()
-		admitted := record.publishTerminal(types.ExecutorEvent{Channel: "terminal", Type: "cancelled", Terminal: true})
-		if !admitted {
-			return evidence, ErrEventAdmissionRejected
-		}
 		return evidence, nil
 	}
 	record.cancelled = true
@@ -202,12 +198,8 @@ func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reaso
 	record.mu.Lock()
 	record.cancellation = evidence
 	record.mu.Unlock()
-	admitted := record.publishTerminal(types.ExecutorEvent{Channel: "terminal", Type: "cancelled", Terminal: true})
 	if cancelErr != nil {
 		return evidence, cancelErr
-	}
-	if !admitted {
-		return evidence, ErrEventAdmissionRejected
 	}
 	return evidence, nil
 }
@@ -277,42 +269,37 @@ func (record *executionRecord) tryAdmit(event types.ExecutorEvent) bool {
 	return accepted
 }
 
-func (record *executionRecord) terminalEvent(response *types.Response, runErr error) types.ExecutorEvent {
+func (record *executionRecord) finalizeTerminal(response *types.Response, runErr error) bool {
 	record.mu.Lock()
-	cancelled := record.cancelled
-	truncated := record.truncated
-	record.mu.Unlock()
+	defer record.mu.Unlock()
+	if record.terminal {
+		return record.admitted
+	}
+	if response != nil && response.Partial {
+		record.truncated = true
+	}
 	eventType := "completed"
-	if cancelled {
+	if record.cancelled {
 		eventType = "cancelled"
 	} else if response != nil && response.Error != nil && response.Error.Type == types.ErrorTypeTimeout {
 		eventType = "timeout"
 	} else if runErr != nil || response != nil && response.ExitCode != 0 {
 		eventType = "failed"
 	}
-	if response != nil && response.Partial {
-		truncated = true
-	}
-	return types.ExecutorEvent{Channel: "terminal", Type: eventType, Terminal: true, Truncated: truncated}
+	record.terminal = true
+	record.admitted = record.sink.TryAdmit(types.ExecutorEvent{
+		Channel:   "terminal",
+		Type:      eventType,
+		Terminal:  true,
+		Truncated: record.truncated,
+	})
+	return record.admitted
 }
 
 func (record *executionRecord) wasTruncated() bool {
 	record.mu.Lock()
 	defer record.mu.Unlock()
 	return record.truncated
-}
-
-func (record *executionRecord) publishTerminal(event types.ExecutorEvent) bool {
-	record.mu.Lock()
-	defer record.mu.Unlock()
-	if record.terminal {
-		return record.admitted
-	}
-	record.terminal = true
-	event.Terminal = true
-	event.Truncated = event.Truncated || record.truncated
-	record.admitted = record.sink.TryAdmit(event)
-	return record.admitted
 }
 
 func (s *Swarm) complete(record *executionRecord, key executionKey) {

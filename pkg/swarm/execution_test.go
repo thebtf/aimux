@@ -59,12 +59,16 @@ func TestSwarmExecuteFencesOneActiveExecutionAndCancelWins(t *testing.T) {
 		t.Fatalf("cancel = %#v, %v", evidence, err)
 	}
 	inspection, err := s.Inspect(context.Background(), h, scope, "one")
-	if err != nil || !inspection.Terminal || !inspection.Cancelled {
+	if err != nil || inspection.Terminal || !inspection.Cancelled {
 		t.Fatalf("inspect = %#v, %v", inspection, err)
 	}
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+	inspection, err = s.Inspect(context.Background(), h, scope, "one")
+	if err != nil || !inspection.Terminal || !inspection.Cancelled {
+		t.Fatalf("terminal inspect = %#v, %v", inspection, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -73,7 +77,7 @@ func TestSwarmExecuteFencesOneActiveExecutionAndCancelWins(t *testing.T) {
 	}
 }
 
-func TestSwarmCancelCancelsContextAndFencesLateEvents(t *testing.T) {
+func TestSwarmCancelCancelsContextAndDrainsLateEventsBeforeTerminal(t *testing.T) {
 	started := make(chan struct{}, 1)
 	late := make(chan struct{})
 	s := swarm.New(func(string) (types.ExecutorV2, error) {
@@ -106,8 +110,8 @@ func TestSwarmCancelCancelsContextAndFencesLateEvents(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(events) != 2 || string(events[0].Content) != "before" || !events[1].Terminal || events[1].Type != "cancelled" {
-		t.Fatalf("late output or terminal escaped cancellation fence: %#v", events)
+	if len(events) != 3 || string(events[0].Content) != "before" || string(events[1].Content) != "late" || !events[2].Terminal || events[2].Type != "cancelled" {
+		t.Fatalf("cancellation tail was not drained before terminal: %#v", events)
 	}
 }
 

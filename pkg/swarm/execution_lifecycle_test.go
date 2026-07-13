@@ -25,6 +25,43 @@ type lifecycleEventExecutor struct {
 	ignoreRefusal bool
 }
 
+type cancellationTailExecutor struct {
+	started     chan struct{}
+	releaseTail chan struct{}
+	tailTried   chan bool
+}
+
+func newCancellationTailExecutor() *cancellationTailExecutor {
+	return &cancellationTailExecutor{
+		started:     make(chan struct{}),
+		releaseTail: make(chan struct{}),
+		tailTried:   make(chan bool, 1),
+	}
+}
+
+func (*cancellationTailExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
+
+func (*cancellationTailExecutor) Send(context.Context, types.Message) (*types.Response, error) {
+	return &types.Response{}, nil
+}
+
+func (e *cancellationTailExecutor) SendStream(ctx context.Context, msg types.Message, onChunk func(types.Chunk)) (*types.Response, error) {
+	return e.Send(ctx, msg)
+}
+
+func (*cancellationTailExecutor) IsAlive() types.HealthStatus { return types.HealthAlive }
+func (*cancellationTailExecutor) Close() error                { return nil }
+
+func (e *cancellationTailExecutor) SendEvents(ctx context.Context, _ types.ExecutionID, _ types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "output", Content: []byte("before")})
+	close(e.started)
+	<-ctx.Done()
+	<-e.releaseTail
+	accepted := sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "output", Content: []byte("cancellation-tail")})
+	e.tailTried <- accepted
+	return &types.Response{Content: "apparently-complete"}, nil
+}
+
 func newLifecycleEventExecutor() *lifecycleEventExecutor {
 	return &lifecycleEventExecutor{
 		started: make(chan struct{}),
@@ -85,6 +122,79 @@ func TestSwarmPromotesGenericEventAdmissionLossToPartialResponse(t *testing.T) {
 	}
 	if response == nil || !response.Partial {
 		t.Fatalf("response = %#v, want Partial after rejected generic output", response)
+	}
+}
+
+func TestSwarmCancelFinalizesOnlyAfterTailAdmissionDecision(t *testing.T) {
+	exec := newCancellationTailExecutor()
+	s := swarm.New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil, swarm.WithStatefulTTL(0))
+	const scope = "scope-a"
+	h, err := s.Get(context.Background(), "generic", swarm.Stateful, swarm.WithScope(scope))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var events []types.ExecutorEvent
+	terminalSeen := make(chan struct{}, 1)
+	result := make(chan struct {
+		response *types.Response
+		err      error
+	}, 1)
+	go func() {
+		response, runErr := s.Execute(context.Background(), h, scope, "cancel-tail", types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+			mu.Lock()
+			events = append(events, event)
+			mu.Unlock()
+			if event.Terminal {
+				terminalSeen <- struct{}{}
+				return true
+			}
+			return string(event.Content) != "cancellation-tail"
+		}))
+		result <- struct {
+			response *types.Response
+			err      error
+		}{response: response, err: runErr}
+	}()
+
+	<-exec.started
+	if evidence, cancelErr := s.Cancel(context.Background(), h, scope, "cancel-tail", "test"); cancelErr != nil || evidence.ExecutionID != "cancel-tail" {
+		t.Fatalf("Cancel = %#v, %v", evidence, cancelErr)
+	}
+	inspection, inspectErr := s.Inspect(context.Background(), h, scope, "cancel-tail")
+	if inspectErr != nil {
+		t.Fatal(inspectErr)
+	}
+	if !inspection.Cancelled || inspection.Terminal {
+		t.Fatalf("inspection immediately after Cancel = %#v, want cancelled intent without terminal", inspection)
+	}
+	select {
+	case <-terminalSeen:
+		t.Fatal("terminal was published before cancellation-tail admission was decided")
+	default:
+	}
+
+	close(exec.releaseTail)
+	if accepted := <-exec.tailTried; accepted {
+		t.Fatal("cancellation tail unexpectedly admitted")
+	}
+	run := <-result
+	if run.err != nil {
+		t.Fatal(run.err)
+	}
+	if run.response == nil || !run.response.Partial {
+		t.Fatalf("response = %#v, want truthful Partial after rejected cancellation tail", run.response)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 3 {
+		t.Fatalf("events = %#v, want before, rejected tail decision, terminal", events)
+	}
+	terminal := events[len(events)-1]
+	if !terminal.Terminal || terminal.Type != "cancelled" || !terminal.Truncated {
+		t.Fatalf("terminal = %#v, want cancelled truncated terminal after tail decision", terminal)
 	}
 }
 
