@@ -21,6 +21,11 @@ import (
 // existed or belongs to a different tenant.
 var ErrHandleNotFound = errors.New("swarm: handle not found")
 
+// ErrSwarmShutdown is returned once lifecycle quiescing has begun. A shut
+// down Swarm is terminal; callers must construct a new instance instead of
+// admitting work after process teardown starts.
+var ErrSwarmShutdown = errors.New("swarm: shut down")
+
 // ErrNotSupported indicates a backend cannot create a persistent Session.
 // Returned by SessionFactory.StartSession implementations when the backend
 // lacks the capability (e.g. ConPTY on non-Windows). FR-1 C3: defensive
@@ -156,6 +161,8 @@ type Handle struct {
 	startedAt  time.Time
 	lastUsedAt time.Time
 	mu         sync.Mutex // protects executor, lastUsedAt, sessionArgs
+	opOnce     sync.Once
+	opGate     chan struct{} // one generation-scoped operation at a time
 
 	// sessionArgs stores the SpawnArgs used to start the persistent session
 	// bound to this handle. Non-nil only when the handle was spawned with
@@ -184,9 +191,12 @@ type Swarm struct {
 	registry map[string][]*Handle // keyed by registryKey(tenantID, scope, name)
 	nextID   uint64
 
+	lifecycleMu  sync.RWMutex
+	shuttingDown bool
+
 	executionMu   sync.Mutex
 	executions    map[executionKey]*executionRecord
-	active        map[*Handle]types.ExecutionID
+	active        map[*Handle]*executionRecord
 	terminalOrder []executionKey
 	live          map[*Handle]handleAuthority
 
@@ -263,7 +273,7 @@ func NewWithContextFactory(factoryFn func(context.Context, string) (types.Execut
 		auditLog:    al,
 		registry:    make(map[string][]*Handle),
 		executions:  make(map[executionKey]*executionRecord),
-		active:      make(map[*Handle]types.ExecutionID),
+		active:      make(map[*Handle]*executionRecord),
 		live:        make(map[*Handle]handleAuthority),
 		statefulTTL: defaultStatefulTTL,
 		reaperStop:  make(chan struct{}),
@@ -275,6 +285,73 @@ func NewWithContextFactory(factoryFn func(context.Context, string) (types.Execut
 		go s.reapLoop()
 	}
 	return s
+}
+
+func (h *Handle) acquireOperation(ctx context.Context) error {
+	if h == nil {
+		return ErrHandleNotFound
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	h.opOnce.Do(func() {
+		h.opGate = make(chan struct{}, 1)
+		h.opGate <- struct{}{}
+	})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-h.opGate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *Handle) tryAcquireOperation() bool {
+	if h == nil {
+		return false
+	}
+	h.opOnce.Do(func() {
+		h.opGate = make(chan struct{}, 1)
+		h.opGate <- struct{}{}
+	})
+	select {
+	case <-h.opGate:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Handle) releaseOperation() {
+	h.opGate <- struct{}{}
+}
+
+func (s *Swarm) accepting() bool {
+	s.lifecycleMu.RLock()
+	defer s.lifecycleMu.RUnlock()
+	return !s.shuttingDown
+}
+
+// BeginShutdown closes admission without interrupting work already admitted.
+// Server shutdown uses this before its graceful ProcessManager drain; Shutdown
+// later cancels any execution still active at the deadline.
+func (s *Swarm) BeginShutdown() {
+	if s == nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	s.shuttingDown = true
+	s.lifecycleMu.Unlock()
+	s.reaperOnce.Do(func() {
+		if s.reaperStop != nil {
+			close(s.reaperStop)
+		}
+	})
 }
 
 func detachFactoryContext(ctx context.Context) context.Context {
@@ -310,6 +387,12 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 	if name == "" {
 		return nil, errors.New("swarm: executor name must not be empty")
 	}
+	s.lifecycleMu.RLock()
+	if s.shuttingDown {
+		s.lifecycleMu.RUnlock()
+		return nil, ErrSwarmShutdown
+	}
+	s.lifecycleMu.RUnlock()
 
 	tenantID := tenantIDFromContext(ctx)
 	var o getOpts
@@ -324,6 +407,7 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 			return nil, err
 		}
 		s.emitSpawn(h)
+		h.releaseOperation()
 		return h, nil
 	}
 
@@ -375,23 +459,35 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 	}
 
 	if len(alive) > 0 {
+		if !s.accepting() {
+			return nil, ErrSwarmShutdown
+		}
 		return alive[0], nil
 	}
 
 	// Step 2: no alive handle — run factoryFn OUTSIDE s.mu (DEF-8 fix).
 	// The per-key mutex above serialises concurrent same-key Gets, so exactly
 	// one goroutine reaches here per key at a time (TOCTOU prevention preserved).
+	if !s.accepting() {
+		return nil, ErrSwarmShutdown
+	}
 	h, err := s.spawnLocked(ctx, name, mode, o.scope)
 	if err != nil {
 		return nil, err
 	}
+	operationHeld := true
+	defer func() {
+		if operationHeld {
+			h.releaseOperation()
+		}
+	}()
 
 	// Step 2b: bind a persistent session when WithSessionArgs was provided
 	// and the executor supports sessions (AIMUX-14 FR-2). This runs outside
 	// s.mu — MaybeStartSession may block on process startup.
 	if o.sessionArgs != nil && mode != Stateless {
 		if err := s.bindSession(ctx, h, *o.sessionArgs); err != nil {
-			_ = s.closeHandle(h, "session-bind-failed")
+			_ = s.closeHandleLocked(h, "session-bind-failed")
 			return nil, fmt.Errorf("swarm: session bind(%s): %w", name, err)
 		}
 	}
@@ -399,11 +495,19 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 	// Step 3: re-acquire write lock only for registry insertion.
 	// Use alive (the already-pruned slice) as the base, not s.registry[key],
 	// so dead handles that were pruned in Step 1 are not re-added here.
+	s.lifecycleMu.RLock()
+	if s.shuttingDown {
+		s.lifecycleMu.RUnlock()
+		_ = s.closeHandleLocked(h, "shutdown-during-spawn")
+		return nil, ErrSwarmShutdown
+	}
 	s.mu.Lock()
 	s.registry[key] = append(alive, h)
 	s.mu.Unlock()
-
+	s.lifecycleMu.RUnlock()
 	s.emitSpawn(h)
+	h.releaseOperation()
+	operationHeld = false
 	return h, nil
 }
 
@@ -416,11 +520,13 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 // (FR-2, CHK079 defense-in-depth). The error message is intentionally generic
 // so that a caller cannot infer whether the handle exists or belongs to another tenant.
 func (s *Swarm) Send(ctx context.Context, h *Handle, msg types.Message) (*types.Response, error) {
-	if err := s.checkTenant(ctx, h); err != nil {
+	authority, err := s.beginHandleOperation(ctx, h)
+	if err != nil {
 		return nil, err
 	}
+	defer h.releaseOperation()
 
-	if err := s.ensureAlive(h); err != nil {
+	if err := s.ensureAliveLocked(h); err != nil {
 		return nil, err
 	}
 
@@ -439,8 +545,8 @@ func (s *Swarm) Send(ctx context.Context, h *Handle, msg types.Message) (*types.
 		h.mu.Unlock()
 	}
 
-	if h.Mode == Stateless {
-		_ = s.closeHandle(h, "stateless-after-send")
+	if authority.mode == Stateless {
+		_ = s.closeHandleLocked(h, "stateless-after-send")
 	}
 
 	return resp, err
@@ -452,11 +558,13 @@ func (s *Swarm) Send(ctx context.Context, h *Handle, msg types.Message) (*types.
 //
 // Cross-tenant access check: see Send for behaviour and rationale.
 func (s *Swarm) SendStream(ctx context.Context, h *Handle, msg types.Message, onChunk func(types.Chunk)) (*types.Response, error) {
-	if err := s.checkTenant(ctx, h); err != nil {
+	authority, err := s.beginHandleOperation(ctx, h)
+	if err != nil {
 		return nil, err
 	}
+	defer h.releaseOperation()
 
-	if err := s.ensureAlive(h); err != nil {
+	if err := s.ensureAliveLocked(h); err != nil {
 		return nil, err
 	}
 
@@ -475,8 +583,8 @@ func (s *Swarm) SendStream(ctx context.Context, h *Handle, msg types.Message, on
 		h.mu.Unlock()
 	}
 
-	if h.Mode == Stateless {
-		_ = s.closeHandle(h, "stateless-after-send")
+	if authority.mode == Stateless {
+		_ = s.closeHandleLocked(h, "stateless-after-send")
 	}
 
 	return resp, err
@@ -489,11 +597,13 @@ func (s *Swarm) SendStream(ctx context.Context, h *Handle, msg types.Message, on
 //
 // Use this during M2 migration. Full migration to Send(Message)→Response in M3+.
 func (s *Swarm) LegacyRun(ctx context.Context, h *Handle, args types.SpawnArgs) (*types.Result, error) {
-	if err := s.checkTenant(ctx, h); err != nil {
+	authority, err := s.beginHandleOperation(ctx, h)
+	if err != nil {
 		return nil, err
 	}
+	defer h.releaseOperation()
 
-	if err := s.ensureAlive(h); err != nil {
+	if err := s.ensureAliveLocked(h); err != nil {
 		return nil, err
 	}
 
@@ -513,8 +623,8 @@ func (s *Swarm) LegacyRun(ctx context.Context, h *Handle, args types.SpawnArgs) 
 	h.mu.Unlock()
 
 	// For Stateless mode, close after use (consistent with Send behavior).
-	if h.Mode == Stateless {
-		_ = s.closeHandle(h, "stateless-after-send")
+	if authority.mode == Stateless {
+		_ = s.closeHandleLocked(h, "stateless-after-send")
 	}
 
 	return result, err
@@ -558,22 +668,33 @@ func (s *Swarm) Health() map[string]types.HealthStatus {
 // but respects ctx for the overall deadline. Errors from individual closes are
 // accumulated and returned as a single combined error.
 func (s *Swarm) Shutdown(ctx context.Context) error {
-	// Stop the reaper goroutine before walking the registry so it does
-	// not race with the shutdown drain.
-	s.reaperOnce.Do(func() {
-		if s.reaperStop != nil {
-			close(s.reaperStop)
-		}
-	})
+	s.BeginShutdown()
 
-	s.mu.Lock()
-	all := make([]*Handle, 0)
-	for _, handles := range s.registry {
-		all = append(all, handles...)
+	// Cancel every admitted execution before waiting for its generation gate.
+	// This lets native pipe/process owners terminate promptly while close waits
+	// for the single execution owner to publish its terminal result.
+	s.executionMu.Lock()
+	active := make([]*executionRecord, 0, len(s.active))
+	for _, record := range s.active {
+		active = append(active, record)
 	}
-	// Clear the registry so new Get calls after Shutdown start fresh.
-	s.registry = make(map[string][]*Handle)
-	s.mu.Unlock()
+	s.executionMu.Unlock()
+
+	var errs []error
+	for _, record := range active {
+		if _, err := s.cancelRecord(ctx, record, "swarm shutdown"); err != nil {
+			errs = append(errs, fmt.Errorf("swarm: cancel execution %s: %w", record.id, err))
+		}
+	}
+
+	// live, not registry, is the complete authority set: Stateless handles are
+	// intentionally absent from registry but still own executors and processes.
+	s.mu.RLock()
+	all := make([]*Handle, 0, len(s.live))
+	for h := range s.live {
+		all = append(all, h)
+	}
+	s.mu.RUnlock()
 
 	// Release all per-key mutexes so they can be GC'd. This prevents the
 	// keyLocks sync.Map from accumulating unbounded entries across repeated
@@ -583,7 +704,6 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 		return true
 	})
 
-	var errs []error
 	for _, h := range all {
 		select {
 		case <-ctx.Done():
@@ -591,7 +711,7 @@ func (s *Swarm) Shutdown(ctx context.Context) error {
 			return errors.Join(errs...)
 		default:
 		}
-		if err := s.closeHandle(h, "shutdown"); err != nil {
+		if err := s.closeHandleContext(ctx, h, "shutdown"); err != nil {
 			errs = append(errs, fmt.Errorf("swarm: close %s (%s): %w", h.Name, h.ID, err))
 		}
 	}
@@ -623,31 +743,26 @@ func (s *Swarm) reapLoop() {
 // by Close / Shutdown / daemon hot-swap).
 func (s *Swarm) reapStaleStateful() {
 	now := time.Now()
-	var stale []*Handle
-
-	s.mu.Lock()
-	for key, handles := range s.registry {
-		kept := handles[:0]
-		for _, h := range handles {
-			h.mu.Lock()
-			idle := now.Sub(h.lastUsedAt)
-			h.mu.Unlock()
-			if h.Mode == Stateful && idle > s.statefulTTL {
-				stale = append(stale, h)
-				continue
-			}
-			kept = append(kept, h)
-		}
-		if len(kept) == 0 {
-			delete(s.registry, key)
-		} else {
-			s.registry[key] = kept
+	s.mu.RLock()
+	candidates := make([]*Handle, 0)
+	for h, authority := range s.live {
+		if authority.mode == Stateful {
+			candidates = append(candidates, h)
 		}
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
-	for _, h := range stale {
-		_ = s.closeHandle(h, "stateful-ttl-idle")
+	for _, h := range candidates {
+		if err := h.acquireOperation(context.Background()); err != nil {
+			continue
+		}
+		h.mu.Lock()
+		idle := now.Sub(h.lastUsedAt)
+		h.mu.Unlock()
+		if idle > s.statefulTTL {
+			_ = s.closeHandleLocked(h, "stateful-ttl-idle")
+		}
+		h.releaseOperation()
 	}
 }
 
@@ -686,6 +801,32 @@ func MaybeStartSession(ctx context.Context, ex types.ExecutorV2, args types.Spaw
 }
 
 // --- internal helpers ---
+
+func (s *Swarm) beginHandleOperation(ctx context.Context, h *Handle) (handleAuthority, error) {
+	if err := h.acquireOperation(ctx); err != nil {
+		return handleAuthority{}, err
+	}
+	s.lifecycleMu.RLock()
+	if s.shuttingDown {
+		s.lifecycleMu.RUnlock()
+		h.releaseOperation()
+		return handleAuthority{}, ErrSwarmShutdown
+	}
+	if err := s.checkTenant(ctx, h); err != nil {
+		s.lifecycleMu.RUnlock()
+		h.releaseOperation()
+		return handleAuthority{}, err
+	}
+	s.mu.RLock()
+	authority, found := s.live[h]
+	s.mu.RUnlock()
+	s.lifecycleMu.RUnlock()
+	if !found || authority.tenantID != tenantIDFromContext(ctx) {
+		h.releaseOperation()
+		return handleAuthority{}, ErrHandleNotFound
+	}
+	return authority, nil
+}
 
 // getKeyMutex returns the per-key *sync.Mutex for the given registry key,
 // creating it on first access. LoadOrStore guarantees exactly one mutex per
@@ -809,12 +950,25 @@ func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode, scope st
 		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
 	}
 
+	s.lifecycleMu.RLock()
+	if s.shuttingDown {
+		s.lifecycleMu.RUnlock()
+		_ = exec.Close()
+		return nil, ErrSwarmShutdown
+	}
 	s.mu.Lock()
 	s.nextID++
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
 	h := makeHandle(factoryCtx, id, name, mode, scope, exec)
+	if !h.tryAcquireOperation() {
+		s.mu.Unlock()
+		s.lifecycleMu.RUnlock()
+		_ = exec.Close()
+		return nil, errors.New("swarm: failed to reserve new handle operation")
+	}
 	s.live[h] = handleAuthority{tenantID: h.TenantID, scope: scope, generation: h.generation, mode: mode}
 	s.mu.Unlock()
+	s.lifecycleMu.RUnlock()
 	return h, nil
 }
 
@@ -834,12 +988,25 @@ func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode, sc
 		return nil, fmt.Errorf("swarm: factory(%s): %w", name, err)
 	}
 
+	s.lifecycleMu.RLock()
+	if s.shuttingDown {
+		s.lifecycleMu.RUnlock()
+		_ = exec.Close()
+		return nil, ErrSwarmShutdown
+	}
 	s.mu.Lock()
 	s.nextID++
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
 	h := makeHandle(factoryCtx, id, name, mode, scope, exec)
+	if !h.tryAcquireOperation() {
+		s.mu.Unlock()
+		s.lifecycleMu.RUnlock()
+		_ = exec.Close()
+		return nil, errors.New("swarm: failed to reserve new handle operation")
+	}
 	s.live[h] = handleAuthority{tenantID: h.TenantID, scope: scope, generation: h.generation, mode: mode}
 	s.mu.Unlock()
+	s.lifecycleMu.RUnlock()
 	return h, nil
 }
 
@@ -885,19 +1052,24 @@ func (s *Swarm) bindSession(ctx context.Context, h *Handle, args types.SpawnArgs
 	return nil
 }
 
-// ensureAlive checks h.executor health and restarts once if not alive.
-// Returns an error only if the restart also fails.
-func (s *Swarm) ensureAlive(h *Handle) error {
+// ensureAliveLocked checks h.executor health and restarts once if not alive.
+// The caller owns h's operation gate, so the executor generation cannot be
+// replaced between the health check and the send.
+func (s *Swarm) ensureAliveLocked(h *Handle) error {
 	h.mu.Lock()
-	status := h.executor.IsAlive()
+	exec := h.executor
 	h.mu.Unlock()
+	if exec == nil {
+		return ErrHandleNotFound
+	}
+	status := exec.IsAlive()
 
 	if status == types.HealthAlive || status == types.HealthDegraded {
 		return nil
 	}
 
 	// Executor is dead or unknown — attempt a single restart.
-	return s.restart(h)
+	return s.restartLocked(h)
 }
 
 // restart closes the current executor in h and replaces it with a fresh one
@@ -907,6 +1079,20 @@ func (s *Swarm) ensureAlive(h *Handle) error {
 // When h.sessionArgs is non-nil (handle was originally session-bound), restart
 // starts a new session and rebinds the adapter via SessionBinder (AIMUX-14 FR-2).
 func (s *Swarm) restart(h *Handle) error {
+	if err := h.acquireOperation(context.Background()); err != nil {
+		return err
+	}
+	defer h.releaseOperation()
+	s.lifecycleMu.RLock()
+	shuttingDown := s.shuttingDown
+	s.lifecycleMu.RUnlock()
+	if shuttingDown {
+		return ErrSwarmShutdown
+	}
+	return s.restartLocked(h)
+}
+
+func (s *Swarm) restartLocked(h *Handle) error {
 	h.mu.Lock()
 
 	// Close the old executor; ignore close errors — it may already be dead.
@@ -973,11 +1159,24 @@ func (s *Swarm) restart(h *Handle) error {
 // closeHandle calls Close on h's executor and nils the reference.
 // reason is forwarded to the audit event (e.g. "shutdown", "stateless-after-send").
 func (s *Swarm) closeHandle(h *Handle, reason string) error {
+	return s.closeHandleContext(context.Background(), h, reason)
+}
+
+func (s *Swarm) closeHandleContext(ctx context.Context, h *Handle, reason string) error {
+	if err := h.acquireOperation(ctx); err != nil {
+		return err
+	}
+	defer h.releaseOperation()
+	return s.closeHandleLocked(h, reason)
+}
+
+func (s *Swarm) closeHandleLocked(h *Handle, reason string) error {
 	h.mu.Lock()
 	if h.executor == nil {
 		h.mu.Unlock()
 		s.mu.Lock()
 		delete(s.live, h)
+		s.removeHandleFromRegistryLocked(h)
 		s.mu.Unlock()
 		return nil
 	}
@@ -986,6 +1185,7 @@ func (s *Swarm) closeHandle(h *Handle, reason string) error {
 	h.mu.Unlock()
 	s.mu.Lock()
 	delete(s.live, h)
+	s.removeHandleFromRegistryLocked(h)
 	s.mu.Unlock()
 
 	// Emit close event after releasing h.mu (audit.Emit is non-blocking but
@@ -993,4 +1193,20 @@ func (s *Swarm) closeHandle(h *Handle, reason string) error {
 	s.emitClose(h, reason)
 
 	return err
+}
+
+func (s *Swarm) removeHandleFromRegistryLocked(target *Handle) {
+	for key, handles := range s.registry {
+		kept := handles[:0]
+		for _, h := range handles {
+			if h != target {
+				kept = append(kept, h)
+			}
+		}
+		if len(kept) == 0 {
+			delete(s.registry, key)
+		} else {
+			s.registry[key] = kept
+		}
+	}
 }

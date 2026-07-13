@@ -63,8 +63,24 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	if err := id.Validate(); err != nil {
 		return nil, err
 	}
+	if h == nil {
+		return nil, ErrExecutionNotFound
+	}
+	if !h.tryAcquireOperation() {
+		if !s.accepting() {
+			return nil, ErrSwarmShutdown
+		}
+		return nil, ErrExecutionActive
+	}
+	defer h.releaseOperation()
+	s.lifecycleMu.RLock()
+	if s.shuttingDown {
+		s.lifecycleMu.RUnlock()
+		return nil, ErrSwarmShutdown
+	}
 	authority, exec, err := s.executionAuthority(ctx, h, scope)
 	if err != nil {
+		s.lifecycleMu.RUnlock()
 		return nil, err
 	}
 	if sink == nil {
@@ -85,17 +101,20 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	s.executionMu.Lock()
 	if _, found := s.active[h]; found {
 		s.executionMu.Unlock()
+		s.lifecycleMu.RUnlock()
 		cancel()
 		return nil, ErrExecutionActive
 	}
 	if _, found := s.executions[key]; found {
 		s.executionMu.Unlock()
+		s.lifecycleMu.RUnlock()
 		cancel()
 		return nil, ErrExecutionExists
 	}
-	s.active[h] = id
+	s.active[h] = record
 	s.executions[key] = record
 	s.executionMu.Unlock()
+	s.lifecycleMu.RUnlock()
 	defer cancel()
 
 	h.mu.Lock()
@@ -113,11 +132,20 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 			}
 		})
 	}
+	if record.wasTruncated() {
+		if response == nil {
+			response = &types.Response{}
+		}
+		response.Partial = true
+	}
 	terminal := record.terminalEvent(response, err)
 	terminalAdmitted := record.publishTerminal(terminal)
 	s.complete(record, key)
+	h.mu.Lock()
+	h.lastUsedAt = time.Now()
+	h.mu.Unlock()
 	if authority.mode == Stateless {
-		_ = s.closeHandle(h, "stateless-after-execution")
+		_ = s.closeHandleLocked(h, "stateless-after-execution")
 	}
 	if !terminalAdmitted && err == nil {
 		err = ErrEventAdmissionRejected
@@ -133,11 +161,15 @@ func (s *Swarm) Cancel(ctx context.Context, h *Handle, scope string, id types.Ex
 	if err != nil {
 		return types.CancellationEvidence{}, err
 	}
+	return s.cancelRecord(ctx, record, reason)
+}
+
+func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reason string) (types.CancellationEvidence, error) {
 	record.mu.Lock()
 	if record.terminal {
 		evidence := record.cancellation
 		if evidence.ExecutionID == "" {
-			evidence.ExecutionID = id
+			evidence.ExecutionID = record.id
 		}
 		record.mu.Unlock()
 		return evidence, nil
@@ -145,22 +177,26 @@ func (s *Swarm) Cancel(ctx context.Context, h *Handle, scope string, id types.Ex
 	if record.cancelled {
 		evidence := record.cancellation
 		record.mu.Unlock()
+		admitted := record.publishTerminal(types.ExecutorEvent{Channel: "terminal", Type: "cancelled", Terminal: true})
+		if !admitted {
+			return evidence, ErrEventAdmissionRejected
+		}
 		return evidence, nil
 	}
 	record.cancelled = true
-	record.cancellation = types.CancellationEvidence{ExecutionID: id}
+	record.cancellation = types.CancellationEvidence{ExecutionID: record.id}
 	cancel := record.cancel
 	exec := record.executor
 	record.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	evidence := types.CancellationEvidence{ExecutionID: id}
+	evidence := types.CancellationEvidence{ExecutionID: record.id}
 	var cancelErr error
 	if canceller, ok := exec.(types.ExecutionCanceller); ok {
-		evidence, cancelErr = canceller.CancelExecution(ctx, id, reason)
+		evidence, cancelErr = canceller.CancelExecution(ctx, record.id, reason)
 		if evidence.ExecutionID == "" {
-			evidence.ExecutionID = id
+			evidence.ExecutionID = record.id
 		}
 	}
 	record.mu.Lock()
@@ -260,6 +296,12 @@ func (record *executionRecord) terminalEvent(response *types.Response, runErr er
 	return types.ExecutorEvent{Channel: "terminal", Type: eventType, Terminal: true, Truncated: truncated}
 }
 
+func (record *executionRecord) wasTruncated() bool {
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	return record.truncated
+}
+
 func (record *executionRecord) publishTerminal(event types.ExecutorEvent) bool {
 	record.mu.Lock()
 	defer record.mu.Unlock()
@@ -275,7 +317,7 @@ func (record *executionRecord) publishTerminal(event types.ExecutorEvent) bool {
 
 func (s *Swarm) complete(record *executionRecord, key executionKey) {
 	s.executionMu.Lock()
-	if activeID, ok := s.active[record.handle]; ok && activeID == record.id {
+	if activeRecord, ok := s.active[record.handle]; ok && activeRecord == record {
 		delete(s.active, record.handle)
 	}
 	s.terminalOrder = append(s.terminalOrder, key)

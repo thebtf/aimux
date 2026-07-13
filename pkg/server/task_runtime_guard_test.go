@@ -1,11 +1,19 @@
 package server
 
 import (
+	"errors"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestTaskWorkerRuntimeRejectsAfterShutdownGate(t *testing.T) {
+	s := &Server{taskRuntimeClosed: true}
+	if _, _, err := s.taskWorkerRuntime(); !errors.Is(err, errTaskRuntimeClosed) {
+		t.Fatalf("taskWorkerRuntime after shutdown = %v, want errTaskRuntimeClosed", err)
+	}
+}
 
 func TestTaskDispatchUsesSwarmWorkerRuntimeAndBoundedEventWriter(t *testing.T) {
 	taskTool, err := os.ReadFile("task_tool.go")
@@ -37,5 +45,17 @@ func TestTaskDispatchUsesSwarmWorkerRuntimeAndBoundedEventWriter(t *testing.T) {
 	}
 	if !strings.Contains(string(workers), "workerruntime.NewExecutorEventSink") {
 		t.Fatal("production task worker must bind the existing EventWriter/eventPump to runtime execution")
+	}
+
+	serverSource, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverText := string(serverSource)
+	closedAt := strings.Index(serverText, "taskRuntimeClosed = true")
+	quiesceAt := strings.Index(serverText, "taskSwarm.BeginShutdown()")
+	drainAt := strings.Index(serverText, "executor.SharedPM.GracefulShutdown")
+	if closedAt < 0 || quiesceAt < 0 || drainAt < 0 || closedAt > drainAt || quiesceAt > drainAt {
+		t.Fatal("task admission must close before the ProcessManager graceful-drain snapshot")
 	}
 }

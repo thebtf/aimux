@@ -13,12 +13,17 @@ import (
 	"github.com/thebtf/aimux/pkg/workerruntime"
 )
 
+var errTaskRuntimeClosed = errors.New("task runtime: server is shutting down")
+
 func (s *Server) taskWorkerRuntime() (*workerruntime.WorkerRuntime, *swarm.Swarm, error) {
 	if s == nil {
 		return nil, nil, errors.New("task runtime: server is nil")
 	}
 	s.taskRuntimeMu.Lock()
 	defer s.taskRuntimeMu.Unlock()
+	if s.taskRuntimeClosed {
+		return nil, nil, errTaskRuntimeClosed
+	}
 	if s.taskRuntime != nil && s.taskSwarm != nil {
 		return s.taskRuntime, s.taskSwarm, nil
 	}

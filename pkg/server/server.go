@@ -169,9 +169,10 @@ type Server struct {
 	fallbackPicker *fallback.FallbackPicker
 
 	// CR-002: one daemon-owned generic execution fabric behind taskDispatch.
-	taskRuntimeMu sync.Mutex
-	taskSwarm     *swarm.Swarm
-	taskRuntime   *workerruntime.WorkerRuntime
+	taskRuntimeMu     sync.Mutex
+	taskSwarm         *swarm.Swarm
+	taskRuntime       *workerruntime.WorkerRuntime
+	taskRuntimeClosed bool
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -560,15 +561,23 @@ func (s *Server) Shutdown() {
 		s.capRefresher.Stop()
 	}
 
-	// Graceful drain: give running CLI processes time to finish.
+	// Close task admission before the ProcessManager snapshot. Otherwise a lazy
+	// runtime init or a handle obtained just before shutdown can spawn a process
+	// after the graceful-drain scan has already passed.
+	s.taskRuntimeMu.Lock()
+	s.taskRuntimeClosed = true
+	taskSwarm := s.taskSwarm
+	if taskSwarm != nil {
+		taskSwarm.BeginShutdown()
+	}
+	s.taskRuntimeMu.Unlock()
+
+	// Graceful drain: give already-admitted CLI processes time to finish.
 	// mcp-mux gives us ~8s grace after stdin close — use 5s for drain, rest for cleanup.
 	graceful := executor.SharedPM.GracefulShutdown(5 * time.Second)
 	if graceful > 0 && s.log != nil {
 		s.log.Info("graceful shutdown: %d processes finished naturally", graceful)
 	}
-	s.taskRuntimeMu.Lock()
-	taskSwarm := s.taskSwarm
-	s.taskRuntimeMu.Unlock()
 	if taskSwarm != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := taskSwarm.Shutdown(shutdownCtx); err != nil && s.log != nil {
