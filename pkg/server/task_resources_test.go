@@ -332,6 +332,14 @@ func TestTaskSnapshotResourceBoundsAndRedactsReviewReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loom.Submit: %v", err)
 	}
+	task, err := srv.loom.Get(taskID)
+	if err != nil {
+		t.Fatalf("loom.Get: %v", err)
+	}
+	durableReason, _ := task.Metadata["reason"].(string)
+	if strings.Contains(durableReason, rawSecret) || !strings.Contains(durableReason, "[REDACTED:openai-key-project]") {
+		t.Fatalf("durable review reason = %q, want typed marker without raw secret", durableReason)
+	}
 
 	got := readTaskSnapshotResource(t, srv, ctx, "aimux://tasks/"+taskID)
 	metadata, ok := got["metadata"].(map[string]any)

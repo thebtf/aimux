@@ -20,14 +20,19 @@ import (
 // Order is load-bearing: specific sk-*-prefix patterns (project/svcacct/anthropic)
 // MUST precede the generic legacy `sk-...` regex, which would otherwise swallow
 // them under a wrong label.
-var storeSecretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{20,}`),         // openai-key-project
-	regexp.MustCompile(`sk-svcacct-[A-Za-z0-9_\-]{20,}`),      // openai-key-svcacct
-	regexp.MustCompile(`sk-ant-api\d{2}-[A-Za-z0-9_\-]{20,}`), // anthropic-key
-	regexp.MustCompile(`sk-[A-Za-z0-9_\-]{20,}`),              // openai-key-legacy (LAST of sk-*)
-	regexp.MustCompile(`AIza[A-Za-z0-9_\-]{35,}`),             // google-ai-key
-	regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9_\-\.=]{20,}`), // bearer-token
-	regexp.MustCompile(`(?i)Authorization:\s*[^\s]{20,}`),     // auth-header
+type storeSecretPattern struct {
+	label string
+	re    *regexp.Regexp
+}
+
+var storeSecretPatterns = []storeSecretPattern{
+	{label: "openai-key-project", re: regexp.MustCompile(`sk-proj-[A-Za-z0-9_\-]{20,}`)},
+	{label: "openai-key-svcacct", re: regexp.MustCompile(`sk-svcacct-[A-Za-z0-9_\-]{20,}`)},
+	{label: "anthropic-key", re: regexp.MustCompile(`sk-ant-api\d{2}-[A-Za-z0-9_\-]{20,}`)},
+	{label: "openai-key-legacy", re: regexp.MustCompile(`sk-[A-Za-z0-9_\-]{20,}`)},
+	{label: "google-ai-key", re: regexp.MustCompile(`AIza[A-Za-z0-9_\-]{35,}`)},
+	{label: "bearer-token", re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9_\-\.=]{20,}`)},
+	{label: "auth-header", re: regexp.MustCompile(`(?i)Authorization:\s*[^\s]{20,}`)},
 }
 
 // redactErrorMsg scrubs known secret patterns from an error message.
@@ -35,10 +40,20 @@ func redactErrorMsg(s string) string {
 	if s == "" {
 		return s
 	}
-	for _, re := range storeSecretPatterns {
-		s = re.ReplaceAllString(s, "[REDACTED]")
+	for _, pattern := range storeSecretPatterns {
+		s = pattern.re.ReplaceAllString(s, "[REDACTED]")
 	}
 	return s
+}
+
+// sanitizeReviewReasonMetadata retains the established typed marker only for
+// the public review-reason metadata field; all other Loom terminal text keeps
+// the generic marker contract.
+func sanitizeReviewReasonMetadata(s string) string {
+	for _, pattern := range storeSecretPatterns {
+		s = pattern.re.ReplaceAllString(s, "[REDACTED:"+pattern.label+"]")
+	}
+	return sanitizeTerminalText(s)
 }
 
 // sanitizeTerminalText removes secrets and provider-private reasoning from a
@@ -1593,13 +1608,17 @@ func unmarshalJSON(s string, v any) error {
 	return json.Unmarshal([]byte(s), v)
 }
 
-func unmarshalMetadataJSON(s string, v any) error {
+func unmarshalMetadataJSON(s string, v *map[string]any) error {
 	if s == "" || s == "{}" || s == "null" {
 		return nil
 	}
 	decoder := json.NewDecoder(strings.NewReader(s))
 	decoder.UseNumber()
-	return decoder.Decode(v)
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	normalizeTaskMetadataNumbers(*v)
+	return nil
 }
 
 func nullableString(s string) any {

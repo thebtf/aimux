@@ -95,6 +95,57 @@ func TestSanitizeTaskMetadataForStorageRejectsCycles(t *testing.T) {
 	}
 }
 
+func TestTaskStoreMetadataWritersPreserveTypedReviewReasonAndSafeNumbers(t *testing.T) {
+	const rawSecret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	store := newTestStore(t)
+	metadata := func() map[string]any {
+		return map[string]any{
+			"reason":        "review backend failed " + rawSecret,
+			"small":         6,
+			"fraction":      2.5,
+			"large_integer": json.Number("9007199254740993"),
+		}
+	}
+
+	create := makeTask("metadata-create-compatible", "metadata-sinks", TaskStatusPending)
+	create.Metadata = metadata()
+	if err := store.Create(create); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	imported := makeTask("metadata-import-compatible", "metadata-sinks", TaskStatusCompleted)
+	imported.Metadata = metadata()
+	if err := store.Import(imported); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	active := makeTask("metadata-set-compatible", "metadata-sinks", TaskStatusRunning)
+	if err := store.Create(active); err != nil {
+		t.Fatalf("Create active: %v", err)
+	}
+	if err := store.SetMetadata(active.ID, metadata()); err != nil {
+		t.Fatalf("SetMetadata: %v", err)
+	}
+
+	for _, id := range []string{create.ID, imported.ID, active.ID} {
+		task, err := store.Get(id)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", id, err)
+		}
+		reason, _ := task.Metadata["reason"].(string)
+		if strings.Contains(reason, rawSecret) || !strings.Contains(reason, "[REDACTED:openai-key-project]") {
+			t.Fatalf("%s reason = %q, want typed marker without raw secret", id, reason)
+		}
+		if _, isNumber := task.Metadata["small"].(json.Number); isNumber {
+			t.Fatalf("%s small = %#v, want ordinary numeric metadata", id, task.Metadata["small"])
+		}
+		if _, isNumber := task.Metadata["fraction"].(json.Number); isNumber {
+			t.Fatalf("%s fraction = %#v, want ordinary numeric metadata", id, task.Metadata["fraction"])
+		}
+		if got, ok := task.Metadata["large_integer"].(json.Number); !ok || got.String() != "9007199254740993" {
+			t.Fatalf("%s large_integer = %#v, want exact json.Number", id, task.Metadata["large_integer"])
+		}
+	}
+}
+
 func TestTaskStoreMetadataWritersRejectCyclesWithoutMutation(t *testing.T) {
 	store := newTestStore(t)
 	active := makeTask("cycle-metadata-active", "metadata-sinks", TaskStatusRunning)
@@ -158,8 +209,8 @@ func TestLoomEngine_SubmitSanitizesGenericWorkerMetadata(t *testing.T) {
 	if task.Metadata["provider"] != "codex" {
 		t.Fatalf("provider = %#v, want codex", task.Metadata["provider"])
 	}
-	if got, ok := task.Metadata["exit_code"].(json.Number); !ok || got.String() != "0" {
-		t.Fatalf("exit_code = %#v, want json.Number(0)", task.Metadata["exit_code"])
+	if got, ok := task.Metadata["exit_code"].(float64); !ok || got != 0 {
+		t.Fatalf("exit_code = %#v, want ordinary float64(0)", task.Metadata["exit_code"])
 	}
 }
 

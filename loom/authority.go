@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -1615,8 +1616,87 @@ func sanitizeTaskMetadataForStorage(metadata map[string]any) (map[string]any, er
 	if err := decoder.Decode(&normalized); err != nil {
 		return nil, fmt.Errorf("decode task metadata: %w", err)
 	}
-	sanitized, _ := sanitizeAuthorityJSONValue(normalized)
+	normalizeTaskMetadataNumbers(normalized)
+	sanitized, _ := sanitizeTaskMetadataValue(normalized)
 	return sanitized.(map[string]any), nil
+}
+
+func normalizeTaskMetadataNumbers(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if number, ok := child.(json.Number); ok {
+				typed[key] = normalizeTaskMetadataNumber(number)
+				continue
+			}
+			normalizeTaskMetadataNumbers(child)
+		}
+	case []any:
+		for index, child := range typed {
+			if number, ok := child.(json.Number); ok {
+				typed[index] = normalizeTaskMetadataNumber(number)
+				continue
+			}
+			normalizeTaskMetadataNumbers(child)
+		}
+	}
+}
+
+func normalizeTaskMetadataNumber(number json.Number) any {
+	raw := number.String()
+	if value, err := number.Int64(); err == nil && strconv.FormatInt(value, 10) == raw {
+		if value >= -(1<<53) && value <= 1<<53 {
+			return float64(value)
+		}
+		return number
+	}
+	if value, err := number.Float64(); err == nil {
+		return value
+	}
+	return number
+}
+
+func sanitizeTaskMetadataValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		changed := false
+		result := make(map[string]any, len(typed))
+		for key, child := range typed {
+			if authoritySensitiveJSONKey(key) {
+				result[key] = authorityRedactedValue
+				if child != authorityRedactedValue {
+					changed = true
+				}
+				continue
+			}
+			if key == "reason" {
+				if reason, ok := child.(string); ok {
+					redacted := sanitizeReviewReasonMetadata(reason)
+					result[key] = redacted
+					changed = changed || redacted != reason
+					continue
+				}
+			}
+			var childChanged bool
+			result[key], childChanged = sanitizeTaskMetadataValue(child)
+			changed = changed || childChanged
+		}
+		return result, changed
+	case []any:
+		changed := false
+		result := make([]any, len(typed))
+		for i, child := range typed {
+			var childChanged bool
+			result[i], childChanged = sanitizeTaskMetadataValue(child)
+			changed = changed || childChanged
+		}
+		return result, changed
+	case string:
+		redacted := sanitizeTerminalText(typed)
+		return redacted, redacted != typed
+	default:
+		return value, false
+	}
 }
 
 func authoritySensitiveJSONKey(key string) bool {
