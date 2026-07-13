@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -1614,10 +1615,19 @@ func unmarshalMetadataJSON(s string, v *map[string]any) error {
 	}
 	decoder := json.NewDecoder(strings.NewReader(s))
 	decoder.UseNumber()
-	if err := decoder.Decode(v); err != nil {
+	var metadata map[string]any
+	if err := decoder.Decode(&metadata); err != nil {
 		return err
 	}
-	normalizeTaskMetadataNumbers(*v)
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return errors.New("metadata contains trailing JSON value")
+	}
+	normalizeTaskMetadataNumbers(metadata)
+	*v = metadata
 	return nil
 }
 

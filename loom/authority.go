@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -1650,7 +1651,10 @@ func normalizeTaskMetadataNumber(number json.Number) any {
 		}
 		return number
 	}
-	if value, err := number.Float64(); err == nil {
+	if value, err := number.Float64(); err == nil && !math.IsInf(value, 0) && !math.IsNaN(value) {
+		if math.Trunc(value) == value {
+			return number
+		}
 		return value
 	}
 	return number
