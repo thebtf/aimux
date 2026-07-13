@@ -31,6 +31,10 @@ type cancellationTailExecutor struct {
 	tailTried   chan bool
 }
 
+func (*cancellationTailExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
+	return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, nil
+}
+
 func newCancellationTailExecutor() *cancellationTailExecutor {
 	return &cancellationTailExecutor{
 		started:     make(chan struct{}),

@@ -29,19 +29,74 @@ const (
 	// Eight MiB avoids the old 64 KiB false-success cliff for normal code diffs.
 	eventResponseCapBytes = 8 << 20
 	// eventDrainTimeout bounds stdout/stderr/stdin completion after process exit.
-	eventDrainTimeout = 2 * time.Second
+	eventDrainTimeout    = 2 * time.Second
+	processEvidenceLimit = 256
 )
 
 // Compile-time assertion: *Executor must implement types.SessionFactory (T007 / FR-1).
 var _ types.SessionFactory = (*Executor)(nil)
 var _ types.EventExecutor = (*Executor)(nil)
+var _ types.ProcessEvidenceProvider = (*Executor)(nil)
 
 // Executor spawns CLI processes via stdin/stdout pipes.
-type Executor struct{}
+type Executor struct {
+	evidenceMu    sync.Mutex
+	evidence      map[types.ExecutionID]processEvidence
+	evidenceOrder []types.ExecutionID
+}
+
+type processEvidence struct {
+	tree   types.ProcessTreeEvidence
+	handle *executor.ProcessHandle
+}
 
 // New creates a pipe executor.
 func New() *Executor {
-	return &Executor{}
+	return &Executor{evidence: make(map[types.ExecutionID]processEvidence)}
+}
+
+// ProcessTreeEvidence reports the exact managed process generation retained for
+// an event execution. It is intentionally in-memory; recovery is CR-003.
+func (e *Executor) ProcessTreeEvidence(_ context.Context, id types.ExecutionID) (types.ProcessTreeEvidence, error) {
+	e.evidenceMu.Lock()
+	defer e.evidenceMu.Unlock()
+	record, ok := e.evidence[id]
+	if !ok {
+		return types.ProcessTreeEvidence{}, fmt.Errorf("pipe: process evidence not found")
+	}
+	if !record.tree.Stopped && !executor.SharedPM.IsAlive(record.handle) {
+		record.tree.Stopped = true
+		e.evidence[id] = record
+	}
+	return record.tree, nil
+}
+
+func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.ProcessHandle) {
+	evidence := types.ProcessTreeEvidence{Process: types.ProcessIdentity{
+		PID: h.PID, StartFingerprint: fmt.Sprintf("%d", h.StartedAt.UnixNano()),
+		TreeID: fmt.Sprintf("pipe:%d:%d", h.PID, h.StartedAt.UnixNano()),
+	}}
+	e.evidenceMu.Lock()
+	if _, exists := e.evidence[id]; !exists {
+		e.evidenceOrder = append(e.evidenceOrder, id)
+	}
+	e.evidence[id] = processEvidence{tree: evidence, handle: h}
+	for len(e.evidenceOrder) > processEvidenceLimit {
+		oldest := e.evidenceOrder[0]
+		e.evidenceOrder = e.evidenceOrder[1:]
+		delete(e.evidence, oldest)
+	}
+	e.evidenceMu.Unlock()
+}
+
+func (e *Executor) markProcessStopped(id types.ExecutionID) {
+	e.evidenceMu.Lock()
+	record, ok := e.evidence[id]
+	if ok {
+		record.tree.Stopped = true
+		e.evidence[id] = record
+	}
+	e.evidenceMu.Unlock()
 }
 
 // Name returns the executor name.
@@ -221,6 +276,8 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 		return nil, types.NewExecutorError("failed to start "+args.Command, err, "")
 	}
 	defer executor.SharedPM.Cleanup(h)
+	e.retainProcessEvidence(executionID, h)
+	defer e.markProcessStopped(executionID)
 
 	var ioGroup sync.WaitGroup
 	if stdin != nil {

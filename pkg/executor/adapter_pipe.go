@@ -10,6 +10,7 @@ import (
 // Compile-time assertion: CLIPipeAdapter must implement ExecutorV2.
 var _ types.ExecutorV2 = (*CLIPipeAdapter)(nil)
 var _ types.EventExecutor = (*CLIPipeAdapter)(nil)
+var _ types.ProcessEvidenceProvider = (*CLIPipeAdapter)(nil)
 
 // CLIPipeAdapter wraps a legacy types.LegacyExecutor (typically *pipe.Executor) as
 // an ExecutorV2. It accepts the interface to avoid an import cycle:
@@ -166,6 +167,16 @@ func (a *CLIPipeAdapter) SendEvents(ctx context.Context, executionID types.Execu
 		resp.Partial = true
 	}
 	return resp, err
+}
+
+// ProcessTreeEvidence forwards executor-owned evidence without exposing the
+// legacy executor to callers.
+func (a *CLIPipeAdapter) ProcessTreeEvidence(ctx context.Context, id types.ExecutionID) (types.ProcessTreeEvidence, error) {
+	provider, ok := a.legacy.(types.ProcessEvidenceProvider)
+	if !ok || a.session != nil {
+		return types.ProcessTreeEvidence{}, fmt.Errorf("pipe adapter: process evidence unavailable")
+	}
+	return provider.ProcessTreeEvidence(ctx, id)
 }
 
 // IsAlive returns HealthAlive when the adapter is session-bound and the session

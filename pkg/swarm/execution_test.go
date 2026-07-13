@@ -15,6 +15,10 @@ type eventExecutor struct {
 	started chan<- struct{}
 }
 
+func (*eventExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
+	return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, nil
+}
+
 func (e *eventExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
 func (e *eventExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{}, nil
@@ -183,6 +187,10 @@ func TestSwarmExecutionRejectsDuplicateIDWhileTerminalRecordIsRetained(t *testin
 type contextEventExecutor struct {
 	started chan<- struct{}
 	late    <-chan struct{}
+}
+
+func (*contextEventExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
+	return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, nil
 }
 
 func (*contextEventExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }

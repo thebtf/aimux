@@ -21,9 +21,11 @@ const maxTerminalExecutions = 256
 // ExecutionInspection is an in-memory, fenced snapshot. It intentionally
 // carries no durable binding; CR-003 owns recovery and persistence.
 type ExecutionInspection struct {
-	ExecutionID types.ExecutionID
-	Terminal    bool
-	Cancelled   bool
+	ExecutionID          types.ExecutionID
+	Terminal             bool
+	Cancelled            bool
+	CancellationEvidence types.CancellationEvidence
+	ProcessTreeEvidence  types.ProcessTreeEvidence
 }
 
 type handleAuthority struct {
@@ -40,20 +42,24 @@ type executionKey struct {
 }
 
 type executionRecord struct {
-	handle       *Handle
-	id           types.ExecutionID
-	tenantID     string
-	scope        string
-	generation   uint64
-	executor     types.ExecutorV2
-	sink         types.ExecutorEventSink
-	cancel       context.CancelFunc
-	cancellation types.CancellationEvidence
-	terminal     bool
-	cancelled    bool
-	truncated    bool
-	admitted     bool
-	mu           sync.Mutex
+	handle             *Handle
+	id                 types.ExecutionID
+	tenantID           string
+	scope              string
+	generation         uint64
+	executor           types.ExecutorV2
+	sink               types.ExecutorEventSink
+	cancel             context.CancelFunc
+	cancellation       types.CancellationEvidence
+	processEvidence    types.ProcessTreeEvidence
+	hasProcessEvidence bool
+	cancelDone         chan struct{}
+	cancellationErr    error
+	terminal           bool
+	cancelled          bool
+	truncated          bool
+	admitted           bool
+	mu                 sync.Mutex
 }
 
 // Execute admits one exact execution for a live handle generation. Swarm owns
@@ -180,13 +186,21 @@ func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reaso
 		record.mu.Unlock()
 		return evidence, nil
 	}
-	if record.cancelled {
-		evidence := record.cancellation
+	if done := record.cancelDone; done != nil {
 		record.mu.Unlock()
-		return evidence, nil
+		select {
+		case <-done:
+			record.mu.Lock()
+			evidence, cancelErr := record.cancellation, record.cancellationErr
+			record.mu.Unlock()
+			return evidence, cancelErr
+		case <-ctx.Done():
+			return types.CancellationEvidence{ExecutionID: record.id}, ctx.Err()
+		}
 	}
 	record.cancelled = true
 	record.cancellation = types.CancellationEvidence{ExecutionID: record.id}
+	record.cancelDone = make(chan struct{})
 	cancel := record.cancel
 	exec := record.executor
 	record.mu.Unlock()
@@ -201,8 +215,19 @@ func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reaso
 			evidence.ExecutionID = record.id
 		}
 	}
+	var processEvidence types.ProcessTreeEvidence
+	var processErr error
+	if provider, ok := exec.(types.ProcessEvidenceProvider); ok {
+		processEvidence, processErr = provider.ProcessTreeEvidence(ctx, record.id)
+	}
 	record.mu.Lock()
 	record.cancellation = evidence
+	if processErr == nil && processEvidence.Process.Validate() == nil {
+		record.processEvidence = processEvidence
+		record.hasProcessEvidence = true
+	}
+	record.cancellationErr = cancelErr
+	close(record.cancelDone)
 	record.mu.Unlock()
 	if cancelErr != nil {
 		return evidence, cancelErr
@@ -219,7 +244,7 @@ func (s *Swarm) Inspect(ctx context.Context, h *Handle, scope string, id types.E
 	}
 	record.mu.Lock()
 	defer record.mu.Unlock()
-	return ExecutionInspection{ExecutionID: id, Terminal: record.terminal, Cancelled: record.cancelled}, nil
+	return ExecutionInspection{ExecutionID: id, Terminal: record.terminal, Cancelled: record.cancelled, CancellationEvidence: record.cancellation, ProcessTreeEvidence: record.processEvidence}, nil
 }
 
 func (s *Swarm) executionAuthority(ctx context.Context, h *Handle, scope string) (handleAuthority, types.ExecutorV2, error) {
@@ -277,6 +302,12 @@ func (record *executionRecord) tryAdmit(event types.ExecutorEvent) bool {
 
 func (record *executionRecord) finalizeTerminal(response *types.Response, runErr error) bool {
 	record.mu.Lock()
+	done := record.cancelDone
+	record.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+	record.mu.Lock()
 	defer record.mu.Unlock()
 	if record.terminal {
 		return record.admitted
@@ -285,7 +316,7 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 		record.truncated = true
 	}
 	eventType := "completed"
-	if record.cancelled {
+	if record.cancelled && (record.cancellation.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped) {
 		eventType = "cancelled"
 	} else if response != nil && response.Error != nil && response.Error.Type == types.ErrorTypeTimeout {
 		eventType = "timeout"

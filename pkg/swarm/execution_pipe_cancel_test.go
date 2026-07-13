@@ -66,6 +66,14 @@ func (e *delayedCancellationPipeExecutor) SendEvents(ctx context.Context, id typ
 	}
 }
 
+func (e *delayedCancellationPipeExecutor) ProcessTreeEvidence(ctx context.Context, id types.ExecutionID) (types.ProcessTreeEvidence, error) {
+	return e.inner.ProcessTreeEvidence(ctx, id)
+}
+
+func (*delayedCancellationPipeExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
+	return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, nil
+}
+
 func TestSwarmPipeDrainCancellationHelper(t *testing.T) {
 	if os.Getenv(pipeDrainHelperEnv) != "1" {
 		return
