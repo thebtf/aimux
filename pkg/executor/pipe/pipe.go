@@ -43,6 +43,7 @@ type Executor struct {
 	evidenceMu    sync.Mutex
 	evidence      map[types.ExecutionID]processEvidence
 	evidenceOrder []types.ExecutionID
+	stdinPipe     func(*exec.Cmd) (io.WriteCloser, error)
 }
 
 type processEvidence struct {
@@ -64,7 +65,7 @@ func (e *Executor) ProcessTreeEvidence(_ context.Context, id types.ExecutionID) 
 	if !ok {
 		return types.ProcessTreeEvidence{}, fmt.Errorf("pipe: process evidence not found")
 	}
-	if !record.tree.Stopped && !executor.SharedPM.IsAlive(record.handle) {
+	if !record.tree.Stopped && record.handle.TreeStopped() {
 		record.tree.Stopped = true
 		e.evidence[id] = record
 	}
@@ -84,7 +85,14 @@ func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.Proce
 	for len(e.evidence) >= processEvidenceLimit {
 		evicted := false
 		for i, candidate := range e.evidenceOrder {
-			if record, ok := e.evidence[candidate]; ok && record.tree.Stopped {
+			if record, ok := e.evidence[candidate]; ok {
+				if !record.tree.Stopped && record.handle.TreeStopped() {
+					record.tree.Stopped = true
+					e.evidence[candidate] = record
+				}
+				if !record.tree.Stopped {
+					continue
+				}
 				delete(e.evidence, candidate)
 				e.evidenceOrder = append(e.evidenceOrder[:i], e.evidenceOrder[i+1:]...)
 				evicted = true
@@ -100,14 +108,11 @@ func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.Proce
 	return nil
 }
 
-func (e *Executor) markProcessStopped(id types.ExecutionID) {
-	e.evidenceMu.Lock()
-	record, ok := e.evidence[id]
-	if ok {
-		record.tree.Stopped = true
-		e.evidence[id] = record
+func (e *Executor) openStdinPipe(cmd *exec.Cmd) (io.WriteCloser, error) {
+	if e.stdinPipe != nil {
+		return e.stdinPipe(cmd)
 	}
-	e.evidenceMu.Unlock()
+	return cmd.StdinPipe()
 }
 
 // Name returns the executor name.
@@ -277,13 +282,16 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 	var stdin io.WriteCloser
 	var err error
 	if args.Stdin != "" {
-		stdin, err = cmd.StdinPipe()
+		stdin, err = e.openStdinPipe(cmd)
 		if err != nil {
 			return nil, types.NewExecutorError("failed to create stdin pipe", err, "")
 		}
 	}
 	h, err := executor.SharedPM.SpawnWithDrain(cmd)
 	if err != nil {
+		if stdin != nil {
+			_ = stdin.Close()
+		}
 		return nil, types.NewExecutorError("failed to start "+args.Command, err, "")
 	}
 	defer executor.SharedPM.Cleanup(h)
@@ -291,12 +299,13 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 		// Admission is after spawn; release the just-spawned owned tree before
 		// returning so a full live registry cannot leak a process.
 		h.MarkDrained()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
 		executor.SharedPM.Kill(h)
 		executor.SharedPM.Cleanup(h)
 		return nil, err
 	}
-	defer e.markProcessStopped(executionID)
-
 	var ioGroup sync.WaitGroup
 	if stdin != nil {
 		ioGroup.Add(1)
@@ -434,6 +443,7 @@ func (e *Executor) Start(ctx context.Context, args types.SpawnArgs) (types.Sessi
 
 	handle, err := sessionPM.Spawn(cmd)
 	if err != nil {
+		_ = stdin.Close()
 		return nil, types.NewExecutorError(
 			fmt.Sprintf("failed to start %s", args.Command), err, "")
 	}

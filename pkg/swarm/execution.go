@@ -18,9 +18,8 @@ var (
 
 const maxTerminalExecutions = 256
 
-// cancellationResolutionTimeout bounds terminal publication when an optional
-// native canceller ignores its context. Process teardown itself remains owned
-// by the executor and is awaited through executionDone when evidence is needed.
+// cancellationResolutionTimeout bounds cancellation resolution for optional
+// native cancellers that honor their context contract.
 const cancellationResolutionTimeout = 10 * time.Second
 
 // ExecutionInspection is an in-memory, fenced snapshot. It intentionally
@@ -62,7 +61,6 @@ type executionRecord struct {
 	executionReturned  bool
 	cancelDone         chan struct{}
 	cancellationErr    error
-	cancelIntent       bool
 	terminal           bool
 	cancelled          bool
 	truncated          bool
@@ -188,6 +186,10 @@ func (s *Swarm) Cancel(ctx context.Context, h *Handle, scope string, id types.Ex
 
 func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reason string) (types.CancellationEvidence, error) {
 	record.mu.Lock()
+	if done := record.cancelDone; done != nil {
+		record.mu.Unlock()
+		return record.waitCancellation(ctx, done)
+	}
 	if record.terminal || record.executionReturned {
 		evidence := record.cancellation
 		if evidence.ExecutionID == "" {
@@ -197,11 +199,6 @@ func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reaso
 		record.mu.Unlock()
 		return evidence, cancelErr
 	}
-	if done := record.cancelDone; done != nil {
-		record.mu.Unlock()
-		return record.waitCancellation(ctx, done)
-	}
-	record.cancelIntent = true
 	record.cancellation = types.CancellationEvidence{ExecutionID: record.id}
 	record.cancelDone = make(chan struct{})
 	done := record.cancelDone

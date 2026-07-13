@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -16,8 +17,9 @@ import (
 // processTree owns the Job Object assigned to one process started by Spawn.
 // releaseOnce makes natural exit, Kill, and Cleanup safe to race.
 type processTree struct {
-	job         windows.Handle
-	releaseOnce sync.Once
+	job          windows.Handle
+	releaseOnce  sync.Once
+	stopObserved atomic.Bool
 }
 
 type windowsThreadOperations struct {
@@ -172,9 +174,9 @@ func selectSoleProcessThread(processID uint32, entries []windows.ThreadEntry32) 
 	return threadID, nil
 }
 
-func (tree *processTree) terminate() {
+func (tree *processTree) terminate() bool {
 	if tree == nil {
-		return
+		return false
 	}
 	tree.releaseOnce.Do(func() {
 		job := tree.job
@@ -182,10 +184,15 @@ func (tree *processTree) terminate() {
 		if job == 0 {
 			return
 		}
-		_ = windows.TerminateJobObject(job, 1)
+		if windows.TerminateJobObject(job, 1) == nil {
+			tree.stopObserved.Store(true)
+		}
 		_ = windows.CloseHandle(job)
 	})
+	return tree.stopObserved.Load()
 }
+
+func (tree *processTree) stopped() bool { return tree != nil && tree.stopObserved.Load() }
 
 func (tree *processTree) discard() {
 	if tree == nil {

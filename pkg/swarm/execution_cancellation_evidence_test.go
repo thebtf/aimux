@@ -2,6 +2,7 @@ package swarm_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +10,94 @@ import (
 	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+type delayedNativeCancellationExecutor struct {
+	started, returned, cancelStarted chan struct{}
+	release                          <-chan struct{}
+	err                              error
+}
+
+func (*delayedNativeCancellationExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
+func (*delayedNativeCancellationExecutor) Send(context.Context, types.Message) (*types.Response, error) {
+	return &types.Response{}, nil
+}
+func (*delayedNativeCancellationExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
+	return &types.Response{}, nil
+}
+func (*delayedNativeCancellationExecutor) IsAlive() types.HealthStatus { return types.HealthAlive }
+func (*delayedNativeCancellationExecutor) Close() error                { return nil }
+func (e *delayedNativeCancellationExecutor) SendEvents(ctx context.Context, _ types.ExecutionID, _ types.Message, _ types.ExecutorEventSink) (*types.Response, error) {
+	close(e.started)
+	<-ctx.Done()
+	close(e.returned)
+	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
+}
+func (e *delayedNativeCancellationExecutor) CancelExecution(ctx context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
+	close(e.cancelStarted)
+	select {
+	case <-e.release:
+		return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, e.err
+	case <-ctx.Done():
+		return types.CancellationEvidence{ExecutionID: id}, ctx.Err()
+	}
+}
+
+func TestSwarmRepeatedCancelAfterExecutionReturnWaitsForNativeFlight(t *testing.T) {
+	release := make(chan struct{})
+	wantErr := errors.New("native cancellation result")
+	exec := &delayedNativeCancellationExecutor{
+		started: make(chan struct{}), returned: make(chan struct{}), cancelStarted: make(chan struct{}), release: release, err: wantErr,
+	}
+	s := swarm.New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	h, err := s.Get(context.Background(), "native", swarm.Stateful, swarm.WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := s.Execute(context.Background(), h, "scope", "native-flight", types.Message{}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true }))
+		runDone <- err
+	}()
+	<-exec.started
+	first := make(chan struct {
+		evidence types.CancellationEvidence
+		err      error
+	}, 1)
+	go func() {
+		evidence, err := s.Cancel(context.Background(), h, "scope", "native-flight", "first")
+		first <- struct {
+			evidence types.CancellationEvidence
+			err      error
+		}{evidence, err}
+	}()
+	<-exec.returned
+	<-exec.cancelStarted
+	repeated := make(chan struct {
+		evidence types.CancellationEvidence
+		err      error
+	}, 1)
+	go func() {
+		evidence, err := s.Cancel(context.Background(), h, "scope", "native-flight", "repeat")
+		repeated <- struct {
+			evidence types.CancellationEvidence
+			err      error
+		}{evidence, err}
+	}()
+	select {
+	case got := <-repeated:
+		t.Fatalf("repeated Cancel escaped shared native flight: %#v, %v", got.evidence, got.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	firstResult := <-first
+	repeatedResult := <-repeated
+	if !firstResult.evidence.NativeAcknowledged || firstResult.evidence != repeatedResult.evidence || !errors.Is(firstResult.err, wantErr) || !errors.Is(repeatedResult.err, wantErr) {
+		t.Fatalf("first=%#v,%v repeated=%#v,%v", firstResult.evidence, firstResult.err, repeatedResult.evidence, repeatedResult.err)
+	}
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+}
 
 type treeEvidenceExecutor struct {
 	started, returned chan struct{}

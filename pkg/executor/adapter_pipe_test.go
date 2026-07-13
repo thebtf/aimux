@@ -56,6 +56,12 @@ type mockLegacyExecutor struct {
 
 type nativeLegacyExecutor struct{ mockLegacyExecutor }
 
+type evidenceLegacyExecutor struct{ mockLegacyExecutor }
+
+func (*evidenceLegacyExecutor) ProcessTreeEvidence(context.Context, types.ExecutionID) (types.ProcessTreeEvidence, error) {
+	return types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 7, StartFingerprint: "start", TreeID: "tree"}, Stopped: true}, nil
+}
+
 func (m *nativeLegacyExecutor) SendEvents(_ context.Context, _ types.ExecutionID, _ types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
 	sink.TryAdmit(types.ExecutorEvent{Channel: "stderr", Type: "output", Content: []byte{0xff}})
 	return &types.Response{Content: "native"}, nil
@@ -70,6 +76,22 @@ func TestCLIPipeAdapter_SendEventsDelegatesNativeBytes(t *testing.T) {
 	}
 	if resp.Content != "native" || got.Channel != "stderr" || len(got.Content) != 1 || got.Content[0] != 0xff {
 		t.Fatalf("resp=%#v event=%#v", resp, got)
+	}
+}
+
+func TestCLIPipeAdapterProcessTreeEvidenceForwardsOnlyStatelessProvider(t *testing.T) {
+	legacy := &evidenceLegacyExecutor{}
+	adapter := executor.NewCLIPipeAdapter(legacy)
+	evidence, err := adapter.ProcessTreeEvidence(context.Background(), "exec")
+	if err != nil || !evidence.Stopped || evidence.Process.Validate() != nil {
+		t.Fatalf("ProcessTreeEvidence = %#v, %v", evidence, err)
+	}
+	bound := executor.NewCLIPipeAdapterWithSession(legacy, &mockSession{})
+	if _, err := bound.ProcessTreeEvidence(context.Background(), "exec"); err == nil {
+		t.Fatal("session-bound adapter exposed process evidence")
+	}
+	if _, err := executor.NewCLIPipeAdapter(&mockLegacyExecutor{}).ProcessTreeEvidence(context.Background(), "exec"); err == nil {
+		t.Fatal("adapter exposed evidence without a provider")
 	}
 }
 

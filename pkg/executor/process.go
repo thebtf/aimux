@@ -184,6 +184,12 @@ func (pm *ProcessManager) IsAlive(h *ProcessHandle) bool {
 	return !h.exited.Load()
 }
 
+// TreeStopped reports the ProcessManager-owned termination observation for the
+// exact tree started with h. Root exit alone is not whole-tree evidence.
+func (h *ProcessHandle) TreeStopped() bool {
+	return h != nil && h.processTree != nil && h.processTree.stopped()
+}
+
 // MarkExited atomically marks the handle as exited. Used by external
 // reap goroutines (e.g. ConPTY's wrapper around upconpty.ConPty.Wait —
 // AIMUX-16 CR-004) that own their child-process lifecycle but plug their

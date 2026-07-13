@@ -63,8 +63,10 @@ type EventExecutor interface {
 	SendEvents(ctx context.Context, executionID ExecutionID, msg Message, sink ExecutorEventSink) (*Response, error)
 }
 
-// ExecutionCanceller is an optional ExecutorV2 capability for native
-// cancellation with explicit acknowledgement evidence.
+// ExecutionCanceller is a trusted compiled optional ExecutorV2 capability for
+// native cancellation with explicit acknowledgement evidence. Implementations
+// must promptly return when ctx is cancelled; Swarm relies on that contract to
+// bound shared cancellation resolution.
 type ExecutionCanceller interface {
 	CancelExecution(ctx context.Context, executionID ExecutionID, reason string) (CancellationEvidence, error)
 }

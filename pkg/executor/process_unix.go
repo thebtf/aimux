@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -22,8 +23,9 @@ const (
 // created by SysProcAttr before Start, so descendants cannot escape the
 // ownership boundary by racing post-start attachment.
 type processTree struct {
-	pgid        int
-	releaseOnce sync.Once
+	pgid         int
+	releaseOnce  sync.Once
+	stopObserved atomic.Bool
 }
 
 func prepareProcessTree(cmd *exec.Cmd) (*processTree, error) {
@@ -72,24 +74,31 @@ func (tree *processTree) attach(cmd *exec.Cmd) error {
 	return nil
 }
 
-func (tree *processTree) terminate() {
+func (tree *processTree) terminate() bool {
 	if tree == nil {
-		return
+		return false
 	}
 	tree.releaseOnce.Do(func() {
 		if tree.pgid <= 0 {
 			return
 		}
 		if err := syscall.Kill(-tree.pgid, syscall.SIGTERM); errors.Is(err, syscall.ESRCH) {
+			tree.stopObserved.Store(true)
 			return
 		}
 		if waitForProcessGroupExit(tree.pgid, processTreeTermGrace) {
+			tree.stopObserved.Store(true)
 			return
 		}
 		_ = syscall.Kill(-tree.pgid, syscall.SIGKILL)
-		_ = waitForProcessGroupExit(tree.pgid, processTreeKillGrace)
+		if waitForProcessGroupExit(tree.pgid, processTreeKillGrace) {
+			tree.stopObserved.Store(true)
+		}
 	})
+	return tree.stopObserved.Load()
 }
+
+func (tree *processTree) stopped() bool { return tree != nil && tree.stopObserved.Load() }
 
 func (tree *processTree) discard() {
 	if tree == nil {
