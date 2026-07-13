@@ -1401,6 +1401,7 @@ func (l *LoomEngine) persistWorkerMetadata(ctx context.Context, task *Task, late
 	if result != nil {
 		metadata = mergeTaskMetadata(metadata, result.Metadata)
 	}
+	metadata = sanitizeTaskMetadata(metadata)
 	if err := l.store.SetMetadata(latest.ID, metadata); err != nil {
 		l.logger.ErrorContext(ctx, "dispatch: store.SetMetadata failed",
 			"module", "loom",

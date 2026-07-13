@@ -40,7 +40,7 @@ func (l *LoomEngine) FailActive(taskID, errMsg string) (bool, error) {
 	if cancel != nil {
 		cancel()
 	}
-	l.emitAdminFailed(*info, errMsg)
+	l.emitAdminFailed(*info)
 	return true, nil
 }
 
@@ -113,9 +113,8 @@ func taskActivityBaseline(task *Task) time.Time {
 	return baseline
 }
 
-func (l *LoomEngine) emitAdminFailed(info FailedTaskInfo, errMsg string) {
+func (l *LoomEngine) emitAdminFailed(info FailedTaskInfo) {
 	ctx := context.Background()
-	redactedErr := redactErrorMsg(errMsg)
 	l.events.Emit(TaskEvent{
 		Type:      EventTaskFailed,
 		TaskID:    info.Task.ID,
@@ -137,7 +136,7 @@ func (l *LoomEngine) emitAdminFailed(info FailedTaskInfo, errMsg string) {
 		"previous_status", string(info.FromStatus),
 		"request_id", info.Task.RequestID,
 		"error_code", "admin_failed",
-		"error", redactedErr,
+		"error", info.Task.Error,
 	)
 }
 
@@ -198,12 +197,13 @@ func (s *TaskStore) FailActive(taskID, errMsg string) (*FailedTaskInfo, error) {
 		return nil, nil
 	}
 	fromStatus := task.Status
+	sanitizedErr := sanitizeTerminalText(errMsg)
 	now := time.Now().UTC()
 	res, err := tx.Exec(`
 		UPDATE tasks
 		SET status = ?, result = '', error = ?, completed_at = ?
 		WHERE id = ? AND engine_name = ? AND status = ?`,
-		string(TaskStatusFailed), redactErrorMsg(errMsg), now, taskID, s.engineName, string(fromStatus),
+		string(TaskStatusFailed), sanitizedErr, now, taskID, s.engineName, string(fromStatus),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("loom store: fail active update: %w", err)
@@ -221,7 +221,7 @@ func (s *TaskStore) FailActive(taskID, errMsg string) (*FailedTaskInfo, error) {
 
 	task.Status = TaskStatusFailed
 	task.Result = ""
-	task.Error = redactErrorMsg(errMsg)
+	task.Error = sanitizedErr
 	task.CompletedAt = &now
 	return &FailedTaskInfo{Task: task, FromStatus: fromStatus}, nil
 }

@@ -16,6 +16,7 @@ import (
 // may carry a non-zero AuthorityResult; infrastructure and validation failures
 // always return wholly zero wrappers.
 var ErrAuthorityConflict = errors.New("loom: authority conflict")
+var errAuthorityJSONDuplicateKey = errors.New("invalid JSON: duplicate object key")
 
 type ActionStatus string
 
@@ -1544,7 +1545,7 @@ func validateAuthorityJSONUniqueKeys(raw string) error {
 				frame := &frames[len(frames)-1]
 				if frame.object && frame.expectKey {
 					if _, duplicate := frame.keys[typed]; duplicate {
-						return fmt.Errorf("invalid JSON: duplicate object key %q", typed)
+						return fmt.Errorf("%w %q", errAuthorityJSONDuplicateKey, typed)
 					}
 					frame.keys[typed] = struct{}{}
 					frame.expectKey = false

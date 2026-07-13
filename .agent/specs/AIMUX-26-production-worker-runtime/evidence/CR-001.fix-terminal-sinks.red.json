@@ -19,5 +19,26 @@
     "sqlite leaked terminal content: credential and PRIVATE_REASONING_SENTINEL",
     "canonical failed task leaked error: provider stderr: [REDACTED] PRIVATE_REASONING_SENTINEL",
     "sqlite leaked fallback failure: failed_attempts.Message contained credential and PRIVATE_REASONING_SENTINEL"
-  ]
+  ],
+  "amendment_red": {
+    "observed_at": "2026-07-12T23:53:39.0244455Z",
+    "test_file": "loom/terminal_sinks_amendment_test.go",
+    "test_names": [
+      "TestTaskStore_FailActiveSanitizesDurableAndLog",
+      "TestSanitizeTerminalResultAmbiguousJSON",
+      "TestLoomEngine_SubmitSanitizesGenericWorkerMetadata",
+      "TestTaskStore_MetadataSinksSanitizeGenericMetadata"
+    ],
+    "commands": [
+      "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test . -run 'Test(TaskStore_FailActiveSanitizesDurableAndLog|SanitizeTerminalResultAmbiguousJSON|LoomEngine_SubmitSanitizesGenericWorkerMetadata|TaskStore_MetadataSinksSanitizeGenericMetadata)$' -count=1",
+      "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test ./pkg/server -run '^TestProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage$' -count=1"
+    ],
+    "failure_reason": "FailActive retained provider-private text in the durable task and daemon log; duplicate and malformed sensitive JSON retained short credentials; generic worker metadata leaked through dispatch and direct/replay metadata writers, including numeric precision loss.",
+    "runner_stdout_excerpt": [
+      "returned task leaked terminal data: admin failure: [REDACTED] PRIVATE_REASONING_SENTINEL",
+      "duplicate_sensitive_key retained both credential fields; malformed_sensitive_object retained short-secret",
+      "generic metadata task leaked credential and private reasoning",
+      "direct/replay task leaked token and converted 9007199254740993 to 9007199254740992"
+    ]
+  }
 }

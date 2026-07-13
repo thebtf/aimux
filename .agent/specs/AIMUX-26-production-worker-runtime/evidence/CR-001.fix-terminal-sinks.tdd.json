@@ -18,5 +18,73 @@
     "failed_tests": 2,
     "runner_stdout_excerpt": "unsafe terminal-result substitution leaked SQLite content; unsafe failed-attempt substitution leaked SQLite metadata; terminal-text substitution failed to build because its private-marker dependency became unused.",
     "reverted_at": "2026-07-12T23:16:00Z"
+  },
+  "amendment": {
+    "red": {
+      "observed_at": "2026-07-12T23:53:39.0244455Z",
+      "test_file": "loom/terminal_sinks_amendment_test.go",
+      "test_names": [
+        "TestTaskStore_FailActiveSanitizesDurableAndLog",
+        "TestSanitizeTerminalResultAmbiguousJSON",
+        "TestLoomEngine_SubmitSanitizesGenericWorkerMetadata",
+        "TestTaskStore_MetadataSinksSanitizeGenericMetadata"
+      ],
+      "runner_command": "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test . -run 'Test(TaskStore_FailActiveSanitizesDurableAndLog|SanitizeTerminalResultAmbiguousJSON|LoomEngine_SubmitSanitizesGenericWorkerMetadata|TaskStore_MetadataSinksSanitizeGenericMetadata)$' -count=1",
+      "runner_stdout_excerpt": "returned task leaked terminal data; duplicate and malformed sensitive JSON retained short credentials; generic and direct/replay metadata leaked private markers; direct metadata rounded 9007199254740993 to 9007199254740992"
+    },
+    "historic_fallback_red": {
+      "observed_at": "2026-07-12T23:06:27.0917055Z",
+      "test_name": "TestProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage",
+      "runner_command": "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-gocache'; go test ./pkg/server -run '^TestProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage$' -count=1",
+      "runner_stdout_excerpt": "sqlite leaked fallback failure: failed_attempts.Message contained credential and PRIVATE_REASONING_SENTINEL",
+      "note": "Command omitted from the first-maker RED sidecar; restored here from the original focused test and recorded RED excerpt."
+    },
+    "green": {
+      "observed_at": "2026-07-12T23:59:43.9586845Z",
+      "commands": [
+        "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test . -run '^(TestTaskStore_FailActiveSanitizesDurableAndLog|TestSanitizeTerminalResultAmbiguousJSON|TestLoomEngine_SubmitSanitizesGenericWorkerMetadata|TestTaskStore_MetadataSinksSanitizeGenericMetadata|TestFailTaskSanitizesDurableErrorAndLog|TestLegacyResultWritersSanitizeTerminalContent|TestLoomEngine_FailActivePreventsLateWorkerResultOverwrite|TestLoomEngine_Cancel|TestSanitizeAuthorityJSON_RejectsDuplicateObjectKeys)$' -count=1",
+        "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test ./pkg/server -run '^(TestLoomTerminalResultSanitizesDurableAndStatusSinks|TestSessionsKill_FailsLoomTasksBySessionMetadata|TestSessionsCancel_FailsPendingLoomTask|TestAdaptReviewPassOutputFailsClosedOnMalformedJSON|TestAdaptReviewPassOutputAcceptsStructuredJSON|TestProfileTaskWorkerReviewLeavesRedactBeforeStatusContent|TestRuntimeEventsFromOutputLine_NormalizesStructuredJSONL|TestProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail|TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput|TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON|TestProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage)$' -count=1"
+      ],
+      "result": "PASS: loom focused suite and pkg/server focused suite passed with no regressions."
+    },
+    "refactor": {
+      "applied": false,
+      "reason": "The shared sanitizer calls are the minimal boundary changes; extraction would add an unneeded abstraction."
+    },
+    "prove_it": {
+      "restored_at": "2026-07-12T23:59:43.9586845Z",
+      "mutations": [
+        {
+          "mutation": "disable private-marker branch in sanitizeTerminalText",
+          "command": "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test . -run '^TestTaskStore_FailActiveSanitizesDurableAndLog$' -count=1",
+          "result": "FAIL assertion: returned task leaked PRIVATE_REASONING_SENTINEL"
+        },
+        {
+          "mutation": "disable ambiguous-JSON fail-closed branch in sanitizeTerminalResult",
+          "command": "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test . -run '^TestSanitizeTerminalResultAmbiguousJSON$' -count=1",
+          "result": "FAIL assertions: duplicate and malformed sensitive JSON retained short-secret"
+        },
+        {
+          "mutation": "return raw metadata from sanitizeTaskMetadata",
+          "command": "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test . -run '^TestLoomEngine_SubmitSanitizesGenericWorkerMetadata$' -count=1",
+          "result": "FAIL assertion: generic metadata task leaked credential and private reasoning"
+        }
+      ],
+      "result": "PASS: every deliberate unsafe mutation failed a named assertion and was restored exactly."
+    },
+    "race": {
+      "commands": [
+        "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test -race . -run '^(TestTaskStore_FailActiveSanitizesDurableAndLog|TestSanitizeTerminalResultAmbiguousJSON|TestLoomEngine_SubmitSanitizesGenericWorkerMetadata|TestTaskStore_MetadataSinksSanitizeGenericMetadata|TestFailTaskSanitizesDurableErrorAndLog|TestLegacyResultWritersSanitizeTerminalContent|TestLoomEngine_FailActivePreventsLateWorkerResultOverwrite|TestLoomEngine_Cancel|TestSanitizeAuthorityJSON_RejectsDuplicateObjectKeys)$' -count=1",
+        "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test -race ./pkg/server -run '^(TestLoomTerminalResultSanitizesDurableAndStatusSinks|TestSessionsKill_FailsLoomTasksBySessionMetadata|TestSessionsCancel_FailsPendingLoomTask|TestAdaptReviewPassOutputFailsClosedOnMalformedJSON|TestAdaptReviewPassOutputAcceptsStructuredJSON|TestProfileTaskWorkerReviewLeavesRedactBeforeStatusContent|TestRuntimeEventsFromOutputLine_NormalizesStructuredJSONL|TestProfileTaskWorkerProgressSinkPersistsRuntimeSliceAndProgressTail|TestProfileTaskWorkerProgressSinksRejectUnnormalizedStructuredOutput|TestProfileTaskWorkerProgressSinksKeepTextAndSafeJSON|TestProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage)$' -count=1"
+      ],
+      "result": "PASS: loom and pkg/server focused race suites passed."
+    },
+    "coverage": {
+      "command": "$env:GOCACHE='D:\\tmp\\aimux26-terminal-sinks-amendment-gocache'; go test . -cover -run '^(TestTaskStore_FailActiveSanitizesDurableAndLog|TestSanitizeTerminalResultAmbiguousJSON|TestLoomEngine_SubmitSanitizesGenericWorkerMetadata|TestTaskStore_MetadataSinksSanitizeGenericMetadata)$' -count=1",
+      "percent": 28.6,
+      "threshold": 80,
+      "status": "WARN",
+      "note": "Focused package measurement only; the task specification does not set a blocking coverage threshold."
+    }
   }
 }
