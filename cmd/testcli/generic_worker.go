@@ -64,6 +64,7 @@ func runGenericWorker(args []string, stdout, stderr io.Writer) int {
 	depth := flags.Int("depth", 2, "tree descendant depth")
 	level := flags.Int("level", 0, "internal tree node level")
 	holdMS := flags.Int("hold-ms", 50, "tree leaf lifetime in milliseconds")
+	rootExit := flags.Bool("root-exit", false, "tree root exits while its descendant retains output pipes")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -168,6 +169,7 @@ func runGenericWorker(args []string, stdout, stderr io.Writer) int {
 	case "tree":
 		if *depth < 0 || *depth > genericWorkerMaxTreeDepth ||
 			*level != 0 ||
+			(*rootExit && *depth == 0) ||
 			*holdMS < 0 || *holdMS > genericWorkerMaxTreeHoldMS {
 			fmt.Fprintf(
 				stderr,
@@ -177,16 +179,17 @@ func runGenericWorker(args []string, stdout, stderr io.Writer) int {
 			)
 			return 2
 		}
-		return runGenericWorkerTree(stdout, stderr, *depth, *level, *holdMS)
+		return runGenericWorkerTree(stdout, stderr, *depth, *level, *holdMS, *rootExit)
 	case "tree-node":
 		if os.Getenv(genericWorkerTreeChildEnv) != "1" ||
 			*depth < 1 || *depth > genericWorkerMaxTreeDepth ||
 			*level < 1 || *level > *depth ||
+			*rootExit ||
 			*holdMS < 0 || *holdMS > genericWorkerMaxTreeHoldMS {
 			fmt.Fprintln(stderr, "generic-worker: rejected internal tree-node invocation")
 			return 2
 		}
-		return runGenericWorkerTree(stdout, stderr, *depth, *level, *holdMS)
+		return runGenericWorkerTree(stdout, stderr, *depth, *level, *holdMS, false)
 	default:
 		fmt.Fprintf(stderr, "generic-worker: unknown mode %q\n", *mode)
 		return 2
@@ -201,7 +204,7 @@ type genericWorkerTreeEvent struct {
 	Nodes     int    `json:"nodes,omitempty"`
 }
 
-func runGenericWorkerTree(stdout, stderr io.Writer, depth, level, holdMS int) int {
+func runGenericWorkerTree(stdout, stderr io.Writer, depth, level, holdMS int, rootExit bool) int {
 	encoder := json.NewEncoder(stdout)
 	pid := os.Getpid()
 	if err := encoder.Encode(genericWorkerTreeEvent{
@@ -240,6 +243,19 @@ func runGenericWorkerTree(stdout, stderr io.Writer, depth, level, holdMS int) in
 		child.Env = append(os.Environ(), genericWorkerTreeChildEnv+"=1")
 		child.Stdout = stdout
 		child.Stderr = stderr
+		if rootExit && level == 0 {
+			if err := child.Start(); err != nil {
+				fmt.Fprintf(stderr, "generic-worker: start detached tree child level=%d: %v\n", level+1, err)
+				return 1
+			}
+			if err := child.Process.Release(); err != nil {
+				_ = child.Process.Kill()
+				_, _ = child.Process.Wait()
+				fmt.Fprintf(stderr, "generic-worker: release detached tree child level=%d: %v\n", level+1, err)
+				return 1
+			}
+			return 0
+		}
 		if err := child.Run(); err != nil {
 			fmt.Fprintf(stderr, "generic-worker: tree child level=%d: %v\n", level+1, err)
 			return 1

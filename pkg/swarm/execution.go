@@ -140,6 +140,12 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 		response.Partial = true
 	}
 	terminalAdmitted := record.finalizeTerminal(response, err)
+	if !terminalAdmitted {
+		if response == nil {
+			response = &types.Response{}
+		}
+		response.Partial = true
+	}
 	s.complete(record, key)
 	h.mu.Lock()
 	h.lastUsedAt = time.Now()
@@ -293,6 +299,9 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 		Terminal:  true,
 		Truncated: record.truncated,
 	})
+	if !record.admitted {
+		record.truncated = true
+	}
 	return record.admitted
 }
 

@@ -85,6 +85,35 @@ func TestPipeExecutorSendEventsRejectedOutputTerminatesWithPartialEvidence(t *te
 	}
 }
 
+func TestPipeExecutorSendEventsPreExitDrainDeadlineMarksPartial(t *testing.T) {
+	binary := buildGenericWorkerTestCLI(t)
+	resp, err := pipe.New().SendEvents(context.Background(), "pre-exit-drain", types.Message{Spawn: &types.SpawnArgs{
+		Command: binary,
+		Args: []string{
+			"generic-worker",
+			"--mode", "tree",
+			"--depth", "1",
+			"--hold-ms", "10000",
+			"--root-exit",
+		},
+	}}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil {
+		t.Fatal("response = nil")
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("response = %#v, want clean root exit", resp)
+	}
+	if !strings.Contains(resp.Content, `"event":"tree.node"`) || strings.Contains(resp.Content, `"event":"tree.complete"`) {
+		t.Fatalf("stdout = %q, want root/descendant evidence without natural tree completion", resp.Content)
+	}
+	if !resp.Partial {
+		t.Fatalf("response = %#v, want Partial=true after ProcessManager forced descendant termination at the pre-exit drain deadline", resp)
+	}
+}
+
 func TestPipeExecutorSendEventsPreservesNormativeFloodWithoutPrematureTruncation(t *testing.T) {
 	binary := buildGenericWorkerTestCLI(t)
 	started := time.Now()

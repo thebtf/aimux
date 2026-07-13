@@ -88,6 +88,7 @@ func (sink *executorEventSink) admitTerminal(event types.ExecutorEvent) bool {
 	}
 	sink.mu.Unlock()
 	truncated := event.Truncated
+	flushRejected := false
 	for _, format := range formats {
 		normalizer, err := sink.writer.normalizer(sink.provider, format)
 		if err != nil {
@@ -102,6 +103,7 @@ func (sink *executorEventSink) admitTerminal(event types.ExecutorEvent) bool {
 			}
 			if !sink.admit(events) {
 				truncated = true
+				flushRejected = true
 			}
 		}
 	}
@@ -123,7 +125,7 @@ func (sink *executorEventSink) admitTerminal(event types.ExecutorEvent) bool {
 			sink.setErr(err)
 		}
 	}
-	return accepted
+	return accepted && !flushRejected
 }
 
 func (sink *executorEventSink) admit(events []RuntimeEvent) bool {

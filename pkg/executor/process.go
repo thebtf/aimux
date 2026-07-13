@@ -28,6 +28,7 @@ type ProcessHandle struct {
 	drainDone            chan struct{} // optional: closed when stdout/stderr readers are fully drained
 	drained              bool
 	drainBeforeTerminate bool
+	preExitDrainTimedOut atomic.Bool
 	processTree          *processTree // non-nil only for processes started by Spawn
 }
 
@@ -136,6 +137,7 @@ func (pm *ProcessManager) spawn(cmd *exec.Cmd, drainBeforeTerminate bool) (*Proc
 			select {
 			case <-drainDone:
 			case <-time.After(preExitDrainTimeout):
+				h.preExitDrainTimedOut.Store(true)
 			}
 		}
 		// Done represents the managed lifetime, so release the owned tree
@@ -222,6 +224,14 @@ func (h *ProcessHandle) MarkDrained() {
 	if h.drainDone != nil {
 		close(h.drainDone)
 	}
+}
+
+// PreExitDrainTimedOut reports that the root exited while a descendant still
+// retained stdout/stderr past the bounded drain window. The process tree is
+// terminated in that case, so callers must report the captured output as
+// partial even when the root itself exited successfully.
+func (h *ProcessHandle) PreExitDrainTimedOut() bool {
+	return h != nil && h.preExitDrainTimedOut.Load()
 }
 
 // Cleanup removes a handle from tracking and marks it as cleaned up.

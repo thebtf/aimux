@@ -300,7 +300,7 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 		Stderr:   stderr.String(),
 		ExitCode: h.ExitCode,
 		Duration: time.Since(started),
-		Partial:  rejected.Load() || drainTimedOut || stdout.Truncated() || stderr.Truncated(),
+		Partial:  rejected.Load() || drainTimedOut || h.PreExitDrainTimedOut() || stdout.Truncated() || stderr.Truncated(),
 	}
 	if timedOut {
 		response.ExitCode = 124
