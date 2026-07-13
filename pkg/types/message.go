@@ -18,6 +18,82 @@ type Message struct {
 	// Metadata carries optional parameters: model override, timeout, effort level,
 	// environment variables, working directory, etc. Keys are executor-specific.
 	Metadata map[string]any `json:"metadata,omitempty"`
+
+	// Spawn is an exact in-process CLI launch carrier. It is never serialized;
+	// metadata remains a backwards-compatible fallback for older callers.
+	Spawn *SpawnArgs `json:"-"`
+}
+
+// SpawnArgsFromMessage returns an owned exact launch specification. The typed
+// carrier wins; metadata decoding is retained only for compatibility.
+func SpawnArgsFromMessage(msg Message) SpawnArgs {
+	if msg.Spawn != nil {
+		return cloneSpawnArgs(*msg.Spawn)
+	}
+	args := SpawnArgs{Stdin: msg.Content}
+	if msg.Metadata == nil {
+		return args
+	}
+	if value, ok := msg.Metadata["command"].(string); ok {
+		args.Command = value
+	}
+	switch value := msg.Metadata["args"].(type) {
+	case []string:
+		args.Args = append([]string(nil), value...)
+	case []any:
+		for _, item := range value {
+			if arg, ok := item.(string); ok {
+				args.Args = append(args.Args, arg)
+			}
+		}
+	}
+	if value, ok := msg.Metadata["cwd"].(string); ok {
+		args.CWD = value
+	}
+	if value, ok := msg.Metadata["stdin"].(string); ok {
+		args.Stdin = value
+	}
+	switch value := msg.Metadata["timeout"].(type) {
+	case int:
+		args.TimeoutSeconds = value
+	case int64:
+		args.TimeoutSeconds = int(value)
+	case float64:
+		args.TimeoutSeconds = int(value)
+	}
+	if value, ok := msg.Metadata["completion_pattern"].(string); ok {
+		args.CompletionPattern = value
+	}
+	switch value := msg.Metadata["env"].(type) {
+	case map[string]string:
+		args.Env = cloneStringMap(value)
+	case map[string]any:
+		args.Env = make(map[string]string, len(value))
+		for key, item := range value {
+			if text, ok := item.(string); ok {
+				args.Env[key] = text
+			}
+		}
+	}
+	return args
+}
+
+func cloneSpawnArgs(args SpawnArgs) SpawnArgs {
+	args.Args = append([]string(nil), args.Args...)
+	args.Env = cloneStringMap(args.Env)
+	args.EnvList = append([]string(nil), args.EnvList...)
+	return args
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	clone := make(map[string]string, len(source))
+	for key, value := range source {
+		clone[key] = value
+	}
+	return clone
 }
 
 // Turn represents one turn in a conversation history.
@@ -35,6 +111,12 @@ type Response struct {
 
 	// ExitCode is the CLI process exit code. Zero-value (0) for API executors.
 	ExitCode int `json:"exit_code,omitempty"`
+
+	// Stderr, Partial, and Error preserve legacy CLI terminal semantics while
+	// the ExecutorV2 migration remains additive.
+	Stderr  string      `json:"stderr,omitempty"`
+	Partial bool        `json:"partial,omitempty"`
+	Error   *TypedError `json:"error,omitempty"`
 
 	// TokensUsed tracks input/output token consumption. Zero-value for CLI executors.
 	TokensUsed TokenCount `json:"tokens_used,omitempty"`

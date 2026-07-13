@@ -23,6 +23,23 @@ type ExecutorEvent struct {
 	Truncated bool   `json:"truncated"`
 }
 
+// ExecutorEventSink is the bounded, non-blocking admission boundary used by
+// native event executors. Implementations MUST be safe for concurrent stdout
+// and stderr calls and MUST return without waiting on durable I/O.
+type ExecutorEventSink interface {
+	TryAdmit(ExecutorEvent) bool
+}
+
+// ExecutorEventSinkFunc adapts a function to ExecutorEventSink.
+type ExecutorEventSinkFunc func(ExecutorEvent) bool
+
+func (fn ExecutorEventSinkFunc) TryAdmit(event ExecutorEvent) bool {
+	if fn == nil {
+		return false
+	}
+	return fn(event)
+}
+
 // ProcessIdentity identifies an OS process generation and its owned process
 // tree without relying on a reusable PID alone.
 type ProcessIdentity struct {

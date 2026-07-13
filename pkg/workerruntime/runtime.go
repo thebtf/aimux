@@ -19,16 +19,20 @@ func New(s *swarm.Swarm) (*WorkerRuntime, error) {
 	return &WorkerRuntime{swarm: s}, nil
 }
 
-func (r *WorkerRuntime) Execute(ctx context.Context, h *swarm.Handle, id types.ExecutionID, msg types.Message, emit func(ExecutionEnvelope)) (*types.Response, error) {
-	return r.swarm.Execute(ctx, h, id, msg, func(event types.ExecutorEvent) {
-		emit(ExecutionEnvelope{ExecutionID: id, Event: event})
-	})
+func (r *WorkerRuntime) Execute(ctx context.Context, h *swarm.Handle, scope string, id types.ExecutionID, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	response, err := r.swarm.Execute(ctx, h, scope, id, msg, sink)
+	if source, ok := sink.(interface{ Err() error }); ok {
+		if sinkErr := source.Err(); sinkErr != nil {
+			return response, sinkErr
+		}
+	}
+	return response, err
 }
 
-func (r *WorkerRuntime) Cancel(ctx context.Context, h *swarm.Handle, id types.ExecutionID, reason string) (types.CancellationEvidence, error) {
-	return r.swarm.Cancel(ctx, h, id, reason)
+func (r *WorkerRuntime) Cancel(ctx context.Context, h *swarm.Handle, scope string, id types.ExecutionID, reason string) (types.CancellationEvidence, error) {
+	return r.swarm.Cancel(ctx, h, scope, id, reason)
 }
 
-func (r *WorkerRuntime) Inspect(ctx context.Context, h *swarm.Handle, id types.ExecutionID) (swarm.ExecutionInspection, error) {
-	return r.swarm.Inspect(ctx, h, id)
+func (r *WorkerRuntime) Inspect(ctx context.Context, h *swarm.Handle, scope string, id types.ExecutionID) (swarm.ExecutionInspection, error) {
+	return r.swarm.Inspect(ctx, h, scope, id)
 }

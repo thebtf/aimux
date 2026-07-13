@@ -146,17 +146,25 @@ func (a *CLIPipeAdapter) SendStream(ctx context.Context, msg types.Message, onCh
 // SendEvents preserves native byte/channel events when the wrapped executor
 // supports them. Legacy Run has only line-oriented text output, so its fallback
 // is explicitly labelled text-only rather than implying byte fidelity.
-func (a *CLIPipeAdapter) SendEvents(ctx context.Context, executionID types.ExecutionID, msg types.Message, emit func(types.ExecutorEvent)) (*types.Response, error) {
-	if native, ok := a.legacy.(types.EventExecutor); ok && a.session == nil {
-		return native.SendEvents(ctx, executionID, msg, emit)
+func (a *CLIPipeAdapter) SendEvents(ctx context.Context, executionID types.ExecutionID, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	if sink == nil {
+		sink = types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })
 	}
+	if native, ok := a.legacy.(types.EventExecutor); ok && a.session == nil {
+		return native.SendEvents(ctx, executionID, msg, sink)
+	}
+	rejected := false
 	resp, err := a.SendStream(ctx, msg, func(chunk types.Chunk) {
 		if chunk.Done {
 			return
 		}
-		emit(types.ExecutorEvent{Channel: "stdout", Type: "text-only", Content: []byte(chunk.Content)})
+		if !sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "text-only", Content: []byte(chunk.Content)}) {
+			rejected = true
+		}
 	})
-	emit(types.ExecutorEvent{Channel: "terminal", Type: "terminal", Terminal: true})
+	if resp != nil && rejected {
+		resp.Partial = true
+	}
 	return resp, err
 }
 

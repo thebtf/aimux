@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const preExitDrainTimeout = 2 * time.Second
+
 // ProcessHandle represents a managed process.
 type ProcessHandle struct {
 	PID       int
@@ -19,13 +21,14 @@ type ProcessHandle struct {
 	ExitCode  int
 	StartedAt time.Time
 
-	done        chan error  // internal writable channel
-	exited      atomic.Bool // set to true before Done is signalled; safe for concurrent reads
-	mu          sync.Mutex
-	cleaned     bool
-	drainDone   chan struct{} // optional: closed when stdout/stderr readers are fully drained
-	drained     bool
-	processTree *processTree // non-nil only for processes started by Spawn
+	done                 chan error  // internal writable channel
+	exited               atomic.Bool // set to true before Done is signalled; safe for concurrent reads
+	mu                   sync.Mutex
+	cleaned              bool
+	drainDone            chan struct{} // optional: closed when stdout/stderr readers are fully drained
+	drained              bool
+	drainBeforeTerminate bool
+	processTree          *processTree // non-nil only for processes started by Spawn
 }
 
 // ProcessManager tracks and manages spawned processes.
@@ -47,6 +50,17 @@ var SharedPM = NewProcessManager()
 // The provided cmd must not have Stdout/Stderr set — Spawn sets up the pipes itself.
 // Returns a ProcessHandle with PID > 0 on success.
 func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
+	return pm.spawn(cmd, false)
+}
+
+// SpawnWithDrain starts a process whose natural-exit path gives transport
+// readers one bounded window to drain before descendant-tree termination.
+// ProcessManager remains the sole Wait/process-tree owner.
+func (pm *ProcessManager) SpawnWithDrain(cmd *exec.Cmd) (*ProcessHandle, error) {
+	return pm.spawn(cmd, true)
+}
+
+func (pm *ProcessManager) spawn(cmd *exec.Cmd, drainBeforeTerminate bool) (*ProcessHandle, error) {
 	tree, err := prepareProcessTree(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("prepare process tree: %w", err)
@@ -84,14 +98,18 @@ func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
 
 	done := make(chan error, 1)
 	h := &ProcessHandle{
-		PID:         cmd.Process.Pid,
-		Cmd:         cmd,
-		Stdout:      stdout,
-		Stderr:      stderr,
-		Done:        done,
-		StartedAt:   time.Now(),
-		done:        done,
-		processTree: tree,
+		PID:                  cmd.Process.Pid,
+		Cmd:                  cmd,
+		Stdout:               stdout,
+		Stderr:               stderr,
+		Done:                 done,
+		StartedAt:            time.Now(),
+		done:                 done,
+		processTree:          tree,
+		drainBeforeTerminate: drainBeforeTerminate,
+	}
+	if drainBeforeTerminate {
+		h.drainDone = make(chan struct{})
 	}
 
 	pm.handles.Store(h.PID, h)
@@ -111,7 +129,15 @@ func (pm *ProcessManager) Spawn(cmd *exec.Cmd) (*ProcessHandle, error) {
 		} else if waitErr != nil {
 			h.ExitCode = -1
 		}
+		drainDone := h.drainDone
+		waitForDrain := h.drainBeforeTerminate
 		h.mu.Unlock()
+		if waitForDrain && drainDone != nil {
+			select {
+			case <-drainDone:
+			case <-time.After(preExitDrainTimeout):
+			}
+		}
 		// Done represents the managed lifetime, so release the owned tree
 		// before publishing root completion. On Windows, closing the Job Object
 		// kills remaining descendants; on Unix, the process group is drained.

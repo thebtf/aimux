@@ -16,6 +16,7 @@ import (
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/parser"
 	"github.com/thebtf/aimux/pkg/tenant"
+	runtimeTypes "github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/aimux/pkg/workerruntime"
 )
 
@@ -516,6 +517,7 @@ func runtimeRawEvent(line string, frame map[string]any) loom.TaskRuntimeEventApp
 
 func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, metadata map[string]any, spec picker.TaskSpec, writer *workerruntime.EventWriter, progress *taskProgressSampler, taskID string) (string, string, []fallback.FailedAttempt, error) {
 	dispatch := w.dispatchLeaf
+	productionRuntime := dispatch == nil
 	if dispatch == nil {
 		dispatch = w.server.taskDispatch
 	}
@@ -527,7 +529,12 @@ func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, meta
 			}
 			return "", extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable during dispatch: %v", cli, err), err)
 		}
-		selected.OnOutput = w.writerOutputSink(writer, progress, taskID, cli, profile.OutputFormat)
+		if productionRuntime {
+			selected.EventSink = w.writerEventSink(writer, progress, cli, profile.OutputFormat)
+			selected.OnOutput = nil
+		} else {
+			selected.OnOutput = w.writerOutputSink(writer, progress, taskID, cli, profile.OutputFormat)
+		}
 		return dispatch(ctx, cli, selected)
 	}
 	if w.server != nil && w.server.fallbackPicker != nil {
@@ -539,6 +546,15 @@ func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, meta
 	}
 	raw, err := providerDispatch(ctx, primaryCLI, spec)
 	return raw, primaryCLI, nil, err
+}
+
+func (w profileTaskWorker) writerEventSink(writer *workerruntime.EventWriter, progress *taskProgressSampler, provider, outputFormat string) runtimeTypes.ExecutorEventSink {
+	return workerruntime.NewExecutorEventSink(writer, provider, outputFormat, func(line string) {
+		progressLine := normalizeProgressLine(outputFormat, line)
+		if progressLine != "" {
+			progress.Offer(progressLine)
+		}
+	})
 }
 
 func (w profileTaskWorker) writerOutputSink(writer *workerruntime.EventWriter, progress *taskProgressSampler, taskID, provider, outputFormat string) func(string) {

@@ -7,8 +7,11 @@ import (
 	"io"
 	"net"
 	"os"
+	osexec "os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,47 +19,122 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-const pipeNativeEventsHelperEnv = "AIMUX_PIPE_NATIVE_EVENTS_HELPER"
+var (
+	genericWorkerBuildOnce  sync.Once
+	genericWorkerBinaryPath string
+	genericWorkerBuildDir   string
+	genericWorkerBuildErr   error
+	genericWorkerBuildOut   []byte
+)
 
-func TestPipeNativeEventsHelper(t *testing.T) {
-	if os.Getenv(pipeNativeEventsHelperEnv) != "1" {
-		return
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if genericWorkerBuildDir != "" {
+		_ = os.RemoveAll(genericWorkerBuildDir)
 	}
-	_, _ = os.Stdout.Write([]byte{0xce})
-	_, _ = os.Stdout.Write([]byte{0xb2, 0xff, 0x00})
-	_, _ = os.Stderr.Write([]byte{0x1b, 0xff})
+	os.Exit(code)
 }
 
 func TestPipeExecutorSendEventsPreservesRawChannelBytes(t *testing.T) {
+	binary := buildGenericWorkerTestCLI(t)
 	var events []types.ExecutorEvent
-	_, err := pipe.New().SendEvents(context.Background(), "raw", types.Message{Metadata: map[string]any{
-		"command": os.Args[0], "args": []string{"-test.run=^TestPipeNativeEventsHelper$", "-test.count=1"},
-		"env": map[string]string{pipeNativeEventsHelperEnv: "1"},
-	}}, func(event types.ExecutorEvent) { events = append(events, event) })
+	var eventsMu sync.Mutex
+	resp, err := pipe.New().SendEvents(context.Background(), "raw", types.Message{Spawn: &types.SpawnArgs{
+		Command: binary,
+		Args:    []string{"generic-worker", "--mode", "framing"},
+	}}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+		eventsMu.Lock()
+		events = append(events, event)
+		eventsMu.Unlock()
+		return true
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr []byte
-	terminal := false
 	for _, event := range events {
 		switch event.Channel {
 		case "stdout":
 			stdout = append(stdout, event.Content...)
 		case "stderr":
 			stderr = append(stderr, event.Content...)
-		case "terminal":
-			terminal = event.Terminal
 		}
 	}
-	if !bytes.Contains(stdout, []byte{0xce, 0xb2, 0xff, 0x00}) {
-		t.Fatalf("stdout = %v", stdout)
+	if !bytes.Contains(stdout, []byte{0xce, 0xb2}) || !bytes.Contains(stdout, []byte{0xff, 0xfe}) || !bytes.Contains(stdout, []byte{0x00, 0x1b}) || !bytes.HasSuffix(stdout, []byte("no-final-newline")) {
+		t.Fatalf("stdout = %v; stderr = %v; response = %#v; events = %#v", stdout, stderr, resp, events)
 	}
-	if !bytes.Contains(stderr, []byte{0x1b, 0xff}) {
+	if !bytes.Contains(stderr, []byte{0xff}) || !bytes.Contains(stderr, []byte{0x00}) || !bytes.HasSuffix(stderr, []byte("stderr-no-final-newline")) {
 		t.Fatalf("stderr = %v", stderr)
 	}
-	if !terminal {
-		t.Fatal("missing terminal event")
+	if resp == nil || resp.ExitCode != 0 || resp.Stderr == "" {
+		t.Fatalf("response = %#v", resp)
 	}
+}
+
+func TestPipeExecutorSendEventsRejectedOutputTerminatesWithPartialEvidence(t *testing.T) {
+	binary := buildGenericWorkerTestCLI(t)
+	resp, err := pipe.New().SendEvents(context.Background(), "raw", types.Message{Spawn: &types.SpawnArgs{
+		Command: binary,
+		Args:    []string{"generic-worker", "--mode", "framing"},
+	}}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return false }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || !resp.Partial {
+		t.Fatalf("response = %#v, want bounded partial evidence after sink rejection", resp)
+	}
+}
+
+func TestPipeExecutorSendEventsPreservesNormativeFloodWithoutPrematureTruncation(t *testing.T) {
+	binary := buildGenericWorkerTestCLI(t)
+	started := time.Now()
+	resp, err := pipe.New().SendEvents(context.Background(), "bounded-flood", types.Message{Spawn: &types.SpawnArgs{
+		Command: binary,
+		Args:    []string{"generic-worker", "--mode", "flood", "--count", "1024", "--chunk-bytes", "1024"},
+	}}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || resp.Partial {
+		if resp == nil {
+			t.Fatal("response = nil; want complete output below the 8 MiB channel budget")
+		}
+		t.Fatalf("response partial = %v, stdout bytes = %d, stderr bytes = %d; want complete output below the 8 MiB channel budget", resp.Partial, len(resp.Content), len(resp.Stderr))
+	}
+	if len(resp.Content) != 1<<20 || len(resp.Stderr) != 1<<20 {
+		t.Fatalf("response lengths = stdout %d, stderr %d; want 1 MiB each", len(resp.Content), len(resp.Stderr))
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("bounded flood took %s", elapsed)
+	}
+}
+
+func buildGenericWorkerTestCLI(t *testing.T) string {
+	t.Helper()
+	genericWorkerBuildOnce.Do(func() {
+		goMod, err := osexec.Command("go", "env", "GOMOD").Output()
+		if err != nil {
+			genericWorkerBuildErr = fmt.Errorf("resolve module root: %w", err)
+			return
+		}
+		root := filepath.Dir(strings.TrimSpace(string(goMod)))
+		genericWorkerBuildDir, err = os.MkdirTemp("", "aimux-pipe-testcli-")
+		if err != nil {
+			genericWorkerBuildErr = fmt.Errorf("create testcli temp dir: %w", err)
+			return
+		}
+		genericWorkerBinaryPath = filepath.Join(genericWorkerBuildDir, "testcli")
+		if runtime.GOOS == "windows" {
+			genericWorkerBinaryPath += ".exe"
+		}
+		cmd := osexec.Command("go", "build", "-o", genericWorkerBinaryPath, "./cmd/testcli")
+		cmd.Dir = root
+		genericWorkerBuildOut, genericWorkerBuildErr = cmd.CombinedOutput()
+	})
+	if genericWorkerBuildErr != nil {
+		t.Fatalf("build testcli: %v\n%s", genericWorkerBuildErr, genericWorkerBuildOut)
+	}
+	return genericWorkerBinaryPath
 }
 
 const (

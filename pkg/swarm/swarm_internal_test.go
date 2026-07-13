@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -17,6 +18,69 @@ type restartTestExecutor struct {
 
 func (e *restartTestExecutor) Info() types.ExecutorInfo {
 	return types.ExecutorInfo{Name: "restart-test", Type: types.ExecutorTypeCLI}
+}
+
+func TestExecutionInspectionRejectsStaleHandleGeneration(t *testing.T) {
+	created := 0
+	s := New(func(string) (types.ExecutorV2, error) {
+		created++
+		return &restartTestExecutor{alive: types.HealthAlive, content: "ok"}, nil
+	}, nil)
+	const scope = "scope-a"
+	h, err := s.Get(context.Background(), "restart", Stateful, WithScope(scope))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Execute(context.Background(), h, scope, "first", types.Message{}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.restart(h); err != nil {
+		t.Fatal(err)
+	}
+	if created < 2 {
+		t.Fatalf("factory calls = %d, want restart", created)
+	}
+	if _, err := s.Inspect(context.Background(), h, scope, "first"); err != ErrExecutionNotFound {
+		t.Fatalf("stale generation inspect = %v, want not found", err)
+	}
+}
+
+func TestExecutionTerminalRetentionIsBounded(t *testing.T) {
+	s := New(func(string) (types.ExecutorV2, error) {
+		return &restartTestExecutor{alive: types.HealthAlive, content: "ok"}, nil
+	}, nil)
+	const scope = "scope-a"
+	h, err := s.Get(context.Background(), "retention", Stateful, WithScope(scope))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxTerminalExecutions+32; i++ {
+		id := types.ExecutionID(fmt.Sprintf("run-%d", i))
+		if _, err := s.Execute(context.Background(), h, scope, id, types.Message{}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.executionMu.Lock()
+	defer s.executionMu.Unlock()
+	if len(s.executions) > maxTerminalExecutions {
+		t.Fatalf("retained executions = %d, max %d", len(s.executions), maxTerminalExecutions)
+	}
+}
+
+func TestStatelessExecutionUsesPrivateModeAuthority(t *testing.T) {
+	executor := &restartTestExecutor{alive: types.HealthAlive, content: "ok"}
+	s := New(func(string) (types.ExecutorV2, error) { return executor, nil }, nil)
+	h, err := s.Get(context.Background(), "private-mode", Stateless, WithScope("scope-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Mode = Stateful
+	if _, err := s.Execute(context.Background(), h, "scope-a", "run", types.Message{}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })); err != nil {
+		t.Fatal(err)
+	}
+	if !executor.closed {
+		t.Fatal("mutating public handle metadata prevented stateless executor cleanup")
+	}
 }
 
 func (e *restartTestExecutor) Send(_ context.Context, _ types.Message) (*types.Response, error) {

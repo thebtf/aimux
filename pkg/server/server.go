@@ -36,6 +36,7 @@ import (
 	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/session"
 	"github.com/thebtf/aimux/pkg/skills"
+	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/tenant"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/harness"
@@ -43,6 +44,7 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/aimux/pkg/updater"
 	"github.com/thebtf/aimux/pkg/upgrade"
+	"github.com/thebtf/aimux/pkg/workerruntime"
 	"github.com/thebtf/mcp-mux/muxcore"
 	"github.com/thebtf/mcp-mux/muxcore/engine"
 )
@@ -165,6 +167,11 @@ type Server struct {
 	// Nil when no CLIs are available at daemon startup — task tool surfaces a clear
 	// error at call time rather than panicking.
 	fallbackPicker *fallback.FallbackPicker
+
+	// CR-002: one daemon-owned generic execution fabric behind taskDispatch.
+	taskRuntimeMu sync.Mutex
+	taskSwarm     *swarm.Swarm
+	taskRuntime   *workerruntime.WorkerRuntime
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.
@@ -558,6 +565,16 @@ func (s *Server) Shutdown() {
 	graceful := executor.SharedPM.GracefulShutdown(5 * time.Second)
 	if graceful > 0 && s.log != nil {
 		s.log.Info("graceful shutdown: %d processes finished naturally", graceful)
+	}
+	s.taskRuntimeMu.Lock()
+	taskSwarm := s.taskSwarm
+	s.taskRuntimeMu.Unlock()
+	if taskSwarm != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := taskSwarm.Shutdown(shutdownCtx); err != nil && s.log != nil {
+			s.log.Warn("task runtime swarm shutdown: %v", err)
+		}
+		cancel()
 	}
 
 	// Kill remaining session processes (persistent sessions don't need grace — they're idle).

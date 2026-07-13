@@ -17,7 +17,6 @@ import (
 	"github.com/thebtf/aimux/pkg/config"
 	"github.com/thebtf/aimux/pkg/executor/fallback"
 	"github.com/thebtf/aimux/pkg/executor/picker"
-	pipeExec "github.com/thebtf/aimux/pkg/executor/pipe"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/recipes"
 	"github.com/thebtf/aimux/pkg/server/classifier"
@@ -629,7 +628,8 @@ func taskCLIError(err error) *extypes.CLIError {
 	return extypes.NewUnknown(err.Error(), err)
 }
 
-// taskDispatch dispatches a single CLI call using the pipe executor.
+// taskDispatch dispatches a single CLI call through the server-owned
+// WorkerRuntime and Swarm execution fabric.
 // Implements fallback.DispatchFn — returns *extypes.CLIError on failure
 // so the FailureClassifier can determine fallback eligibility.
 func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskSpec) (string, error) {
@@ -662,8 +662,7 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 		spawnArgs.Stdin = spec.Prompt
 	}
 
-	exec := pipeExec.New()
-	result, execErr := exec.Run(ctx, spawnArgs)
+	result, execErr := s.dispatchTaskRuntime(ctx, cli, spawnArgs, spec.EventSink)
 	if execErr != nil {
 		return "", mapExecError(execErr)
 	}
@@ -675,7 +674,17 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 	if result.Error != nil {
 		return result.Content, mapTypedError(result.Error)
 	}
-	if result.ExitCode != 0 && !result.Partial {
+	if result.Partial {
+		msg := fmt.Sprintf("CLI %q returned incomplete output", cli)
+		if result.ExitCode != 0 {
+			msg += fmt.Sprintf(" and exited with code %d", result.ExitCode)
+		}
+		if result.Stderr != "" {
+			msg += ": " + result.Stderr
+		}
+		return result.Content, extypes.NewUnknown(msg, nil)
+	}
+	if result.ExitCode != 0 {
 		msg := fmt.Sprintf("CLI %q exited with code %d", cli, result.ExitCode)
 		if result.Stderr != "" {
 			msg += ": " + result.Stderr

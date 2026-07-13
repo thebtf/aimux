@@ -1685,6 +1685,53 @@ func TestTaskDispatchFailFastWhenCLIUnavailable(t *testing.T) {
 	}
 }
 
+func TestTaskDispatchRejectsPartialOutputForZeroAndNonZeroExit(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		exitCode int
+	}{
+		{name: "zero exit", exitCode: 0},
+		{name: "non-zero exit", exitCode: 7},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			binary := fakeExecutableWithContents(
+				t,
+				dir,
+				"partial-output",
+				fmt.Sprintf("#!/bin/sh\nprintf 'worker output\\n'\nexit %d\n", testCase.exitCode),
+				fmt.Sprintf("@echo off\r\necho worker output\r\nexit /b %d\r\n", testCase.exitCode),
+			)
+			profile := &config.CLIProfile{
+				Name:           "codex",
+				Binary:         binary,
+				ResolvedPath:   binary,
+				OutputFormat:   "text",
+				PromptFlagType: "positional",
+				TimeoutSeconds: 5,
+			}
+			registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": profile})
+			registry.SetAvailable("codex", true)
+			srv := &Server{registry: registry}
+			_, err := srv.taskDispatch(context.Background(), "codex", picker.TaskSpec{
+				Prompt: "test partial handling",
+				EventSink: types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+					return event.Terminal
+				}),
+			})
+			if err == nil {
+				t.Fatal("taskDispatch error = nil, want incomplete-output failure")
+			}
+			if !strings.Contains(err.Error(), "incomplete output") {
+				t.Fatalf("taskDispatch error = %v, want incomplete-output evidence", err)
+			}
+			if testCase.exitCode != 0 && !strings.Contains(err.Error(), "code 7") {
+				t.Fatalf("taskDispatch error = %v, want non-zero exit evidence", err)
+			}
+		})
+	}
+}
+
 func TestHandleTaskDirectReviewSkipsRecipeCapabilityPreflight(t *testing.T) {
 	t.Parallel()
 
@@ -1954,14 +2001,18 @@ func TestProfileTaskWorkerRuntimeEventsFromStructuredEmulator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListArtifacts runtime: %v", err)
 	}
-	if len(page.Items) != 2 {
-		t.Fatalf("runtime artifacts = %#v; want text_delta plus raw fallback", page.Items)
+	if len(page.Items) != 3 {
+		t.Fatalf("runtime artifacts = %#v; want text_delta, raw fallback, and one terminal", page.Items)
 	}
 	if page.Items[0].EventType != "text_delta" || page.Items[0].Channel != "stdout" || page.Items[0].Summary != "hello from emulator" {
 		t.Fatalf("first runtime event = %#v; want text_delta/stdout emulator text", page.Items[0])
 	}
 	if page.Items[1].EventType != "raw" || page.Items[1].Channel != "stdout" {
 		t.Fatalf("second runtime event = %#v; want raw/stdout fallback for unknown frame", page.Items[1])
+	}
+	terminal, _ := page.Items[2].Payload["terminal"].(bool)
+	if page.Items[2].EventType != "completed" || page.Items[2].Channel != "system" || !terminal {
+		t.Fatalf("terminal runtime event = %#v; want completed/system last", page.Items[2])
 	}
 }
 

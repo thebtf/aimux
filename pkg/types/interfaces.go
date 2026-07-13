@@ -60,7 +60,7 @@ type ExecutorV2 interface {
 // EventExecutor is an optional ExecutorV2 capability for provider-neutral,
 // execution-correlated event delivery.
 type EventExecutor interface {
-	SendEvents(ctx context.Context, executionID ExecutionID, msg Message, emit func(ExecutorEvent)) (*Response, error)
+	SendEvents(ctx context.Context, executionID ExecutionID, msg Message, sink ExecutorEventSink) (*Response, error)
 }
 
 // ExecutionCanceller is an optional ExecutorV2 capability for native

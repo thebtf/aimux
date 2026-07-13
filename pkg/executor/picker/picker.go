@@ -3,6 +3,8 @@ package picker
 import (
 	"context"
 	"math"
+
+	"github.com/thebtf/aimux/pkg/types"
 )
 
 // TaskSpec describes a task submitted for CLI routing.
@@ -48,6 +50,10 @@ type TaskSpec struct {
 	// It must be safe for concurrent use and should return quickly; a slow sink
 	// blocks the streaming loop.
 	OnOutput func(line string)
+
+	// EventSink is the internal bounded raw-event admission path used by the
+	// production WorkerRuntime. It is never interpreted by the picker.
+	EventSink types.ExecutorEventSink
 }
 
 // Picker selects the optimal CLI for a TaskSpec when the caller does not

@@ -56,20 +56,47 @@ type mockLegacyExecutor struct {
 
 type nativeLegacyExecutor struct{ mockLegacyExecutor }
 
-func (m *nativeLegacyExecutor) SendEvents(_ context.Context, _ types.ExecutionID, _ types.Message, emit func(types.ExecutorEvent)) (*types.Response, error) {
-	emit(types.ExecutorEvent{Channel: "stderr", Type: "output", Content: []byte{0xff}})
+func (m *nativeLegacyExecutor) SendEvents(_ context.Context, _ types.ExecutionID, _ types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	sink.TryAdmit(types.ExecutorEvent{Channel: "stderr", Type: "output", Content: []byte{0xff}})
 	return &types.Response{Content: "native"}, nil
 }
 
 func TestCLIPipeAdapter_SendEventsDelegatesNativeBytes(t *testing.T) {
 	adapter := executor.NewCLIPipeAdapter(&nativeLegacyExecutor{})
 	var got types.ExecutorEvent
-	resp, err := adapter.SendEvents(context.Background(), "exec", types.Message{}, func(event types.ExecutorEvent) { got = event })
+	resp, err := adapter.SendEvents(context.Background(), "exec", types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool { got = event; return true }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.Content != "native" || got.Channel != "stderr" || len(got.Content) != 1 || got.Content[0] != 0xff {
 		t.Fatalf("resp=%#v event=%#v", resp, got)
+	}
+}
+
+func TestCLIPipeAdapterSendEventsLegacyFallbackIsExplicitlyTextOnly(t *testing.T) {
+	mock := &mockLegacyExecutor{outputLines: []string{"line"}, result: &types.Result{Content: "line\n"}}
+	adapter := executor.NewCLIPipeAdapter(mock)
+	var events []types.ExecutorEvent
+	_, err := adapter.SendEvents(context.Background(), "exec", types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+		events = append(events, event)
+		return true
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != "text-only" || events[0].Channel != "stdout" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestCLIPipeAdapterNilLegacyResultDoesNotPanic(t *testing.T) {
+	adapter := executor.NewCLIPipeAdapter(&mockLegacyExecutor{})
+	resp, err := adapter.Send(context.Background(), types.Message{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp != nil {
+		t.Fatalf("response = %#v, want nil malformed legacy result for caller validation", resp)
 	}
 }
 

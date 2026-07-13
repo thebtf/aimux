@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor"
@@ -23,6 +24,12 @@ const (
 	defaultInactivitySeconds = 5
 	// stderrCapBytes is the maximum stderr captured per process (64 KiB).
 	stderrCapBytes = 64 * 1024
+	// eventResponseCapBytes bounds each compatibility response channel while raw
+	// events continue through the existing bounded EventWriter admission path.
+	// Eight MiB avoids the old 64 KiB false-success cliff for normal code diffs.
+	eventResponseCapBytes = 8 << 20
+	// eventDrainTimeout bounds stdout/stderr/stdin completion after process exit.
+	eventDrainTimeout = 2 * time.Second
 )
 
 // Compile-time assertion: *Executor must implement types.SessionFactory (T007 / FR-1).
@@ -184,19 +191,21 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 
 // SendEvents streams raw bytes from both pipes. It deliberately does not use
 // IOManager: line framing would turn invalid or unterminated bytes into text.
-func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID, msg types.Message, emit func(types.ExecutorEvent)) (*types.Response, error) {
+func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
 	if err := executionID.Validate(); err != nil {
 		return nil, err
 	}
-	args := eventSpawnArgs(msg)
-	if args.TimeoutSeconds > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(args.TimeoutSeconds)*time.Second)
-		defer cancel()
+	if sink == nil {
+		sink = types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })
 	}
+	args := types.SpawnArgsFromMessage(msg)
+	started := time.Now()
 	cmd := exec.Command(args.Command, args.Args...)
 	cmd.Dir = args.CWD
-	if len(args.Env) > 0 {
+	switch {
+	case len(args.EnvList) > 0:
+		cmd.Env = append([]string(nil), args.EnvList...)
+	case len(args.Env) > 0:
 		cmd.Env = mergeEnv(args.Env)
 	}
 	var stdin io.WriteCloser
@@ -207,104 +216,118 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 			return nil, types.NewExecutorError("failed to create stdin pipe", err, "")
 		}
 	}
-	h, err := executor.SharedPM.Spawn(cmd)
+	h, err := executor.SharedPM.SpawnWithDrain(cmd)
 	if err != nil {
 		return nil, types.NewExecutorError("failed to start "+args.Command, err, "")
 	}
 	defer executor.SharedPM.Cleanup(h)
-	h.ArmDrainWait()
-	defer h.MarkDrained()
+
+	var ioGroup sync.WaitGroup
 	if stdin != nil {
-		go func() { _, _ = io.WriteString(stdin, args.Stdin); _ = stdin.Close() }()
+		ioGroup.Add(1)
+		go func() {
+			defer ioGroup.Done()
+			_, _ = io.WriteString(stdin, args.Stdin)
+			_ = stdin.Close()
+		}()
 	}
-	var stdout, stderr bytes.Buffer
-	var emitMu sync.Mutex
-	emitEvent := func(event types.ExecutorEvent) {
-		emitMu.Lock()
-		defer emitMu.Unlock()
-		emit(event)
-	}
-	var drains sync.WaitGroup
-	drain := func(channel string, reader io.Reader, dst *bytes.Buffer) {
-		defer drains.Done()
+	var stdout = cappedBuffer{cap: eventResponseCapBytes}
+	var stderr = cappedBuffer{cap: eventResponseCapBytes}
+	var rejected atomic.Bool
+	drain := func(channel string, reader io.Reader, dst *cappedBuffer) {
+		defer ioGroup.Done()
 		buf := make([]byte, 32<<10)
 		for {
 			n, readErr := reader.Read(buf)
 			if n > 0 {
 				chunk := append([]byte(nil), buf[:n]...)
 				_, _ = dst.Write(chunk)
-				emitEvent(types.ExecutorEvent{Channel: channel, Type: "output", Content: chunk})
+				if !sink.TryAdmit(types.ExecutorEvent{Channel: channel, Type: "output", Content: chunk}) {
+					rejected.Store(true)
+				}
 			}
 			if readErr != nil {
 				return
 			}
 		}
 	}
-	drains.Add(2)
+	ioGroup.Add(2)
 	go drain("stdout", h.Stdout, &stdout)
 	go drain("stderr", h.Stderr, &stderr)
+	ioDone := make(chan struct{})
+	go func() {
+		ioGroup.Wait()
+		h.MarkDrained()
+		close(ioDone)
+	}()
+
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	if args.TimeoutSeconds > 0 {
+		timer = time.NewTimer(time.Duration(args.TimeoutSeconds) * time.Second)
+		defer timer.Stop()
+		timerC = timer.C
+	}
 	var waitErr error
+	timedOut := false
+	cancelled := false
 	select {
 	case waitErr = <-h.Done:
+	case <-timerC:
+		timedOut = true
+		executor.SharedPM.Kill(h)
+		waitErr = context.DeadlineExceeded
 	case <-ctx.Done():
+		cancelled = true
 		executor.SharedPM.Kill(h)
 		waitErr = ctx.Err()
 	}
-	drains.Wait()
-	resp := &types.Response{Content: stdout.String()}
-	if waitErr != nil {
-		resp.ExitCode = 1
+	drainTimedOut := false
+	select {
+	case <-ioDone:
+	case <-time.After(eventDrainTimeout):
+		drainTimedOut = true
+		_ = h.Stdout.Close()
+		_ = h.Stderr.Close()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		<-ioDone
 	}
-	emitEvent(types.ExecutorEvent{Channel: "terminal", Type: "terminal", Terminal: true})
-	if ctx.Err() != nil {
-		return resp, nil
-	}
-	if waitErr != nil {
-		return resp, waitErr
-	}
-	_ = stderr // stderr is represented only by byte events on this native path.
-	return resp, nil
-}
 
-func eventSpawnArgs(msg types.Message) types.SpawnArgs {
-	args := types.SpawnArgs{Stdin: msg.Content}
-	if msg.Metadata == nil {
-		return args
+	response := &types.Response{
+		Content:  stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: h.ExitCode,
+		Duration: time.Since(started),
+		Partial:  rejected.Load() || drainTimedOut || stdout.Truncated() || stderr.Truncated(),
 	}
-	if value, ok := msg.Metadata["command"].(string); ok {
-		args.Command = value
+	if timedOut {
+		response.ExitCode = 124
+		response.Partial = true
+		response.Error = types.NewTimeoutError(fmt.Sprintf("timed out after %ds", args.TimeoutSeconds), response.Content)
+		return response, nil
 	}
-	switch value := msg.Metadata["args"].(type) {
-	case []string:
-		args.Args = value
-	case []any:
-		for _, item := range value {
-			if arg, ok := item.(string); ok {
-				args.Args = append(args.Args, arg)
-			}
-		}
+	if cancelled {
+		response.ExitCode = 130
+		response.Partial = true
+		response.Error = types.NewExecutorError("cancelled", ctx.Err(), response.Content)
+		return response, nil
 	}
-	if value, ok := msg.Metadata["stdin"].(string); ok {
-		args.Stdin = value
+	if waitErr == nil {
+		return response, nil
 	}
-	if value, ok := msg.Metadata["cwd"].(string); ok {
-		args.CWD = value
+	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		response.ExitCode = exitErr.ExitCode()
+		return response, nil
 	}
-	if value, ok := msg.Metadata["timeout"].(int); ok {
-		args.TimeoutSeconds = value
+	if ctx.Err() != nil {
+		response.ExitCode = 130
+		response.Partial = true
+		response.Error = types.NewExecutorError("cancelled", ctx.Err(), response.Content)
+		return response, nil
 	}
-	switch value := msg.Metadata["env"].(type) {
-	case map[string]string:
-		args.Env = value
-	case map[string]any:
-		args.Env = make(map[string]string, len(value))
-		for key, item := range value {
-			if stringValue, ok := item.(string); ok {
-				args.Env[key] = stringValue
-			}
-		}
-	}
-	return args
+	return response, types.NewExecutorError(fmt.Sprintf("%s failed", args.Command), waitErr, response.Content)
 }
 
 // sessionPM is the package-level ProcessManager for persistent sessions.
@@ -366,9 +389,10 @@ func (e *Executor) StartSession(ctx context.Context, args types.SpawnArgs) (type
 // cappedBuffer is an io.Writer that discards writes once the cap is reached.
 // Used to drain stderr without unbounded memory growth.
 type cappedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-	cap int
+	mu        sync.Mutex
+	buf       bytes.Buffer
+	cap       int
+	truncated bool
 }
 
 func (cb *cappedBuffer) Write(p []byte) (int, error) {
@@ -376,12 +400,20 @@ func (cb *cappedBuffer) Write(p []byte) (int, error) {
 	defer cb.mu.Unlock()
 	remaining := cb.cap - cb.buf.Len()
 	if remaining <= 0 {
+		cb.truncated = true
 		return len(p), nil // silently discard; still report success to io.Copy
 	}
 	if len(p) > remaining {
+		cb.truncated = true
 		p = p[:remaining]
 	}
 	return cb.buf.Write(p)
+}
+
+func (cb *cappedBuffer) Truncated() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.truncated
 }
 
 func (cb *cappedBuffer) String() string {

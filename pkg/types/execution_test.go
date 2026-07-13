@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/types"
@@ -70,8 +71,8 @@ var (
 	_ types.SessionIdentityProvider = (*optionalCapabilityExecutor)(nil)
 )
 
-func (*optionalCapabilityExecutor) SendEvents(_ context.Context, _ types.ExecutionID, _ types.Message, emit func(types.ExecutorEvent)) (*types.Response, error) {
-	emit(types.ExecutorEvent{})
+func (*optionalCapabilityExecutor) SendEvents(_ context.Context, _ types.ExecutionID, _ types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	sink.TryAdmit(types.ExecutorEvent{})
 	return &types.Response{}, nil
 }
 
@@ -217,5 +218,32 @@ func TestEvidenceWrappersRejectInvalidAffirmativeEvidence(t *testing.T) {
 				t.Fatalf("validation error must be typed: %T %v", err, err)
 			}
 		})
+	}
+}
+
+func TestMessageSpawnArgsCarrierPreservesExactTypes(t *testing.T) {
+	want := types.SpawnArgs{
+		CLI:               "generic",
+		Command:           "worker.exe",
+		Args:              []string{"--mode", "framing", "--literal=01"},
+		CWD:               `D:\\work tree`,
+		Env:               map[string]string{"A": "01", "B": "x=y"},
+		EnvList:           []string{"ONLY=exact", "EMPTY="},
+		Stdin:             "stdin\x00payload",
+		TimeoutSeconds:    17,
+		InactivitySeconds: 9,
+		CompletionPattern: `(?m)^done$`,
+	}
+	msg := types.Message{Content: "fallback", Spawn: &want}
+	got := types.SpawnArgsFromMessage(msg)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("spawn args = %#v, want %#v", got, want)
+	}
+
+	got.Args[0] = "mutated"
+	got.Env["A"] = "mutated"
+	got.EnvList[0] = "mutated"
+	if want.Args[0] != "--mode" || want.Env["A"] != "01" || want.EnvList[0] != "ONLY=exact" {
+		t.Fatalf("typed carrier aliased caller-owned input: %#v", want)
 	}
 }

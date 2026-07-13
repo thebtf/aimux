@@ -167,6 +167,11 @@ type Handle struct {
 	// this executor. restart() reuses it so tenant/session-specific factory
 	// resolution stays within the same trust boundary.
 	factoryCtx context.Context
+
+	// scope and generation are private live authority. Public compatibility
+	// fields are metadata and cannot be used to forge execution ownership.
+	scope      string
+	generation uint64
 }
 
 // Swarm manages executor lifecycle: spawn, get, send, health check, restart,
@@ -179,9 +184,11 @@ type Swarm struct {
 	registry map[string][]*Handle // keyed by registryKey(tenantID, scope, name)
 	nextID   uint64
 
-	executionMu sync.Mutex
-	executions  map[string]*executionRecord
-	active      map[string]types.ExecutionID
+	executionMu   sync.Mutex
+	executions    map[executionKey]*executionRecord
+	active        map[*Handle]types.ExecutionID
+	terminalOrder []executionKey
+	live          map[*Handle]handleAuthority
 
 	// keyLocks holds a *sync.Mutex per registry key (DEF-8 / FR-2).
 	// Per-key locking allows concurrent Gets on distinct keys to run their
@@ -255,8 +262,9 @@ func NewWithContextFactory(factoryFn func(context.Context, string) (types.Execut
 		factoryFn:   factoryFn,
 		auditLog:    al,
 		registry:    make(map[string][]*Handle),
-		executions:  make(map[string]*executionRecord),
-		active:      make(map[string]types.ExecutionID),
+		executions:  make(map[executionKey]*executionRecord),
+		active:      make(map[*Handle]types.ExecutionID),
+		live:        make(map[*Handle]handleAuthority),
 		statefulTTL: defaultStatefulTTL,
 		reaperStop:  make(chan struct{}),
 	}
@@ -304,10 +312,14 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 	}
 
 	tenantID := tenantIDFromContext(ctx)
+	var o getOpts
+	for _, fn := range opts {
+		fn(&o)
+	}
 
 	// Stateless always spawns fresh — no registry lookup needed.
 	if mode == Stateless {
-		h, err := s.spawn(ctx, name, mode)
+		h, err := s.spawn(ctx, name, mode, o.scope)
 		if err != nil {
 			return nil, err
 		}
@@ -315,10 +327,6 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 		return h, nil
 	}
 
-	var o getOpts
-	for _, fn := range opts {
-		fn(&o)
-	}
 	key := registryKey(tenantID, o.scope, name)
 
 	// Stateful/Persistent: per-key mutex prevents TOCTOU double-spawn (BUG-003)
@@ -340,30 +348,40 @@ func (s *Swarm) Get(ctx context.Context, name string, mode SpawnMode, opts ...Ge
 	existing := s.registry[key]
 	// Build alive slice without mutating the registry while holding RLock.
 	var alive []*Handle
+	var dead []*Handle
 	for _, h := range existing {
 		h.mu.Lock()
 		isAlive := h.executor != nil && h.executor.IsAlive() == types.HealthAlive
 		h.mu.Unlock()
 		if isAlive {
 			alive = append(alive, h)
+		} else {
+			dead = append(dead, h)
 		}
 	}
 	s.mu.RUnlock()
 
-	if len(alive) > 0 {
-		// Prune dead handles from the registry if any were found dead.
-		if len(alive) != len(existing) {
-			s.mu.Lock()
+	if len(dead) > 0 {
+		s.mu.Lock()
+		if len(alive) == 0 {
+			delete(s.registry, key)
+		} else {
 			s.registry[key] = alive
-			s.mu.Unlock()
 		}
+		s.mu.Unlock()
+		for _, h := range dead {
+			_ = s.closeHandle(h, "dead-pruned")
+		}
+	}
+
+	if len(alive) > 0 {
 		return alive[0], nil
 	}
 
 	// Step 2: no alive handle — run factoryFn OUTSIDE s.mu (DEF-8 fix).
 	// The per-key mutex above serialises concurrent same-key Gets, so exactly
 	// one goroutine reaches here per key at a time (TOCTOU prevention preserved).
-	h, err := s.spawnLocked(ctx, name, mode)
+	h, err := s.spawnLocked(ctx, name, mode, o.scope)
 	if err != nil {
 		return nil, err
 	}
@@ -760,7 +778,7 @@ func (s *Swarm) emitRestart(h *Handle) {
 //
 // TenantID is canonicalized once at construction; FR-1 immutability holds for
 // the lifetime of the returned Handle.
-func makeHandle(ctx context.Context, id, name string, mode SpawnMode, exec types.ExecutorV2) *Handle {
+func makeHandle(ctx context.Context, id, name string, mode SpawnMode, scope string, exec types.ExecutorV2) *Handle {
 	factoryCtx := detachFactoryContext(ctx)
 	now := time.Now()
 	return &Handle{
@@ -772,6 +790,8 @@ func makeHandle(ctx context.Context, id, name string, mode SpawnMode, exec types
 		startedAt:  now,
 		lastUsedAt: now,
 		factoryCtx: factoryCtx,
+		scope:      scope,
+		generation: 1,
 	}
 }
 
@@ -782,7 +802,7 @@ func makeHandle(ctx context.Context, id, name string, mode SpawnMode, exec types
 //
 // TenantID is extracted from ctx and set once on the returned Handle; no
 // subsequent code path mutates it (FR-1 immutability invariant).
-func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle, error) {
+func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode, scope string) (*Handle, error) {
 	factoryCtx := detachFactoryContext(ctx)
 	exec, err := s.factoryFn(factoryCtx, name)
 	if err != nil {
@@ -792,9 +812,10 @@ func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle
 	s.mu.Lock()
 	s.nextID++
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
+	h := makeHandle(factoryCtx, id, name, mode, scope, exec)
+	s.live[h] = handleAuthority{tenantID: h.TenantID, scope: scope, generation: h.generation, mode: mode}
 	s.mu.Unlock()
-
-	return makeHandle(factoryCtx, id, name, mode, exec), nil
+	return h, nil
 }
 
 // spawnLocked creates a new executor via the factory and wraps it in a Handle.
@@ -804,7 +825,7 @@ func (s *Swarm) spawn(ctx context.Context, name string, mode SpawnMode) (*Handle
 // s.mu is acquired briefly only to increment nextID.
 //
 // TenantID is extracted from ctx and set once on the returned Handle (FR-1).
-func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode) (*Handle, error) {
+func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode, scope string) (*Handle, error) {
 	// factoryFn is called without holding s.mu (DEF-8 fix). The per-key mutex
 	// held by the caller serialises same-key spawns; distinct keys run concurrently.
 	factoryCtx := detachFactoryContext(ctx)
@@ -816,9 +837,10 @@ func (s *Swarm) spawnLocked(ctx context.Context, name string, mode SpawnMode) (*
 	s.mu.Lock()
 	s.nextID++
 	id := fmt.Sprintf("%s-%d", name, s.nextID)
+	h := makeHandle(factoryCtx, id, name, mode, scope, exec)
+	s.live[h] = handleAuthority{tenantID: h.TenantID, scope: scope, generation: h.generation, mode: mode}
 	s.mu.Unlock()
-
-	return makeHandle(factoryCtx, id, name, mode, exec), nil
+	return h, nil
 }
 
 // bindSession starts a persistent session on h's executor via MaybeStartSession
@@ -919,9 +941,17 @@ func (s *Swarm) restart(h *Handle) error {
 	}
 
 	h.executor = fresh
+	h.generation++
 	h.startedAt = time.Now()
 	h.lastUsedAt = time.Now()
+	generation := h.generation
 	h.mu.Unlock()
+	s.mu.Lock()
+	if authority, ok := s.live[h]; ok {
+		authority.generation = generation
+		s.live[h] = authority
+	}
+	s.mu.Unlock()
 
 	// Rebind session if the original handle was session-bound (AIMUX-14 FR-2).
 	// bindSession acquires h.mu internally — safe to call after the unlock above.
@@ -946,11 +976,17 @@ func (s *Swarm) closeHandle(h *Handle, reason string) error {
 	h.mu.Lock()
 	if h.executor == nil {
 		h.mu.Unlock()
+		s.mu.Lock()
+		delete(s.live, h)
+		s.mu.Unlock()
 		return nil
 	}
 	err := h.executor.Close()
 	h.executor = nil
 	h.mu.Unlock()
+	s.mu.Lock()
+	delete(s.live, h)
+	s.mu.Unlock()
 
 	// Emit close event after releasing h.mu (audit.Emit is non-blocking but
 	// emitting outside the lock keeps hot-path lock hold time minimal).

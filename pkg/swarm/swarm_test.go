@@ -714,6 +714,9 @@ func TestSwarm_Get_DeadPersistent_Respawns(t *testing.T) {
 	if h1.ID == h2.ID {
 		t.Log("warning: same handle returned even though first executor is dead — Swarm may defer restart to Send")
 	}
+	if !first.isClosed() {
+		t.Fatal("dead persistent executor was pruned without Close")
+	}
 	// At minimum, sending on h2 must succeed.
 	if _, err := s.Send(ctx, h2, types.Message{Content: "test"}); err != nil {
 		t.Errorf("Send on h2: %v", err)
