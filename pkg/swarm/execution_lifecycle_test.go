@@ -63,7 +63,7 @@ func (e *cancellationTailExecutor) SendEvents(ctx context.Context, _ types.Execu
 	<-e.releaseTail
 	accepted := sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "output", Content: []byte("cancellation-tail")})
 	e.tailTried <- accepted
-	return &types.Response{Content: "apparently-complete"}, nil
+	return &types.Response{Content: "cancellation-tail", ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
 }
 
 func newLifecycleEventExecutor() *lifecycleEventExecutor {
@@ -166,12 +166,21 @@ func TestSwarmCancelFinalizesOnlyAfterTailAdmissionDecision(t *testing.T) {
 	if evidence, cancelErr := s.Cancel(context.Background(), h, scope, "cancel-tail", "test"); cancelErr != nil || evidence.ExecutionID != "cancel-tail" {
 		t.Fatalf("Cancel = %#v, %v", evidence, cancelErr)
 	}
-	inspection, inspectErr := s.Inspect(context.Background(), h, scope, "cancel-tail")
-	if inspectErr != nil {
-		t.Fatal(inspectErr)
-	}
-	if !inspection.Cancelled || inspection.Terminal {
-		t.Fatalf("inspection immediately after Cancel = %#v, want cancelled intent without terminal", inspection)
+	inspectionDone := make(chan struct {
+		inspection swarm.ExecutionInspection
+		err        error
+	}, 1)
+	go func() {
+		inspection, inspectErr := s.Inspect(context.Background(), h, scope, "cancel-tail")
+		inspectionDone <- struct {
+			inspection swarm.ExecutionInspection
+			err        error
+		}{inspection, inspectErr}
+	}()
+	select {
+	case result := <-inspectionDone:
+		t.Fatalf("Inspect returned provisional cancellation state: %#v, %v", result.inspection, result.err)
+	case <-time.After(25 * time.Millisecond):
 	}
 	select {
 	case <-terminalSeen:
@@ -189,6 +198,10 @@ func TestSwarmCancelFinalizesOnlyAfterTailAdmissionDecision(t *testing.T) {
 	}
 	if run.response == nil || !run.response.Partial {
 		t.Fatalf("response = %#v, want truthful Partial after rejected cancellation tail", run.response)
+	}
+	inspectionResult := <-inspectionDone
+	if inspectionResult.err != nil || !inspectionResult.inspection.Terminal || !inspectionResult.inspection.Cancelled {
+		t.Fatalf("terminal Inspect = %#v, %v", inspectionResult.inspection, inspectionResult.err)
 	}
 
 	mu.Lock()

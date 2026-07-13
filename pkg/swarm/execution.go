@@ -59,7 +59,9 @@ type executionRecord struct {
 	hasProcessEvidence bool
 	executionDone      chan struct{}
 	executionReturned  bool
+	naturalSuccess     bool
 	cancelDone         chan struct{}
+	terminalDone       chan struct{}
 	cancellationErr    error
 	terminal           bool
 	cancelled          bool
@@ -110,6 +112,7 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 		sink:          sink,
 		cancel:        cancel,
 		executionDone: make(chan struct{}),
+		terminalDone:  make(chan struct{}),
 	}
 	key := executionKey{handle: h, generation: authority.generation, id: id}
 	s.executionMu.Lock()
@@ -146,7 +149,10 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 			}
 		})
 	}
-	record.markExecutionReturned()
+	if s.postExecutorReturn != nil {
+		s.postExecutorReturn()
+	}
+	record.markExecutionReturned(response, err)
 	if record.wasTruncated() {
 		if response == nil {
 			response = &types.Response{}
@@ -254,7 +260,7 @@ func (record *executionRecord) resolveCancellation(reason string) {
 	// A successful stopped-tree proof still wins terminal classification even
 	// when a native cancellation call returned an error; callers receive that
 	// native error unchanged through cancellationErr.
-	if !record.terminal && (evidence.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped) {
+	if !record.terminal && !record.naturalSuccess && (evidence.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped) {
 		record.cancelled = true
 	}
 	record.cancellationErr = cancelErr
@@ -270,11 +276,14 @@ func (s *Swarm) Inspect(ctx context.Context, h *Handle, scope string, id types.E
 		return ExecutionInspection{}, err
 	}
 	record.mu.Lock()
-	done := record.cancelDone
+	cancellationStarted := record.cancelDone != nil
+	terminalDone := record.terminalDone
 	record.mu.Unlock()
-	if done != nil {
-		if _, err := record.waitCancellation(ctx, done); err != nil {
-			return ExecutionInspection{}, err
+	if cancellationStarted {
+		select {
+		case <-terminalDone:
+		case <-ctx.Done():
+			return ExecutionInspection{}, ctx.Err()
 		}
 	}
 	record.mu.Lock()
@@ -354,7 +363,7 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 		record.truncated = true
 	}
 	eventType := "completed"
-	if record.cancelled && (record.cancellation.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped) {
+	if record.cancelled && !record.naturalSuccess && (record.cancellation.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped) {
 		eventType = "cancelled"
 	} else if response != nil && response.Error != nil && response.Error.Type == types.ErrorTypeTimeout {
 		eventType = "timeout"
@@ -371,16 +380,25 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 	if !record.admitted {
 		record.truncated = true
 	}
+	close(record.terminalDone)
 	return record.admitted
 }
 
-func (record *executionRecord) markExecutionReturned() {
+func (record *executionRecord) markExecutionReturned(response *types.Response, runErr error) {
 	record.mu.Lock()
 	if !record.executionReturned {
+		record.naturalSuccess = executionSucceeded(response, runErr)
+		if record.naturalSuccess {
+			record.cancelled = false
+		}
 		record.executionReturned = true
 		close(record.executionDone)
 	}
 	record.mu.Unlock()
+}
+
+func executionSucceeded(response *types.Response, runErr error) bool {
+	return runErr == nil && response != nil && response.Error == nil && response.ExitCode == 0
 }
 
 func (record *executionRecord) wasTruncated() bool {

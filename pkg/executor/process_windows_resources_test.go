@@ -91,6 +91,53 @@ func TestSnapshotThreadEntriesWithOperations_ClosesAcquiredSnapshotExactlyOnce(t
 	}
 }
 
+func TestProcessTreeTerminateRequiresObservedJobCompletion(t *testing.T) {
+	const job = windows.Handle(101)
+	for _, test := range []struct {
+		name    string
+		status  uint32
+		waitErr error
+		want    bool
+	}{
+		{name: "termination request with timeout remains unconfirmed", status: uint32(windows.WAIT_TIMEOUT)},
+		{name: "termination request with wait failure remains unconfirmed", waitErr: errors.New("wait failed")},
+		{name: "signalled exact job confirms whole tree", status: uint32(windows.WAIT_OBJECT_0), want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			terminated, waited, closed := 0, 0, 0
+			tree := &processTree{job: job, jobOps: windowsJobOperations{
+				terminate: func(got windows.Handle, code uint32) error {
+					if got != job || code != 1 {
+						t.Fatalf("TerminateJobObject(%d, %d)", got, code)
+					}
+					terminated++
+					return nil
+				},
+				wait: func(got windows.Handle, timeout uint32) (uint32, error) {
+					if got != job || timeout != processTreeJobWaitTimeout {
+						t.Fatalf("WaitForSingleObject(%d, %d)", got, timeout)
+					}
+					waited++
+					return test.status, test.waitErr
+				},
+				close: func(got windows.Handle) error {
+					if got != job {
+						t.Fatalf("CloseHandle(%d)", got)
+					}
+					closed++
+					return nil
+				},
+			}}
+			if got := tree.terminate(); got != test.want || tree.stopped() != test.want {
+				t.Fatalf("terminate/stopped = %t/%t, want %t", got, tree.stopped(), test.want)
+			}
+			if terminated != 1 || waited != 1 || closed != 1 {
+				t.Fatalf("operations terminate=%d wait=%d close=%d, want 1/1/1", terminated, waited, closed)
+			}
+		})
+	}
+}
+
 func TestResumeThreadWithOperations_ClosesAcquiredThreadExactlyOnce(t *testing.T) {
 	wantOpenErr := errors.New("open failed")
 	wantResumeErr := errors.New("resume failed")

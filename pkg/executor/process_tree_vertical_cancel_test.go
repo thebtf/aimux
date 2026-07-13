@@ -145,8 +145,8 @@ func TestSwarmCLIPipeAdapterCancelStopsGenericWorkerTree(t *testing.T) {
 		t.Fatalf("Inspect = %#v, %v", inspectionResult.inspection, inspectionResult.err)
 	}
 	for level, identity := range identities {
-		if !waitForProcessTreeExit(identity, 5*time.Second) {
-			t.Fatalf("generic-worker level %d survived cancellation", level)
+		if processTreeProcessAlive(identity) {
+			t.Fatalf("Inspect reported stopped before generic-worker level %d exited", level)
 		}
 	}
 	if err := <-runDone; err != nil {

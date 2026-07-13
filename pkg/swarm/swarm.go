@@ -200,6 +200,10 @@ type Swarm struct {
 	terminalOrder []executionKey
 	live          map[*Handle]handleAuthority
 
+	// postExecutorReturn is a package-private deterministic test seam for the
+	// return-to-outcome publication boundary.
+	postExecutorReturn func()
+
 	// keyLocks holds a *sync.Mutex per registry key (DEF-8 / FR-2).
 	// Per-key locking allows concurrent Gets on distinct keys to run their
 	// factoryFn in parallel while still serialising same-key Gets to prevent

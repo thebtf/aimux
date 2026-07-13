@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/tenant"
@@ -28,10 +29,13 @@ func (e *eventExecutor) SendStream(context.Context, types.Message, func(types.Ch
 }
 func (e *eventExecutor) IsAlive() types.HealthStatus { return types.HealthAlive }
 func (e *eventExecutor) Close() error                { return nil }
-func (e *eventExecutor) SendEvents(_ context.Context, _ types.ExecutionID, _ types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+func (e *eventExecutor) SendEvents(ctx context.Context, _ types.ExecutionID, _ types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
 	sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "output", Content: []byte{0xff}})
 	e.started <- struct{}{}
 	<-e.release
+	if ctx.Err() != nil {
+		return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
+	}
 	return &types.Response{Content: "ok"}, nil
 }
 
@@ -62,15 +66,28 @@ func TestSwarmExecuteFencesOneActiveExecutionAndCancelWins(t *testing.T) {
 	if evidence, err := s.Cancel(context.Background(), h, scope, "one", "test"); err != nil || evidence.ExecutionID != "one" {
 		t.Fatalf("cancel = %#v, %v", evidence, err)
 	}
-	inspection, err := s.Inspect(context.Background(), h, scope, "one")
-	if err != nil || inspection.Terminal || !inspection.Cancelled {
-		t.Fatalf("inspect = %#v, %v", inspection, err)
+	inspectionDone := make(chan struct {
+		inspection swarm.ExecutionInspection
+		err        error
+	}, 1)
+	go func() {
+		inspection, inspectErr := s.Inspect(context.Background(), h, scope, "one")
+		inspectionDone <- struct {
+			inspection swarm.ExecutionInspection
+			err        error
+		}{inspection, inspectErr}
+	}()
+	select {
+	case result := <-inspectionDone:
+		t.Fatalf("Inspect returned provisional cancellation state: %#v, %v", result.inspection, result.err)
+	case <-time.After(25 * time.Millisecond):
 	}
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	inspection, err = s.Inspect(context.Background(), h, scope, "one")
+	inspectionResult := <-inspectionDone
+	inspection, err := inspectionResult.inspection, inspectionResult.err
 	if err != nil || !inspection.Terminal || !inspection.Cancelled {
 		t.Fatalf("terminal inspect = %#v, %v", inspection, err)
 	}
@@ -208,5 +225,5 @@ func (e *contextEventExecutor) SendEvents(ctx context.Context, _ types.Execution
 	<-ctx.Done()
 	<-e.late
 	sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "output", Content: []byte("late")})
-	return &types.Response{}, nil
+	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
 }

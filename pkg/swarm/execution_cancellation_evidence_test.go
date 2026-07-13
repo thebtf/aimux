@@ -201,7 +201,7 @@ func TestSwarmCancelWaitsForFinalTreeEvidenceAndInspectSharesIt(t *testing.T) {
 		}
 	}
 	inspection := <-inspectDone
-	if inspection.err != nil || !inspection.inspection.Cancelled || !inspection.inspection.ProcessTreeEvidence.Stopped || inspection.inspection.ProcessTreeEvidence.Process.Validate() != nil {
+	if inspection.err != nil || !inspection.inspection.Terminal || !inspection.inspection.Cancelled || !inspection.inspection.ProcessTreeEvidence.Stopped || inspection.inspection.ProcessTreeEvidence.Process.Validate() != nil {
 		t.Fatalf("Inspect = %#v, %v", inspection.inspection, inspection.err)
 	}
 	if err := <-runDone; err != nil {

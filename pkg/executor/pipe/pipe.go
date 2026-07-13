@@ -49,6 +49,7 @@ type Executor struct {
 type processEvidence struct {
 	tree   types.ProcessTreeEvidence
 	handle *executor.ProcessHandle
+	final  bool // final false stays false; it is evictable but never refreshed.
 }
 
 // New creates a pipe executor.
@@ -65,7 +66,7 @@ func (e *Executor) ProcessTreeEvidence(_ context.Context, id types.ExecutionID) 
 	if !ok {
 		return types.ProcessTreeEvidence{}, fmt.Errorf("pipe: process evidence not found")
 	}
-	if !record.tree.Stopped && record.handle.TreeStopped() {
+	if !record.final && !record.tree.Stopped && record.handle.TreeStopped() {
 		record.tree.Stopped = true
 		e.evidence[id] = record
 	}
@@ -86,11 +87,11 @@ func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.Proce
 		evicted := false
 		for i, candidate := range e.evidenceOrder {
 			if record, ok := e.evidence[candidate]; ok {
-				if !record.tree.Stopped && record.handle.TreeStopped() {
+				if !record.final && !record.tree.Stopped && record.handle.TreeStopped() {
 					record.tree.Stopped = true
 					e.evidence[candidate] = record
 				}
-				if !record.tree.Stopped {
+				if !record.final {
 					continue
 				}
 				delete(e.evidence, candidate)
@@ -106,6 +107,23 @@ func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.Proce
 	e.evidenceOrder = append(e.evidenceOrder, id)
 	e.evidence[id] = processEvidence{tree: evidence, handle: h}
 	return nil
+}
+
+// finalizeProcessEvidence takes one last exact-handle snapshot as the managed
+// execution ends. A false result is historical uncertainty, never a later PID
+// or PGID observation; retention may reclaim it without treating it as live.
+func (e *Executor) finalizeProcessEvidence(id types.ExecutionID) {
+	e.evidenceMu.Lock()
+	defer e.evidenceMu.Unlock()
+	record, ok := e.evidence[id]
+	if !ok || record.final {
+		return
+	}
+	if !record.tree.Stopped && record.handle.TreeStopped() {
+		record.tree.Stopped = true
+	}
+	record.final = true
+	e.evidence[id] = record
 }
 
 func (e *Executor) openStdinPipe(cmd *exec.Cmd) (io.WriteCloser, error) {
@@ -306,6 +324,7 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 		executor.SharedPM.Cleanup(h)
 		return nil, err
 	}
+	defer e.finalizeProcessEvidence(executionID)
 	var ioGroup sync.WaitGroup
 	if stdin != nil {
 		ioGroup.Add(1)

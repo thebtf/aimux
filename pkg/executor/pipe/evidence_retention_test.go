@@ -25,6 +25,7 @@ func TestProcessEvidenceRetentionNeverEvictsLiveRecords(t *testing.T) {
 	e.evidenceMu.Lock()
 	record := e.evidence["a"]
 	record.tree.Stopped = true
+	record.final = true
 	e.evidence["a"] = record
 	e.evidenceMu.Unlock()
 	if err := e.retainProcessEvidence("replacement", &executor.ProcessHandle{PID: 1000, StartedAt: time.Now()}); err != nil {
@@ -35,6 +36,33 @@ func TestProcessEvidenceRetentionNeverEvictsLiveRecords(t *testing.T) {
 	}
 	if err := e.retainProcessEvidence("replacement", &executor.ProcessHandle{PID: 1001, StartedAt: time.Now()}); err == nil {
 		t.Fatal("duplicate execution evidence succeeded")
+	}
+}
+
+func TestProcessEvidenceRetentionEvictsFinalUnconfirmedRecords(t *testing.T) {
+	e := New()
+	for i := 0; i < processEvidenceLimit; i++ {
+		id := types.ExecutionID(string(rune('a' + i)))
+		if err := e.retainProcessEvidence(id, &executor.ProcessHandle{PID: i + 1, StartedAt: time.Unix(0, int64(i+1))}); err != nil {
+			t.Fatalf("retain %d: %v", i, err)
+		}
+		e.evidenceMu.Lock()
+		record := e.evidence[id]
+		record.final = true
+		e.evidence[id] = record
+		e.evidenceMu.Unlock()
+	}
+	if err := e.retainProcessEvidence("replacement", &executor.ProcessHandle{PID: 999, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("final unconfirmed capacity stayed exhausted: %v", err)
+	}
+	if _, err := e.ProcessTreeEvidence(nil, "a"); err == nil {
+		t.Fatal("oldest final-unconfirmed evidence was not reclaimed")
+	}
+	for i := 1; i < processEvidenceLimit; i++ {
+		evidence, err := e.ProcessTreeEvidence(nil, types.ExecutionID(string(rune('a'+i))))
+		if err != nil || evidence.Stopped {
+			t.Fatalf("final unconfirmed evidence %d = %#v, %v", i, evidence, err)
+		}
 	}
 }
 

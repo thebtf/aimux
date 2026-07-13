@@ -14,12 +14,27 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const processTreeJobWaitTimeout = 2 * 1000 // milliseconds; stays inside ProcessManager's 10s bound.
+
 // processTree owns the Job Object assigned to one process started by Spawn.
 // releaseOnce makes natural exit, Kill, and Cleanup safe to race.
 type processTree struct {
 	job          windows.Handle
 	releaseOnce  sync.Once
 	stopObserved atomic.Bool
+	jobOps       windowsJobOperations
+}
+
+type windowsJobOperations struct {
+	terminate func(windows.Handle, uint32) error
+	wait      func(windows.Handle, uint32) (uint32, error)
+	close     func(windows.Handle) error
+}
+
+var systemWindowsJobOperations = windowsJobOperations{
+	terminate: windows.TerminateJobObject,
+	wait:      windows.WaitForSingleObject,
+	close:     windows.CloseHandle,
 }
 
 type windowsThreadOperations struct {
@@ -67,7 +82,7 @@ func prepareProcessTree(cmd *exec.Cmd) (*processTree, error) {
 	attributes.CreationFlags |= windows.CREATE_SUSPENDED
 	cmd.SysProcAttr = &attributes
 
-	return &processTree{job: job}, nil
+	return &processTree{job: job, jobOps: systemWindowsJobOperations}, nil
 }
 
 func (tree *processTree) attach(cmd *exec.Cmd) error {
@@ -184,10 +199,20 @@ func (tree *processTree) terminate() bool {
 		if job == 0 {
 			return
 		}
-		if windows.TerminateJobObject(job, 1) == nil {
-			tree.stopObserved.Store(true)
+		operations := tree.jobOps
+		if operations.terminate == nil {
+			operations = systemWindowsJobOperations
 		}
-		_ = windows.CloseHandle(job)
+		if operations.terminate(job, 1) == nil {
+			status, err := operations.wait(job, processTreeJobWaitTimeout)
+			if err == nil && status == uint32(windows.WAIT_OBJECT_0) {
+				tree.stopObserved.Store(true)
+			}
+		}
+		if operations.close == nil {
+			operations.close = systemWindowsJobOperations.close
+		}
+		_ = operations.close(job)
 	})
 	return tree.stopObserved.Load()
 }
@@ -202,7 +227,11 @@ func (tree *processTree) discard() {
 		job := tree.job
 		tree.job = 0
 		if job != 0 {
-			_ = windows.CloseHandle(job)
+			operations := tree.jobOps
+			if operations.close == nil {
+				operations.close = systemWindowsJobOperations.close
+			}
+			_ = operations.close(job)
 		}
 	})
 }
