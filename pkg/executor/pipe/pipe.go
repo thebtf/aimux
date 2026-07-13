@@ -43,7 +43,7 @@ type Executor struct {
 	evidenceMu    sync.Mutex
 	evidence      map[types.ExecutionID]processEvidence
 	evidenceOrder []types.ExecutionID
-	evidenceHolds map[types.ExecutionID]int
+	reservations  map[types.ExecutionID]processEvidenceReservation
 	// finalEvidence is a package-private deterministic test seam for the
 	// exact final ProcessManager snapshot.
 	finalEvidence func(types.ProcessTreeEvidence) types.ProcessTreeEvidence
@@ -55,11 +55,20 @@ type processEvidence struct {
 	handle *executor.ProcessHandle
 	final  bool // final false stays false; it is evictable but never refreshed.
 	holds  int  // Swarm owns short outcome-copy holds across SendEvents return.
+	ready  chan types.ProcessTreeEvidence
+}
+
+// processEvidenceReservation is the pre-spawn half of an exact evidence
+// record. It counts against the same bound as retained records so a rejected
+// execution never reaches cmd.Start.
+type processEvidenceReservation struct {
+	holds int
+	ready chan types.ProcessTreeEvidence
 }
 
 // New creates a pipe executor.
 func New() *Executor {
-	return &Executor{evidence: make(map[types.ExecutionID]processEvidence), evidenceHolds: make(map[types.ExecutionID]int)}
+	return &Executor{evidence: make(map[types.ExecutionID]processEvidence), reservations: make(map[types.ExecutionID]processEvidenceReservation)}
 }
 
 // HoldProcessEvidence keeps an exact stateless result available until Swarm has
@@ -68,13 +77,13 @@ func New() *Executor {
 func (e *Executor) HoldProcessEvidence(id types.ExecutionID) bool {
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
-	if record, ok := e.evidence[id]; ok {
-		record.holds++
-		e.evidence[id] = record
-		return true
+	if _, exists := e.evidence[id]; exists {
+		return false
 	}
-	e.evidenceHolds[id]++
-	return true
+	if _, exists := e.reservations[id]; exists {
+		return false
+	}
+	return e.reserveProcessEvidenceLocked(id, 1) == nil
 }
 
 // ReleaseProcessEvidence makes a final result reclaimable once its immutable
@@ -92,11 +101,29 @@ func (e *Executor) ReleaseProcessEvidence(id types.ExecutionID) {
 		}
 		return
 	}
-	if e.evidenceHolds[id] > 1 {
-		e.evidenceHolds[id]--
-	} else {
-		delete(e.evidenceHolds, id)
+	if reservation, ok := e.reservations[id]; ok {
+		if reservation.holds > 1 {
+			reservation.holds--
+			e.reservations[id] = reservation
+		} else {
+			delete(e.reservations, id)
+		}
 	}
+}
+
+// ProcessEvidenceReady exposes the private one-shot exact-final future held by
+// a successful lease. It is fulfilled by finalizeProcessEvidence, never by a
+// Swarm-created capture goroutine.
+func (e *Executor) ProcessEvidenceReady(id types.ExecutionID) <-chan types.ProcessTreeEvidence {
+	e.evidenceMu.Lock()
+	defer e.evidenceMu.Unlock()
+	if record, ok := e.evidence[id]; ok {
+		return record.ready
+	}
+	if reservation, ok := e.reservations[id]; ok {
+		return reservation.ready
+	}
+	return nil
 }
 
 // ProcessTreeEvidence reports the exact managed process generation retained for
@@ -115,41 +142,89 @@ func (e *Executor) ProcessTreeEvidence(_ context.Context, id types.ExecutionID) 
 	return record.tree, nil
 }
 
-func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.ProcessHandle) error {
+func (e *Executor) reserveProcessEvidence(id types.ExecutionID) error {
+	e.evidenceMu.Lock()
+	defer e.evidenceMu.Unlock()
+	if reservation, ok := e.reservations[id]; ok {
+		// A positive HoldProcessEvidence lease owns this reservation for the
+		// immediately following Swarm SendEvents call. A bare reservation is a
+		// concurrent direct caller and remains a duplicate rejection.
+		if reservation.holds > 0 {
+			return nil
+		}
+		return fmt.Errorf("pipe: duplicate process evidence for execution %q", id)
+	}
+	return e.reserveProcessEvidenceLocked(id, 0)
+}
+
+func (e *Executor) reserveProcessEvidenceLocked(id types.ExecutionID, holds int) error {
+	if _, exists := e.evidence[id]; exists {
+		return fmt.Errorf("pipe: duplicate process evidence for execution %q", id)
+	}
+	if _, exists := e.reservations[id]; exists {
+		return fmt.Errorf("pipe: duplicate process evidence for execution %q", id)
+	}
+	for len(e.evidence)+len(e.reservations) >= processEvidenceLimit {
+		if !e.evictProcessEvidenceLocked() {
+			return fmt.Errorf("pipe: process evidence capacity reached with live executions")
+		}
+	}
+	e.reservations[id] = processEvidenceReservation{holds: holds, ready: make(chan types.ProcessTreeEvidence, 1)}
+	return nil
+}
+
+func (e *Executor) rollbackProcessEvidenceReservation(id types.ExecutionID) {
+	e.evidenceMu.Lock()
+	defer e.evidenceMu.Unlock()
+	delete(e.reservations, id)
+}
+
+func (e *Executor) commitProcessEvidenceReservation(id types.ExecutionID, h *executor.ProcessHandle) error {
 	evidence := types.ProcessTreeEvidence{Process: types.ProcessIdentity{
 		PID: h.PID, StartFingerprint: fmt.Sprintf("%d", h.StartedAt.UnixNano()),
 		TreeID: fmt.Sprintf("pipe:%d:%d", h.PID, h.StartedAt.UnixNano()),
 	}}
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
-	if _, exists := e.evidence[id]; exists {
-		return fmt.Errorf("pipe: duplicate process evidence for execution %q", id)
-	}
-	for len(e.evidence) >= processEvidenceLimit {
-		evicted := false
-		for i, candidate := range e.evidenceOrder {
-			if record, ok := e.evidence[candidate]; ok {
-				if !record.final && !record.tree.Stopped && record.handle.TreeStopped() {
-					record.tree.Stopped = true
-					e.evidence[candidate] = record
-				}
-				if !record.final || record.holds != 0 {
-					continue
-				}
-				delete(e.evidence, candidate)
-				e.evidenceOrder = append(e.evidenceOrder[:i], e.evidenceOrder[i+1:]...)
-				evicted = true
-				break
-			}
-		}
-		if !evicted {
-			return fmt.Errorf("pipe: process evidence capacity reached with live executions")
-		}
+	reservation, exists := e.reservations[id]
+	if !exists {
+		return fmt.Errorf("pipe: missing process evidence reservation for execution %q", id)
 	}
 	e.evidenceOrder = append(e.evidenceOrder, id)
-	e.evidence[id] = processEvidence{tree: evidence, handle: h, holds: e.evidenceHolds[id]}
-	delete(e.evidenceHolds, id)
+	e.evidence[id] = processEvidence{tree: evidence, handle: h, holds: reservation.holds, ready: reservation.ready}
+	delete(e.reservations, id)
 	return nil
+}
+
+// retainProcessEvidence remains a focused-test helper; production admission
+// always reserves before spawn and commits after attachment.
+func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.ProcessHandle) error {
+	if err := e.reserveProcessEvidence(id); err != nil {
+		return err
+	}
+	if err := e.commitProcessEvidenceReservation(id, h); err != nil {
+		e.rollbackProcessEvidenceReservation(id)
+		return err
+	}
+	return nil
+}
+
+func (e *Executor) evictProcessEvidenceLocked() bool {
+	for i, candidate := range e.evidenceOrder {
+		if record, ok := e.evidence[candidate]; ok {
+			if !record.final && !record.tree.Stopped && record.handle.TreeStopped() {
+				record.tree.Stopped = true
+				e.evidence[candidate] = record
+			}
+			if !record.final || record.holds != 0 {
+				continue
+			}
+			delete(e.evidence, candidate)
+			e.evidenceOrder = append(e.evidenceOrder[:i], e.evidenceOrder[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // finalizeProcessEvidence takes one last exact-handle snapshot as the managed
@@ -170,6 +245,10 @@ func (e *Executor) finalizeProcessEvidence(id types.ExecutionID) {
 	}
 	record.final = true
 	e.evidence[id] = record
+	if record.ready != nil {
+		record.ready <- record.tree
+		close(record.ready)
+	}
 }
 
 func (e *Executor) openStdinPipe(cmd *exec.Cmd) (io.WriteCloser, error) {
@@ -330,6 +409,15 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 	if err := executionID.Validate(); err != nil {
 		return nil, err
 	}
+	if err := e.reserveProcessEvidence(executionID); err != nil {
+		return nil, err
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			e.rollbackProcessEvidenceReservation(executionID)
+		}
+	}()
 	if sink == nil {
 		sink = types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })
 	}
@@ -359,9 +447,7 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 		return nil, types.NewExecutorError("failed to start "+args.Command, err, "")
 	}
 	defer executor.SharedPM.Cleanup(h)
-	if err := e.retainProcessEvidence(executionID, h); err != nil {
-		// Admission is after spawn; release the just-spawned owned tree before
-		// returning so a full live registry cannot leak a process.
+	if err := e.commitProcessEvidenceReservation(executionID, h); err != nil {
 		h.MarkDrained()
 		if stdin != nil {
 			_ = stdin.Close()
@@ -370,6 +456,7 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 		executor.SharedPM.Cleanup(h)
 		return nil, err
 	}
+	reserved = false
 	defer e.finalizeProcessEvidence(executionID)
 	var ioGroup sync.WaitGroup
 	if stdin != nil {

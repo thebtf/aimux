@@ -3,6 +3,8 @@ package pipe
 import (
 	"context"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -112,6 +114,56 @@ func TestProcessTreeEvidenceDoesNotTreatRootExitAsManagedTreeStop(t *testing.T) 
 	if evidence.Stopped {
 		t.Fatalf("root exit fabricated whole-tree stop evidence: %#v", evidence)
 	}
+}
+
+func TestProcessEvidenceReservationsAreHardBoundedAndReusable(t *testing.T) {
+	e := New()
+	var acquired atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < processEvidenceLimit*2; i++ {
+		id := types.ExecutionID("reservation-" + string(rune(i)))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if e.HoldProcessEvidence(id) {
+				acquired.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := acquired.Load(); got != processEvidenceLimit {
+		t.Fatalf("concurrent acquired reservations = %d, want %d", got, processEvidenceLimit)
+	}
+	e.evidenceMu.Lock()
+	reserved := len(e.reservations)
+	e.evidenceMu.Unlock()
+	if reserved != processEvidenceLimit {
+		t.Fatalf("retained reservations = %d, want %d", reserved, processEvidenceLimit)
+	}
+	for i := 0; i < processEvidenceLimit*2; i++ {
+		e.ReleaseProcessEvidence(types.ExecutionID("reservation-" + string(rune(i))))
+	}
+	if !e.HoldProcessEvidence("reusable") {
+		t.Fatal("released reservation capacity was not reusable")
+	}
+	e.ReleaseProcessEvidence("reusable")
+}
+
+func TestSendEventsSpawnFailureRollsBackReservation(t *testing.T) {
+	e := New()
+	if _, err := e.SendEvents(context.Background(), "spawn-failure", types.Message{Spawn: &types.SpawnArgs{Command: "aimux-command-that-does-not-exist"}}, nil); err == nil {
+		t.Fatal("spawn failure unexpectedly succeeded")
+	}
+	e.evidenceMu.Lock()
+	reserved := len(e.reservations)
+	e.evidenceMu.Unlock()
+	if reserved != 0 {
+		t.Fatalf("spawn failure left %d reservations", reserved)
+	}
+	if !e.HoldProcessEvidence("reusable-after-spawn-failure") {
+		t.Fatal("spawn failure reservation capacity was not reusable")
+	}
+	e.ReleaseProcessEvidence("reusable-after-spawn-failure")
 }
 
 func TestSwarmNaturalRootExitWithUnconfirmedPipeTreeFails(t *testing.T) {

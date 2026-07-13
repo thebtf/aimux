@@ -103,6 +103,7 @@ type treeEvidenceExecutor struct {
 	started, returned chan struct{}
 	evidenceGate      <-chan struct{}
 	stopped           bool
+	ready             chan types.ProcessTreeEvidence
 }
 
 func (*treeEvidenceExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
@@ -118,18 +119,21 @@ func (e *treeEvidenceExecutor) SendEvents(ctx context.Context, _ types.Execution
 	close(e.started)
 	<-ctx.Done()
 	close(e.returned)
-	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
-}
-func (e *treeEvidenceExecutor) ProcessTreeEvidence(context.Context, types.ExecutionID) (types.ProcessTreeEvidence, error) {
 	if e.evidenceGate != nil {
 		<-e.evidenceGate
 	}
-	return types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 17, StartFingerprint: "generation", TreeID: "tree"}, Stopped: e.stopped}, nil
+	e.ready <- types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 17, StartFingerprint: "generation", TreeID: "tree"}, Stopped: e.stopped}
+	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
 }
+func (*treeEvidenceExecutor) HoldProcessEvidence(types.ExecutionID) bool { return true }
+func (e *treeEvidenceExecutor) ProcessEvidenceReady(types.ExecutionID) <-chan types.ProcessTreeEvidence {
+	return e.ready
+}
+func (*treeEvidenceExecutor) ReleaseProcessEvidence(types.ExecutionID) {}
 
 func TestSwarmCancelWaitsForFinalTreeEvidenceAndInspectSharesIt(t *testing.T) {
 	gate := make(chan struct{})
-	exec := &treeEvidenceExecutor{started: make(chan struct{}), returned: make(chan struct{}), evidenceGate: gate, stopped: true}
+	exec := &treeEvidenceExecutor{started: make(chan struct{}), returned: make(chan struct{}), evidenceGate: gate, stopped: true, ready: make(chan types.ProcessTreeEvidence, 1)}
 	s := swarm.New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
 	h, err := s.Get(context.Background(), "tree", swarm.Stateful, swarm.WithScope("scope"))
 	if err != nil {
@@ -217,7 +221,7 @@ func TestSwarmCancelWaitsForFinalTreeEvidenceAndInspectSharesIt(t *testing.T) {
 func TestSwarmCancellationWithoutAcknowledgementOrStopProofFailsClosed(t *testing.T) {
 	gate := make(chan struct{})
 	close(gate)
-	exec := &treeEvidenceExecutor{started: make(chan struct{}), returned: make(chan struct{}), evidenceGate: gate}
+	exec := &treeEvidenceExecutor{started: make(chan struct{}), returned: make(chan struct{}), evidenceGate: gate, ready: make(chan types.ProcessTreeEvidence, 1)}
 	s := swarm.New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
 	h, err := s.Get(context.Background(), "tree", swarm.Stateful, swarm.WithScope("scope"))
 	if err != nil {

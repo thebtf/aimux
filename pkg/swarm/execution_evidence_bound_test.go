@@ -12,12 +12,8 @@ import (
 )
 
 type blockingExactEvidenceExecutor struct {
-	evidenceStarted  chan struct{}
-	evidenceReleased chan struct{}
-	evidenceReturned chan struct{}
-	block            atomic.Bool
-	calls            atomic.Int32
-	holds            atomic.Int32
+	ready chan types.ProcessTreeEvidence
+	holds atomic.Int32
 }
 
 func (*blockingExactEvidenceExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
@@ -36,101 +32,99 @@ func (e *blockingExactEvidenceExecutor) HoldProcessEvidence(types.ExecutionID) b
 	e.holds.Add(1)
 	return true
 }
-func (e *blockingExactEvidenceExecutor) ReleaseProcessEvidence(types.ExecutionID) { e.holds.Add(-1) }
-func (e *blockingExactEvidenceExecutor) ProcessTreeEvidence(context.Context, types.ExecutionID) (types.ProcessTreeEvidence, error) {
-	call := e.calls.Add(1)
-	if call == 1 {
-		close(e.evidenceStarted)
-	}
-	if e.block.Load() {
-		<-e.evidenceReleased // Deliberately non-cooperative: Swarm must still bound its terminal.
-	}
-	if call == 1 {
-		close(e.evidenceReturned)
-	}
-	return types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 17, StartFingerprint: "start", TreeID: "tree"}, Stopped: true}, nil
+func (e *blockingExactEvidenceExecutor) ProcessEvidenceReady(types.ExecutionID) <-chan types.ProcessTreeEvidence {
+	return e.ready
 }
+func (e *blockingExactEvidenceExecutor) ReleaseProcessEvidence(types.ExecutionID) { e.holds.Add(-1) }
 
-func TestSwarmBoundsBlockingExactProcessEvidenceAndReleasesLease(t *testing.T) {
+func TestSwarmBoundsNeverReadyExactLeaseWithoutCaptureGoroutine(t *testing.T) {
 	previous := processEvidenceCaptureTimeout
 	processEvidenceCaptureTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { processEvidenceCaptureTimeout = previous })
 
-	exec := &blockingExactEvidenceExecutor{
-		evidenceStarted: make(chan struct{}), evidenceReleased: make(chan struct{}), evidenceReturned: make(chan struct{}),
-	}
-	exec.block.Store(true)
+	exec := &blockingExactEvidenceExecutor{ready: make(chan types.ProcessTreeEvidence)}
 	s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
 	h, err := s.Get(context.Background(), "blocking-evidence", Stateful, WithScope("scope"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	terminal := make(chan types.ExecutorEvent, 2)
-	runDone := make(chan error, 1)
-	go func() {
-		_, err := s.Execute(context.Background(), h, "scope", "bounded-evidence", types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+	for i := 0; i < 3; i++ {
+		id := types.ExecutionID("bounded-evidence-" + string(rune('a'+i)))
+		if _, err := s.Execute(context.Background(), h, "scope", id, types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
 			if event.Terminal {
 				terminal <- event
 			}
 			return true
-		}))
-		runDone <- err
-	}()
-	<-exec.evidenceStarted
+		})); err != nil {
+			t.Fatal(err)
+		}
+		if event := <-terminal; event.Type == "completed" {
+			t.Fatalf("terminal = %#v, want fail-closed bounded evidence result", event)
+		}
+		if got := exec.holds.Load(); got != 0 {
+			t.Fatalf("evidence holds after %d executions = %d, want released", i+1, got)
+		}
+	}
+}
 
-	joinCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	cancelDone := make(chan error, 1)
-	inspectDone := make(chan struct {
-		inspection ExecutionInspection
-		err        error
-	}, 1)
-	go func() { _, err := s.Cancel(joinCtx, h, "scope", "bounded-evidence", "join"); cancelDone <- err }()
-	go func() {
-		inspection, err := s.Inspect(joinCtx, h, "scope", "bounded-evidence")
-		inspectDone <- struct {
-			inspection ExecutionInspection
-			err        error
-		}{inspection, err}
-	}()
+type noLeaseExecutor struct{ releases atomic.Int32 }
 
-	if err := <-runDone; err != nil {
+func (*noLeaseExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
+func (*noLeaseExecutor) Send(context.Context, types.Message) (*types.Response, error) {
+	return &types.Response{ExitCode: 0}, nil
+}
+func (*noLeaseExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
+	return &types.Response{ExitCode: 0}, nil
+}
+func (*noLeaseExecutor) IsAlive() types.HealthStatus { return types.HealthAlive }
+func (*noLeaseExecutor) Close() error                { return nil }
+func (*noLeaseExecutor) SendEvents(context.Context, types.ExecutionID, types.Message, types.ExecutorEventSink) (*types.Response, error) {
+	return &types.Response{ExitCode: 0}, nil
+}
+func (*noLeaseExecutor) HoldProcessEvidence(types.ExecutionID) bool { return false }
+func (*noLeaseExecutor) ProcessEvidenceReady(types.ExecutionID) <-chan types.ProcessTreeEvidence {
+	return nil
+}
+func (e *noLeaseExecutor) ReleaseProcessEvidence(types.ExecutionID) { e.releases.Add(1) }
+
+func TestSwarmDoesNotReleaseUnacquiredExactLease(t *testing.T) {
+	exec := &noLeaseExecutor{}
+	s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	h, err := s.Get(context.Background(), "no-lease", Stateful, WithScope("scope"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := <-cancelDone; err != nil {
-		t.Fatalf("Cancel = %v", err)
+	if _, err := s.Execute(context.Background(), h, "scope", "no-lease", types.Message{}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })); err != nil {
+		t.Fatal(err)
 	}
-	if inspection := <-inspectDone; inspection.err != nil || !inspection.inspection.Terminal {
-		t.Fatalf("Inspect = %#v, %v", inspection.inspection, inspection.err)
+	if got := exec.releases.Load(); got != 0 {
+		t.Fatalf("release calls = %d, want 0 for a refused lease", got)
 	}
-	if event := <-terminal; event.Type == "completed" {
-		t.Fatalf("terminal = %#v, want fail-closed bounded evidence result", event)
-	}
-	if got := exec.holds.Load(); got != 0 {
-		t.Fatalf("evidence holds = %d, want released", got)
-	}
+}
 
-	close(exec.evidenceReleased) // Let the deliberately non-cooperative oracle exit.
-	select {
-	case <-exec.evidenceReturned:
-	case <-time.After(time.Second):
-		t.Fatal("blocked evidence provider goroutine did not exit after release")
+func TestSwarmReadyExactLeaseWinsDeadline(t *testing.T) {
+	previous := processEvidenceCaptureTimeout
+	processEvidenceCaptureTimeout = time.Nanosecond
+	t.Cleanup(func() { processEvidenceCaptureTimeout = previous })
+	exec := &blockingExactEvidenceExecutor{ready: make(chan types.ProcessTreeEvidence, 1)}
+	exec.ready <- types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 17, StartFingerprint: "start", TreeID: "tree"}, Stopped: true}
+	s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	h, err := s.Get(context.Background(), "ready-evidence", Stateful, WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	exec.block.Store(false)
-	if _, err := s.Execute(context.Background(), h, "scope", "bounded-evidence-next", types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+	terminal := make(chan types.ExecutorEvent, 1)
+	if _, err := s.Execute(context.Background(), h, "scope", "ready-evidence", types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
 		if event.Terminal {
 			terminal <- event
 		}
 		return true
 	})); err != nil {
-		t.Fatalf("next Execute = %v", err)
+		t.Fatal(err)
 	}
 	if event := <-terminal; event.Type != "completed" {
-		t.Fatalf("next terminal = %#v, want completed after released capacity", event)
-	}
-	if got := exec.holds.Load(); got != 0 {
-		t.Fatalf("evidence holds after reuse = %d, want released", got)
+		t.Fatalf("terminal = %#v, want ready exact evidence to win the deadline", event)
 	}
 }
 

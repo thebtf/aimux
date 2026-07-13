@@ -181,6 +181,7 @@ func (a *CLIPipeAdapter) ProcessTreeEvidence(ctx context.Context, id types.Execu
 
 type processEvidenceHolder interface {
 	HoldProcessEvidence(types.ExecutionID) bool
+	ProcessEvidenceReady(types.ExecutionID) <-chan types.ProcessTreeEvidence
 	ReleaseProcessEvidence(types.ExecutionID)
 }
 
@@ -191,6 +192,13 @@ func (a *CLIPipeAdapter) HoldProcessEvidence(id types.ExecutionID) bool {
 		return holder.HoldProcessEvidence(id)
 	}
 	return false
+}
+
+func (a *CLIPipeAdapter) ProcessEvidenceReady(id types.ExecutionID) <-chan types.ProcessTreeEvidence {
+	if holder, ok := a.legacy.(processEvidenceHolder); ok && a.session == nil {
+		return holder.ProcessEvidenceReady(id)
+	}
+	return nil
 }
 
 func (a *CLIPipeAdapter) ReleaseProcessEvidence(id types.ExecutionID) {
