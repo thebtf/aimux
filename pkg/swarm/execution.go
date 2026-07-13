@@ -18,6 +18,11 @@ var (
 
 const maxTerminalExecutions = 256
 
+// cancellationResolutionTimeout bounds terminal publication when an optional
+// native canceller ignores its context. Process teardown itself remains owned
+// by the executor and is awaited through executionDone when evidence is needed.
+const cancellationResolutionTimeout = 10 * time.Second
+
 // ExecutionInspection is an in-memory, fenced snapshot. It intentionally
 // carries no durable binding; CR-003 owns recovery and persistence.
 type ExecutionInspection struct {
@@ -53,8 +58,11 @@ type executionRecord struct {
 	cancellation       types.CancellationEvidence
 	processEvidence    types.ProcessTreeEvidence
 	hasProcessEvidence bool
+	executionDone      chan struct{}
+	executionReturned  bool
 	cancelDone         chan struct{}
 	cancellationErr    error
+	cancelIntent       bool
 	terminal           bool
 	cancelled          bool
 	truncated          bool
@@ -95,14 +103,15 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	}
 	execCtx, cancel := context.WithCancel(ctx)
 	record := &executionRecord{
-		handle:     h,
-		id:         id,
-		tenantID:   authority.tenantID,
-		scope:      authority.scope,
-		generation: authority.generation,
-		executor:   exec,
-		sink:       sink,
-		cancel:     cancel,
+		handle:        h,
+		id:            id,
+		tenantID:      authority.tenantID,
+		scope:         authority.scope,
+		generation:    authority.generation,
+		executor:      exec,
+		sink:          sink,
+		cancel:        cancel,
+		executionDone: make(chan struct{}),
 	}
 	key := executionKey{handle: h, generation: authority.generation, id: id}
 	s.executionMu.Lock()
@@ -139,6 +148,7 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 			}
 		})
 	}
+	record.markExecutionReturned()
 	if record.wasTruncated() {
 		if response == nil {
 			response = &types.Response{}
@@ -178,38 +188,49 @@ func (s *Swarm) Cancel(ctx context.Context, h *Handle, scope string, id types.Ex
 
 func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reason string) (types.CancellationEvidence, error) {
 	record.mu.Lock()
-	if record.terminal {
+	if record.terminal || record.executionReturned {
 		evidence := record.cancellation
 		if evidence.ExecutionID == "" {
 			evidence.ExecutionID = record.id
 		}
+		cancelErr := record.cancellationErr
 		record.mu.Unlock()
-		return evidence, nil
+		return evidence, cancelErr
 	}
 	if done := record.cancelDone; done != nil {
 		record.mu.Unlock()
-		select {
-		case <-done:
-			record.mu.Lock()
-			evidence, cancelErr := record.cancellation, record.cancellationErr
-			record.mu.Unlock()
-			return evidence, cancelErr
-		case <-ctx.Done():
-			return types.CancellationEvidence{ExecutionID: record.id}, ctx.Err()
-		}
+		return record.waitCancellation(ctx, done)
 	}
-	record.cancelled = true
+	record.cancelIntent = true
 	record.cancellation = types.CancellationEvidence{ExecutionID: record.id}
 	record.cancelDone = make(chan struct{})
-	cancel := record.cancel
-	exec := record.executor
+	done := record.cancelDone
 	record.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	go record.resolveCancellation(reason)
+	return record.waitCancellation(ctx, done)
+}
+
+func (record *executionRecord) waitCancellation(ctx context.Context, done <-chan struct{}) (types.CancellationEvidence, error) {
+	select {
+	case <-done:
+		record.mu.Lock()
+		evidence, cancelErr := record.cancellation, record.cancellationErr
+		record.mu.Unlock()
+		return evidence, cancelErr
+	case <-ctx.Done():
+		return types.CancellationEvidence{ExecutionID: record.id}, ctx.Err()
 	}
+}
+
+func (record *executionRecord) resolveCancellation(reason string) {
+	if record.cancel != nil {
+		record.cancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cancellationResolutionTimeout)
+	defer cancel()
 	evidence := types.CancellationEvidence{ExecutionID: record.id}
 	var cancelErr error
-	if canceller, ok := exec.(types.ExecutionCanceller); ok {
+	if canceller, ok := record.executor.(types.ExecutionCanceller); ok {
 		evidence, cancelErr = canceller.CancelExecution(ctx, record.id, reason)
 		if evidence.ExecutionID == "" {
 			evidence.ExecutionID = record.id
@@ -217,8 +238,15 @@ func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reaso
 	}
 	var processEvidence types.ProcessTreeEvidence
 	var processErr error
-	if provider, ok := exec.(types.ProcessEvidenceProvider); ok {
-		processEvidence, processErr = provider.ProcessTreeEvidence(ctx, record.id)
+	if !evidence.NativeAcknowledged {
+		if provider, ok := record.executor.(types.ProcessEvidenceProvider); ok {
+			select {
+			case <-record.executionDone:
+				processEvidence, processErr = provider.ProcessTreeEvidence(ctx, record.id)
+			case <-ctx.Done():
+				processErr = ctx.Err()
+			}
+		}
 	}
 	record.mu.Lock()
 	record.cancellation = evidence
@@ -226,13 +254,15 @@ func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reaso
 		record.processEvidence = processEvidence
 		record.hasProcessEvidence = true
 	}
+	// A successful stopped-tree proof still wins terminal classification even
+	// when a native cancellation call returned an error; callers receive that
+	// native error unchanged through cancellationErr.
+	if !record.terminal && (evidence.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped) {
+		record.cancelled = true
+	}
 	record.cancellationErr = cancelErr
 	close(record.cancelDone)
 	record.mu.Unlock()
-	if cancelErr != nil {
-		return evidence, cancelErr
-	}
-	return evidence, nil
 }
 
 // Inspect returns the bounded, fenced in-memory execution snapshot without
@@ -241,6 +271,14 @@ func (s *Swarm) Inspect(ctx context.Context, h *Handle, scope string, id types.E
 	record, err := s.execution(ctx, h, scope, id)
 	if err != nil {
 		return ExecutionInspection{}, err
+	}
+	record.mu.Lock()
+	done := record.cancelDone
+	record.mu.Unlock()
+	if done != nil {
+		if _, err := record.waitCancellation(ctx, done); err != nil {
+			return ExecutionInspection{}, err
+		}
 	}
 	record.mu.Lock()
 	defer record.mu.Unlock()
@@ -305,7 +343,10 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 	done := record.cancelDone
 	record.mu.Unlock()
 	if done != nil {
-		<-done
+		select {
+		case <-done:
+		case <-time.After(cancellationResolutionTimeout):
+		}
 	}
 	record.mu.Lock()
 	defer record.mu.Unlock()
@@ -334,6 +375,15 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 		record.truncated = true
 	}
 	return record.admitted
+}
+
+func (record *executionRecord) markExecutionReturned() {
+	record.mu.Lock()
+	if !record.executionReturned {
+		record.executionReturned = true
+		close(record.executionDone)
+	}
+	record.mu.Unlock()
 }
 
 func (record *executionRecord) wasTruncated() bool {

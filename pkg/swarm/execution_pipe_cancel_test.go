@@ -70,10 +70,6 @@ func (e *delayedCancellationPipeExecutor) ProcessTreeEvidence(ctx context.Contex
 	return e.inner.ProcessTreeEvidence(ctx, id)
 }
 
-func (*delayedCancellationPipeExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
-	return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, nil
-}
-
 func TestSwarmPipeDrainCancellationHelper(t *testing.T) {
 	if os.Getenv(pipeDrainHelperEnv) != "1" {
 		return
@@ -203,9 +199,17 @@ func TestSwarmPipeCancellationDrainsTailBeforeTerminal(t *testing.T) {
 		t.Fatal("initial pipe output was not admitted")
 	}
 
-	if evidence, cancelErr := s.Cancel(context.Background(), h, scope, "pipe-cancel-tail", "test"); cancelErr != nil || evidence.ExecutionID != "pipe-cancel-tail" {
-		t.Fatalf("Cancel = %#v, %v", evidence, cancelErr)
-	}
+	cancelDone := make(chan struct {
+		evidence types.CancellationEvidence
+		err      error
+	}, 1)
+	go func() {
+		evidence, cancelErr := s.Cancel(context.Background(), h, scope, "pipe-cancel-tail", "test")
+		cancelDone <- struct {
+			evidence types.CancellationEvidence
+			err      error
+		}{evidence, cancelErr}
+	}()
 	select {
 	case <-exec.cancelObserved:
 	case <-time.After(5 * time.Second):
@@ -234,6 +238,10 @@ func TestSwarmPipeCancellationDrainsTailBeforeTerminal(t *testing.T) {
 	}
 
 	release()
+	cancelResult := <-cancelDone
+	if cancelResult.err != nil || cancelResult.evidence.NativeAcknowledged {
+		t.Fatalf("Cancel = %#v, %v, want native false", cancelResult.evidence, cancelResult.err)
+	}
 	var result runOutcome
 	select {
 	case result = <-runDone:
@@ -245,6 +253,10 @@ func TestSwarmPipeCancellationDrainsTailBeforeTerminal(t *testing.T) {
 	}
 	if result.response == nil || !result.response.Partial {
 		t.Fatalf("response = %#v, want Partial after rejected pipe tail", result.response)
+	}
+	inspection, inspectErr := s.Inspect(context.Background(), h, scope, "pipe-cancel-tail")
+	if inspectErr != nil || !inspection.Cancelled || !inspection.ProcessTreeEvidence.Stopped || inspection.ProcessTreeEvidence.Process.Validate() != nil {
+		t.Fatalf("Inspect = %#v, %v, want stopped exact process proof", inspection, inspectErr)
 	}
 
 	mu.Lock()

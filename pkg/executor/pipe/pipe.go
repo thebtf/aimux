@@ -71,22 +71,33 @@ func (e *Executor) ProcessTreeEvidence(_ context.Context, id types.ExecutionID) 
 	return record.tree, nil
 }
 
-func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.ProcessHandle) {
+func (e *Executor) retainProcessEvidence(id types.ExecutionID, h *executor.ProcessHandle) error {
 	evidence := types.ProcessTreeEvidence{Process: types.ProcessIdentity{
 		PID: h.PID, StartFingerprint: fmt.Sprintf("%d", h.StartedAt.UnixNano()),
 		TreeID: fmt.Sprintf("pipe:%d:%d", h.PID, h.StartedAt.UnixNano()),
 	}}
 	e.evidenceMu.Lock()
-	if _, exists := e.evidence[id]; !exists {
-		e.evidenceOrder = append(e.evidenceOrder, id)
+	defer e.evidenceMu.Unlock()
+	if _, exists := e.evidence[id]; exists {
+		return fmt.Errorf("pipe: duplicate process evidence for execution %q", id)
 	}
+	for len(e.evidence) >= processEvidenceLimit {
+		evicted := false
+		for i, candidate := range e.evidenceOrder {
+			if record, ok := e.evidence[candidate]; ok && record.tree.Stopped {
+				delete(e.evidence, candidate)
+				e.evidenceOrder = append(e.evidenceOrder[:i], e.evidenceOrder[i+1:]...)
+				evicted = true
+				break
+			}
+		}
+		if !evicted {
+			return fmt.Errorf("pipe: process evidence capacity reached with live executions")
+		}
+	}
+	e.evidenceOrder = append(e.evidenceOrder, id)
 	e.evidence[id] = processEvidence{tree: evidence, handle: h}
-	for len(e.evidenceOrder) > processEvidenceLimit {
-		oldest := e.evidenceOrder[0]
-		e.evidenceOrder = e.evidenceOrder[1:]
-		delete(e.evidence, oldest)
-	}
-	e.evidenceMu.Unlock()
+	return nil
 }
 
 func (e *Executor) markProcessStopped(id types.ExecutionID) {
@@ -276,7 +287,14 @@ func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID
 		return nil, types.NewExecutorError("failed to start "+args.Command, err, "")
 	}
 	defer executor.SharedPM.Cleanup(h)
-	e.retainProcessEvidence(executionID, h)
+	if err := e.retainProcessEvidence(executionID, h); err != nil {
+		// Admission is after spawn; release the just-spawned owned tree before
+		// returning so a full live registry cannot leak a process.
+		h.MarkDrained()
+		executor.SharedPM.Kill(h)
+		executor.SharedPM.Cleanup(h)
+		return nil, err
+	}
 	defer e.markProcessStopped(executionID)
 
 	var ioGroup sync.WaitGroup
