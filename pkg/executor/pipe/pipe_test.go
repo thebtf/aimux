@@ -1,6 +1,7 @@
 package pipe_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,6 +15,49 @@ import (
 	"github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+const pipeNativeEventsHelperEnv = "AIMUX_PIPE_NATIVE_EVENTS_HELPER"
+
+func TestPipeNativeEventsHelper(t *testing.T) {
+	if os.Getenv(pipeNativeEventsHelperEnv) != "1" {
+		return
+	}
+	_, _ = os.Stdout.Write([]byte{0xce})
+	_, _ = os.Stdout.Write([]byte{0xb2, 0xff, 0x00})
+	_, _ = os.Stderr.Write([]byte{0x1b, 0xff})
+}
+
+func TestPipeExecutorSendEventsPreservesRawChannelBytes(t *testing.T) {
+	var events []types.ExecutorEvent
+	_, err := pipe.New().SendEvents(context.Background(), "raw", types.Message{Metadata: map[string]any{
+		"command": os.Args[0], "args": []string{"-test.run=^TestPipeNativeEventsHelper$", "-test.count=1"},
+		"env": map[string]string{pipeNativeEventsHelperEnv: "1"},
+	}}, func(event types.ExecutorEvent) { events = append(events, event) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr []byte
+	terminal := false
+	for _, event := range events {
+		switch event.Channel {
+		case "stdout":
+			stdout = append(stdout, event.Content...)
+		case "stderr":
+			stderr = append(stderr, event.Content...)
+		case "terminal":
+			terminal = event.Terminal
+		}
+	}
+	if !bytes.Contains(stdout, []byte{0xce, 0xb2, 0xff, 0x00}) {
+		t.Fatalf("stdout = %v", stdout)
+	}
+	if !bytes.Contains(stderr, []byte{0x1b, 0xff}) {
+		t.Fatalf("stderr = %v", stderr)
+	}
+	if !terminal {
+		t.Fatal("missing terminal event")
+	}
+}
 
 const (
 	pipeCancelPartialOutputHelperEnv     = "AIMUX_PIPE_CANCEL_PARTIAL_OUTPUT_HELPER"

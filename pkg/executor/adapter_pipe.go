@@ -9,6 +9,7 @@ import (
 
 // Compile-time assertion: CLIPipeAdapter must implement ExecutorV2.
 var _ types.ExecutorV2 = (*CLIPipeAdapter)(nil)
+var _ types.EventExecutor = (*CLIPipeAdapter)(nil)
 
 // CLIPipeAdapter wraps a legacy types.LegacyExecutor (typically *pipe.Executor) as
 // an ExecutorV2. It accepts the interface to avoid an import cycle:
@@ -140,6 +141,23 @@ func (a *CLIPipeAdapter) SendStream(ctx context.Context, msg types.Message, onCh
 		return nil, err
 	}
 	return resultToResponse(result), nil
+}
+
+// SendEvents preserves native byte/channel events when the wrapped executor
+// supports them. Legacy Run has only line-oriented text output, so its fallback
+// is explicitly labelled text-only rather than implying byte fidelity.
+func (a *CLIPipeAdapter) SendEvents(ctx context.Context, executionID types.ExecutionID, msg types.Message, emit func(types.ExecutorEvent)) (*types.Response, error) {
+	if native, ok := a.legacy.(types.EventExecutor); ok && a.session == nil {
+		return native.SendEvents(ctx, executionID, msg, emit)
+	}
+	resp, err := a.SendStream(ctx, msg, func(chunk types.Chunk) {
+		if chunk.Done {
+			return
+		}
+		emit(types.ExecutorEvent{Channel: "stdout", Type: "text-only", Content: []byte(chunk.Content)})
+	})
+	emit(types.ExecutorEvent{Channel: "terminal", Type: "terminal", Terminal: true})
+	return resp, err
 }
 
 // IsAlive returns HealthAlive when the adapter is session-bound and the session

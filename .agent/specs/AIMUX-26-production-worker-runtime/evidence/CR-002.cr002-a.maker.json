@@ -1,0 +1,40 @@
+{
+  "maker": "cr002-a-runtime-maker",
+  "base": "3ea1102f1ed9a4a4e2dc8de4f4e3dca7b85be9ae",
+  "cycles": [
+    {
+      "tasks": ["T001", "T002"],
+      "red": {
+        "command": "GOCACHE=D:\\tmp\\aimux-go-cache-cr002a-maker go test ./pkg/types -run TestExecutorEventJSONPreservesContentBytes -count=1",
+        "exit_code": 1,
+        "failure": "unknown field Content in types.ExecutorEvent"
+      },
+      "green": {
+        "command": "GOCACHE=D:\\tmp\\aimux-go-cache-cr002a-maker go test ./pkg/types ./pkg/swarm ./pkg/workerruntime ./pkg/executor ./pkg/executor/pipe -count=1",
+        "exit_code": 0
+      }
+    },
+    {
+      "tasks": ["T003", "T004", "T005", "T006", "T007", "T008", "T009"],
+      "red": {
+        "status": "NOT_RECORDED",
+        "reason": "implementation began before these additive tests were authored; do not accept this as TDD-complete evidence"
+      },
+      "green": {
+        "command": "GOCACHE=D:\\tmp\\aimux-go-cache-cr002a-maker go test -race ./pkg/types ./pkg/swarm ./pkg/workerruntime ./pkg/executor ./pkg/executor/pipe ./cmd/testcli -count=1",
+        "exit_code": 0
+      },
+      "prove_it": {
+        "status": "NOT_RECORDED",
+        "reason": "independent checker must run required mutation proofs"
+      }
+    }
+  ],
+  "verification": [
+    {"command": "go test ./... -count=1 -timeout 300s", "exit_code": 0},
+    {"command": "go build ./...", "exit_code": 0},
+    {"command": "go vet ./...", "exit_code": 0},
+    {"command": "git diff --check 3ea1102..HEAD", "exit_code": 0}
+  ],
+  "concern": "T003-T009 RED and Prove-It evidence is absent; finish state is review-needed."
+}

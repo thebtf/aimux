@@ -1,12 +1,38 @@
 package types_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+func TestExecutorEventJSONPreservesContentBytes(t *testing.T) {
+	cases := [][]byte{{0xce}, {0xb2}, {0xff}, {0x00, 0x1b}, {}}
+	for _, content := range cases {
+		want := types.ExecutorEvent{Channel: "stdout", Type: "output", Content: content}
+		encoded, err := json.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got types.ExecutorEvent
+		if err := json.Unmarshal(encoded, &got); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got.Content, want.Content) {
+			t.Fatalf("content = %v, want %v", got.Content, want.Content)
+		}
+	}
+	var old types.ExecutorEvent
+	if err := json.Unmarshal([]byte(`{"channel":"stderr","type":"output","terminal":false,"truncated":false}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.Content != nil {
+		t.Fatalf("old JSON content = %v, want nil", old.Content)
+	}
+}
 
 type fiveMethodExecutor struct{}
 

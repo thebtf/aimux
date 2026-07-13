@@ -54,6 +54,25 @@ type mockLegacyExecutor struct {
 	runCalls    int
 }
 
+type nativeLegacyExecutor struct{ mockLegacyExecutor }
+
+func (m *nativeLegacyExecutor) SendEvents(_ context.Context, _ types.ExecutionID, _ types.Message, emit func(types.ExecutorEvent)) (*types.Response, error) {
+	emit(types.ExecutorEvent{Channel: "stderr", Type: "output", Content: []byte{0xff}})
+	return &types.Response{Content: "native"}, nil
+}
+
+func TestCLIPipeAdapter_SendEventsDelegatesNativeBytes(t *testing.T) {
+	adapter := executor.NewCLIPipeAdapter(&nativeLegacyExecutor{})
+	var got types.ExecutorEvent
+	resp, err := adapter.SendEvents(context.Background(), "exec", types.Message{}, func(event types.ExecutorEvent) { got = event })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "native" || got.Channel != "stderr" || len(got.Content) != 1 || got.Content[0] != 0xff {
+		t.Fatalf("resp=%#v event=%#v", resp, got)
+	}
+}
+
 func (m *mockLegacyExecutor) Run(_ context.Context, args types.SpawnArgs) (*types.Result, error) {
 	m.runCalls++
 	for _, line := range m.outputLines {

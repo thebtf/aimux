@@ -27,6 +27,7 @@ const (
 
 // Compile-time assertion: *Executor must implement types.SessionFactory (T007 / FR-1).
 var _ types.SessionFactory = (*Executor)(nil)
+var _ types.EventExecutor = (*Executor)(nil)
 
 // Executor spawns CLI processes via stdin/stdout pipes.
 type Executor struct{}
@@ -179,6 +180,131 @@ func (e *Executor) Run(ctx context.Context, args types.SpawnArgs) (*types.Result
 			Error:      types.NewExecutorError("cancelled", ctx.Err(), content),
 		}, nil
 	}
+}
+
+// SendEvents streams raw bytes from both pipes. It deliberately does not use
+// IOManager: line framing would turn invalid or unterminated bytes into text.
+func (e *Executor) SendEvents(ctx context.Context, executionID types.ExecutionID, msg types.Message, emit func(types.ExecutorEvent)) (*types.Response, error) {
+	if err := executionID.Validate(); err != nil {
+		return nil, err
+	}
+	args := eventSpawnArgs(msg)
+	if args.TimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(args.TimeoutSeconds)*time.Second)
+		defer cancel()
+	}
+	cmd := exec.Command(args.Command, args.Args...)
+	cmd.Dir = args.CWD
+	if len(args.Env) > 0 {
+		cmd.Env = mergeEnv(args.Env)
+	}
+	var stdin io.WriteCloser
+	var err error
+	if args.Stdin != "" {
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return nil, types.NewExecutorError("failed to create stdin pipe", err, "")
+		}
+	}
+	h, err := executor.SharedPM.Spawn(cmd)
+	if err != nil {
+		return nil, types.NewExecutorError("failed to start "+args.Command, err, "")
+	}
+	defer executor.SharedPM.Cleanup(h)
+	h.ArmDrainWait()
+	defer h.MarkDrained()
+	if stdin != nil {
+		go func() { _, _ = io.WriteString(stdin, args.Stdin); _ = stdin.Close() }()
+	}
+	var stdout, stderr bytes.Buffer
+	var emitMu sync.Mutex
+	emitEvent := func(event types.ExecutorEvent) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		emit(event)
+	}
+	var drains sync.WaitGroup
+	drain := func(channel string, reader io.Reader, dst *bytes.Buffer) {
+		defer drains.Done()
+		buf := make([]byte, 32<<10)
+		for {
+			n, readErr := reader.Read(buf)
+			if n > 0 {
+				chunk := append([]byte(nil), buf[:n]...)
+				_, _ = dst.Write(chunk)
+				emitEvent(types.ExecutorEvent{Channel: channel, Type: "output", Content: chunk})
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}
+	drains.Add(2)
+	go drain("stdout", h.Stdout, &stdout)
+	go drain("stderr", h.Stderr, &stderr)
+	var waitErr error
+	select {
+	case waitErr = <-h.Done:
+	case <-ctx.Done():
+		executor.SharedPM.Kill(h)
+		waitErr = ctx.Err()
+	}
+	drains.Wait()
+	resp := &types.Response{Content: stdout.String()}
+	if waitErr != nil {
+		resp.ExitCode = 1
+	}
+	emitEvent(types.ExecutorEvent{Channel: "terminal", Type: "terminal", Terminal: true})
+	if ctx.Err() != nil {
+		return resp, nil
+	}
+	if waitErr != nil {
+		return resp, waitErr
+	}
+	_ = stderr // stderr is represented only by byte events on this native path.
+	return resp, nil
+}
+
+func eventSpawnArgs(msg types.Message) types.SpawnArgs {
+	args := types.SpawnArgs{Stdin: msg.Content}
+	if msg.Metadata == nil {
+		return args
+	}
+	if value, ok := msg.Metadata["command"].(string); ok {
+		args.Command = value
+	}
+	switch value := msg.Metadata["args"].(type) {
+	case []string:
+		args.Args = value
+	case []any:
+		for _, item := range value {
+			if arg, ok := item.(string); ok {
+				args.Args = append(args.Args, arg)
+			}
+		}
+	}
+	if value, ok := msg.Metadata["stdin"].(string); ok {
+		args.Stdin = value
+	}
+	if value, ok := msg.Metadata["cwd"].(string); ok {
+		args.CWD = value
+	}
+	if value, ok := msg.Metadata["timeout"].(int); ok {
+		args.TimeoutSeconds = value
+	}
+	switch value := msg.Metadata["env"].(type) {
+	case map[string]string:
+		args.Env = value
+	case map[string]any:
+		args.Env = make(map[string]string, len(value))
+		for key, item := range value {
+			if stringValue, ok := item.(string); ok {
+				args.Env[key] = stringValue
+			}
+		}
+	}
+	return args
 }
 
 // sessionPM is the package-level ProcessManager for persistent sessions.

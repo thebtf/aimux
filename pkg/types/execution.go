@@ -18,6 +18,7 @@ func (id ExecutionID) Validate() error {
 type ExecutorEvent struct {
 	Channel   string `json:"channel"`
 	Type      string `json:"type"`
+	Content   []byte `json:"content,omitempty"`
 	Terminal  bool   `json:"terminal"`
 	Truncated bool   `json:"truncated"`
 }

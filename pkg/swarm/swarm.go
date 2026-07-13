@@ -179,6 +179,10 @@ type Swarm struct {
 	registry map[string][]*Handle // keyed by registryKey(tenantID, scope, name)
 	nextID   uint64
 
+	executionMu sync.Mutex
+	executions  map[string]*executionRecord
+	active      map[string]types.ExecutionID
+
 	// keyLocks holds a *sync.Mutex per registry key (DEF-8 / FR-2).
 	// Per-key locking allows concurrent Gets on distinct keys to run their
 	// factoryFn in parallel while still serialising same-key Gets to prevent
@@ -251,6 +255,8 @@ func NewWithContextFactory(factoryFn func(context.Context, string) (types.Execut
 		factoryFn:   factoryFn,
 		auditLog:    al,
 		registry:    make(map[string][]*Handle),
+		executions:  make(map[string]*executionRecord),
+		active:      make(map[string]types.ExecutionID),
 		statefulTTL: defaultStatefulTTL,
 		reaperStop:  make(chan struct{}),
 	}
