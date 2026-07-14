@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.24.1] — 2026-07-14 — muxcore v0.27.1 handoff adaptation
+
+### Changed
+
+- **Muxcore dependency.** Upgraded `github.com/thebtf/mcp-mux/muxcore` from `v0.26.13` to released `v0.27.1` (`5f0ebb3c6c51cd6345b21bdf8ef0d0b21dc89338`).
+- **Protocol-v2 successor handoff.** Updated Aimux's direct handoff fixture and relay cleanup for the required stderr and Windows authority handles while preserving the existing active-engine pointer and `RestartWithSuccessor` topology.
+- **Artifact vulnerability gate.** Updated the release toolchain to Go `1.25.12` and changed the hard release scan to inspect the built Aimux binary; the source scan remains a soft dependency-hygiene signal.
+
+### Fixed
+
+- **Complete handoff resource cleanup.** Successor bootstrap now closes stdin, stdout, stderr, and authority handles once per unique numeric value across the full upstream set, while ignoring zero and invalid-handle sentinels.
+- **Cross-upstream alias safety.** Added regression coverage for duplicate handles spanning multiple upstream records so cleanup cannot close the same operating-system handle twice.
+- **Shipped gRPC vulnerability.** Raised `google.golang.org/grpc` to `v1.79.3`, which fixes `GO-2026-4762` in the binary release path.
+
+### Compatibility
+
+- The stateful daemon and per-host shim remain persistent and always connected; no idle/dormant fields or private lifecycle frames are enabled. Reusable stdio-retaining supervisor work remains blocked on provider issue `mcp-mux#140`.
+
 ## [5.24.0] — 2026-07-07 — AIMUX-9 review entry facade
 
 ### Added

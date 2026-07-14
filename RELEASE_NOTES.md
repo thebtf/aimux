@@ -1,3 +1,32 @@
+## v5.24.1 — muxcore v0.27.1 handoff adaptation
+
+This PATCH release adopts the released muxcore `v0.27.1` protocol-v2 handoff contract without changing Aimux's persistent daemon/shim lifecycle policy.
+
+### Highlights
+
+- Upgraded `github.com/thebtf/mcp-mux/muxcore` from `v0.26.13` to `v0.27.1` (`5f0ebb3c6c51cd6345b21bdf8ef0d0b21dc89338`).
+- Carried stderr and Windows authority handles through the direct successor-handoff fixture.
+- Closed every relayed stdin/stdout/stderr/authority handle once per unique value across the complete upstream set.
+- Ignored both zero and `INVALID_HANDLE_VALUE` sentinels during cleanup.
+- Updated the release toolchain to Go `1.25.12` and `google.golang.org/grpc` to `v1.79.3`; the hard vulnerability gate now scans the built release binary.
+
+### Compatibility
+
+The stateful Aimux daemon and per-host stdio shim remain `Persistent: true`. `OnInject`, tenant/session authorization, the active-engine pointer, and `RestartWithSuccessor` remain on their existing paths. No private dormant frame or second updater was added.
+
+Provider issue [mcp-mux#140](https://github.com/thebtf/mcp-mux/issues/140) remains the stopline for a reusable stdio-retaining supervisor, capability negotiation, and exact park/wake behavior. This release therefore does not claim that abandoned host pipes converge to zero shim processes.
+
+### Review and verification
+
+- PR [#196](https://github.com/thebtf/aimux/pull/196) merged into `master` after CodeRabbit approval, a resolved invalid-handle review finding, and green cross-platform CI.
+- Local build, vet, full-suite, critical-suite, stall-detection, deterministic product-gate, Loom-module, active-pointer successor, and customer-mode stdio checks passed on the release candidate.
+- Clean-cache module verification passed.
+- Artifact-mode `govulncheck` passes on the built Aimux binary. The soft source scan still reports `GO-2026-5932` because `go-selfupdate` compiles optional legacy OpenPGP support, but those symbols are not linked into the shipped Aimux binary.
+
+### Upgrade
+
+Existing installations can use the public `upgrade(action="apply")` path after the GitHub release workflow publishes the archives and `checksums.txt`.
+
 ## v5.24.0 — AIMUX-9 review entry facade
 
 This MINOR release ships AIMUX-9 CR-006 as the first dedicated methodology-bearing public entry after the Layer 5 purge. Aimux now exposes a literal `review` MCP tool for standard and gate-oriented code review while keeping the same task/Loom/runtime-events evidence plane underneath.
