@@ -369,6 +369,9 @@ func (s *Swarm) resolveCancellation(record *executionRecord, reason string) {
 			evidence, cancelErr = native.evidence, native.err
 			if evidence.ExecutionID == "" {
 				evidence.ExecutionID = record.id
+			} else if evidence.ExecutionID != record.id {
+				evidence = types.CancellationEvidence{ExecutionID: record.id}
+				cancelErr = types.NewValidationError("native cancellation execution ID must match requested execution ID")
 			}
 		}
 		select {

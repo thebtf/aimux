@@ -28,7 +28,7 @@ func (envelope ExecutionEnvelope) Validate() error {
 		}
 	}
 
-	if envelope.ProcessTree.Process != (types.ProcessIdentity{}) || envelope.ProcessTree.Stopped {
+	if envelope.ProcessTree.Process != (types.ProcessIdentity{}) || envelope.ProcessTree.OwnershipBoundary != "" || envelope.ProcessTree.Stopped {
 		if err := envelope.ProcessTree.Validate(); err != nil {
 			return err
 		}

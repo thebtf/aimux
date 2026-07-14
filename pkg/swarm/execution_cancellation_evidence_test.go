@@ -99,6 +99,110 @@ func TestSwarmRepeatedCancelAfterExecutionReturnWaitsForNativeFlight(t *testing.
 	}
 }
 
+type mismatchedNativeCancellationExecutor struct {
+	started chan struct{}
+	ready   chan types.ProcessTreeEvidence
+	stopped bool
+}
+
+func (*mismatchedNativeCancellationExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
+func (*mismatchedNativeCancellationExecutor) Send(context.Context, types.Message) (*types.Response, error) {
+	return &types.Response{}, nil
+}
+func (*mismatchedNativeCancellationExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
+	return &types.Response{}, nil
+}
+func (*mismatchedNativeCancellationExecutor) IsAlive() types.HealthStatus { return types.HealthAlive }
+func (*mismatchedNativeCancellationExecutor) Close() error                { return nil }
+func (e *mismatchedNativeCancellationExecutor) SendEvents(ctx context.Context, _ types.ExecutionID, _ types.Message, _ types.ExecutorEventSink) (*types.Response, error) {
+	close(e.started)
+	<-ctx.Done()
+	e.ready <- types.ProcessTreeEvidence{
+		Process: types.ProcessIdentity{
+			PID:              19,
+			StartFingerprint: "mismatched-generation",
+			TreeID:           "mismatched-tree",
+		},
+		OwnershipBoundary: types.ProcessOwnershipBoundaryProcessGroup,
+		Stopped:           e.stopped,
+	}
+	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
+}
+func (*mismatchedNativeCancellationExecutor) CancelExecution(context.Context, types.ExecutionID, string) (types.CancellationEvidence, error) {
+	return types.CancellationEvidence{ExecutionID: "wrong-execution", NativeAcknowledged: true}, nil
+}
+func (*mismatchedNativeCancellationExecutor) HoldProcessEvidence(types.ExecutionID) bool { return true }
+func (e *mismatchedNativeCancellationExecutor) ProcessEvidenceReady(types.ExecutionID) <-chan types.ProcessTreeEvidence {
+	return e.ready
+}
+func (*mismatchedNativeCancellationExecutor) ReleaseProcessEvidence(types.ExecutionID) {}
+
+func TestSwarmMismatchedNativeCancellationEvidenceFailsClosed(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		stopped       bool
+		wantTerminal  string
+		wantCancelled bool
+	}{
+		{name: "without independent process proof", wantTerminal: "failed"},
+		{name: "with independent process proof", stopped: true, wantTerminal: "cancelled", wantCancelled: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &mismatchedNativeCancellationExecutor{
+				started: make(chan struct{}),
+				ready:   make(chan types.ProcessTreeEvidence, 1),
+				stopped: tt.stopped,
+			}
+			s := swarm.New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+			h, err := s.Get(context.Background(), "mismatched-native", swarm.Stateful, swarm.WithScope("scope"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			const id = types.ExecutionID("canonical-execution")
+			terminal := make(chan types.ExecutorEvent, 1)
+			runDone := make(chan error, 1)
+			go func() {
+				_, err := s.Execute(context.Background(), h, "scope", id, types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+					if event.Terminal {
+						terminal <- event
+					}
+					return true
+				}))
+				runDone <- err
+			}()
+			<-exec.started
+
+			wantEvidence := types.CancellationEvidence{ExecutionID: id}
+			firstEvidence, firstErr := s.Cancel(context.Background(), h, "scope", id, "first")
+			if firstEvidence != wantEvidence || !types.IsTypedError(firstErr, types.ErrorTypeValidation) {
+				t.Fatalf("first Cancel = %#v, %v; want %#v and typed correlation error", firstEvidence, firstErr, wantEvidence)
+			}
+			repeatedEvidence, repeatedErr := s.Cancel(context.Background(), h, "scope", id, "repeat")
+			if repeatedEvidence != wantEvidence || !types.IsTypedError(repeatedErr, types.ErrorTypeValidation) {
+				t.Fatalf("repeated Cancel = %#v, %v; want %#v and typed correlation error", repeatedEvidence, repeatedErr, wantEvidence)
+			}
+			if err := <-runDone; err != nil {
+				t.Fatal(err)
+			}
+			if got := <-terminal; got.Type != tt.wantTerminal {
+				t.Fatalf("terminal = %#v; want type %q", got, tt.wantTerminal)
+			}
+
+			firstInspection, err := s.Inspect(context.Background(), h, "scope", id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondInspection, err := s.Inspect(context.Background(), h, "scope", id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if firstInspection != secondInspection || firstInspection.CancellationEvidence != wantEvidence || firstInspection.Cancelled != tt.wantCancelled {
+				t.Fatalf("Inspect changed or retained mismatched evidence: first=%#v second=%#v", firstInspection, secondInspection)
+			}
+		})
+	}
+}
+
 type treeEvidenceExecutor struct {
 	started, returned chan struct{}
 	evidenceGate      <-chan struct{}

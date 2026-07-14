@@ -145,6 +145,18 @@ func TestExecutionEnvelopeRejectsPartialOptionalEvidence(t *testing.T) {
 			},
 		},
 		{
+			name: "process_boundary_without_identity",
+			apply: func(envelope *ExecutionEnvelope) {
+				envelope.ProcessTree.OwnershipBoundary = types.ProcessOwnershipBoundaryProcessGroup
+			},
+		},
+		{
+			name: "unknown_process_boundary_without_identity",
+			apply: func(envelope *ExecutionEnvelope) {
+				envelope.ProcessTree.OwnershipBoundary = types.ProcessOwnershipBoundary("unknown")
+			},
+		},
+		{
 			name: "session_zero_generation",
 			apply: func(envelope *ExecutionEnvelope) {
 				envelope.Session = types.SessionIdentity{
