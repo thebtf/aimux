@@ -25,7 +25,7 @@ Provider issue [mcp-mux#140](https://github.com/thebtf/mcp-mux/issues/140) remai
 
 ### Upgrade
 
-Existing installations can use the public `upgrade(action="apply")` path after the GitHub release workflow publishes the archives and `checksums.txt`.
+Authorized operators can use the public `upgrade(action="apply")` path after the GitHub release workflow publishes the archives and `checksums.txt`. Supported modes are `auto`, `hot_swap`, and `deferred`; the current muxcore `SessionHandler` topology reports truthful deferred fallback when live handoff is unavailable.
 
 ## v5.24.0 — AIMUX-9 review entry facade
 
