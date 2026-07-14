@@ -68,10 +68,10 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
 
       - name: Build vulnerability-scan artifact
-        run: go build -o ./aimux-vuln-scan ./cmd/aimux
+        run: go build -o "$RUNNER_TEMP/aimux-vuln-scan" ./cmd/aimux
 
       - name: Vulnerability scan
-        run: $(go env GOPATH)/bin/govulncheck -mode=binary ./aimux-vuln-scan
+        run: $(go env GOPATH)/bin/govulncheck -mode=binary "$RUNNER_TEMP/aimux-vuln-scan"
 
       - uses: goreleaser/goreleaser-action@v7
         with:
