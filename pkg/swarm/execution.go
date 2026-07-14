@@ -233,9 +233,6 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 				record.markPreSpawnCancellation(err)
 			} else {
 				response, err = ownedLease.SendEventsWithProcessEvidenceLease(execCtx, id, lease, msg, admission)
-				if errors.Is(err, context.Canceled) {
-					record.markPreSpawnCancellation(err)
-				}
 			}
 		} else {
 			response, err = native.SendEvents(execCtx, id, msg, admission)
@@ -247,10 +244,15 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 			}
 		})
 	}
+	providerContextErr := execCtx.Err()
+	if ownedLease != nil && errors.Is(err, context.Canceled) && providerContextErr != nil {
+		record.markPreSpawnCancellation(providerContextErr)
+	}
+	cancellationObservedAtReturn := providerContextErr != nil
 	if s.beforeOutcomeCapture != nil {
 		s.beforeOutcomeCapture()
 	}
-	record.markExecutionReturned(response, err)
+	record.markExecutionReturned(response, err, cancellationObservedAtReturn)
 	record.captureProcessEvidence(evidenceReady)
 	if s.postExecutorReturn != nil {
 		s.postExecutorReturn()
@@ -583,10 +585,10 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 	return record.admitted
 }
 
-func (record *executionRecord) markExecutionReturned(response *types.Response, runErr error) {
+func (record *executionRecord) markExecutionReturned(response *types.Response, runErr error, cancellationObservedAtReturn bool) {
 	record.mu.Lock()
 	if !record.executionReturned {
-		record.outcome = classifyExecutionOutcome(response, runErr, record.cancelDone != nil)
+		record.outcome = classifyExecutionOutcome(response, runErr, cancellationObservedAtReturn)
 		record.executionReturned = true
 		close(record.executionDone)
 	}

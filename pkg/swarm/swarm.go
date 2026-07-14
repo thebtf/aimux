@@ -206,7 +206,8 @@ type Swarm struct {
 	nativeCancellationGate chan struct{}
 
 	// beforeOutcomeCapture and postExecutorReturn are package-private
-	// deterministic test seams around immutable outcome publication.
+	// deterministic seams around immutable outcome publication. The former runs
+	// after the provider-return context snapshot, so tests cannot rewrite cause.
 	beforeOutcomeCapture func()
 	postExecutorReturn   func()
 
@@ -283,15 +284,15 @@ func NewWithContextFactory(factoryFn func(context.Context, string) (types.Execut
 		al = audit.DiscardLog{}
 	}
 	s := &Swarm{
-		factoryFn:   factoryFn,
-		auditLog:    al,
-		registry:    make(map[string][]*Handle),
-		executions:  make(map[executionKey]*executionRecord),
-		active:      make(map[*Handle]*executionRecord),
-		live:        make(map[*Handle]handleAuthority),
-		statefulTTL: defaultStatefulTTL,
+		factoryFn:              factoryFn,
+		auditLog:               al,
+		registry:               make(map[string][]*Handle),
+		executions:             make(map[executionKey]*executionRecord),
+		active:                 make(map[*Handle]*executionRecord),
+		live:                   make(map[*Handle]handleAuthority),
+		statefulTTL:            defaultStatefulTTL,
 		nativeCancellationGate: make(chan struct{}, defaultNativeCancellationCapacity),
-		reaperStop:  make(chan struct{}),
+		reaperStop:             make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)

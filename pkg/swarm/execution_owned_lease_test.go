@@ -12,8 +12,10 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-const ownedLeaseHelperEnv = "AIMUX_SWARM_OWNED_LEASE_HELPER"
-const ownedLeaseFileEnv = "AIMUX_SWARM_OWNED_LEASE_FILE"
+const (
+	ownedLeaseHelperEnv = "AIMUX_SWARM_OWNED_LEASE_HELPER"
+	ownedLeaseFileEnv   = "AIMUX_SWARM_OWNED_LEASE_FILE"
+)
 
 type cancellationSignalPipeExecutor struct {
 	*aimexecutor.CLIPipeAdapter
@@ -24,6 +26,31 @@ func (e *cancellationSignalPipeExecutor) CancelExecution(_ context.Context, id t
 	close(e.cancelStarted)
 	return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, nil
 }
+
+type providerCanceledOwnedLeaseExecutor struct{}
+
+func (*providerCanceledOwnedLeaseExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
+func (*providerCanceledOwnedLeaseExecutor) Send(context.Context, types.Message) (*types.Response, error) {
+	return &types.Response{ExitCode: 1}, context.Canceled
+}
+
+func (*providerCanceledOwnedLeaseExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
+	return &types.Response{ExitCode: 1}, context.Canceled
+}
+
+func (*providerCanceledOwnedLeaseExecutor) SendEvents(context.Context, types.ExecutionID, types.Message, types.ExecutorEventSink) (*types.Response, error) {
+	return &types.Response{ExitCode: 1}, context.Canceled
+}
+func (*providerCanceledOwnedLeaseExecutor) IsAlive() types.HealthStatus { return types.HealthAlive }
+func (*providerCanceledOwnedLeaseExecutor) Close() error                { return nil }
+func (*providerCanceledOwnedLeaseExecutor) AcquireProcessEvidenceLease(types.ExecutionID) (any, <-chan types.ProcessTreeEvidence, bool) {
+	return struct{}{}, nil, true
+}
+
+func (*providerCanceledOwnedLeaseExecutor) SendEventsWithProcessEvidenceLease(context.Context, types.ExecutionID, any, types.Message, types.ExecutorEventSink) (*types.Response, error) {
+	return &types.Response{ExitCode: 1}, context.Canceled
+}
+func (*providerCanceledOwnedLeaseExecutor) ReleaseProcessEvidenceLease(types.ExecutionID, any) {}
 
 func TestSwarmOwnedLeaseHelper(t *testing.T) {
 	if os.Getenv(ownedLeaseHelperEnv) != "1" {
@@ -121,6 +148,32 @@ func TestSwarmAlreadyCancelledOwnedLeaseDoesNotStartHelper(t *testing.T) {
 		t.Fatal("already-cancelled Execute did not reclaim lease capacity")
 	} else {
 		pipe.ReleaseProcessEvidenceLease("already-cancelled", lease)
+	}
+}
+
+func TestSwarmOwnedLeaseProviderCanceledErrorWithoutContextCancellationFails(t *testing.T) {
+	exec := &providerCanceledOwnedLeaseExecutor{}
+	s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	h, err := s.Get(context.Background(), "provider-canceled", Stateful, WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := make(chan types.ExecutorEvent, 1)
+	_, runErr := s.Execute(context.Background(), h, "scope", "provider-canceled", types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+		if event.Terminal {
+			terminal <- event
+		}
+		return true
+	}))
+	if !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("Execute = %v, want provider context.Canceled", runErr)
+	}
+	if event := <-terminal; event.Type != "failed" {
+		t.Fatalf("terminal = %#v, want failed", event)
+	}
+	inspection, err := s.Inspect(context.Background(), h, "scope", "provider-canceled")
+	if err != nil || !inspection.Terminal || inspection.Cancelled || inspection.CancellationEvidence != (types.CancellationEvidence{}) {
+		t.Fatalf("Inspect = %#v, %v", inspection, err)
 	}
 }
 
