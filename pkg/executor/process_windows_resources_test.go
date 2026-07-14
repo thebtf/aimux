@@ -129,7 +129,7 @@ func TestProcessTreeTerminateRequiresObservedJobCompletion(t *testing.T) {
 					return nil
 				},
 			}}
-			if got := (&ProcessHandle{processTree: tree}).TreeOwnershipBoundary(); got != types.ProcessOwnershipBoundaryJobObject {
+			if got := tree.ownershipBoundary(); got != types.ProcessOwnershipBoundaryJobObject {
 				t.Fatalf("ownership boundary = %q, want %q", got, types.ProcessOwnershipBoundaryJobObject)
 			}
 			if got := tree.terminate(); got != test.want || tree.stopped() != test.want {

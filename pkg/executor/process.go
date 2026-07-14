@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/thebtf/aimux/pkg/types"
 )
 
 const preExitDrainTimeout = 2 * time.Second
@@ -190,14 +188,6 @@ func (pm *ProcessManager) IsAlive(h *ProcessHandle) bool {
 // for h. It does not claim that descendants which left that boundary exited.
 func (h *ProcessHandle) TreeStopped() bool {
 	return h != nil && h.processTree != nil && h.processTree.stopped()
-}
-
-// TreeOwnershipBoundary reports the OS primitive actually created for h.
-func (h *ProcessHandle) TreeOwnershipBoundary() types.ProcessOwnershipBoundary {
-	if h == nil || h.processTree == nil {
-		return ""
-	}
-	return h.processTree.ownershipBoundary()
 }
 
 // MarkExited atomically marks the handle as exited. Used by external

@@ -190,7 +190,7 @@ func (e *Executor) commitProcessEvidenceReservation(id types.ExecutionID, h *exe
 			PID: h.PID, StartFingerprint: fmt.Sprintf("%d", h.StartedAt.UnixNano()),
 			TreeID: fmt.Sprintf("pipe:%d:%d", h.PID, h.StartedAt.UnixNano()),
 		},
-		OwnershipBoundary: h.TreeOwnershipBoundary(),
+		OwnershipBoundary: processOwnershipBoundary(),
 	}
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
