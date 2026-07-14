@@ -172,11 +172,14 @@ func TestProcessEvidenceLeaseCancelBetweenCheckAndSpawnClosesFutureAndReusesCapa
 	}
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	_, stdin, err := os.Pipe()
+	reader, stdin, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = stdin.Close() })
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = stdin.Close()
+	})
 	e.stdinPipe = func(*exec.Cmd) (io.WriteCloser, error) {
 		close(entered) // proves the manual context check already passed.
 		<-release
