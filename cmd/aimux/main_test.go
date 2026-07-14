@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -188,7 +189,6 @@ func TestDetectMode_DaemonFlagExactMatch(t *testing.T) {
 	if gotLegacy != ModeDaemon {
 		t.Errorf("legacy daemon flag: mode = %d, want ModeDaemon (%d)", gotLegacy, ModeDaemon)
 	}
-
 }
 
 // TestDetectMode_DirectUpstreamRejected verifies that AIMUX_DIRECT_UPSTREAM=1
@@ -512,6 +512,20 @@ func TestBootstrapSuccessorHandoff_RelaysIntoMuxcoreRestorePath(t *testing.T) {
 	defer stdoutR.Close()
 	defer stdoutW.Close()
 
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	defer stderrR.Close()
+	defer stderrW.Close()
+
+	authorityFD := uintptr(0)
+	if runtime.GOOS == "windows" {
+		// This test exercises handle relay, not Job-object semantics. Any valid
+		// transferable handle is sufficient for muxcore's Windows v2 slot.
+		authorityFD = stderrR.Fd()
+	}
+
 	predecessorListener, predecessorSocket, err := listenPlatformHandoffRelay()
 	if err != nil {
 		t.Fatalf("listen predecessor socket: %v", err)
@@ -531,11 +545,13 @@ func TestBootstrapSuccessorHandoff_RelaysIntoMuxcoreRestorePath(t *testing.T) {
 		}
 		defer conn.Close()
 		_, performErr := muxdaemon.PerformHandoff(context.Background(), conn, token, []muxdaemon.HandoffUpstream{{
-			ServerID: sid,
-			Command:  "echo",
-			PID:      os.Getpid(),
-			StdinFD:  stdinR.Fd(),
-			StdoutFD: stdoutW.Fd(),
+			ServerID:    sid,
+			Command:     "echo",
+			PID:         os.Getpid(),
+			StdinFD:     stdinR.Fd(),
+			StdoutFD:    stdoutW.Fd(),
+			StderrFD:    stderrR.Fd(),
+			AuthorityFD: authorityFD,
 		}})
 		senderDone <- performErr
 	}()
@@ -579,11 +595,13 @@ func TestBootstrapSuccessorHandoff_RelaysIntoMuxcoreRestorePath(t *testing.T) {
 	if received[0].ServerID != sid {
 		t.Fatalf("server id = %q, want %q", received[0].ServerID, sid)
 	}
-	if received[0].StdinFD == 0 || received[0].StdoutFD == 0 {
-		t.Fatalf("received invalid FDs: stdin=%d stdout=%d", received[0].StdinFD, received[0].StdoutFD)
+	if received[0].StdinFD == 0 || received[0].StdoutFD == 0 || received[0].StderrFD == 0 {
+		t.Fatalf("received invalid stdio handles: stdin=%d stdout=%d stderr=%d", received[0].StdinFD, received[0].StdoutFD, received[0].StderrFD)
 	}
-	_ = os.NewFile(received[0].StdinFD, "").Close()
-	_ = os.NewFile(received[0].StdoutFD, "").Close()
+	if runtime.GOOS == "windows" && received[0].AuthorityFD == 0 {
+		t.Fatal("received invalid Windows authority handle")
+	}
+	closeHandoffUpstreams(received)
 
 	select {
 	case err := <-senderDone:
@@ -592,6 +610,30 @@ func TestBootstrapSuccessorHandoff_RelaysIntoMuxcoreRestorePath(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("predecessor PerformHandoff() did not finish")
+	}
+}
+
+func TestCloseHandoffHandlesClosesDuplicateValuesOnce(t *testing.T) {
+	t.Parallel()
+
+	upstreams := []muxdaemon.HandoffUpstream{
+		{StdinFD: 11, StdoutFD: 12, StderrFD: 13, AuthorityFD: 14},
+		{StdinFD: 11, StdoutFD: 15, StderrFD: 13, AuthorityFD: 16},
+		{StdoutFD: 16, StderrFD: 17, AuthorityFD: 14},
+	}
+	closed := make(map[uintptr]int)
+	closeHandoffHandles(upstreams, func(handle uintptr) {
+		closed[handle]++
+	})
+
+	want := []uintptr{11, 12, 13, 14, 15, 16, 17}
+	if len(closed) != len(want) {
+		t.Fatalf("closed %d unique handles, want %d: %v", len(closed), len(want), closed)
+	}
+	for _, handle := range want {
+		if closed[handle] != 1 {
+			t.Errorf("handle %d closed %d times, want once", handle, closed[handle])
+		}
 	}
 }
 

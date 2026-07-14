@@ -564,12 +564,31 @@ func writeSuccessorHandoffTokenFile(token string) (string, error) {
 }
 
 func closeHandoffUpstreams(upstreams []muxdaemon.HandoffUpstream) {
-	for _, upstream := range upstreams {
-		if upstream.StdinFD > 0 {
-			_ = os.NewFile(upstream.StdinFD, "").Close()
+	closeHandoffHandles(upstreams, func(handle uintptr) {
+		if file := os.NewFile(handle, ""); file != nil {
+			_ = file.Close()
 		}
-		if upstream.StdoutFD > 0 {
-			_ = os.NewFile(upstream.StdoutFD, "").Close()
+	})
+}
+
+func closeHandoffHandles(upstreams []muxdaemon.HandoffUpstream, closeHandle func(uintptr)) {
+	seen := make(map[uintptr]struct{}, len(upstreams)*4)
+	for _, upstream := range upstreams {
+		handles := [...]uintptr{
+			upstream.StdinFD,
+			upstream.StdoutFD,
+			upstream.StderrFD,
+			upstream.AuthorityFD,
+		}
+		for _, handle := range handles {
+			if handle == 0 {
+				continue
+			}
+			if _, duplicate := seen[handle]; duplicate {
+				continue
+			}
+			seen[handle] = struct{}{}
+			closeHandle(handle)
 		}
 	}
 }
