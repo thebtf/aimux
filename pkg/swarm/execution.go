@@ -19,8 +19,9 @@ var (
 const maxTerminalExecutions = 256
 
 // cancellationResolutionTimeout bounds cancellation resolution for optional
-// native cancellers that honor their context contract.
-const cancellationResolutionTimeout = 10 * time.Second
+// native cancellers, including implementations that ignore their context.
+// Tests shorten it through this package-private seam.
+var cancellationResolutionTimeout = 5 * time.Second
 
 // processEvidenceCaptureTimeout bounds a private exact-evidence lease. Tests
 // shorten it through this package-private seam. Generic inspection providers
@@ -338,9 +339,29 @@ func (record *executionRecord) resolveCancellation(reason string) {
 	evidence := types.CancellationEvidence{ExecutionID: record.id}
 	var cancelErr error
 	if canceller, ok := record.executor.(types.ExecutionCanceller); ok {
-		evidence, cancelErr = canceller.CancelExecution(ctx, record.id, reason)
-		if evidence.ExecutionID == "" {
-			evidence.ExecutionID = record.id
+		type nativeResult struct {
+			evidence   types.CancellationEvidence
+			err        error
+			returnedAt time.Time
+		}
+		result := make(chan nativeResult, 1)
+		go func() {
+			nativeEvidence, err := canceller.CancelExecution(ctx, record.id, reason)
+			result <- nativeResult{evidence: nativeEvidence, err: err, returnedAt: time.Now()}
+		}()
+		deadline, _ := ctx.Deadline()
+		select {
+		case native := <-result:
+			if native.returnedAt.After(deadline) {
+				cancelErr = context.DeadlineExceeded
+			} else {
+				evidence, cancelErr = native.evidence, native.err
+				if evidence.ExecutionID == "" {
+					evidence.ExecutionID = record.id
+				}
+			}
+		case <-ctx.Done():
+			cancelErr = ctx.Err()
 		}
 	}
 	if _, ok := record.executor.(types.ProcessEvidenceProvider); ok {
@@ -437,10 +458,7 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 	done := record.cancelDone
 	record.mu.Unlock()
 	if done != nil {
-		select {
-		case <-done:
-		case <-time.After(cancellationResolutionTimeout):
-		}
+		<-done
 	}
 	record.mu.Lock()
 	defer record.mu.Unlock()
@@ -451,7 +469,8 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 		record.truncated = true
 	}
 	eventType := "completed"
-	cancellationProven := record.cancellation.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped || record.preSpawnCancelled
+	processCancellationProven := record.hasProcessEvidence && record.processEvidence.Stopped && record.processEvidence.Validate() == nil
+	cancellationProven := record.cancellation.NativeAcknowledged || processCancellationProven || record.preSpawnCancelled
 	if record.outcome == executionOutcomeCancelled && cancellationProven {
 		eventType = "cancelled"
 	} else if response != nil && response.Error != nil && response.Error.Type == types.ErrorTypeTimeout {
@@ -502,7 +521,7 @@ func (record *executionRecord) captureProcessEvidence(ready <-chan types.Process
 		return
 	}
 	accept := func(evidence types.ProcessTreeEvidence, ok bool) {
-		if !ok || evidence.Process.Validate() != nil {
+		if !ok || evidence.Validate() != nil {
 			return
 		}
 		record.mu.Lock()
@@ -546,7 +565,7 @@ func classifyExecutionOutcome(response *types.Response, runErr error, cancellati
 }
 
 func executionSucceeded(response *types.Response, runErr error) bool {
-	return runErr == nil && response != nil && response.Error == nil && response.ExitCode == 0
+	return runErr == nil && (response == nil || response.Error == nil && response.ExitCode == 0)
 }
 
 func (record *executionRecord) wasTruncated() bool {

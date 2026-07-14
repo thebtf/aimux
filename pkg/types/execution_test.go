@@ -221,6 +221,40 @@ func TestEvidenceWrappersRejectInvalidAffirmativeEvidence(t *testing.T) {
 	}
 }
 
+func TestProcessTreeEvidenceRequiresExplicitOwnershipBoundary(t *testing.T) {
+	evidence := types.ProcessTreeEvidence{
+		Process: types.ProcessIdentity{PID: 4242, StartFingerprint: "start-17", TreeID: "tree-17"},
+		Stopped: true,
+	}
+	if err := evidence.Validate(); err == nil {
+		t.Fatal("confirmed process evidence without an ownership boundary validated")
+	}
+	payload, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["ownership_boundary"]; !ok {
+		t.Fatalf("process evidence JSON omitted ownership_boundary: %s", payload)
+	}
+	for _, boundary := range []types.ProcessOwnershipBoundary{
+		types.ProcessOwnershipBoundaryProcessGroup,
+		types.ProcessOwnershipBoundaryJobObject,
+	} {
+		evidence.OwnershipBoundary = boundary
+		if err := evidence.Validate(); err != nil {
+			t.Fatalf("valid ownership boundary %q rejected: %v", boundary, err)
+		}
+	}
+	evidence.OwnershipBoundary = "ancestry"
+	if err := evidence.Validate(); err == nil {
+		t.Fatal("unknown ownership boundary validated")
+	}
+}
+
 func TestMessageSpawnArgsCarrierPreservesExactTypes(t *testing.T) {
 	want := types.SpawnArgs{
 		CLI:               "generic",

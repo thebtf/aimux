@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/thebtf/aimux/pkg/types"
 	"golang.org/x/sys/windows"
 )
 
@@ -221,6 +222,10 @@ func (tree *processTree) terminate() bool {
 }
 
 func (tree *processTree) stopped() bool { return tree != nil && tree.stopObserved.Load() }
+
+func (*processTree) ownershipBoundary() types.ProcessOwnershipBoundary {
+	return types.ProcessOwnershipBoundaryJobObject
+}
 
 func (tree *processTree) discard() {
 	if tree == nil {

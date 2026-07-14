@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thebtf/aimux/pkg/types"
 	"golang.org/x/sys/windows"
 )
 
@@ -101,7 +102,7 @@ func TestProcessTreeTerminateRequiresObservedJobCompletion(t *testing.T) {
 	}{
 		{name: "termination request with timeout remains unconfirmed", status: uint32(windows.WAIT_TIMEOUT)},
 		{name: "termination request with wait failure remains unconfirmed", waitErr: errors.New("wait failed")},
-		{name: "signalled exact job confirms whole tree", status: uint32(windows.WAIT_OBJECT_0), want: true},
+		{name: "signalled exact job confirms job boundary", status: uint32(windows.WAIT_OBJECT_0), want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			terminated, waited, closed := 0, 0, 0
@@ -128,6 +129,9 @@ func TestProcessTreeTerminateRequiresObservedJobCompletion(t *testing.T) {
 					return nil
 				},
 			}}
+			if got := (&ProcessHandle{processTree: tree}).TreeOwnershipBoundary(); got != types.ProcessOwnershipBoundaryJobObject {
+				t.Fatalf("ownership boundary = %q, want %q", got, types.ProcessOwnershipBoundaryJobObject)
+			}
 			if got := tree.terminate(); got != test.want || tree.stopped() != test.want {
 				t.Fatalf("terminate/stopped = %t/%t, want %t", got, tree.stopped(), test.want)
 			}

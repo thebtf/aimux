@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,117 @@ import (
 	pipeexecutor "github.com/thebtf/aimux/pkg/executor/pipe"
 	"github.com/thebtf/aimux/pkg/types"
 )
+
+type lateNativeCancellationExecutor struct {
+	started, cancelStarted chan struct{}
+	releaseCancel          <-chan struct{}
+	lateErr                error
+}
+
+func (*lateNativeCancellationExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
+func (*lateNativeCancellationExecutor) Send(context.Context, types.Message) (*types.Response, error) {
+	return &types.Response{}, nil
+}
+func (*lateNativeCancellationExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
+	return &types.Response{}, nil
+}
+func (*lateNativeCancellationExecutor) IsAlive() types.HealthStatus { return types.HealthAlive }
+func (*lateNativeCancellationExecutor) Close() error                { return nil }
+func (e *lateNativeCancellationExecutor) SendEvents(ctx context.Context, _ types.ExecutionID, _ types.Message, _ types.ExecutorEventSink) (*types.Response, error) {
+	close(e.started)
+	<-ctx.Done()
+	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
+}
+func (e *lateNativeCancellationExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
+	close(e.cancelStarted)
+	<-e.releaseCancel
+	return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, e.lateErr
+}
+
+func TestSwarmCancellationResolutionDiscardsLateNativeResult(t *testing.T) {
+	previousTimeout := cancellationResolutionTimeout
+	cancellationResolutionTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { cancellationResolutionTimeout = previousTimeout })
+	releaseCancel := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseCancel:
+		default:
+			close(releaseCancel)
+		}
+	})
+	lateErr := errors.New("late native cancellation result")
+	exec := &lateNativeCancellationExecutor{
+		started: make(chan struct{}), cancelStarted: make(chan struct{}), releaseCancel: releaseCancel, lateErr: lateErr,
+	}
+	s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	h, err := s.Get(context.Background(), "late-native", Stateful, WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = types.ExecutionID("late-native")
+	terminal := make(chan types.ExecutorEvent, 1)
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := s.Execute(context.Background(), h, "scope", id, types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+			if event.Terminal {
+				terminal <- event
+			}
+			return true
+		}))
+		runDone <- runErr
+	}()
+	<-exec.started
+	type cancelResult struct {
+		evidence types.CancellationEvidence
+		err      error
+	}
+	firstDone := make(chan cancelResult, 1)
+	go func() {
+		evidence, cancelErr := s.Cancel(context.Background(), h, "scope", id, "test")
+		firstDone <- cancelResult{evidence: evidence, err: cancelErr}
+	}()
+	<-exec.cancelStarted
+
+	var terminalEvent types.ExecutorEvent
+	select {
+	case terminalEvent = <-terminal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal publication did not reach its bounded cancellation deadline")
+	}
+	beforeLateReturn, err := s.Inspect(context.Background(), h, "scope", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeatedEvidence, repeatedErr := s.Cancel(context.Background(), h, "scope", id, "repeat")
+	close(releaseCancel)
+	var first cancelResult
+	select {
+	case first = <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Cancel did not return its canonical result")
+	}
+	afterLateReturn, err := s.Inspect(context.Background(), h, "scope", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case runErr := <-runDone:
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("execution did not finish after terminal publication")
+	}
+
+	wantEvidence := types.CancellationEvidence{ExecutionID: id}
+	if terminalEvent.Type != "failed" || !beforeLateReturn.Terminal || beforeLateReturn.Cancelled || beforeLateReturn != afterLateReturn || beforeLateReturn.CancellationEvidence != wantEvidence || first.evidence != wantEvidence || repeatedEvidence != wantEvidence || afterLateReturn.CancellationEvidence != wantEvidence {
+		t.Fatalf("terminal=%#v before=%#v first=%#v repeated=%#v after=%#v", terminalEvent, beforeLateReturn, first.evidence, repeatedEvidence, afterLateReturn)
+	}
+	if !errors.Is(first.err, context.DeadlineExceeded) || !errors.Is(repeatedErr, context.DeadlineExceeded) || errors.Is(first.err, lateErr) || errors.Is(repeatedErr, lateErr) {
+		t.Fatalf("first error=%v repeated error=%v, want canonical deadline and no late error", first.err, repeatedErr)
+	}
+}
 
 type blockingExactEvidenceExecutor struct {
 	ready chan types.ProcessTreeEvidence
@@ -108,7 +220,7 @@ func TestSwarmReadyExactLeaseWinsDeadline(t *testing.T) {
 	processEvidenceCaptureTimeout = time.Nanosecond
 	t.Cleanup(func() { processEvidenceCaptureTimeout = previous })
 	exec := &blockingExactEvidenceExecutor{ready: make(chan types.ProcessTreeEvidence, 1)}
-	exec.ready <- types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 17, StartFingerprint: "start", TreeID: "tree"}, Stopped: true}
+	exec.ready <- types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 17, StartFingerprint: "start", TreeID: "tree"}, OwnershipBoundary: types.ProcessOwnershipBoundaryProcessGroup, Stopped: true}
 	s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
 	h, err := s.Get(context.Background(), "ready-evidence", Stateful, WithScope("scope"))
 	if err != nil {
@@ -160,7 +272,7 @@ func TestSwarmTimerFinalReadAdmitsEvidencePublishedAtDeadline(t *testing.T) {
 		done <- runErr
 	}()
 	<-entered // timer branch won; the final receive is deliberately still blocked.
-	exec.ready <- types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 18, StartFingerprint: "deadline", TreeID: "tree"}, Stopped: true}
+	exec.ready <- types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 18, StartFingerprint: "deadline", TreeID: "tree"}, OwnershipBoundary: types.ProcessOwnershipBoundaryProcessGroup, Stopped: true}
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)

@@ -40,8 +40,8 @@ func (fn ExecutorEventSinkFunc) TryAdmit(event ExecutorEvent) bool {
 	return fn(event)
 }
 
-// ProcessIdentity identifies an OS process generation and its owned process
-// tree without relying on a reusable PID alone.
+// ProcessIdentity identifies an OS process generation and its ownership
+// boundary without relying on a reusable PID alone.
 type ProcessIdentity struct {
 	PID              int    `json:"pid"`
 	StartFingerprint string `json:"start_fingerprint"`
@@ -96,14 +96,39 @@ func (evidence CancellationEvidence) Validate() error {
 	return evidence.ExecutionID.Validate()
 }
 
-// ProcessTreeEvidence records observed stop state for one exact process
-// generation. Stopped=false is valid unconfirmed evidence.
-type ProcessTreeEvidence struct {
-	Process ProcessIdentity `json:"process"`
-	Stopped bool            `json:"stopped"`
+// ProcessOwnershipBoundary names the OS primitive whose membership is covered
+// by process evidence.
+type ProcessOwnershipBoundary string
+
+const (
+	ProcessOwnershipBoundaryProcessGroup ProcessOwnershipBoundary = "process_group"
+	ProcessOwnershipBoundaryJobObject    ProcessOwnershipBoundary = "job_object"
+)
+
+// Validate rejects blank and unknown OS ownership boundaries.
+func (boundary ProcessOwnershipBoundary) Validate() error {
+	switch boundary {
+	case ProcessOwnershipBoundaryProcessGroup, ProcessOwnershipBoundaryJobObject:
+		return nil
+	default:
+		return NewValidationError("process ownership boundary must be process_group or job_object")
+	}
 }
 
-// Validate verifies the process generation carried by the evidence.
+// ProcessTreeEvidence records observed stop state for one exact process
+// generation and named OS ownership boundary. Stopped means that boundary
+// disappeared; it does not claim that every descendant by ancestry exited.
+// Stopped=false is valid unconfirmed evidence.
+type ProcessTreeEvidence struct {
+	Process           ProcessIdentity          `json:"process"`
+	OwnershipBoundary ProcessOwnershipBoundary `json:"ownership_boundary"`
+	Stopped           bool                     `json:"stopped"`
+}
+
+// Validate verifies the process generation and explicit OS ownership boundary.
 func (evidence ProcessTreeEvidence) Validate() error {
-	return evidence.Process.Validate()
+	if err := evidence.Process.Validate(); err != nil {
+		return err
+	}
+	return evidence.OwnershipBoundary.Validate()
 }

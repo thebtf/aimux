@@ -59,7 +59,7 @@ type nativeLegacyExecutor struct{ mockLegacyExecutor }
 type evidenceLegacyExecutor struct{ mockLegacyExecutor }
 
 func (*evidenceLegacyExecutor) ProcessTreeEvidence(context.Context, types.ExecutionID) (types.ProcessTreeEvidence, error) {
-	return types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 7, StartFingerprint: "start", TreeID: "tree"}, Stopped: true}, nil
+	return types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 7, StartFingerprint: "start", TreeID: "tree"}, OwnershipBoundary: types.ProcessOwnershipBoundaryProcessGroup, Stopped: true}, nil
 }
 
 func (m *nativeLegacyExecutor) SendEvents(_ context.Context, _ types.ExecutionID, _ types.Message, sink types.ExecutorEventSink) (*types.Response, error) {

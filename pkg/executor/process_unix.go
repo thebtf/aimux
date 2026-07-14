@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/thebtf/aimux/pkg/types"
 )
 
 const (
@@ -19,9 +21,9 @@ const (
 	processTreePollInterval = 10 * time.Millisecond
 )
 
-// processTree owns a process group whose ID is the root PID. The group is
-// created by SysProcAttr before Start, so descendants cannot escape the
-// ownership boundary by racing post-start attachment.
+// processTree owns a process group whose ID is the root PID. SysProcAttr creates
+// the initial boundary before Start; descendants may deliberately leave it
+// later with setsid or setpgid and are then outside this evidence claim.
 type processTree struct {
 	pgid         int
 	releaseOnce  sync.Once
@@ -99,6 +101,10 @@ func (tree *processTree) terminate() bool {
 }
 
 func (tree *processTree) stopped() bool { return tree != nil && tree.stopObserved.Load() }
+
+func (*processTree) ownershipBoundary() types.ProcessOwnershipBoundary {
+	return types.ProcessOwnershipBoundaryProcessGroup
+}
 
 func (tree *processTree) discard() {
 	if tree == nil {

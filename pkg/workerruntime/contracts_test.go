@@ -27,8 +27,9 @@ func TestNeutralExecutionEvidenceComposesAndRoundTrips(t *testing.T) {
 			NativeAcknowledged: true,
 		},
 		ProcessTree: types.ProcessTreeEvidence{
-			Process: process,
-			Stopped: true,
+			Process:           process,
+			OwnershipBoundary: types.ProcessOwnershipBoundaryProcessGroup,
+			Stopped:           true,
 		},
 		Session: session,
 	}

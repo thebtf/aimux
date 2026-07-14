@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/thebtf/aimux/pkg/types"
 )
 
 const preExitDrainTimeout = 2 * time.Second
@@ -154,8 +156,8 @@ func (pm *ProcessManager) spawn(cmd *exec.Cmd, drainBeforeTerminate bool) (*Proc
 	return h, nil
 }
 
-// Kill terminates a process and every descendant owned by Spawn. Synthetic
-// handles that were not created by Spawn retain the direct-process fallback.
+// Kill terminates a process and every member of the OS ownership boundary
+// created by Spawn. Synthetic handles retain the direct-process fallback.
 func (pm *ProcessManager) Kill(h *ProcessHandle) {
 	if h == nil || h.Cmd == nil || h.Cmd.Process == nil {
 		return
@@ -184,10 +186,18 @@ func (pm *ProcessManager) IsAlive(h *ProcessHandle) bool {
 	return !h.exited.Load()
 }
 
-// TreeStopped reports the ProcessManager-owned termination observation for the
-// exact tree started with h. Root exit alone is not whole-tree evidence.
+// TreeStopped reports disappearance of the named OS ownership boundary created
+// for h. It does not claim that descendants which left that boundary exited.
 func (h *ProcessHandle) TreeStopped() bool {
 	return h != nil && h.processTree != nil && h.processTree.stopped()
+}
+
+// TreeOwnershipBoundary reports the OS primitive actually created for h.
+func (h *ProcessHandle) TreeOwnershipBoundary() types.ProcessOwnershipBoundary {
+	if h == nil || h.processTree == nil {
+		return ""
+	}
+	return h.processTree.ownershipBoundary()
 }
 
 // MarkExited atomically marks the handle as exited. Used by external

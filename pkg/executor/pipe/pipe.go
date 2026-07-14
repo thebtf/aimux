@@ -185,10 +185,13 @@ func (e *Executor) rollbackProcessEvidenceReservation(id types.ExecutionID, leas
 }
 
 func (e *Executor) commitProcessEvidenceReservation(id types.ExecutionID, h *executor.ProcessHandle, lease processEvidenceLease) error {
-	evidence := types.ProcessTreeEvidence{Process: types.ProcessIdentity{
-		PID: h.PID, StartFingerprint: fmt.Sprintf("%d", h.StartedAt.UnixNano()),
-		TreeID: fmt.Sprintf("pipe:%d:%d", h.PID, h.StartedAt.UnixNano()),
-	}}
+	evidence := types.ProcessTreeEvidence{
+		Process: types.ProcessIdentity{
+			PID: h.PID, StartFingerprint: fmt.Sprintf("%d", h.StartedAt.UnixNano()),
+			TreeID: fmt.Sprintf("pipe:%d:%d", h.PID, h.StartedAt.UnixNano()),
+		},
+		OwnershipBoundary: h.TreeOwnershipBoundary(),
+	}
 	e.evidenceMu.Lock()
 	defer e.evidenceMu.Unlock()
 	reservation, exists := e.reservations[id]

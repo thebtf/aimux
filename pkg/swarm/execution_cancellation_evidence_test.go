@@ -122,7 +122,7 @@ func (e *treeEvidenceExecutor) SendEvents(ctx context.Context, _ types.Execution
 	if e.evidenceGate != nil {
 		<-e.evidenceGate
 	}
-	e.ready <- types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 17, StartFingerprint: "generation", TreeID: "tree"}, Stopped: e.stopped}
+	e.ready <- types.ProcessTreeEvidence{Process: types.ProcessIdentity{PID: 17, StartFingerprint: "generation", TreeID: "tree"}, OwnershipBoundary: types.ProcessOwnershipBoundaryProcessGroup, Stopped: e.stopped}
 	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
 }
 func (*treeEvidenceExecutor) HoldProcessEvidence(types.ExecutionID) bool { return true }

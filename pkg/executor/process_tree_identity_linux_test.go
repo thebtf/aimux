@@ -3,6 +3,7 @@
 package executor_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,8 +13,147 @@ import (
 	"testing"
 	"time"
 
+	pipeexecutor "github.com/thebtf/aimux/pkg/executor/pipe"
+	"github.com/thebtf/aimux/pkg/types"
 	"golang.org/x/sys/unix"
 )
+
+const processTreeEscapedSessionRoleEnv = "AIMUX_PROCESS_TREE_ESCAPED_SESSION_ROLE"
+
+func TestProcessTreeEscapedSessionHelper(t *testing.T) {
+	role := os.Getenv(processTreeEscapedSessionRoleEnv)
+	if role == "" {
+		return
+	}
+	handshakePath := os.Getenv(processTreeHandshakeEnv)
+	cleanupPath := os.Getenv(processTreeCleanupEnv)
+	if handshakePath == "" || cleanupPath == "" {
+		t.Fatal("escaped-session helper paths are blank")
+	}
+	switch role {
+	case "root":
+		child := exec.Command(os.Args[0], "-test.run=^TestProcessTreeEscapedSessionHelper$", "-test.count=1")
+		child.Env = append(
+			os.Environ(),
+			processTreeEscapedSessionRoleEnv+"=escaped",
+			processTreeHandshakeEnv+"="+handshakePath,
+			processTreeCleanupEnv+"="+cleanupPath,
+		)
+		if err := child.Start(); err != nil {
+			t.Fatalf("start escaped-session descendant: %v", err)
+		}
+		if err := child.Process.Release(); err != nil {
+			t.Fatalf("release escaped-session descendant: %v", err)
+		}
+		select {}
+	case "escaped":
+		if _, err := unix.Setsid(); err != nil {
+			t.Fatalf("setsid: %v", err)
+		}
+		if err := writeProcessTreePIDHandshake(handshakePath, os.Getpid()); err != nil {
+			t.Fatalf("write escaped-session PID handshake: %v", err)
+		}
+		for {
+			if _, err := os.Stat(cleanupPath); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	default:
+		t.Fatalf("unknown escaped-session helper role %q", role)
+	}
+}
+
+func TestPipeProcessEvidenceNamesGroupBoundaryWhenDescendantEscapesSession(t *testing.T) {
+	fixtureDir := t.TempDir()
+	handshakePath := filepath.Join(fixtureDir, "escaped.pid")
+	cleanupPath := filepath.Join(fixtureDir, "cleanup")
+	e := pipeexecutor.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const id = types.ExecutionID("escaped-session")
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.SendEvents(ctx, id, types.Message{Spawn: &types.SpawnArgs{
+			Command: os.Args[0],
+			Args:    []string{"-test.run=^TestProcessTreeEscapedSessionHelper$", "-test.count=1"},
+			Env: map[string]string{
+				processTreeEscapedSessionRoleEnv: "root",
+				processTreeHandshakeEnv:          handshakePath,
+				processTreeCleanupEnv:            cleanupPath,
+			},
+		}}, nil)
+		done <- err
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = os.WriteFile(cleanupPath, []byte("stop"), 0o600)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("escaped-session root survived deterministic cleanup")
+		}
+	})
+	escapedPID := waitForProcessTreePID(t, handshakePath, 5*time.Second)
+	escapedIdentity, err := captureProcessTreeIdentity(escapedPID)
+	if err != nil || escapedIdentity == nil {
+		cancel()
+		<-done
+		t.Fatalf("capture escaped-session identity: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.WriteFile(cleanupPath, []byte("stop"), 0o600)
+		if !waitForProcessTreeExit(escapedIdentity, time.Second) {
+			_ = processTreeForceKill(escapedIdentity)
+			if !waitForProcessTreeExit(escapedIdentity, 2*time.Second) {
+				t.Error("escaped-session descendant survived deterministic cleanup")
+			}
+		}
+		closeProcessTreeIdentity(escapedIdentity)
+	})
+	pgid, err := unix.Getpgid(escapedPID)
+	if err != nil {
+		t.Fatalf("read escaped-session process group: %v", err)
+	}
+	if pgid != escapedPID {
+		t.Fatalf("escaped-session process group = %d, want its own PID %d", pgid, escapedPID)
+	}
+	liveEvidence, err := e.ProcessTreeEvidence(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if liveEvidence.OwnershipBoundary != types.ProcessOwnershipBoundaryProcessGroup || liveEvidence.Stopped {
+		t.Fatalf("live evidence = %#v, want active process_group boundary", liveEvidence)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled pipe execution did not return")
+	}
+	finalEvidence, err := e.ProcessTreeEvidence(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalEvidence.OwnershipBoundary != types.ProcessOwnershipBoundaryProcessGroup || !finalEvidence.Stopped || finalEvidence.Validate() != nil {
+		t.Fatalf("final evidence = %#v, want stopped process_group boundary", finalEvidence)
+	}
+	if !processTreeProcessAlive(escapedIdentity) {
+		t.Fatal("escaped-session descendant was incorrectly included in process_group stop evidence")
+	}
+	if err := os.WriteFile(cleanupPath, []byte("stop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForProcessTreeExit(escapedIdentity, 5*time.Second) {
+		_ = processTreeForceKill(escapedIdentity)
+		t.Fatal("escaped-session descendant did not exit after deterministic cleanup")
+	}
+}
 
 type processTreeIdentity struct {
 	pid       int

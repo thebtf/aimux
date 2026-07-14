@@ -2,6 +2,7 @@ package pipe
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -50,6 +51,39 @@ func processEvidenceLeaseMessage(file string) types.Message {
 			processEvidenceLeaseFileEnv:   file,
 		},
 	}}
+}
+
+func TestProcessEvidenceCarriesOSOwnershipBoundary(t *testing.T) {
+	e := New()
+	file := t.TempDir() + string(os.PathSeparator) + "started"
+	const id = types.ExecutionID("ownership-boundary")
+	if _, err := e.SendEvents(context.Background(), id, processEvidenceLeaseMessage(file), nil); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := e.ProcessTreeEvidence(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := evidence.Validate(); err != nil {
+		t.Fatalf("invalid OS-owned process evidence: %v", err)
+	}
+	payload, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields struct {
+		OwnershipBoundary string `json:"ownership_boundary"`
+	}
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	want := "process_group"
+	if runtime.GOOS == "windows" {
+		want = "job_object"
+	}
+	if fields.OwnershipBoundary != want {
+		t.Fatalf("ownership boundary = %q, want %q; evidence=%s", fields.OwnershipBoundary, want, payload)
+	}
 }
 
 func processEvidenceLeasePersistentMessage(file string) types.Message {

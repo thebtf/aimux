@@ -12,8 +12,9 @@ import (
 )
 
 type eventExecutor struct {
-	release <-chan struct{}
-	started chan<- struct{}
+	release     <-chan struct{}
+	started     chan<- struct{}
+	nilResponse bool
 }
 
 func (*eventExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
@@ -33,10 +34,52 @@ func (e *eventExecutor) SendEvents(ctx context.Context, _ types.ExecutionID, _ t
 	sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "output", Content: []byte{0xff}})
 	e.started <- struct{}{}
 	<-e.release
+	if e.nilResponse {
+		return nil, nil
+	}
 	if ctx.Err() != nil {
 		return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
 	}
 	return &types.Response{Content: "ok"}, nil
+}
+
+func TestSwarmNilResponseEventExecutorSuccessCompletes(t *testing.T) {
+	release, started := make(chan struct{}), make(chan struct{}, 1)
+	close(release)
+	exec := &eventExecutor{release: release, started: started, nilResponse: true}
+	s := swarm.New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	h, err := s.Get(context.Background(), "nil-response", swarm.Stateful, swarm.WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []types.ExecutorEvent
+	response, err := s.Execute(context.Background(), h, "scope", "nil-response", types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+		events = append(events, event)
+		return true
+	}))
+	if err != nil || response != nil {
+		t.Fatalf("Execute = %#v, %v; want nil, nil", response, err)
+	}
+	var terminals []types.ExecutorEvent
+	for _, event := range events {
+		if event.Terminal {
+			terminals = append(terminals, event)
+		}
+	}
+	if len(terminals) != 1 || terminals[0].Type != "completed" {
+		t.Fatalf("events = %#v, want one completed terminal", events)
+	}
+	first, err := s.Inspect(context.Background(), h, "scope", "nil-response")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Inspect(context.Background(), h, "scope", "nil-response")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || !first.Terminal || first.Cancelled || first.CancellationEvidence != (types.CancellationEvidence{}) {
+		t.Fatalf("inspections = %#v then %#v, want stable completed state without cancellation", first, second)
+	}
 }
 
 func TestSwarmExecuteFencesOneActiveExecutionAndCancelWins(t *testing.T) {
