@@ -26,7 +26,7 @@ This protocol applies to aimux versioned releases cut from the protected default
 | Stall-detection playbook | `go test ./pkg/server -run 'TestCritical_StallDetection_' -count=1 -timeout 120s` after confirming matching tests exist | Missing matching tests or non-zero exit |
 | AIMUX-21 deterministic product gate | `AIMUX21_E2E=1 go test ./test/e2e -run 'TestE2E_(AIMUX21|ReviewEntry|TaskRouter|Resume)' -count=1 -timeout 600s` | Missing matching tests or non-zero exit |
 | Loom module tests | `go test ./... -count=1` from `loom/` | Non-zero exit |
-| Vulnerability scan | `govulncheck ./...` | Non-zero exit when the tool is available for release gate |
+| Shipped-binary vulnerability scan | Build the Aimux command into a disposable path outside the repository, then run `govulncheck -mode=binary <artifact>` | Non-zero exit; source-mode findings remain visible in the soft-fail Security workflow for dependency hygiene |
 | Release workflow | Tag-triggered `.github/workflows/release.yml` | Workflow failure or missing GitHub release/artifacts |
 
 ## Release Autonomy
