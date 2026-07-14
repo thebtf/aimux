@@ -619,12 +619,15 @@ func TestCloseHandoffHandlesClosesDuplicateValuesOnce(t *testing.T) {
 	upstreams := []muxdaemon.HandoffUpstream{
 		{StdinFD: 11, StdoutFD: 12, StderrFD: 13, AuthorityFD: 14},
 		{StdinFD: 11, StdoutFD: 15, StderrFD: 13, AuthorityFD: 16},
-		{StdoutFD: 16, StderrFD: 17, AuthorityFD: 14},
+		{StdinFD: ^uintptr(0), StdoutFD: 16, StderrFD: 17, AuthorityFD: 14},
 	}
 	closed := make(map[uintptr]int)
 	closeHandoffHandles(upstreams, func(handle uintptr) {
 		closed[handle]++
 	})
+	if closed[^uintptr(0)] != 0 {
+		t.Fatalf("invalid handle was closed: %v", closed)
+	}
 
 	want := []uintptr{11, 12, 13, 14, 15, 16, 17}
 	if len(closed) != len(want) {

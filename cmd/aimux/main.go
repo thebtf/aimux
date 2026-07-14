@@ -581,7 +581,7 @@ func closeHandoffHandles(upstreams []muxdaemon.HandoffUpstream, closeHandle func
 			upstream.AuthorityFD,
 		}
 		for _, handle := range handles {
-			if handle == 0 {
+			if handle == 0 || handle == ^uintptr(0) {
 				continue
 			}
 			if _, duplicate := seen[handle]; duplicate {
