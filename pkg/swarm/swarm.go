@@ -200,6 +200,11 @@ type Swarm struct {
 	terminalOrder []executionKey
 	live          map[*Handle]handleAuthority
 
+	// nativeCancellationGate is a fixed-capacity, non-queuing semaphore for
+	// provider cancellation calls. A slot stays occupied until the provider
+	// returns, bounding context-ignoring goroutines per Swarm.
+	nativeCancellationGate chan struct{}
+
 	// beforeOutcomeCapture and postExecutorReturn are package-private
 	// deterministic test seams around immutable outcome publication.
 	beforeOutcomeCapture func()
@@ -243,6 +248,10 @@ func WithStatefulTTL(d time.Duration) Option {
 // defaultStatefulTTL — 5 minutes per FR-4 spec resolution Q-CLAR-2.
 const defaultStatefulTTL = 5 * time.Minute
 
+// defaultNativeCancellationCapacity bounds concurrently blocked provider
+// cancellation calls per Swarm without introducing a work queue.
+const defaultNativeCancellationCapacity = 32
+
 // New creates a Swarm with a legacy name-only factory. Existing callers keep
 // the same contract while context-aware callers can opt into
 // NewWithContextFactory.
@@ -281,6 +290,7 @@ func NewWithContextFactory(factoryFn func(context.Context, string) (types.Execut
 		active:      make(map[*Handle]*executionRecord),
 		live:        make(map[*Handle]handleAuthority),
 		statefulTTL: defaultStatefulTTL,
+		nativeCancellationGate: make(chan struct{}, defaultNativeCancellationCapacity),
 		reaperStop:  make(chan struct{}),
 	}
 	for _, opt := range opts {

@@ -32,6 +32,12 @@ var processEvidenceCaptureTimeout = cancellationResolutionTimeout
 // test seam for the timer-selected boundary. Production leaves it nil.
 var beforeProcessEvidenceDeadlineFinalRead func()
 
+// beforeNativeCancellationResultSend and
+// beforeNativeCancellationDeadlineFinalRead are package-private deterministic
+// seams for the timeout-boundary final read. Production leaves them nil.
+var beforeNativeCancellationResultSend func()
+var beforeNativeCancellationDeadlineFinalRead func()
+
 // beforeOwnedLeaseExecution is a package-private deterministic test seam after
 // acquisition and before the only lease-consuming execution call.
 var beforeOwnedLeaseExecution func()
@@ -299,7 +305,7 @@ func (s *Swarm) cancelRecord(ctx context.Context, record *executionRecord, reaso
 	record.cancelDone = make(chan struct{})
 	done := record.cancelDone
 	record.mu.Unlock()
-	go record.resolveCancellation(reason)
+	go s.resolveCancellation(record, reason)
 	return record.waitCancellation(ctx, done)
 }
 
@@ -330,7 +336,7 @@ func (record *executionRecord) waitCancellation(ctx context.Context, done <-chan
 	}
 }
 
-func (record *executionRecord) resolveCancellation(reason string) {
+func (s *Swarm) resolveCancellation(record *executionRecord, reason string) {
 	if record.cancel != nil {
 		record.cancel()
 	}
@@ -338,7 +344,7 @@ func (record *executionRecord) resolveCancellation(reason string) {
 	defer cancel()
 	evidence := types.CancellationEvidence{ExecutionID: record.id}
 	var cancelErr error
-	if canceller, ok := record.executor.(types.ExecutionCanceller); ok {
+	if canceller, ok := record.executor.(types.ExecutionCanceller); ok && s.tryAcquireNativeCancellation() {
 		type nativeResult struct {
 			evidence   types.CancellationEvidence
 			err        error
@@ -346,22 +352,38 @@ func (record *executionRecord) resolveCancellation(reason string) {
 		}
 		result := make(chan nativeResult, 1)
 		go func() {
+			defer s.releaseNativeCancellation()
 			nativeEvidence, err := canceller.CancelExecution(ctx, record.id, reason)
-			result <- nativeResult{evidence: nativeEvidence, err: err, returnedAt: time.Now()}
+			returnedAt := time.Now()
+			if beforeNativeCancellationResultSend != nil {
+				beforeNativeCancellationResultSend()
+			}
+			result <- nativeResult{evidence: nativeEvidence, err: err, returnedAt: returnedAt}
 		}()
 		deadline, _ := ctx.Deadline()
-		select {
-		case native := <-result:
+		accept := func(native nativeResult) {
 			if native.returnedAt.After(deadline) {
 				cancelErr = context.DeadlineExceeded
-			} else {
-				evidence, cancelErr = native.evidence, native.err
-				if evidence.ExecutionID == "" {
-					evidence.ExecutionID = record.id
-				}
+				return
 			}
+			evidence, cancelErr = native.evidence, native.err
+			if evidence.ExecutionID == "" {
+				evidence.ExecutionID = record.id
+			}
+		}
+		select {
+		case native := <-result:
+			accept(native)
 		case <-ctx.Done():
-			cancelErr = ctx.Err()
+			if beforeNativeCancellationDeadlineFinalRead != nil {
+				beforeNativeCancellationDeadlineFinalRead()
+			}
+			select {
+			case native := <-result:
+				accept(native)
+			default:
+				cancelErr = ctx.Err()
+			}
 		}
 	}
 	if _, ok := record.executor.(types.ProcessEvidenceProvider); ok {
@@ -375,6 +397,19 @@ func (record *executionRecord) resolveCancellation(reason string) {
 	record.cancellationErr = cancelErr
 	close(record.cancelDone)
 	record.mu.Unlock()
+}
+
+func (s *Swarm) tryAcquireNativeCancellation() bool {
+	select {
+	case s.nativeCancellationGate <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Swarm) releaseNativeCancellation() {
+	<-s.nativeCancellationGate
 }
 
 // Inspect returns the bounded, fenced in-memory execution snapshot without
