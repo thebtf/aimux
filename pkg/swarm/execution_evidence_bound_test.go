@@ -17,22 +17,29 @@ type lateNativeCancellationExecutor struct {
 	started, cancelStarted, cancelReturned chan struct{}
 	releaseCancel                          <-chan struct{}
 	lateErr                                error
+	closeCalls                             atomic.Int32
 }
 
 func (*lateNativeCancellationExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
 func (*lateNativeCancellationExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{}, nil
 }
+
 func (*lateNativeCancellationExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
 	return &types.Response{}, nil
 }
 func (*lateNativeCancellationExecutor) IsAlive() types.HealthStatus { return types.HealthAlive }
-func (*lateNativeCancellationExecutor) Close() error                { return nil }
+func (e *lateNativeCancellationExecutor) Close() error {
+	e.closeCalls.Add(1)
+	return nil
+}
+
 func (e *lateNativeCancellationExecutor) SendEvents(ctx context.Context, _ types.ExecutionID, _ types.Message, _ types.ExecutorEventSink) (*types.Response, error) {
 	close(e.started)
 	<-ctx.Done()
 	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
 }
+
 func (e *lateNativeCancellationExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
 	defer close(e.cancelReturned)
 	close(e.cancelStarted)
@@ -138,6 +145,148 @@ func waitForNativeCancellationSlot(t *testing.T, s *Swarm) {
 	}
 }
 
+func waitForTransferredOperationRelease(t *testing.T, h *Handle) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := h.acquireOperation(ctx); err != nil {
+		t.Fatalf("transferred handle operation lease was not released: %v", err)
+	}
+	h.releaseOperation()
+}
+
+func TestSwarmNativeCancellationTransfersHandleLeaseUntilProviderReturn(t *testing.T) {
+	previousTimeout := cancellationResolutionTimeout
+	cancellationResolutionTimeout = 25 * time.Millisecond
+	t.Cleanup(func() { cancellationResolutionTimeout = previousTimeout })
+
+	for _, tt := range []struct {
+		name string
+		mode SpawnMode
+	}{
+		{name: "stateless", mode: Stateless},
+		{name: "stateful", mode: Stateful},
+		{name: "persistent", mode: Persistent},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			releaseCancel := make(chan struct{})
+			t.Cleanup(func() {
+				select {
+				case <-releaseCancel:
+				default:
+					close(releaseCancel)
+				}
+			})
+			exec := &lateNativeCancellationExecutor{
+				started: make(chan struct{}), cancelStarted: make(chan struct{}), cancelReturned: make(chan struct{}), releaseCancel: releaseCancel,
+			}
+			s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+			s.nativeCancellationGate = make(chan struct{}, 1)
+			h, err := s.Get(context.Background(), "lease-transfer-"+tt.name, tt.mode, WithScope("scope"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := types.ExecutionID("lease-transfer-" + tt.name)
+			terminal := make(chan types.ExecutorEvent, 1)
+			runDone := make(chan error, 1)
+			go func() {
+				_, runErr := s.Execute(context.Background(), h, "scope", id, types.Message{}, types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+					if event.Terminal {
+						terminal <- event
+					}
+					return true
+				}))
+				runDone <- runErr
+			}()
+			<-exec.started
+
+			evidence, cancelErr := s.Cancel(context.Background(), h, "scope", id, "handoff")
+			if !errors.Is(cancelErr, context.DeadlineExceeded) || evidence != (types.CancellationEvidence{ExecutionID: id}) {
+				t.Fatalf("Cancel = %#v, %v; want bounded deadline result", evidence, cancelErr)
+			}
+			<-exec.cancelStarted
+			select {
+			case event := <-terminal:
+				if event.Type != "failed" {
+					t.Fatalf("terminal = %#v, want failed", event)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("terminal publication waited for provider return")
+			}
+			select {
+			case runErr := <-runDone:
+				if runErr != nil {
+					t.Fatal(runErr)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Execute waited for provider return")
+			}
+			if got := exec.closeCalls.Load(); got != 0 {
+				t.Fatalf("Close calls before provider return = %d, want 0", got)
+			}
+			if h.tryAcquireOperation() {
+				h.releaseOperation()
+				t.Fatal("handle operation lease was released before provider return")
+			}
+
+			close(releaseCancel)
+			<-exec.cancelReturned
+			waitForNativeCancellationSlot(t, s)
+			waitForTransferredOperationRelease(t, h)
+			wantCloseCalls := int32(0)
+			if tt.mode == Stateless {
+				wantCloseCalls = 1
+			}
+			if got := exec.closeCalls.Load(); got != wantCloseCalls {
+				t.Fatalf("Close calls after provider return = %d, want %d", got, wantCloseCalls)
+			}
+		})
+	}
+}
+
+func TestSwarmNativeCancellationReturnedBeforeExecuteEndUsesImmediateStatelessClose(t *testing.T) {
+	previousTimeout := cancellationResolutionTimeout
+	cancellationResolutionTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { cancellationResolutionTimeout = previousTimeout })
+
+	releaseCancel := make(chan struct{})
+	close(releaseCancel)
+	exec := &lateNativeCancellationExecutor{
+		started: make(chan struct{}), cancelStarted: make(chan struct{}), cancelReturned: make(chan struct{}), releaseCancel: releaseCancel,
+	}
+	s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	s.nativeCancellationGate = make(chan struct{}, 1)
+	h, err := s.Get(context.Background(), "immediate-native", Stateless, WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = types.ExecutionID("immediate-native")
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := s.Execute(context.Background(), h, "scope", id, types.Message{}, types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true }))
+		runDone <- runErr
+	}()
+	<-exec.started
+	evidence, cancelErr := s.Cancel(context.Background(), h, "scope", id, "immediate")
+	if cancelErr != nil || evidence.ExecutionID != id || !evidence.NativeAcknowledged {
+		t.Fatalf("Cancel = %#v, %v; want immediate native acknowledgement", evidence, cancelErr)
+	}
+	<-exec.cancelReturned
+	select {
+	case runErr := <-runDone:
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Execute did not finish")
+	}
+	waitForNativeCancellationSlot(t, s)
+	waitForTransferredOperationRelease(t, h)
+	if got := exec.closeCalls.Load(); got != 1 {
+		t.Fatalf("Close calls = %d, want exactly 1", got)
+	}
+}
+
 type deadlineNativeCancellationExecutor struct {
 	started chan struct{}
 }
@@ -146,6 +295,7 @@ func (*deadlineNativeCancellationExecutor) Info() types.ExecutorInfo { return ty
 func (*deadlineNativeCancellationExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{}, nil
 }
+
 func (*deadlineNativeCancellationExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
 	return &types.Response{}, nil
 }
@@ -156,6 +306,7 @@ func (e *deadlineNativeCancellationExecutor) SendEvents(ctx context.Context, _ t
 	<-ctx.Done()
 	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
 }
+
 func (*deadlineNativeCancellationExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
 	return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, nil
 }
@@ -257,6 +408,7 @@ func (*cancellationGateExecutor) Info() types.ExecutorInfo { return types.Execut
 func (*cancellationGateExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{}, nil
 }
+
 func (*cancellationGateExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
 	return &types.Response{}, nil
 }
@@ -267,6 +419,7 @@ func (e *cancellationGateExecutor) SendEvents(ctx context.Context, _ types.Execu
 	<-ctx.Done()
 	return &types.Response{ExitCode: 130, Error: types.NewExecutorError("cancelled", ctx.Err(), "")}, nil
 }
+
 func (e *cancellationGateExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
 	e.nativeCalls.Add(1)
 	close(e.nativeStarted)
@@ -389,6 +542,7 @@ func (*blockingExactEvidenceExecutor) Info() types.ExecutorInfo { return types.E
 func (*blockingExactEvidenceExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{ExitCode: 0}, nil
 }
+
 func (*blockingExactEvidenceExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
 	return &types.Response{ExitCode: 0}, nil
 }
@@ -397,10 +551,12 @@ func (*blockingExactEvidenceExecutor) Close() error                { return nil 
 func (*blockingExactEvidenceExecutor) SendEvents(context.Context, types.ExecutionID, types.Message, types.ExecutorEventSink) (*types.Response, error) {
 	return &types.Response{ExitCode: 0}, nil
 }
+
 func (e *blockingExactEvidenceExecutor) HoldProcessEvidence(types.ExecutionID) bool {
 	e.holds.Add(1)
 	return true
 }
+
 func (e *blockingExactEvidenceExecutor) ProcessEvidenceReady(types.ExecutionID) <-chan types.ProcessTreeEvidence {
 	return e.ready
 }
@@ -443,6 +599,7 @@ func (*noLeaseExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} 
 func (*noLeaseExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{ExitCode: 0}, nil
 }
+
 func (*noLeaseExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
 	return &types.Response{ExitCode: 0}, nil
 }
@@ -566,6 +723,7 @@ func (*completedSession) ID() string { return "session" }
 func (*completedSession) Send(context.Context, string) (*types.Result, error) {
 	return &types.Result{Content: "ok", ExitCode: 0}, nil
 }
+
 func (*completedSession) Stream(context.Context, string) (<-chan types.Event, error) {
 	stream := make(chan types.Event)
 	close(stream)

@@ -35,8 +35,10 @@ var beforeProcessEvidenceDeadlineFinalRead func()
 // beforeNativeCancellationResultSend and
 // beforeNativeCancellationDeadlineFinalRead are package-private deterministic
 // seams for the timeout-boundary final read. Production leaves them nil.
-var beforeNativeCancellationResultSend func()
-var beforeNativeCancellationDeadlineFinalRead func()
+var (
+	beforeNativeCancellationResultSend        func()
+	beforeNativeCancellationDeadlineFinalRead func()
+)
 
 // beforeOwnedLeaseExecution is a package-private deterministic test seam after
 // acquisition and before the only lease-consuming execution call.
@@ -66,30 +68,33 @@ type executionKey struct {
 }
 
 type executionRecord struct {
-	handle               *Handle
-	id                   types.ExecutionID
-	tenantID             string
-	scope                string
-	generation           uint64
-	executor             types.ExecutorV2
-	sink                 types.ExecutorEventSink
-	cancel               context.CancelFunc
-	cancellation         types.CancellationEvidence
-	processEvidence      types.ProcessTreeEvidence
-	hasProcessEvidence   bool
-	executionDone        chan struct{}
-	executionReturned    bool
-	outcome              executionOutcome
-	exactProcessEvidence bool
-	cancelDone           chan struct{}
-	terminalDone         chan struct{}
-	cancellationErr      error
-	preSpawnCancelled    bool
-	terminal             bool
-	cancelled            bool
-	truncated            bool
-	admitted             bool
-	mu                   sync.Mutex
+	handle                     *Handle
+	id                         types.ExecutionID
+	tenantID                   string
+	scope                      string
+	generation                 uint64
+	executor                   types.ExecutorV2
+	mode                       SpawnMode
+	sink                       types.ExecutorEventSink
+	cancel                     context.CancelFunc
+	cancellation               types.CancellationEvidence
+	processEvidence            types.ProcessTreeEvidence
+	hasProcessEvidence         bool
+	executionDone              chan struct{}
+	executionReturned          bool
+	outcome                    executionOutcome
+	exactProcessEvidence       bool
+	cancelDone                 chan struct{}
+	terminalDone               chan struct{}
+	cancellationErr            error
+	preSpawnCancelled          bool
+	terminal                   bool
+	cancelled                  bool
+	truncated                  bool
+	admitted                   bool
+	mu                         sync.Mutex
+	nativeCancellationInFlight bool
+	operationLeaseTransferred  bool
 }
 
 type executionOutcome uint8
@@ -137,7 +142,12 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 		}
 		return nil, ErrExecutionActive
 	}
-	defer h.releaseOperation()
+	operationLeaseOwned := true
+	defer func() {
+		if operationLeaseOwned {
+			h.releaseOperation()
+		}
+	}()
 	s.lifecycleMu.RLock()
 	if s.shuttingDown {
 		s.lifecycleMu.RUnlock()
@@ -159,6 +169,7 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 		scope:         authority.scope,
 		generation:    authority.generation,
 		executor:      exec,
+		mode:          authority.mode,
 		sink:          sink,
 		cancel:        cancel,
 		executionDone: make(chan struct{}),
@@ -261,7 +272,9 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	h.mu.Lock()
 	h.lastUsedAt = time.Now()
 	h.mu.Unlock()
-	if authority.mode == Stateless {
+	if record.transferOperationLeaseToNativeCancellation() {
+		operationLeaseOwned = false
+	} else if authority.mode == Stateless {
 		_ = s.closeHandleLocked(h, "stateless-after-execution")
 	}
 	if !terminalAdmitted && err == nil {
@@ -345,6 +358,7 @@ func (s *Swarm) resolveCancellation(record *executionRecord, reason string) {
 	evidence := types.CancellationEvidence{ExecutionID: record.id}
 	var cancelErr error
 	if canceller, ok := record.executor.(types.ExecutionCanceller); ok && s.tryAcquireNativeCancellation() {
+		record.markNativeCancellationStarted()
 		type nativeResult struct {
 			evidence   types.CancellationEvidence
 			err        error
@@ -359,6 +373,7 @@ func (s *Swarm) resolveCancellation(record *executionRecord, reason string) {
 				beforeNativeCancellationResultSend()
 			}
 			result <- nativeResult{evidence: nativeEvidence, err: err, returnedAt: returnedAt}
+			s.finishNativeCancellation(record)
 		}()
 		deadline, _ := ctx.Deadline()
 		accept := func(native nativeResult) {
@@ -400,6 +415,43 @@ func (s *Swarm) resolveCancellation(record *executionRecord, reason string) {
 	record.cancellationErr = cancelErr
 	close(record.cancelDone)
 	record.mu.Unlock()
+}
+
+func (record *executionRecord) markNativeCancellationStarted() {
+	record.mu.Lock()
+	record.nativeCancellationInFlight = true
+	record.mu.Unlock()
+}
+
+// transferOperationLeaseToNativeCancellation atomically chooses who releases
+// Execute's already-held handle operation lease when provider return races the
+// bounded terminal path.
+func (record *executionRecord) transferOperationLeaseToNativeCancellation() bool {
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	if !record.nativeCancellationInFlight {
+		return false
+	}
+	record.operationLeaseTransferred = true
+	return true
+}
+
+// finishNativeCancellation records actual provider return and consumes a
+// transferred handle operation lease, if Execute handed it off while the call
+// was still in flight.
+func (s *Swarm) finishNativeCancellation(record *executionRecord) {
+	record.mu.Lock()
+	record.nativeCancellationInFlight = false
+	transferred := record.operationLeaseTransferred
+	record.operationLeaseTransferred = false
+	record.mu.Unlock()
+	if !transferred {
+		return
+	}
+	if record.mode == Stateless {
+		_ = s.closeHandleLocked(record.handle, "stateless-after-execution")
+	}
+	record.handle.releaseOperation()
 }
 
 func (s *Swarm) tryAcquireNativeCancellation() bool {
