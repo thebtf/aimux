@@ -1,0 +1,131 @@
+name: CR-002 native Ubuntu carrier
+
+on:
+  push:
+    branches:
+      - work/aimux26-cr002-g003-linux-carrier-final2
+
+permissions:
+  contents: read
+
+jobs:
+  native-linux:
+    runs-on: ubuntu-24.04
+    env:
+      EXPECTED_C: 8f25d2a21d1617e495d36b01d3f5eca90f0221d6
+      ARTIFACT_DIR: cr002-native-linux-artifacts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Prove carrier provenance and run detached candidate matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          out="$GITHUB_WORKSPACE/$ARTIFACT_DIR"
+          mkdir -p "$out/logs"
+          trap 'rc=$?; printf "workflow_exit_code=%s\\n" "$rc" > "$out/workflow-exit.env"; exit "$rc"' EXIT
+
+          carrier_sha="$GITHUB_SHA"
+          candidate_sha="$(git rev-parse "${GITHUB_SHA}^")"
+          actual_head="$(git rev-parse HEAD)"
+          printf 'carrier_sha=%s\ncandidate_sha=%s\nactual_head=%s\nexpected_c=%s\n' "$carrier_sha" "$candidate_sha" "$actual_head" "$EXPECTED_C" | tee "$out/carrier-provenance.env"
+          test "$actual_head" = "$carrier_sha"
+          test "$candidate_sha" = "$EXPECTED_C"
+
+          mapfile -t changed_paths < <(git diff --name-only "$candidate_sha" "$carrier_sha")
+          test "${#changed_paths[@]}" -eq 1
+          test "${changed_paths[0]}" = '.github/workflows/cr002-native-linux.yml'
+          workflow_sha="$(sha256sum .github/workflows/cr002-native-linux.yml | awk '{print $1}')"
+          printf 'workflow_sha256=%s\n' "$workflow_sha" | tee -a "$out/carrier-provenance.env"
+
+          git checkout --detach "$candidate_sha"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_C"
+          candidate_tree="$(git rev-parse 'HEAD^{tree}')"
+          {
+            printf 'candidate_sha=%s\n' "$candidate_sha"
+            printf 'candidate_tree=%s\n' "$candidate_tree"
+            printf 'carrier_sha=%s\nworkflow_sha256=%s\n' "$carrier_sha" "$workflow_sha"
+            printf 'github_run_id=%s\ngithub_run_url=%s\ngithub_event_name=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$GITHUB_EVENT_NAME"
+            printf 'runner_os=%s\nrunner_arch=%s\nrunner_name=%s\nrunner_environment=%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$RUNNER_NAME" "$RUNNER_ENVIRONMENT"
+            uname -a
+            cat /etc/os-release
+            go version
+            go env GOOS GOARCH
+          } > "$out/provenance.log"
+          cat "$out/provenance.log"
+
+          failures=0
+          : > "$out/commands.tsv"
+          : > "$out/sha256sums.txt"
+          run_command() {
+            local name="$1"
+            local required_tests="$2"
+            shift 2
+            local log="$out/logs/${name}.log"
+            local started ended elapsed status tee_status hash test_name
+            local -a pipeline_statuses
+            started="$(date +%s)"
+            set +e
+            timeout 330s "$@" 2>&1 | tee "$log"
+            pipeline_statuses=("${PIPESTATUS[@]}")
+            status="${pipeline_statuses[0]}"
+            tee_status="${pipeline_statuses[1]}"
+            set -e
+            ended="$(date +%s)"
+            elapsed="$((ended - started))"
+            hash="$(sha256sum "$log" | awk '{print $1}')"
+            printf '%s  logs/%s.log\n' "$hash" "$name" | tee -a "$out/sha256sums.txt"
+            printf '%s\t%s\t%s\t%s\n' "$name" "$status" "$elapsed" "$hash" | tee -a "$out/commands.tsv"
+            if test "$status" -ne 0 || test "$tee_status" -ne 0; then failures=1; fi
+            if grep -Eq -- '--- SKIP:|[[:space:]]SKIP$|WARNING: DATA RACE|DATA RACE|surviving descendant' "$log"; then failures=1; fi
+            IFS=',' read -ra tests <<< "$required_tests"
+            for test_name in "${tests[@]}"; do
+              test -z "$test_name" && continue
+              grep -Fq -- "=== RUN   $test_name" "$log" || failures=1
+            done
+          }
+
+          run_command executor 'TestProcessManager_KillEscalatesTermResistantOwnedGroup,TestProcessManager_KillStopsOwnedDescendants,TestProcessManager_ConcurrentKillAndCleanupStopOwnedDescendants,TestSwarmCLIPipeAdapterCancelStopsGenericWorkerTree,TestPipeProcessEvidenceNamesGroupBoundaryWhenDescendantEscapesSession' go test -race -count=50 -timeout 5m -v ./pkg/executor -run '^(TestProcessManager_KillEscalatesTermResistantOwnedGroup|TestProcessManager_KillStopsOwnedDescendants|TestProcessManager_ConcurrentKillAndCleanupStopOwnedDescendants|TestSwarmCLIPipeAdapterCancelStopsGenericWorkerTree|TestPipeProcessEvidenceNamesGroupBoundaryWhenDescendantEscapesSession)$'
+          run_command swarm 'TestSwarmRepeatedCancelAfterExecutionReturnWaitsForNativeFlight,TestSwarmCancelWaitsForFinalTreeEvidenceAndInspectSharesIt,TestSwarmCancellationWithoutAcknowledgementOrStopProofFailsClosed,TestSwarmLateCancelCannotReclassifyCompletedExecution,TestSwarmPipeCancellationDrainsTailBeforeTerminal,TestSwarmPostReturnCancelCannotReclassifyNaturalSuccess,TestSwarmPreOutcomeCancelCannotReclassifyNaturalSuccess,TestSwarmPostReturnNaturalFailureCannotBeRelabelledCancelled,TestSwarmOwnedLeaseProviderCanceledErrorWithoutContextCancellationFails,TestSwarmCancellationResolutionDiscardsLateNativeResult,TestSwarmCancellationResolutionFinalReadAcceptsAtDeadline,TestSwarmNativeCancellationSaturationFailsClosedAndRecovers,TestSwarmMismatchedNativeCancellationEvidenceFailsClosed,TestSwarmNativeCancellationTransfersHandleLeaseUntilProviderReturn,TestSwarmNativeCancellationReturnedBeforeExecuteEndUsesImmediateStatelessClose' go test -race -count=100 -timeout 5m -v ./pkg/swarm -run '^(TestSwarmRepeatedCancelAfterExecutionReturnWaitsForNativeFlight|TestSwarmCancelWaitsForFinalTreeEvidenceAndInspectSharesIt|TestSwarmCancellationWithoutAcknowledgementOrStopProofFailsClosed|TestSwarmLateCancelCannotReclassifyCompletedExecution|TestSwarmPipeCancellationDrainsTailBeforeTerminal|TestSwarmPostReturnCancelCannotReclassifyNaturalSuccess|TestSwarmPreOutcomeCancelCannotReclassifyNaturalSuccess|TestSwarmPostReturnNaturalFailureCannotBeRelabelledCancelled|TestSwarmOwnedLeaseProviderCanceledErrorWithoutContextCancellationFails|TestSwarmCancellationResolutionDiscardsLateNativeResult|TestSwarmCancellationResolutionFinalReadAcceptsAtDeadline|TestSwarmNativeCancellationSaturationFailsClosedAndRecovers|TestSwarmMismatchedNativeCancellationEvidenceFailsClosed|TestSwarmNativeCancellationTransfersHandleLeaseUntilProviderReturn|TestSwarmNativeCancellationReturnedBeforeExecuteEndUsesImmediateStatelessClose)$'
+          run_command pipe 'TestProcessEvidenceRetentionNeverEvictsLiveRecords,TestProcessTreeEvidenceDoesNotTreatRootExitAsManagedTreeStop,TestSwarmNaturalRootExitWithUnconfirmedPipeTreeFails,TestProcessEvidenceCarriesOSOwnershipBoundary' go test -race -count=50 -timeout 5m -v ./pkg/executor/pipe -run '^(TestProcessEvidenceRetentionNeverEvictsLiveRecords|TestProcessTreeEvidenceDoesNotTreatRootExitAsManagedTreeStop|TestSwarmNaturalRootExitWithUnconfirmedPipeTreeFails|TestProcessEvidenceCarriesOSOwnershipBoundary)$'
+          run_command build '' go build ./...
+          run_command vet '' go vet ./...
+
+          python3 - "$out" "$candidate_sha" "$carrier_sha" "$workflow_sha" <<'PY'
+          import csv, json, os, pathlib, sys
+          out, candidate, carrier, workflow = sys.argv[1:]
+          commands = []
+          with open(pathlib.Path(out, 'commands.tsv'), newline='', encoding='utf-8') as f:
+              for name, exit_code, duration_seconds, sha256 in csv.reader(f, delimiter='\t'):
+                  commands.append({'name': name, 'exit_code': int(exit_code), 'duration_seconds': int(duration_seconds), 'log_sha256': sha256})
+          summary = {
+              'candidate_sha': candidate,
+              'carrier_sha': carrier,
+              'carrier_parent_sha': candidate,
+              'workflow_sha256': workflow,
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_url': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'event': os.environ['GITHUB_EVENT_NAME'],
+              'runner': {key: os.environ.get(key, '') for key in ('RUNNER_OS', 'RUNNER_ARCH', 'RUNNER_NAME', 'RUNNER_ENVIRONMENT')},
+              'commands': commands,
+          }
+          with open(pathlib.Path(out, 'provenance.json'), 'w', encoding='utf-8') as f:
+              json.dump(summary, f, indent=2, sort_keys=True)
+              f.write('\n')
+          PY
+          sha256sum "$out/provenance.json" | tee -a "$out/sha256sums.txt"
+          test "$failures" -eq 0
+
+      - name: Upload native Linux evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cr002-native-linux-${{ github.run_id }}
+          path: cr002-native-linux-artifacts
+          if-no-files-found: error
