@@ -50,7 +50,7 @@ type Executor struct {
 	finalEvidence func(types.ProcessTreeEvidence) types.ProcessTreeEvidence
 	// commitEvidence is a package-private test seam for attachment failure
 	// after SpawnWithDrain has created an owned process.
-	commitEvidence func() error
+	commitEvidence func(*executor.ProcessHandle) error
 	stdinPipe      func(*exec.Cmd) (io.WriteCloser, error)
 }
 
@@ -438,6 +438,9 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 			e.rollbackProcessEvidenceReservation(executionID, lease)
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if sink == nil {
 		sink = types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })
 	}
@@ -466,9 +469,8 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 		}
 		return nil, types.NewExecutorError("failed to start "+args.Command, err, "")
 	}
-	defer executor.SharedPM.Cleanup(h)
 	if e.commitEvidence != nil {
-		err = e.commitEvidence()
+		err = e.commitEvidence(h)
 	} else {
 		err = e.commitProcessEvidenceReservation(executionID, h, lease)
 	}
@@ -481,6 +483,7 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 		executor.SharedPM.Cleanup(h)
 		return nil, err
 	}
+	defer executor.SharedPM.Cleanup(h)
 	reserved = false
 	defer e.finalizeProcessEvidence(executionID)
 	var ioGroup sync.WaitGroup

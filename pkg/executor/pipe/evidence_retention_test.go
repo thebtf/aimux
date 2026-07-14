@@ -19,6 +19,7 @@ import (
 
 const processEvidenceLeaseHelperEnv = "AIMUX_PIPE_PROCESS_EVIDENCE_LEASE_HELPER"
 const processEvidenceLeaseFileEnv = "AIMUX_PIPE_PROCESS_EVIDENCE_LEASE_FILE"
+const processEvidenceLeasePersistentHelperEnv = "AIMUX_PIPE_PROCESS_EVIDENCE_LEASE_PERSISTENT_HELPER"
 
 func TestProcessEvidenceLeaseSideEffectHelper(t *testing.T) {
 	if os.Getenv(processEvidenceLeaseHelperEnv) != "1" {
@@ -30,6 +31,16 @@ func TestProcessEvidenceLeaseSideEffectHelper(t *testing.T) {
 	os.Exit(0)
 }
 
+func TestProcessEvidenceLeasePersistentHelper(t *testing.T) {
+	if os.Getenv(processEvidenceLeasePersistentHelperEnv) != "1" {
+		return
+	}
+	if err := os.WriteFile(os.Getenv(processEvidenceLeaseFileEnv), []byte("started"), 0o600); err != nil {
+		os.Exit(2)
+	}
+	select {}
+}
+
 func processEvidenceLeaseMessage(file string) types.Message {
 	return types.Message{Spawn: &types.SpawnArgs{
 		Command: os.Args[0],
@@ -37,6 +48,17 @@ func processEvidenceLeaseMessage(file string) types.Message {
 		Env: map[string]string{
 			processEvidenceLeaseHelperEnv: "1",
 			processEvidenceLeaseFileEnv:   file,
+		},
+	}}
+}
+
+func processEvidenceLeasePersistentMessage(file string) types.Message {
+	return types.Message{Spawn: &types.SpawnArgs{
+		Command: os.Args[0],
+		Args:    []string{"-test.run=^TestProcessEvidenceLeasePersistentHelper$", "-test.count=1"},
+		Env: map[string]string{
+			processEvidenceLeasePersistentHelperEnv: "1",
+			processEvidenceLeaseFileEnv:             file,
 		},
 	}}
 }
@@ -106,15 +128,85 @@ func TestProcessEvidenceLeaseAbortClosesFutureAndOldReleaseCannotTouchNewGenerat
 	}
 }
 
+func TestProcessEvidenceLeaseCancelledBeforeSetupClosesFutureAndReusesCapacity(t *testing.T) {
+	e := New()
+	lease, ready, ok := e.AcquireProcessEvidenceLease("cancelled-before-setup")
+	if !ok {
+		t.Fatal("acquire lease")
+	}
+	var stdinCalls atomic.Int32
+	e.stdinPipe = func(*exec.Cmd) (io.WriteCloser, error) {
+		stdinCalls.Add(1)
+		return nil, errors.New("stdin should not be reached")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	file := t.TempDir() + string(os.PathSeparator) + "started"
+	message := processEvidenceLeaseMessage(file)
+	message.Spawn.Stdin = "must not reach stdin"
+	if _, err := e.SendEventsWithProcessEvidenceLease(ctx, "cancelled-before-setup", lease, message, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled leased send = %v, want context.Canceled", err)
+	}
+	if stdinCalls.Load() != 0 {
+		t.Fatalf("cancelled lease reached stdin setup %d times", stdinCalls.Load())
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("cancelled lease started helper: %v", err)
+	}
+	if _, open := <-ready; open {
+		t.Fatal("cancelled lease left evidence future open")
+	}
+	if reusable, _, ok := e.AcquireProcessEvidenceLease("cancelled-before-setup"); !ok {
+		t.Fatal("cancelled lease did not reclaim capacity")
+	} else {
+		e.ReleaseProcessEvidenceLease("cancelled-before-setup", reusable)
+	}
+}
+
 func TestProcessEvidenceLeaseCommitFailureClosesFuture(t *testing.T) {
 	e := New()
-	e.commitEvidence = func() error { return errors.New("attach failed") }
+	file := t.TempDir() + string(os.PathSeparator) + "started"
+	var captured *executor.ProcessHandle
+	e.commitEvidence = func(h *executor.ProcessHandle) error {
+		captured = h
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(file); err == nil {
+				if !executor.SharedPM.IsAlive(h) {
+					return errors.New("persistent helper exited before attachment failure")
+				}
+				return errors.New("attach failed")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return errors.New("persistent helper did not start before attachment failure")
+	}
+	t.Cleanup(func() {
+		if executor.SharedPM.IsAlive(captured) {
+			executor.SharedPM.Kill(captured)
+		}
+		executor.SharedPM.Cleanup(captured)
+	})
 	lease, ready, ok := e.AcquireProcessEvidenceLease("attach-failure")
 	if !ok {
 		t.Fatal("acquire lease")
 	}
-	if _, err := e.SendEventsWithProcessEvidenceLease(context.Background(), "attach-failure", lease, processEvidenceLeaseMessage(t.TempDir()+string(os.PathSeparator)+"unused"), nil); err == nil {
+	if _, err := e.SendEventsWithProcessEvidenceLease(context.Background(), "attach-failure", lease, processEvidenceLeasePersistentMessage(file), nil); err == nil {
 		t.Fatal("commit failure unexpectedly succeeded")
+	}
+	if captured == nil {
+		t.Fatal("attachment failure did not capture spawned handle")
+	}
+	if executor.SharedPM.IsAlive(captured) {
+		t.Fatal("attachment failure left persistent root alive")
+	}
+	if !captured.TreeStopped() {
+		t.Fatal("attachment failure did not stop owned process tree")
+	}
+	select {
+	case <-captured.Done:
+	default:
+		t.Fatal("attachment failure returned before process reaped")
 	}
 	if _, open := <-ready; open {
 		t.Fatal("commit failure left evidence future open")

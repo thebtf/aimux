@@ -2,8 +2,10 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
 	aimexecutor "github.com/thebtf/aimux/pkg/executor"
 	pipeexecutor "github.com/thebtf/aimux/pkg/executor/pipe"
@@ -12,6 +14,16 @@ import (
 
 const ownedLeaseHelperEnv = "AIMUX_SWARM_OWNED_LEASE_HELPER"
 const ownedLeaseFileEnv = "AIMUX_SWARM_OWNED_LEASE_FILE"
+
+type cancellationSignalPipeExecutor struct {
+	*aimexecutor.CLIPipeAdapter
+	cancelStarted chan struct{}
+}
+
+func (e *cancellationSignalPipeExecutor) CancelExecution(_ context.Context, id types.ExecutionID, _ string) (types.CancellationEvidence, error) {
+	close(e.cancelStarted)
+	return types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}, nil
+}
 
 func TestSwarmOwnedLeaseHelper(t *testing.T) {
 	if os.Getenv(ownedLeaseHelperEnv) != "1" {
@@ -67,5 +79,117 @@ func TestSwarmOwnedLeaseRejectsDirectSameIDBeforeSideEffect(t *testing.T) {
 	<-done
 	if _, err := os.Stat(ownerFile); err != nil {
 		t.Fatalf("owner did not start its leased helper: %v", err)
+	}
+}
+
+func TestSwarmAlreadyCancelledOwnedLeaseDoesNotStartHelper(t *testing.T) {
+	pipe := pipeexecutor.New()
+	adapter := aimexecutor.NewCLIPipeAdapter(pipe)
+	s := New(func(string) (types.ExecutorV2, error) { return adapter, nil }, nil)
+	h, err := s.Get(context.Background(), "already-cancelled", Stateful, WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	file := t.TempDir() + string(os.PathSeparator) + "started"
+	terminal := make(chan types.ExecutorEvent, 1)
+	if _, err := s.Execute(ctx, h, "scope", "already-cancelled", ownedLeaseMessage(file), types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+		if event.Terminal {
+			terminal <- event
+		}
+		return true
+	})); !errors.Is(err, context.Canceled) {
+		t.Fatalf("already-cancelled Execute = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("already-cancelled Execute started helper: %v", err)
+	}
+	select {
+	case event := <-terminal:
+		if event.Type != "cancelled" {
+			t.Fatalf("already-cancelled terminal = %#v, want cancelled", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("already-cancelled Execute did not publish one terminal")
+	}
+	inspection, err := s.Inspect(context.Background(), h, "scope", "already-cancelled")
+	if err != nil || !inspection.Terminal || !inspection.Cancelled || inspection.ProcessTreeEvidence.Process.PID != 0 {
+		t.Fatalf("already-cancelled inspection = %#v, %v", inspection, err)
+	}
+	if lease, _, ok := pipe.AcquireProcessEvidenceLease("already-cancelled"); !ok {
+		t.Fatal("already-cancelled Execute did not reclaim lease capacity")
+	} else {
+		pipe.ReleaseProcessEvidenceLease("already-cancelled", lease)
+	}
+}
+
+func TestSwarmOwnedLeaseCancellationAtBoundaryDoesNotStartHelper(t *testing.T) {
+	pipe := pipeexecutor.New()
+	exec := &cancellationSignalPipeExecutor{
+		CLIPipeAdapter: aimexecutor.NewCLIPipeAdapter(pipe),
+		cancelStarted:  make(chan struct{}),
+	}
+	s := New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	h, err := s.Get(context.Background(), "boundary-cancel", Stateful, WithScope("scope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	previous := beforeOwnedLeaseExecution
+	beforeOwnedLeaseExecution = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() { beforeOwnedLeaseExecution = previous })
+	file := t.TempDir() + string(os.PathSeparator) + "started"
+	terminal := make(chan types.ExecutorEvent, 2)
+	executeDone := make(chan error, 1)
+	go func() {
+		_, err := s.Execute(context.Background(), h, "scope", "boundary-cancel", ownedLeaseMessage(file), types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
+			if event.Terminal {
+				terminal <- event
+			}
+			return true
+		}))
+		executeDone <- err
+	}()
+	<-entered
+	cancelDone := make(chan error, 1)
+	go func() {
+		_, err := s.Cancel(context.Background(), h, "scope", "boundary-cancel", "test")
+		cancelDone <- err
+	}()
+	select {
+	case <-exec.cancelStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Swarm Cancel did not cancel the owned lease before release")
+	}
+	close(release)
+	if err := <-executeDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("boundary-cancel Execute = %v, want context.Canceled", err)
+	}
+	if err := <-cancelDone; err != nil {
+		t.Fatalf("boundary-cancel Cancel = %v", err)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("boundary-cancel Execute started helper: %v", err)
+	}
+	if event := <-terminal; event.Type != "cancelled" {
+		t.Fatalf("boundary-cancel terminal = %#v, want cancelled", event)
+	}
+	select {
+	case event := <-terminal:
+		t.Fatalf("boundary-cancel published second terminal: %#v", event)
+	default:
+	}
+	inspection, err := s.Inspect(context.Background(), h, "scope", "boundary-cancel")
+	if err != nil || !inspection.Terminal || !inspection.Cancelled || inspection.ProcessTreeEvidence.Process.PID != 0 {
+		t.Fatalf("boundary-cancel inspection = %#v, %v", inspection, err)
+	}
+	if lease, _, ok := pipe.AcquireProcessEvidenceLease("boundary-cancel"); !ok {
+		t.Fatal("boundary-cancel Execute did not reclaim lease capacity")
+	} else {
+		pipe.ReleaseProcessEvidenceLease("boundary-cancel", lease)
 	}
 }

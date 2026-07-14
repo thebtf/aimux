@@ -77,6 +77,7 @@ type executionRecord struct {
 	cancelDone           chan struct{}
 	terminalDone         chan struct{}
 	cancellationErr      error
+	preSpawnCancelled    bool
 	terminal             bool
 	cancelled            bool
 	truncated            bool
@@ -184,11 +185,17 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	var evidenceReady <-chan types.ProcessTreeEvidence
 	var ownedLease ownedProcessEvidenceLease
 	var lease any
+	releaseOwnedLease := func() {
+		if ownedLease != nil {
+			ownedLease.ReleaseProcessEvidenceLease(id, lease)
+			ownedLease = nil
+		}
+	}
 	if holder, ok := exec.(ownedProcessEvidenceLease); ok {
 		lease, evidenceReady, record.exactProcessEvidence = holder.AcquireProcessEvidenceLease(id)
 		if record.exactProcessEvidence {
 			ownedLease = holder
-			defer holder.ReleaseProcessEvidenceLease(id, lease)
+			defer releaseOwnedLease()
 		}
 	} else if holder, ok := exec.(processEvidenceLease); ok {
 		record.exactProcessEvidence = holder.HoldProcessEvidence(id)
@@ -203,7 +210,15 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 			if beforeOwnedLeaseExecution != nil {
 				beforeOwnedLeaseExecution()
 			}
-			response, err = ownedLease.SendEventsWithProcessEvidenceLease(execCtx, id, lease, msg, admission)
+			if err = execCtx.Err(); err != nil {
+				releaseOwnedLease()
+				record.markPreSpawnCancellation(err)
+			} else {
+				response, err = ownedLease.SendEventsWithProcessEvidenceLease(execCtx, id, lease, msg, admission)
+				if errors.Is(err, context.Canceled) {
+					record.markPreSpawnCancellation(err)
+				}
+			}
 		} else {
 			response, err = native.SendEvents(execCtx, id, msg, admission)
 		}
@@ -436,7 +451,7 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 		record.truncated = true
 	}
 	eventType := "completed"
-	cancellationProven := record.cancellation.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped
+	cancellationProven := record.cancellation.NativeAcknowledged || record.hasProcessEvidence && record.processEvidence.Stopped || record.preSpawnCancelled
 	if record.outcome == executionOutcomeCancelled && cancellationProven {
 		eventType = "cancelled"
 	} else if response != nil && response.Error != nil && response.Error.Type == types.ErrorTypeTimeout {
@@ -467,6 +482,19 @@ func (record *executionRecord) markExecutionReturned(response *types.Response, r
 		close(record.executionDone)
 	}
 	record.mu.Unlock()
+}
+
+func (record *executionRecord) markPreSpawnCancellation(err error) {
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	record.preSpawnCancelled = true
+	if record.cancelDone != nil {
+		return
+	}
+	record.cancellation = types.CancellationEvidence{ExecutionID: record.id}
+	record.cancellationErr = err
+	record.cancelDone = make(chan struct{})
+	close(record.cancelDone)
 }
 
 func (record *executionRecord) captureProcessEvidence(ready <-chan types.ProcessTreeEvidence) {
