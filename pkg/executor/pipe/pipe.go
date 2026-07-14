@@ -446,7 +446,8 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 	}
 	args := types.SpawnArgsFromMessage(msg)
 	started := time.Now()
-	cmd := exec.Command(args.Command, args.Args...)
+	cmd := exec.CommandContext(ctx, args.Command, args.Args...)
+	cmd.Cancel = nil
 	cmd.Dir = args.CWD
 	switch {
 	case len(args.EnvList) > 0:

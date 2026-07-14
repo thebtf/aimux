@@ -163,6 +163,68 @@ func TestProcessEvidenceLeaseCancelledBeforeSetupClosesFutureAndReusesCapacity(t
 	}
 }
 
+func TestProcessEvidenceLeaseCancelBetweenCheckAndSpawnClosesFutureAndReusesCapacity(t *testing.T) {
+	e := New()
+	const id = types.ExecutionID("cancel-between-check-and-spawn")
+	lease, ready, ok := e.AcquireProcessEvidenceLease(id)
+	if !ok {
+		t.Fatal("acquire lease")
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	_, stdin, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stdin.Close() })
+	e.stdinPipe = func(*exec.Cmd) (io.WriteCloser, error) {
+		close(entered) // proves the manual context check already passed.
+		<-release
+		return stdin, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	file := t.TempDir() + string(os.PathSeparator) + "started"
+	message := processEvidenceLeaseMessage(file)
+	message.Spawn.Stdin = "non-empty stdin reaches the seam"
+	type outcome struct {
+		response *types.Response
+		err      error
+	}
+	outcomes := make(chan outcome, 1)
+	go func() {
+		response, err := e.SendEventsWithProcessEvidenceLease(ctx, id, lease, message, nil)
+		outcomes <- outcome{response, err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("stdin seam was not reached")
+	}
+	cancel()
+	close(release)
+	var got outcome
+	select {
+	case got = <-outcomes:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled send did not return")
+	}
+	if !errors.Is(got.err, context.Canceled) || !types.IsTypedError(got.err, types.ErrorTypeExecutor) {
+		t.Errorf("cancelled send = response %#v, err %v; want cancellation-shaped executor error", got.response, got.err)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("cancelled send started helper: %v", err)
+	}
+	if _, open := <-ready; open {
+		t.Fatal("cancelled send left evidence future open")
+	}
+	if reusable, _, ok := e.AcquireProcessEvidenceLease(id); !ok {
+		t.Fatal("cancelled send did not reclaim capacity")
+	} else {
+		e.ReleaseProcessEvidenceLease(id, reusable)
+	}
+}
+
 func TestProcessEvidenceLeaseCommitFailureClosesFuture(t *testing.T) {
 	e := New()
 	file := t.TempDir() + string(os.PathSeparator) + "started"
