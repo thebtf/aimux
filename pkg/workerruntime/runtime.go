@@ -36,3 +36,9 @@ func (r *WorkerRuntime) Cancel(ctx context.Context, h *swarm.Handle, scope strin
 func (r *WorkerRuntime) Inspect(ctx context.Context, h *swarm.Handle, scope string, id types.ExecutionID) (swarm.ExecutionInspection, error) {
 	return r.swarm.Inspect(ctx, h, scope, id)
 }
+
+// InspectSuppliedEvidence classifies explicit process evidence without
+// discovering or executing work.
+func (r *WorkerRuntime) InspectSuppliedEvidence(evidence *swarm.SuppliedProcessEvidence) swarm.SuppliedEvidenceInspection {
+	return r.swarm.InspectSuppliedEvidence(evidence)
+}

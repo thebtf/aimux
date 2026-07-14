@@ -3,6 +3,9 @@ package workerruntime
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"strings"
 	"sync"
@@ -19,6 +22,7 @@ func (*runtimeExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} 
 func (*runtimeExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{}, nil
 }
+
 func (*runtimeExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
 	return &types.Response{}, nil
 }
@@ -36,6 +40,7 @@ func (*terminalFlushQuotaExecutor) Info() types.ExecutorInfo { return types.Exec
 func (*terminalFlushQuotaExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{}, nil
 }
+
 func (*terminalFlushQuotaExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
 	return &types.Response{}, nil
 }
@@ -157,8 +162,124 @@ func TestWorkerRuntimeSourceGuardHasNoDirectExecutorDependency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(source), "pkg/executor") || strings.Contains(string(source), "pkg/loom") || strings.Contains(string(source), "pkg/server") || strings.Contains(string(source), "LegacyRun") {
-		t.Fatal("runtime must access live execution through swarm only")
+	for _, forbidden := range []string{"pkg/executor", "pkg/loom", "pkg/server", "LegacyRun", "swarm.New(", ".Get(", ".Send(", ".SendStream(", "MaybeStartSession", "SessionFactory"} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("runtime must access live execution through supplied Swarm handles; found %q", forbidden)
+		}
+	}
+}
+
+func TestWorkerRuntimeInspectSuppliedEvidenceDelegatesDirectly(t *testing.T) {
+	source, err := os.ReadFile("runtime.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !workerRuntimeInspectSuppliedEvidenceDelegatesDirectly(source) {
+		t.Fatal("InspectSuppliedEvidence must remain one direct delegation through the supplied Swarm")
+	}
+
+	mutations := []string{
+		`package workerruntime
+type WorkerRuntime struct{ swarm any }
+func (r *WorkerRuntime) InspectSuppliedEvidence(evidence any) any {
+	constructor := swarm.New
+	_ = constructor
+	return r.swarm.InspectSuppliedEvidence(evidence)
+}`,
+		`package workerruntime
+type WorkerRuntime struct{ swarm any }
+func (r *WorkerRuntime) InspectSuppliedEvidence(evidence any) any {
+	r.swarm.Get()
+	return r.swarm.InspectSuppliedEvidence(evidence)
+}`,
+	}
+	for _, mutation := range mutations {
+		if workerRuntimeInspectSuppliedEvidenceDelegatesDirectly([]byte(mutation)) {
+			t.Fatal("delegation guard accepted an extra constructor or Swarm call")
+		}
+	}
+}
+
+func workerRuntimeInspectSuppliedEvidenceDelegatesDirectly(source []byte) bool {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "runtime.go", source, 0)
+	if err != nil {
+		return false
+	}
+	var target *ast.FuncDecl
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == "InspectSuppliedEvidence" {
+			target = function
+			break
+		}
+	}
+	if target == nil || target.Recv == nil || len(target.Recv.List) != 1 || len(target.Recv.List[0].Names) != 1 || target.Recv.List[0].Names[0].Name != "r" || target.Body == nil || len(target.Body.List) != 1 {
+		return false
+	}
+	returned, ok := target.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return false
+	}
+	call, ok := returned.Results[0].(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	argument, ok := call.Args[0].(*ast.Ident)
+	if !ok || argument.Name != "evidence" {
+		return false
+	}
+	method, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || method.Sel.Name != "InspectSuppliedEvidence" {
+		return false
+	}
+	field, ok := method.X.(*ast.SelectorExpr)
+	if !ok || field.Sel.Name != "swarm" {
+		return false
+	}
+	receiver, ok := field.X.(*ast.Ident)
+	return ok && receiver.Name == "r"
+}
+
+func TestWorkerRuntimeInspectSuppliedEvidenceIsPure(t *testing.T) {
+	factoryCalls := 0
+	s := swarm.New(func(string) (types.ExecutorV2, error) {
+		factoryCalls++
+		return &runtimeExecutor{}, nil
+	}, nil)
+	r, err := New(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := types.ProcessIdentity{PID: 42, StartFingerprint: "start-a", TreeID: "tree-a"}
+	observed := expected
+	stale := expected
+	stale.StartFingerprint = "start-b"
+	cleanExit, crashExit := 0, 23
+	tests := []struct {
+		name     string
+		evidence *swarm.SuppliedProcessEvidence
+		want     swarm.SuppliedEvidenceClassification
+	}{
+		{name: "missing", want: swarm.SuppliedEvidenceUnknown},
+		{name: "live", evidence: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &observed}, want: swarm.SuppliedEvidenceLive},
+		{name: "clean exit", evidence: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ExitCode: &cleanExit}, want: swarm.SuppliedEvidenceCleanExit},
+		{name: "failed crash", evidence: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ExitCode: &crashExit}, want: swarm.SuppliedEvidenceFailedCrash},
+		{name: "stale identity", evidence: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &stale}, want: swarm.SuppliedEvidenceStaleIdentity},
+		{name: "stale after root absence", evidence: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &stale, RootAbsent: true}, want: swarm.SuppliedEvidenceStaleIdentity},
+		{name: "orphan after PID reuse", evidence: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &stale, RootAbsent: true, DescendantsSurvived: true}, want: swarm.SuppliedEvidenceOrphanedTree},
+		{name: "orphaned tree", evidence: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, RootAbsent: true, DescendantsSurvived: true}, want: swarm.SuppliedEvidenceOrphanedTree},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			first := r.InspectSuppliedEvidence(test.evidence)
+			second := r.InspectSuppliedEvidence(test.evidence)
+			if first != second || first.Classification != test.want {
+				t.Fatalf("inspections = %#v then %#v, want frozen %q classification", first, second, test.want)
+			}
+		})
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("factory calls = %d, want zero", factoryCalls)
 	}
 }
 

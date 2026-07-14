@@ -25,6 +25,7 @@ func (e *eventExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} 
 func (e *eventExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{}, nil
 }
+
 func (e *eventExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
 	return &types.Response{}, nil
 }
@@ -244,6 +245,60 @@ func TestSwarmExecutionRejectsDuplicateIDWhileTerminalRecordIsRetained(t *testin
 	}
 }
 
+func TestSwarmInspectSuppliedEvidenceClassifiesExplicitEvidence(t *testing.T) {
+	expected := types.ProcessIdentity{PID: 42, StartFingerprint: "start-a", TreeID: "tree-a"}
+	exact := expected
+	stale := expected
+	stale.StartFingerprint = "start-b"
+	wrongTree := expected
+	wrongTree.TreeID = "tree-b"
+	differentPID := expected
+	differentPID.PID++
+	cleanExit, crashExit, invalidExit := 0, 23, -1
+
+	tests := []struct {
+		name      string
+		candidate *swarm.SuppliedProcessEvidence
+		want      swarm.SuppliedEvidenceClassification
+	}{
+		{name: "missing", want: swarm.SuppliedEvidenceUnknown},
+		{name: "invalid candidate", candidate: &swarm.SuppliedProcessEvidence{}, want: swarm.SuppliedEvidenceUnknown},
+		{name: "live exact identity", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &exact}, want: swarm.SuppliedEvidenceLive},
+		{name: "clean exit", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ExitCode: &cleanExit}, want: swarm.SuppliedEvidenceCleanExit},
+		{name: "failed crash", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ExitCode: &crashExit}, want: swarm.SuppliedEvidenceFailedCrash},
+		{name: "stale reused PID", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &stale}, want: swarm.SuppliedEvidenceStaleIdentity},
+		{name: "stale reused PID after root absence", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &stale, RootAbsent: true}, want: swarm.SuppliedEvidenceStaleIdentity},
+		{name: "orphaned descendants after PID reuse", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &stale, RootAbsent: true, DescendantsSurvived: true}, want: swarm.SuppliedEvidenceOrphanedTree},
+		{name: "orphaned after observed root absence", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, RootAbsent: true, DescendantsSurvived: true}, want: swarm.SuppliedEvidenceOrphanedTree},
+		{name: "orphaned after root exit", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ExitCode: &cleanExit, DescendantsSurvived: true}, want: swarm.SuppliedEvidenceOrphanedTree},
+		{name: "survivors without root evidence", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, DescendantsSurvived: true}, want: swarm.SuppliedEvidenceUnknown},
+		{name: "contradictory live and exited", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &exact, ExitCode: &cleanExit}, want: swarm.SuppliedEvidenceUnknown},
+		{name: "contradictory live and absent", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &exact, RootAbsent: true}, want: swarm.SuppliedEvidenceUnknown},
+		{name: "contradictory live and survivors", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &exact, DescendantsSurvived: true}, want: swarm.SuppliedEvidenceUnknown},
+		{name: "same generation wrong tree", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &wrongTree}, want: swarm.SuppliedEvidenceUnknown},
+		{name: "different observed PID", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ObservedProcess: &differentPID}, want: swarm.SuppliedEvidenceUnknown},
+		{name: "negative exit code", candidate: &swarm.SuppliedProcessEvidence{ExpectedProcess: expected, ExitCode: &invalidExit}, want: swarm.SuppliedEvidenceUnknown},
+	}
+
+	factoryCalls := 0
+	s := swarm.New(func(string) (types.ExecutorV2, error) {
+		factoryCalls++
+		return &eventExecutor{}, nil
+	}, nil)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			first := s.InspectSuppliedEvidence(test.candidate)
+			second := s.InspectSuppliedEvidence(test.candidate)
+			if first != second || first.Classification != test.want {
+				t.Fatalf("inspections = %#v then %#v, want stable %q", first, second, test.want)
+			}
+		})
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("factory calls = %d, want zero", factoryCalls)
+	}
+}
+
 type contextEventExecutor struct {
 	started chan<- struct{}
 	late    <-chan struct{}
@@ -257,6 +312,7 @@ func (*contextEventExecutor) Info() types.ExecutorInfo { return types.ExecutorIn
 func (*contextEventExecutor) Send(context.Context, types.Message) (*types.Response, error) {
 	return &types.Response{}, nil
 }
+
 func (*contextEventExecutor) SendStream(context.Context, types.Message, func(types.Chunk)) (*types.Response, error) {
 	return &types.Response{}, nil
 }

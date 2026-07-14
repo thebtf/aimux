@@ -3,6 +3,10 @@ package swarm
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"testing"
 	"time"
 
@@ -182,5 +186,103 @@ func TestRestart_ReconstructsTenantContextWhenFactoryCtxMissing(t *testing.T) {
 				t.Fatalf("handle tenantID = %q, want canonical empty legacy tenant", h.TenantID)
 			}
 		})
+	}
+}
+
+func TestInspectSuppliedEvidenceSourceHasNoDiscoveryOrExecutionCalls(t *testing.T) {
+	source, err := os.ReadFile("execution.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inspectSuppliedEvidenceSourceGuard(source); err != nil {
+		t.Fatal(err)
+	}
+
+	const forbiddenMutation = `package swarm
+type Swarm struct{}
+type SuppliedProcessEvidence struct{}
+type SuppliedEvidenceInspection struct{}
+func New(any, any) {}
+func Validate() { New(nil, nil) }
+func (*Swarm) InspectSuppliedEvidence(evidence *SuppliedProcessEvidence) SuppliedEvidenceInspection {
+	return classifySuppliedEvidence(evidence)
+}
+func classifySuppliedEvidence(evidence *SuppliedProcessEvidence) SuppliedEvidenceInspection {
+	Validate()
+	return SuppliedEvidenceInspection{}
+}`
+	if err := inspectSuppliedEvidenceSourceGuard([]byte(forbiddenMutation)); err == nil {
+		t.Fatal("source guard accepted a forbidden classifier constructor call")
+	}
+}
+
+func inspectSuppliedEvidenceSourceGuard(source []byte) error {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "execution.go", source, 0)
+	if err != nil {
+		return err
+	}
+	functions := make(map[string]*ast.FuncDecl, 2)
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok {
+			functions[function.Name.Name] = function
+		}
+	}
+	wrapper := functions["InspectSuppliedEvidence"]
+	if wrapper == nil {
+		return fmt.Errorf("InspectSuppliedEvidence declaration not found")
+	}
+	if wrapper.Recv == nil || len(wrapper.Recv.List) != 1 || len(wrapper.Recv.List[0].Names) != 0 {
+		return fmt.Errorf("InspectSuppliedEvidence must keep an unnamed Swarm receiver")
+	}
+
+	contracts := []string{"InspectSuppliedEvidence", "classifySuppliedEvidence"}
+	for _, functionName := range contracts {
+		function := functions[functionName]
+		if function == nil {
+			return fmt.Errorf("%s declaration not found", functionName)
+		}
+		var forbidden string
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if !isAllowedSuppliedEvidenceCall(functionName, call) {
+				forbidden = "dynamic call"
+				switch called := call.Fun.(type) {
+				case *ast.Ident:
+					forbidden = called.Name
+				case *ast.SelectorExpr:
+					forbidden = called.Sel.Name
+				}
+				return false
+			}
+			return true
+		})
+		if forbidden != "" {
+			return fmt.Errorf("%s contains forbidden call %s", functionName, forbidden)
+		}
+	}
+	return nil
+}
+
+func isAllowedSuppliedEvidenceCall(functionName string, call *ast.CallExpr) bool {
+	if functionName == "InspectSuppliedEvidence" {
+		called, ok := call.Fun.(*ast.Ident)
+		return ok && called.Name == "classifySuppliedEvidence" && len(call.Args) == 1
+	}
+	called, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || called.Sel.Name != "Validate" || len(call.Args) != 0 {
+		return false
+	}
+	switch receiver := called.X.(type) {
+	case *ast.Ident:
+		return receiver.Name == "observed"
+	case *ast.SelectorExpr:
+		root, ok := receiver.X.(*ast.Ident)
+		return ok && root.Name == "evidence" && receiver.Sel.Name == "ExpectedProcess"
+	default:
+		return false
 	}
 }

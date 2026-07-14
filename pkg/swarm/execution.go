@@ -54,6 +54,38 @@ type ExecutionInspection struct {
 	ProcessTreeEvidence  types.ProcessTreeEvidence
 }
 
+// SuppliedEvidenceClassification reports only what caller-supplied process
+// evidence proves. Durable candidate discovery and restart recovery belong to
+// CR-003.
+type SuppliedEvidenceClassification string
+
+const (
+	SuppliedEvidenceUnknown       SuppliedEvidenceClassification = "unknown"
+	SuppliedEvidenceLive          SuppliedEvidenceClassification = "live"
+	SuppliedEvidenceCleanExit     SuppliedEvidenceClassification = "clean_exit"
+	SuppliedEvidenceFailedCrash   SuppliedEvidenceClassification = "failed_crash"
+	SuppliedEvidenceStaleIdentity SuppliedEvidenceClassification = "stale_identity"
+	SuppliedEvidenceOrphanedTree  SuppliedEvidenceClassification = "orphaned_tree"
+)
+
+// SuppliedProcessEvidence contains explicit observations for one expected OS
+// process generation. Pointer fields are optional evidence, never discovery
+// requests. DescendantsSurvived is a positive observation, not an inference
+// from ProcessTreeEvidence.Stopped=false.
+type SuppliedProcessEvidence struct {
+	ExpectedProcess     types.ProcessIdentity
+	ObservedProcess     *types.ProcessIdentity
+	RootAbsent          bool
+	ExitCode            *int
+	DescendantsSurvived bool
+}
+
+// SuppliedEvidenceInspection is immutable-by-value and contains no input
+// pointers or live Swarm state.
+type SuppliedEvidenceInspection struct {
+	Classification SuppliedEvidenceClassification
+}
+
 type handleAuthority struct {
 	tenantID   string
 	scope      string
@@ -467,6 +499,57 @@ func (s *Swarm) tryAcquireNativeCancellation() bool {
 
 func (s *Swarm) releaseNativeCancellation() {
 	<-s.nativeCancellationGate
+}
+
+// InspectSuppliedEvidence classifies explicit process evidence without reading
+// the Swarm registry, constructing an executor, or spawning/resuming work.
+func (*Swarm) InspectSuppliedEvidence(evidence *SuppliedProcessEvidence) SuppliedEvidenceInspection {
+	return classifySuppliedEvidence(evidence)
+}
+
+func classifySuppliedEvidence(evidence *SuppliedProcessEvidence) SuppliedEvidenceInspection {
+	inspection := SuppliedEvidenceInspection{Classification: SuppliedEvidenceUnknown}
+	if evidence == nil || evidence.ExpectedProcess.Validate() != nil {
+		return inspection
+	}
+	if evidence.ExitCode != nil && *evidence.ExitCode < 0 {
+		return inspection
+	}
+
+	if observed := evidence.ObservedProcess; observed != nil {
+		if observed.Validate() != nil || observed.PID != evidence.ExpectedProcess.PID {
+			return inspection
+		}
+		if observed.StartFingerprint != evidence.ExpectedProcess.StartFingerprint {
+			if evidence.DescendantsSurvived {
+				inspection.Classification = SuppliedEvidenceOrphanedTree
+			} else {
+				inspection.Classification = SuppliedEvidenceStaleIdentity
+			}
+			return inspection
+		}
+		if *observed != evidence.ExpectedProcess || evidence.RootAbsent || evidence.ExitCode != nil || evidence.DescendantsSurvived {
+			return inspection
+		}
+		inspection.Classification = SuppliedEvidenceLive
+		return inspection
+	}
+
+	if evidence.DescendantsSurvived {
+		if evidence.RootAbsent || evidence.ExitCode != nil {
+			inspection.Classification = SuppliedEvidenceOrphanedTree
+		}
+		return inspection
+	}
+	if evidence.ExitCode == nil {
+		return inspection
+	}
+	if *evidence.ExitCode == 0 {
+		inspection.Classification = SuppliedEvidenceCleanExit
+	} else {
+		inspection.Classification = SuppliedEvidenceFailedCrash
+	}
+	return inspection
 }
 
 // Inspect returns the bounded, fenced in-memory execution snapshot without
