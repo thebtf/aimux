@@ -168,6 +168,13 @@ func runT016LateScenario(t *testing.T, spec t016ScenarioSpec) string {
 		lateAdmission:  make(chan bool, 1),
 	}
 	s := swarm.New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown swarm for scenario %s: %v", spec.ID, err)
+		}
+	})
 	runtime, err := workerruntime.New(s)
 	if err != nil {
 		t.Fatalf("create worker runtime: %v", err)

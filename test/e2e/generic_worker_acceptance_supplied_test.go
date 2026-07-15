@@ -1,8 +1,10 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/pkg/swarm"
 	"github.com/thebtf/aimux/pkg/types"
@@ -17,6 +19,13 @@ func runT016SuppliedScenario(t *testing.T, spec t016ScenarioSpec) string {
 		factoryCalls++
 		return nil, fmt.Errorf("executor construction is forbidden for supplied evidence")
 	}, nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown swarm for scenario %s: %v", spec.ID, err)
+		}
+	})
 	runtime, err := workerruntime.New(s)
 	if err != nil {
 		t.Fatalf("create worker runtime: %v", err)
