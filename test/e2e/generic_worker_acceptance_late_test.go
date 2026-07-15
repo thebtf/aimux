@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,16 @@ const t016LateBoundedWait = 15 * time.Second
 const (
 	t016LateExecutionID             types.ExecutionID = "t016-late"
 	t016LateCleanupProbeExecutionID types.ExecutionID = "t016-late-cleanup-probe"
+
+	// t016LateProof and t016LateFixture bind this runner to the exact
+	// manifest row it implements; a manifest drift fails loudly here
+	// instead of silently exercising the wrong fixture.
+	t016LateProof   = "late_output"
+	t016LateFixture = "in-process-late-output"
+
+	// t016LateStdoutContent is the known late output the fake native
+	// canceller attempts to admit after the resolution deadline.
+	t016LateStdoutContent = "t016-late-stdout-after-deadline"
 )
 
 // errT016LateProvider is the deliberately non-context.Canceled error the
@@ -37,11 +48,16 @@ var errT016LateProvider = errors.New("t016 late scenario: provider returned afte
 // implements EventExecutor and ExecutionCanceller. SendEvents blocks until
 // the execution context is cancelled and then returns errT016LateProvider;
 // CancelExecution intentionally returns only after the real cancellation
-// resolution deadline elapses, simulating a late native acknowledgement.
+// resolution deadline elapses, simulating a late native acknowledgement,
+// and attempts one known late stdout admission through the same admission
+// sink SendEvents received just before signalling it has returned.
 type t016LateCancellationExecutor struct {
 	started        chan struct{}
 	cancelStarted  chan struct{}
 	nativeReturned chan struct{}
+
+	mu   sync.Mutex
+	sink types.ExecutorEventSink
 }
 
 func (*t016LateCancellationExecutor) Info() types.ExecutorInfo { return types.ExecutorInfo{} }
@@ -54,10 +70,13 @@ func (*t016LateCancellationExecutor) SendStream(context.Context, types.Message, 
 func (*t016LateCancellationExecutor) IsAlive() types.HealthStatus { return types.HealthAlive }
 func (*t016LateCancellationExecutor) Close() error                { return nil }
 
-func (e *t016LateCancellationExecutor) SendEvents(ctx context.Context, id types.ExecutionID, _ types.Message, _ types.ExecutorEventSink) (*types.Response, error) {
+func (e *t016LateCancellationExecutor) SendEvents(ctx context.Context, id types.ExecutionID, _ types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
 	if id == t016LateCleanupProbeExecutionID {
 		return &types.Response{}, nil
 	}
+	e.mu.Lock()
+	e.sink = sink
+	e.mu.Unlock()
 	close(e.started)
 	<-ctx.Done()
 	return nil, errT016LateProvider
@@ -67,18 +86,78 @@ func (e *t016LateCancellationExecutor) CancelExecution(ctx context.Context, id t
 	close(e.cancelStarted)
 	<-ctx.Done()
 	time.Sleep(t016LateNativeCancelSlack)
+
+	e.mu.Lock()
+	sink := e.sink
+	e.mu.Unlock()
+	if sink != nil {
+		sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "text-only", Content: []byte(t016LateStdoutContent)})
+	}
+
 	evidence := types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}
 	close(e.nativeReturned)
 	return evidence, nil
 }
 
+// t016LateSink is the outer, test-level ExecutorEventSink passed to
+// WorkerRuntime.Execute. It keeps a mutex-guarded copy of every delivered
+// event and publishes only the first terminal event on a buffered,
+// non-blocking channel, so a hypothetical duplicate terminal admission can
+// never block the sender.
+type t016LateSink struct {
+	mu       sync.Mutex
+	events   []types.ExecutorEvent
+	once     sync.Once
+	terminal chan types.ExecutorEvent
+}
+
+func newT016LateSink() *t016LateSink {
+	return &t016LateSink{terminal: make(chan types.ExecutorEvent, 1)}
+}
+
+func (s *t016LateSink) TryAdmit(event types.ExecutorEvent) bool {
+	copied := event
+	if event.Content != nil {
+		copied.Content = append([]byte(nil), event.Content...)
+	}
+	s.mu.Lock()
+	s.events = append(s.events, copied)
+	s.mu.Unlock()
+	if event.Terminal {
+		s.once.Do(func() {
+			select {
+			case s.terminal <- copied:
+			default:
+			}
+		})
+	}
+	return true
+}
+
+func (s *t016LateSink) snapshot() []types.ExecutorEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]types.ExecutorEvent, len(s.events))
+	copy(out, s.events)
+	return out
+}
+
 // runT016LateScenario proves that a native cancellation returned after the
 // resolution deadline cannot rewrite an already-finalized terminal or
-// inspection, that repeated Cancel/Inspect calls keep returning the same
-// canonical evidence, and that execution/handle cleanup still completes
-// once the late native call actually returns.
-func runT016LateScenario(t *testing.T) string {
+// inspection, that a late output admission attempt through the same
+// admission sink is rejected and never reaches the outer sink, that
+// repeated Cancel/Inspect calls keep returning the same canonical
+// evidence, and that execution/handle cleanup still completes once the
+// late native call actually returns.
+func runT016LateScenario(t *testing.T, spec t016ScenarioSpec) string {
 	t.Helper()
+
+	if spec.Proof != t016LateProof {
+		t.Fatalf("late scenario proof = %q, want %q", spec.Proof, t016LateProof)
+	}
+	if spec.Input.Fixture != t016LateFixture {
+		t.Fatalf("late scenario fixture = %q, want %q", spec.Input.Fixture, t016LateFixture)
+	}
 
 	exec := &t016LateCancellationExecutor{
 		started:        make(chan struct{}),
@@ -95,13 +174,7 @@ func runT016LateScenario(t *testing.T) string {
 		t.Fatalf("get handle: %v", err)
 	}
 
-	terminalEvents := make(chan types.ExecutorEvent, 1)
-	sink := types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
-		if event.Terminal {
-			terminalEvents <- event
-		}
-		return true
-	})
+	sink := newT016LateSink()
 
 	execDone := make(chan error, 1)
 	go func() {
@@ -161,7 +234,7 @@ func runT016LateScenario(t *testing.T) string {
 
 	var terminalEvent types.ExecutorEvent
 	select {
-	case terminalEvent = <-terminalEvents:
+	case terminalEvent = <-sink.terminal:
 	case <-time.After(t016LateBoundedWait):
 		t.Fatal("timed out waiting for the terminal event")
 	}
@@ -185,8 +258,10 @@ func runT016LateScenario(t *testing.T) string {
 	}
 
 	// Wait for the intentionally late native cancellation to actually
-	// return, then confirm it could not rewrite the already-finalized
-	// terminal or inspection evidence.
+	// return. Just before it does, it attempts a known stdout event
+	// through the same admission sink SendEvents received; that attempt
+	// must be rejected because the execution is already terminal, and must
+	// not rewrite the already-finalized terminal or inspection evidence.
 	select {
 	case <-exec.nativeReturned:
 	case <-time.After(t016LateBoundedWait):
@@ -206,19 +281,53 @@ func runT016LateScenario(t *testing.T) string {
 		t.Fatalf("Cancel after late native return = %#v, %v, want %#v, context.DeadlineExceeded", lateEvidence, lateErr, firstCancel.evidence)
 	}
 
+	// Exactly one event (the terminal failed event) must ever have reached
+	// the outer sink; the late stdout admission attempt must not have
+	// leaked through.
+	delivered := sink.snapshot()
+	if len(delivered) != 1 {
+		t.Fatalf("delivered events = %#v, want exactly 1", delivered)
+	}
+	if !delivered[0].Terminal || delivered[0].Type != "failed" {
+		t.Fatalf("delivered[0] = %#v, want the single terminal failed event", delivered[0])
+	}
+	for _, event := range delivered {
+		if event.Channel == "stdout" {
+			t.Fatalf("late stdout leaked into the outer sink: %#v", event)
+		}
+	}
+
 	// Execution and handle cleanup must still complete: the operation lease
 	// held across the in-flight native cancellation only releases once the
 	// late CancelExecution call actually returns, so a fresh execution on
-	// the same handle eventually succeeds without ErrExecutionActive.
+	// the same handle eventually succeeds without ErrExecutionActive. This
+	// probe is bounded by an explicit context deadline; the retry loop runs
+	// in its own goroutine and the caller only ever blocks in a select
+	// against that same deadline.
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), t016LateBoundedWait)
+	defer cleanupCancel()
 	cleanupSink := types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })
-	cleanupDeadline := time.Now().Add(t016LateBoundedWait)
-	var cleanupErr error
-	for {
-		_, cleanupErr = runtime.Execute(context.Background(), h, "t016-late-scope", t016LateCleanupProbeExecutionID, types.Message{Content: "cleanup-probe"}, cleanupSink)
-		if cleanupErr == nil || !errors.Is(cleanupErr, swarm.ErrExecutionActive) || time.Now().After(cleanupDeadline) {
-			break
+	cleanupDone := make(chan error, 1)
+	go func() {
+		for {
+			_, probeErr := runtime.Execute(cleanupCtx, h, "t016-late-scope", t016LateCleanupProbeExecutionID, types.Message{Content: "cleanup-probe"}, cleanupSink)
+			if probeErr == nil || !errors.Is(probeErr, swarm.ErrExecutionActive) {
+				cleanupDone <- probeErr
+				return
+			}
+			select {
+			case <-cleanupCtx.Done():
+				cleanupDone <- probeErr
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
 		}
-		time.Sleep(10 * time.Millisecond)
+	}()
+	var cleanupErr error
+	select {
+	case cleanupErr = <-cleanupDone:
+	case <-cleanupCtx.Done():
+		t.Fatal("timed out waiting for post-cleanup Execute")
 	}
 	if cleanupErr != nil {
 		t.Fatalf("post-cleanup Execute = %v, want success once the handle operation lease is released", cleanupErr)

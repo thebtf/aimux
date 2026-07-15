@@ -21,28 +21,27 @@ import (
 func runT016SourceOutputScenario(t *testing.T, binary string, spec t016ScenarioSpec) string {
 	t.Helper()
 
-	var args []string
+	args := append([]string(nil), spec.Input.Args...)
 	var stdin []byte
+	if spec.Input.StdinBase64 != "" {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(spec.Input.StdinBase64)
+		if decodeErr != nil {
+			t.Fatalf("decode scenario %q stdin: %v", spec.ID, decodeErr)
+		}
+		if len(decoded) != spec.Input.StdinBytes {
+			t.Fatalf("scenario %q decoded stdin bytes = %d, want %d", spec.ID, len(decoded), spec.Input.StdinBytes)
+		}
+		stdin = decoded
+	} else if spec.Input.StdinBytes > 0 {
+		if spec.Input.StdinRepeatByte < 0 || spec.Input.StdinRepeatByte > 255 {
+			t.Fatalf("scenario %q stdin repeat byte = %d, want 0..255", spec.ID, spec.Input.StdinRepeatByte)
+		}
+		stdin = bytes.Repeat([]byte{byte(spec.Input.StdinRepeatByte)}, spec.Input.StdinBytes)
+	}
+	separator := slices.Index(args, "--")
 	var wantArgv []string
-	switch spec.ID {
-	case "stream":
-		args = []string{"generic-worker", "--mode", "stream"}
-	case "flood":
-		args = []string{"generic-worker", "--mode", "flood", "--count", "32", "--chunk-bytes", "256"}
-	case "byte_edge":
-		args = []string{"generic-worker", "--mode", "framing"}
-	case "typed_input":
-		wantArgv = []string{"space value", "$HOME; & | < >", "quote\"'\\", "unicode-β"}
-		stdin = []byte{0x00, 0xff, 0x1b, 'A', '\n', 0xce, 0xb2}
-		args = append([]string{"generic-worker", "--mode", "typed-input", "--"}, wantArgv...)
-	case "invalid_input":
-		args = []string{"generic-worker", "--mode", "invalid-input"}
-	case "oversize_input":
-		args = []string{"generic-worker", "--mode", "typed-input"}
-		stdin = bytes.Repeat([]byte{0xa5}, (1<<16)+1)
-	default:
-		t.Fatalf("unknown source output scenario %q", spec.ID)
-		return ""
+	if separator >= 0 {
+		wantArgv = append([]string(nil), args[separator+1:]...)
 	}
 
 	adapter := executor.NewCLIPipeAdapter(pipe.New())
@@ -72,7 +71,7 @@ func runT016SourceOutputScenario(t *testing.T, binary string, spec t016ScenarioS
 		handle,
 		scope,
 		types.ExecutionID("t016-source-output-"+spec.ID),
-		types.Message{Spawn: &types.SpawnArgs{Command: binary, Args: args, Stdin: string(stdin)}},
+		types.Message{Spawn: &types.SpawnArgs{Command: binary, Args: args, Stdin: string(stdin), TimeoutSeconds: spec.Input.TimeoutSeconds}},
 		types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
 			event.Content = append([]byte(nil), event.Content...)
 			eventsMu.Lock()
@@ -107,12 +106,15 @@ func runT016SourceOutputScenario(t *testing.T, binary string, spec t016ScenarioS
 	if terminalIndex < 0 {
 		t.Fatalf("scenario %q emitted no terminal event: %#v", spec.ID, snapshot)
 	}
+	if terminalIndex != len(snapshot)-1 {
+		t.Fatalf("scenario %q terminal index = %d, want final event %d: %#v", spec.ID, terminalIndex, len(snapshot)-1, snapshot)
+	}
 	if terminal.Type != spec.Expected {
 		t.Fatalf("scenario %q terminal type = %q, want %q", spec.ID, terminal.Type, spec.Expected)
 	}
 
-	switch spec.ID {
-	case "stream":
+	switch spec.Proof {
+	case "ordered_stream":
 		if err != nil || response == nil || response.ExitCode != 0 {
 			t.Fatalf("stream response = %#v, error = %v", response, err)
 		}
@@ -134,7 +136,7 @@ func runT016SourceOutputScenario(t *testing.T, binary string, spec t016ScenarioS
 		if !seen["stdout"] || !seen["stderr"] {
 			t.Fatalf("stream events = %#v, want stdout and stderr before terminal", snapshot)
 		}
-	case "flood":
+	case "bounded_flood":
 		if err != nil || response == nil || response.ExitCode != 0 || response.Partial || terminal.Truncated {
 			t.Fatalf("flood response = %#v, terminal = %#v, error = %v", response, terminal, err)
 		}
@@ -148,7 +150,7 @@ func runT016SourceOutputScenario(t *testing.T, binary string, spec t016ScenarioS
 				t.Fatalf("flood event was truncated: %#v", event)
 			}
 		}
-	case "byte_edge":
+	case "byte_exact":
 		if err != nil || response == nil || response.ExitCode != 0 {
 			t.Fatalf("byte edge response = %#v, error = %v", response, err)
 		}
@@ -179,20 +181,22 @@ func runT016SourceOutputScenario(t *testing.T, binary string, spec t016ScenarioS
 		if event.Event != "typed_input" || !slices.Equal(event.Argv, wantArgv) || event.StdinBytes != len(stdin) || decodeErr != nil || !bytes.Equal(decoded, stdin) {
 			t.Fatalf("typed input event = %#v, decoded = %v, decode error = %v", event, decoded, decodeErr)
 		}
-	case "invalid_input", "oversize_input":
+	case "input_rejected", "input_limit":
 		if response == nil || response.ExitCode == 0 {
-			t.Fatalf("%s response = %#v, want nonzero exit", spec.ID, response)
+			t.Fatalf("%s response = %#v, want nonzero exit", spec.Proof, response)
 		}
 		if len(stdout) != 0 {
-			t.Fatalf("%s stdout = %q, want empty", spec.ID, stdout)
+			t.Fatalf("%s stdout = %q, want empty", spec.Proof, stdout)
 		}
 		wantDiagnostic := []byte("generic-worker: unknown mode \"invalid-input\"\n")
-		if spec.ID == "oversize_input" {
+		if spec.Proof == "input_limit" {
 			wantDiagnostic = []byte("generic-worker: typed-input bounds: stdin-bytes<=65536\n")
 		}
 		if !bytes.Contains(stderr, wantDiagnostic) {
-			t.Fatalf("%s stderr = %q, want diagnostic %q", spec.ID, stderr, wantDiagnostic)
+			t.Fatalf("%s stderr = %q, want diagnostic %q", spec.Proof, stderr, wantDiagnostic)
 		}
+	default:
+		t.Fatalf("unknown source output proof %q", spec.Proof)
 	}
 
 	return terminal.Type

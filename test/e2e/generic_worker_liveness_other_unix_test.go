@@ -35,11 +35,21 @@ func t016ProcessAlive(identity *t016ProcessIdentity) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
+// t016ForceKillProcess never sends a real signal on this target: a
+// destructive signal risks hitting an unrelated process that has since
+// reused this PID. Instead it waits past the fixture's own known self-exit
+// bound using only the liveness poll (a signal-0 existence probe never
+// mutates process state); still alive after that bound is a genuine
+// cleanup failure surfaced to the caller, not something to paper over by
+// guessing at a kill.
 func t016ForceKillProcess(identity *t016ProcessIdentity) error {
 	if identity == nil {
 		return nil
 	}
-	return fmt.Errorf("stable force-kill identity is unavailable for process %d on this Unix target", identity.pid)
+	if waitForT016ProcessExit(identity, t016TreeFixtureSelfExitBound) {
+		return nil
+	}
+	return fmt.Errorf("process %d did not self-exit within %s; force-kill by signal is unavailable on this Unix target because the PID may have been reused", identity.pid, t016TreeFixtureSelfExitBound)
 }
 
 func closeT016ProcessIdentity(identity *t016ProcessIdentity) {

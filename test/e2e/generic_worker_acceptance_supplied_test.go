@@ -9,7 +9,7 @@ import (
 	"github.com/thebtf/aimux/pkg/workerruntime"
 )
 
-func runT016SuppliedScenario(t *testing.T, id string) string {
+func runT016SuppliedScenario(t *testing.T, spec t016ScenarioSpec) string {
 	t.Helper()
 
 	factoryCalls := 0
@@ -22,39 +22,37 @@ func runT016SuppliedScenario(t *testing.T, id string) string {
 		t.Fatalf("create worker runtime: %v", err)
 	}
 
-	expectedProcess := types.ProcessIdentity{
-		PID:              4242,
-		StartFingerprint: "t016-supplied-start",
-		TreeID:           "t016-supplied-tree",
+	evidence := &swarm.SuppliedProcessEvidence{
+		ExpectedProcess: types.ProcessIdentity{
+			PID:              4242,
+			StartFingerprint: "t016-supplied-start",
+			TreeID:           "t016-supplied-tree",
+		},
+		RootAbsent:          spec.Input.RootAbsent,
+		DescendantsSurvived: spec.Input.DescendantsSurvived,
 	}
-	var evidence *swarm.SuppliedProcessEvidence
+	if spec.Input.ExitCode != nil {
+		exitCode := *spec.Input.ExitCode
+		evidence.ExitCode = &exitCode
+	}
+
 	var want swarm.SuppliedEvidenceClassification
-	switch id {
-	case "supplied_crash":
-		exitCode := 23
-		evidence = &swarm.SuppliedProcessEvidence{
-			ExpectedProcess: expectedProcess,
-			ExitCode:        &exitCode,
-		}
+	switch spec.Proof {
+	case "exit_nonzero":
 		want = swarm.SuppliedEvidenceFailedCrash
-	case "supplied_orphan":
-		evidence = &swarm.SuppliedProcessEvidence{
-			ExpectedProcess:     expectedProcess,
-			RootAbsent:          true,
-			DescendantsSurvived: true,
-		}
+	case "orphan_tree":
 		want = swarm.SuppliedEvidenceOrphanedTree
 	default:
-		t.Fatalf("unknown supplied scenario %q", id)
+		t.Fatalf("unknown supplied proof %q", spec.Proof)
 		return ""
 	}
 
 	got := runtime.InspectSuppliedEvidence(evidence).Classification
 	if got != want {
-		t.Fatalf("InspectSuppliedEvidence(%s) classification = %q, want %q", id, got, want)
+		t.Fatalf("InspectSuppliedEvidence(%s) classification = %q, want %q", spec.ID, got, want)
 	}
 	if factoryCalls != 0 {
-		t.Fatalf("InspectSuppliedEvidence(%s) constructed %d executors, want 0", id, factoryCalls)
+		t.Fatalf("InspectSuppliedEvidence(%s) constructed %d executors, want 0", spec.ID, factoryCalls)
 	}
 	return string(got)
 }

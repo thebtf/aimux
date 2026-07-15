@@ -18,3 +18,11 @@ func waitForT016ProcessExit(identity *t016ProcessIdentity, timeout time.Duration
 		time.Sleep(25 * time.Millisecond)
 	}
 }
+
+// t016TreeFixtureSelfExitBound exceeds the known 10s
+// "generic-worker --mode tree ... --hold-ms 10000" leaf hold used by every
+// T016 lifecycle scenario. A bounded wait for a natural self-exit (used
+// where a target cannot safely force-kill a possibly reused PID) must use a
+// duration longer than this, so a fixture that is still legitimately
+// running is never mistaken for one that simply was not polled long enough.
+const t016TreeFixtureSelfExitBound = 15 * time.Second

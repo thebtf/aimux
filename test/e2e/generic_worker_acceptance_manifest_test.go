@@ -5,34 +5,50 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+type t016ScenarioInput struct {
+	Args                []string `json:"args"`
+	StdinBase64         string   `json:"stdin_base64"`
+	StdinRepeatByte     int      `json:"stdin_repeat_byte"`
+	StdinBytes          int      `json:"stdin_bytes"`
+	TimeoutSeconds      int      `json:"timeout_seconds"`
+	Fixture             string   `json:"fixture"`
+	ExitCode            *int     `json:"exit_code"`
+	RootAbsent          bool     `json:"root_absent"`
+	DescendantsSurvived bool     `json:"descendants_survived"`
+}
 
 type t016ScenarioSpec struct {
 	ID       string
 	Kind     string
 	Proof    string
-	Input    string
+	Input    t016ScenarioInput
 	Expected string
 }
 
-const t016ScenarioCanonicalSHA256 = "52e8fc8cd30d93df2fba087617358079372bf8a856d14c7386f7d2aa587b66c4"
+func t016Int(value int) *int { return &value }
+
+const t016ScenarioCanonicalSHA256 = "55ce5916f4842cdb69c089589c56dfd8ea3ed26b4c4d11224e8b4b3f063e8f23"
 
 func t016ScenarioSpecs() []t016ScenarioSpec {
+	treeArgs := []string{"generic-worker", "--mode", "tree", "--depth", "2", "--hold-ms", "10000"}
 	return []t016ScenarioSpec{
-		{ID: "stream", Kind: "source_generic", Proof: "ordered_stream", Input: "argv:generic-worker --mode stream", Expected: "completed"},
-		{ID: "flood", Kind: "source_generic", Proof: "bounded_flood", Input: "argv:generic-worker --mode flood --count 32 --chunk-bytes 256", Expected: "completed"},
-		{ID: "byte_edge", Kind: "source_generic", Proof: "byte_exact", Input: "argv:generic-worker --mode framing", Expected: "completed"},
-		{ID: "typed_input", Kind: "source_generic", Proof: "typed_input", Input: "argv:generic-worker --mode typed-input -- <argv-with-spaces-and-metachars>; stdin:binary", Expected: "completed"},
-		{ID: "cancel", Kind: "source_generic", Proof: "termination", Input: "argv:generic-worker --mode tree --depth 2 --hold-ms 10000", Expected: "cancelled"},
-		{ID: "timeout", Kind: "source_generic", Proof: "deadline", Input: "argv:generic-worker --mode tree --depth 2 --hold-ms 10000", Expected: "timeout"},
-		{ID: "late", Kind: "runtime_fixture", Proof: "late_output", Input: "fixture:in-process-late-output", Expected: "failed"},
-		{ID: "supplied_crash", Kind: "supplied_evidence", Proof: "exit_nonzero", Input: "evidence:exit-code=nonzero", Expected: "failed_crash"},
-		{ID: "supplied_orphan", Kind: "supplied_evidence", Proof: "orphan_tree", Input: "evidence:root-absent+live-descendant", Expected: "orphaned_tree"},
-		{ID: "invalid_input", Kind: "source_generic", Proof: "input_rejected", Input: "argv:generic-worker --mode invalid-input", Expected: "failed"},
-		{ID: "oversize_input", Kind: "source_generic", Proof: "input_limit", Input: "argv:generic-worker --mode typed-input; stdin:>65536-bytes", Expected: "failed"},
-		{ID: "source_built_zero_child_leak", Kind: "source_generic", Proof: "tree_liveness", Input: "argv:generic-worker --mode tree --depth 2 --hold-ms 10000", Expected: "cancelled"},
+		{ID: "stream", Kind: "source_generic", Proof: "ordered_stream", Input: t016ScenarioInput{Args: []string{"generic-worker", "--mode", "stream"}}, Expected: "completed"},
+		{ID: "flood", Kind: "source_generic", Proof: "bounded_flood", Input: t016ScenarioInput{Args: []string{"generic-worker", "--mode", "flood", "--count", "32", "--chunk-bytes", "256"}}, Expected: "completed"},
+		{ID: "byte_edge", Kind: "source_generic", Proof: "byte_exact", Input: t016ScenarioInput{Args: []string{"generic-worker", "--mode", "framing"}}, Expected: "completed"},
+		{ID: "typed_input", Kind: "source_generic", Proof: "typed_input", Input: t016ScenarioInput{Args: []string{"generic-worker", "--mode", "typed-input", "--", "space value", "$HOME; & | < >", "quote\"'\\", "unicode-β"}, StdinBase64: "AP8bQQrOsg==", StdinBytes: 7}, Expected: "completed"},
+		{ID: "cancel", Kind: "source_generic", Proof: "termination", Input: t016ScenarioInput{Args: treeArgs}, Expected: "cancelled"},
+		{ID: "timeout", Kind: "source_generic", Proof: "deadline", Input: t016ScenarioInput{Args: treeArgs, TimeoutSeconds: 3}, Expected: "timeout"},
+		{ID: "late", Kind: "runtime_fixture", Proof: "late_output", Input: t016ScenarioInput{Fixture: "in-process-late-output"}, Expected: "failed"},
+		{ID: "supplied_crash", Kind: "supplied_evidence", Proof: "exit_nonzero", Input: t016ScenarioInput{ExitCode: t016Int(23)}, Expected: "failed_crash"},
+		{ID: "supplied_orphan", Kind: "supplied_evidence", Proof: "orphan_tree", Input: t016ScenarioInput{RootAbsent: true, DescendantsSurvived: true}, Expected: "orphaned_tree"},
+		{ID: "invalid_input", Kind: "source_generic", Proof: "input_rejected", Input: t016ScenarioInput{Args: []string{"generic-worker", "--mode", "invalid-input"}}, Expected: "failed"},
+		{ID: "oversize_input", Kind: "source_generic", Proof: "input_limit", Input: t016ScenarioInput{Args: []string{"generic-worker", "--mode", "typed-input"}, StdinRepeatByte: 0xa5, StdinBytes: 65537}, Expected: "failed"},
+		{ID: "source_built_zero_child_leak", Kind: "source_generic", Proof: "tree_liveness", Input: t016ScenarioInput{Args: treeArgs}, Expected: "cancelled"},
 	}
 }
 
@@ -79,19 +95,19 @@ func validateT016ScenarioSpecs(specs []t016ScenarioSpec) error {
 		"oversize_input":               "source_generic",
 		"source_built_zero_child_leak": "source_generic",
 	}
-	inputByID := map[string]string{
-		"stream":                       "argv:generic-worker --mode stream",
-		"flood":                        "argv:generic-worker --mode flood --count 32 --chunk-bytes 256",
-		"byte_edge":                    "argv:generic-worker --mode framing",
-		"typed_input":                  "argv:generic-worker --mode typed-input -- <argv-with-spaces-and-metachars>; stdin:binary",
-		"cancel":                       "argv:generic-worker --mode tree --depth 2 --hold-ms 10000",
-		"timeout":                      "argv:generic-worker --mode tree --depth 2 --hold-ms 10000",
-		"late":                         "fixture:in-process-late-output",
-		"supplied_crash":               "evidence:exit-code=nonzero",
-		"supplied_orphan":              "evidence:root-absent+live-descendant",
-		"invalid_input":                "argv:generic-worker --mode invalid-input",
-		"oversize_input":               "argv:generic-worker --mode typed-input; stdin:>65536-bytes",
-		"source_built_zero_child_leak": "argv:generic-worker --mode tree --depth 2 --hold-ms 10000",
+	inputByID := map[string]t016ScenarioInput{
+		"stream":                       {Args: []string{"generic-worker", "--mode", "stream"}},
+		"flood":                        {Args: []string{"generic-worker", "--mode", "flood", "--count", "32", "--chunk-bytes", "256"}},
+		"byte_edge":                    {Args: []string{"generic-worker", "--mode", "framing"}},
+		"typed_input":                  {Args: []string{"generic-worker", "--mode", "typed-input", "--", "space value", "$HOME; & | < >", "quote\"'\\", "unicode-β"}, StdinBase64: "AP8bQQrOsg==", StdinBytes: 7},
+		"cancel":                       {Args: []string{"generic-worker", "--mode", "tree", "--depth", "2", "--hold-ms", "10000"}},
+		"timeout":                      {Args: []string{"generic-worker", "--mode", "tree", "--depth", "2", "--hold-ms", "10000"}, TimeoutSeconds: 3},
+		"late":                         {Fixture: "in-process-late-output"},
+		"supplied_crash":               {ExitCode: t016Int(23)},
+		"supplied_orphan":              {RootAbsent: true, DescendantsSurvived: true},
+		"invalid_input":                {Args: []string{"generic-worker", "--mode", "invalid-input"}},
+		"oversize_input":               {Args: []string{"generic-worker", "--mode", "typed-input"}, StdinRepeatByte: 0xa5, StdinBytes: 65537},
+		"source_built_zero_child_leak": {Args: []string{"generic-worker", "--mode", "tree", "--depth", "2", "--hold-ms", "10000"}},
 	}
 	expectedByID := map[string]string{
 		"stream":                       "completed",
@@ -114,7 +130,7 @@ func validateT016ScenarioSpecs(specs []t016ScenarioSpec) error {
 
 	seen := make(map[string]struct{}, len(specs))
 	for i, spec := range specs {
-		if strings.TrimSpace(spec.ID) == "" || strings.TrimSpace(spec.Kind) == "" || strings.TrimSpace(spec.Proof) == "" || strings.TrimSpace(spec.Input) == "" || strings.TrimSpace(spec.Expected) == "" {
+		if strings.TrimSpace(spec.ID) == "" || strings.TrimSpace(spec.Kind) == "" || strings.TrimSpace(spec.Proof) == "" || reflect.DeepEqual(spec.Input, t016ScenarioInput{}) || strings.TrimSpace(spec.Expected) == "" {
 			return fmt.Errorf("blank scenario field at %d", i)
 		}
 		if _, ok := seen[spec.ID]; ok {
@@ -130,8 +146,8 @@ func validateT016ScenarioSpecs(specs []t016ScenarioSpec) error {
 		if spec.Kind != kindByID[spec.ID] {
 			return fmt.Errorf("kind for %q: got %q, want %q", spec.ID, spec.Kind, kindByID[spec.ID])
 		}
-		if spec.Input != inputByID[spec.ID] {
-			return fmt.Errorf("input for %q: got %q, want %q", spec.ID, spec.Input, inputByID[spec.ID])
+		if !reflect.DeepEqual(spec.Input, inputByID[spec.ID]) {
+			return fmt.Errorf("input for %q: got %#v, want %#v", spec.ID, spec.Input, inputByID[spec.ID])
 		}
 		if spec.Expected != expectedByID[spec.ID] {
 			return fmt.Errorf("expected for %q: got %q, want %q", spec.ID, spec.Expected, expectedByID[spec.ID])
@@ -164,7 +180,15 @@ func TestT016ScenarioSpecs(t *testing.T) {
 
 func TestValidateT016ScenarioSpecsRejectsMutation(t *testing.T) {
 	copySpecs := func() []t016ScenarioSpec {
-		return append([]t016ScenarioSpec(nil), t016ScenarioSpecs()...)
+		specs := append([]t016ScenarioSpec(nil), t016ScenarioSpecs()...)
+		for i := range specs {
+			specs[i].Input.Args = append([]string(nil), specs[i].Input.Args...)
+			if specs[i].Input.ExitCode != nil {
+				exitCode := *specs[i].Input.ExitCode
+				specs[i].Input.ExitCode = &exitCode
+			}
+		}
+		return specs
 	}
 
 	tests := []struct {
@@ -206,7 +230,7 @@ func TestValidateT016ScenarioSpecsRejectsMutation(t *testing.T) {
 		{
 			name: "input",
 			mutate: func(specs []t016ScenarioSpec) []t016ScenarioSpec {
-				specs[0].Input = "wrong-input"
+				specs[0].Input.Args[0] = "wrong-command"
 				return specs
 			},
 			want: "input",
@@ -230,7 +254,7 @@ func TestValidateT016ScenarioSpecsRejectsMutation(t *testing.T) {
 		{
 			name: "blank field",
 			mutate: func(specs []t016ScenarioSpec) []t016ScenarioSpec {
-				specs[0].Input = ""
+				specs[0].Input = t016ScenarioInput{}
 				return specs
 			},
 			want: "blank scenario field",

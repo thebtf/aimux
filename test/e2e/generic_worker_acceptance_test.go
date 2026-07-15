@@ -25,19 +25,28 @@ func TestE2E_GenericWorkerAcceptanceMatrix(t *testing.T) {
 		var terminal string
 		switch spec.Kind {
 		case "source_generic":
-			if spec.ID == "cancel" || spec.ID == "timeout" || spec.ID == "source_built_zero_child_leak" {
+			switch spec.Proof {
+			case "termination", "deadline", "tree_liveness":
 				terminal = runT016LifecycleScenario(t, binary, spec)
-			} else {
+			case "ordered_stream", "bounded_flood", "byte_exact", "typed_input", "input_rejected", "input_limit":
 				terminal = runT016SourceOutputScenario(t, binary, spec)
+			default:
+				t.Fatalf("scenario %q has unsupported source proof %q", spec.ID, spec.Proof)
 			}
 		case "runtime_fixture":
-			if spec.ID == "late" {
-				terminal = runT016LateScenario(t)
-			} else {
-				terminal = runT016LifecycleScenario(t, binary, spec)
+			switch spec.Proof {
+			case "late_output":
+				terminal = runT016LateScenario(t, spec)
+			default:
+				t.Fatalf("scenario %q has unsupported fixture proof %q", spec.ID, spec.Proof)
 			}
 		case "supplied_evidence":
-			terminal = runT016SuppliedScenario(t, spec.ID)
+			switch spec.Proof {
+			case "exit_nonzero", "orphan_tree":
+				terminal = runT016SuppliedScenario(t, spec)
+			default:
+				t.Fatalf("scenario %q has unsupported supplied proof %q", spec.ID, spec.Proof)
+			}
 		default:
 			t.Fatalf("scenario %q has unsupported kind %q", spec.ID, spec.Kind)
 		}
