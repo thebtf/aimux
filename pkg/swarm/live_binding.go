@@ -2,6 +2,8 @@ package swarm
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,8 +12,33 @@ import (
 	"github.com/thebtf/aimux/pkg/types"
 )
 
-// nextSwarmRegistryGeneration fences bindings to one Swarm instance.
-var nextSwarmRegistryGeneration atomic.Uint64
+const maxSwarmRegistryGeneration = uint64(1<<63 - 1)
+
+var (
+	swarmRegistryGenerationSeed = newSwarmRegistryGenerationSeed()
+	nextSwarmRegistryGeneration atomic.Uint64
+)
+
+func newSwarmRegistryGenerationSeed() uint64 {
+	var bytes [8]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		panic("swarm: registry generation seed: " + err.Error())
+	}
+	seed := binary.LittleEndian.Uint64(bytes[:]) & maxSwarmRegistryGeneration
+	if seed == 0 {
+		return 1
+	}
+	return seed
+}
+
+func newSwarmRegistryGeneration() uint64 {
+	for {
+		generation := (swarmRegistryGenerationSeed + nextSwarmRegistryGeneration.Add(1)) & maxSwarmRegistryGeneration
+		if generation != 0 {
+			return generation
+		}
+	}
+}
 
 // LiveSessionBinding is a provider-neutral, fenced view of a live Swarm handle.
 // The private handle is retained solely for internal execution ownership.
@@ -68,7 +95,7 @@ func (s *Swarm) acquireStatelessBinding(ctx context.Context, name, scope string)
 	}
 	defer h.releaseOperation()
 
-	binding, err := s.snapshotLiveBinding(h)
+	binding, err := s.snapshotLiveBinding(h, false)
 	if err != nil {
 		_ = s.closeHandleLocked(h, "session-binding-snapshot-failed")
 		return LiveSessionBinding{}, fmt.Errorf("swarm: stateless session binding: %w", err)
@@ -97,7 +124,7 @@ func (s *Swarm) acquireNewBinding(ctx context.Context, name, scope string, args 
 		return LiveSessionBinding{}, err
 	}
 
-	binding, err := s.snapshotLiveBinding(h)
+	binding, err := s.snapshotLiveBinding(h, true)
 	if err != nil {
 		_ = s.closeHandleLocked(h, "session-binding-new-snapshot-failed")
 		return LiveSessionBinding{}, fmt.Errorf("swarm: new session binding(%s): %w", name, err)
@@ -116,7 +143,7 @@ func (s *Swarm) acquireExactBinding(ctx context.Context, name, scope string, exp
 		return LiveSessionBinding{}, ErrHandleNotFound
 	}
 
-	binding, err := s.snapshotLiveBinding(h)
+	binding, err := s.snapshotLiveBinding(h, true)
 	if err != nil {
 		return LiveSessionBinding{}, fmt.Errorf("swarm: exact session binding: %w", err)
 	}
@@ -136,7 +163,7 @@ func (s *Swarm) acquireForkBinding(ctx context.Context, name, scope string, pare
 		return LiveSessionBinding{}, ErrHandleNotFound
 	}
 
-	parentBinding, err := s.snapshotLiveBinding(parentHandle)
+	parentBinding, err := s.snapshotLiveBinding(parentHandle, true)
 	if err != nil {
 		return LiveSessionBinding{}, fmt.Errorf("swarm: fork session binding: %w", err)
 	}
@@ -186,7 +213,7 @@ func (s *Swarm) acquireForkBinding(ctx context.Context, name, scope string, pare
 		_ = s.closeHandleLocked(child, "session-binding-fork-registration-failed")
 		return LiveSessionBinding{}, err
 	}
-	binding, err := s.snapshotLiveBinding(child)
+	binding, err := s.snapshotLiveBinding(child, true)
 	if err != nil {
 		_ = s.closeHandleLocked(child, "session-binding-fork-snapshot-failed")
 		return LiveSessionBinding{}, fmt.Errorf("swarm: fork session binding(%s): %w", name, err)
@@ -296,7 +323,8 @@ func (s *Swarm) registerBoundChild(h *Handle, key string) error {
 }
 
 // snapshotLiveBinding copies currently held handle authority into public data.
-func (s *Swarm) snapshotLiveBinding(h *Handle) (LiveSessionBinding, error) {
+// Stateless bindings deliberately omit provider session identity.
+func (s *Swarm) snapshotLiveBinding(h *Handle, includeProvider bool) (LiveSessionBinding, error) {
 	s.mu.RLock()
 	registryGeneration := s.registryGeneration
 	s.mu.RUnlock()
@@ -316,12 +344,14 @@ func (s *Swarm) snapshotLiveBinding(h *Handle) (LiveSessionBinding, error) {
 		RegistryGeneration: registryGeneration,
 		handle:             h,
 	}
-	if identityProvider, ok := h.executor.(types.SessionIdentityProvider); ok {
-		identity := identityProvider.SessionIdentity()
-		if err := identity.Validate(); err != nil {
-			return LiveSessionBinding{}, fmt.Errorf("swarm: invalid provider session identity: %w", err)
+	if includeProvider {
+		if identityProvider, ok := h.executor.(types.SessionIdentityProvider); ok {
+			identity := identityProvider.SessionIdentity()
+			if err := identity.Validate(); err != nil {
+				return LiveSessionBinding{}, fmt.Errorf("swarm: invalid provider session identity: %w", err)
+			}
+			binding.ProviderSession = &identity
 		}
-		binding.ProviderSession = &identity
 	}
 	return binding, nil
 }

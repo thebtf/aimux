@@ -537,3 +537,20 @@ func TestAcquireSessionBinding_MissingExactOrParentRejectsBeforeFactory(t *testi
 		t.Errorf("factory calls = %d, want 0", created.Load())
 	}
 }
+
+func TestAcquireSessionBinding_StatelessNeverExposesProviderSession(t *testing.T) {
+	sw := swarm.New(func(string) (types.ExecutorV2, error) {
+		return newLiveBindingExecutor(types.SessionIdentity{Provider: "neutral", ID: "must-not-escape", Generation: 1}, true), nil
+	}, audit.DiscardLog{}, swarm.WithStatefulTTL(0))
+	defer sw.Shutdown(context.Background())
+
+	binding, err := sw.AcquireSessionBinding(context.Background(), "agent", types.SessionBindingRequest{
+		Mode: types.SessionBindingModeStateless,
+	}, swarm.WithScope("stateless-provider-scope"))
+	if err != nil {
+		t.Fatalf("Stateless: %v", err)
+	}
+	if binding.ProviderSession != nil {
+		t.Fatalf("stateless ProviderSession = %+v, want nil", binding.ProviderSession)
+	}
+}

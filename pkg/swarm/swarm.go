@@ -288,7 +288,7 @@ func NewWithContextFactory(factoryFn func(context.Context, string) (types.Execut
 		factoryFn:              factoryFn,
 		auditLog:               al,
 		registry:               make(map[string][]*Handle),
-		registryGeneration:     nextSwarmRegistryGeneration.Add(1),
+		registryGeneration:     newSwarmRegistryGeneration(),
 		executions:             make(map[executionKey]*executionRecord),
 		active:                 make(map[*Handle]*executionRecord),
 		live:                   make(map[*Handle]handleAuthority),
