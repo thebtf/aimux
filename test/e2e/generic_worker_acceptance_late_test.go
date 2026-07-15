@@ -55,6 +55,7 @@ type t016LateCancellationExecutor struct {
 	started        chan struct{}
 	cancelStarted  chan struct{}
 	nativeReturned chan struct{}
+	lateAdmission  chan bool
 
 	mu   sync.Mutex
 	sink types.ExecutorEventSink
@@ -91,7 +92,8 @@ func (e *t016LateCancellationExecutor) CancelExecution(ctx context.Context, id t
 	sink := e.sink
 	e.mu.Unlock()
 	if sink != nil {
-		sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "text-only", Content: []byte(t016LateStdoutContent)})
+		accepted := sink.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "text-only", Content: []byte(t016LateStdoutContent)})
+		e.lateAdmission <- accepted
 	}
 
 	evidence := types.CancellationEvidence{ExecutionID: id, NativeAcknowledged: true}
@@ -163,6 +165,7 @@ func runT016LateScenario(t *testing.T, spec t016ScenarioSpec) string {
 		started:        make(chan struct{}),
 		cancelStarted:  make(chan struct{}),
 		nativeReturned: make(chan struct{}),
+		lateAdmission:  make(chan bool, 1),
 	}
 	s := swarm.New(func(string) (types.ExecutorV2, error) { return exec, nil }, nil)
 	runtime, err := workerruntime.New(s)
@@ -268,33 +271,13 @@ func runT016LateScenario(t *testing.T, spec t016ScenarioSpec) string {
 		t.Fatal("timed out waiting for the late native cancellation to return")
 	}
 
-	secondInspection, err := runtime.Inspect(context.Background(), h, "t016-late-scope", t016LateExecutionID)
-	if err != nil {
-		t.Fatalf("Inspect after late native return: %v", err)
-	}
-	if secondInspection != firstInspection {
-		t.Fatalf("Inspect after late native return = %#v, want unchanged %#v", secondInspection, firstInspection)
-	}
-
-	lateEvidence, lateErr := runtime.Cancel(context.Background(), h, "t016-late-scope", t016LateExecutionID, "t016 late scenario cancel after native return")
-	if lateEvidence != firstCancel.evidence || !errors.Is(lateErr, context.DeadlineExceeded) {
-		t.Fatalf("Cancel after late native return = %#v, %v, want %#v, context.DeadlineExceeded", lateEvidence, lateErr, firstCancel.evidence)
-	}
-
-	// Exactly one event (the terminal failed event) must ever have reached
-	// the outer sink; the late stdout admission attempt must not have
-	// leaked through.
-	delivered := sink.snapshot()
-	if len(delivered) != 1 {
-		t.Fatalf("delivered events = %#v, want exactly 1", delivered)
-	}
-	if !delivered[0].Terminal || delivered[0].Type != "failed" {
-		t.Fatalf("delivered[0] = %#v, want the single terminal failed event", delivered[0])
-	}
-	for _, event := range delivered {
-		if event.Channel == "stdout" {
-			t.Fatalf("late stdout leaked into the outer sink: %#v", event)
+	select {
+	case accepted := <-exec.lateAdmission:
+		if accepted {
+			t.Fatal("late stdout admission = true, want false")
 		}
+	case <-time.After(t016LateBoundedWait):
+		t.Fatal("timed out waiting for the late stdout admission result")
 	}
 
 	// Execution and handle cleanup must still complete: the operation lease
@@ -331,6 +314,35 @@ func runT016LateScenario(t *testing.T, spec t016ScenarioSpec) string {
 	}
 	if cleanupErr != nil {
 		t.Fatalf("post-cleanup Execute = %v, want success once the handle operation lease is released", cleanupErr)
+	}
+
+	secondInspection, err := runtime.Inspect(context.Background(), h, "t016-late-scope", t016LateExecutionID)
+	if err != nil {
+		t.Fatalf("Inspect after late native return: %v", err)
+	}
+	if secondInspection != firstInspection {
+		t.Fatalf("Inspect after late native return = %#v, want unchanged %#v", secondInspection, firstInspection)
+	}
+
+	lateEvidence, lateErr := runtime.Cancel(context.Background(), h, "t016-late-scope", t016LateExecutionID, "t016 late scenario cancel after native return")
+	if lateEvidence != firstCancel.evidence || !errors.Is(lateErr, context.DeadlineExceeded) {
+		t.Fatalf("Cancel after late native return = %#v, %v, want %#v, context.DeadlineExceeded", lateEvidence, lateErr, firstCancel.evidence)
+	}
+
+	// Exactly one event (the terminal failed event) must ever have reached
+	// the outer sink; the late stdout admission attempt must not have
+	// leaked through.
+	delivered := sink.snapshot()
+	if len(delivered) != 1 {
+		t.Fatalf("delivered events = %#v, want exactly 1", delivered)
+	}
+	if !delivered[0].Terminal || delivered[0].Type != "failed" {
+		t.Fatalf("delivered[0] = %#v, want the single terminal failed event", delivered[0])
+	}
+	for _, event := range delivered {
+		if event.Channel == "stdout" {
+			t.Fatalf("late stdout leaked into the outer sink: %#v", event)
+		}
 	}
 
 	return terminalEvent.Type
