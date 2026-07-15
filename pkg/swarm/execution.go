@@ -14,6 +14,12 @@ var (
 	ErrExecutionActive        = errors.New("swarm: handle already has an active execution")
 	ErrExecutionExists        = errors.New("swarm: execution already exists")
 	ErrEventAdmissionRejected = errors.New("swarm: terminal event admission rejected")
+	// ErrProcessFinalityUnconfirmed marks a caller-visible, non-retryable
+	// failure raised when exact process evidence was required to confirm a
+	// success or a retryable timeout, but that evidence is missing or
+	// reports Stopped=false. Pre-spawn cancellation and start failures never
+	// reach this path — they keep their own truthful classification.
+	ErrProcessFinalityUnconfirmed = errors.New("swarm: process finality unconfirmed — exact evidence did not prove the owned process tree stopped")
 )
 
 const maxTerminalExecutions = 256
@@ -295,12 +301,23 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 		}
 		response.Partial = true
 	}
-	terminalAdmitted := record.finalizeTerminal(response, err)
+	terminalAdmitted, unconfirmedFinality := record.finalizeTerminal(response, err)
 	if !terminalAdmitted {
 		if response == nil {
 			response = &types.Response{}
 		}
 		response.Partial = true
+	}
+	if unconfirmedFinality {
+		if response == nil {
+			response = &types.Response{}
+		}
+		response.Partial = true
+		response.Error = types.NewExecutorError(
+			"process finality unconfirmed: exact evidence did not prove the owned process tree stopped",
+			ErrProcessFinalityUnconfirmed,
+			response.Content,
+		)
 	}
 	s.complete(record, key)
 	h.mu.Lock()
@@ -628,7 +645,7 @@ func (record *executionRecord) tryAdmit(event types.ExecutorEvent) bool {
 	return accepted
 }
 
-func (record *executionRecord) finalizeTerminal(response *types.Response, runErr error) bool {
+func (record *executionRecord) finalizeTerminal(response *types.Response, runErr error) (admitted bool, unconfirmedFinality bool) {
 	record.mu.Lock()
 	done := record.cancelDone
 	record.mu.Unlock()
@@ -638,7 +655,7 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 	record.mu.Lock()
 	defer record.mu.Unlock()
 	if record.terminal {
-		return record.admitted
+		return record.admitted, false
 	}
 	if response != nil && response.Partial {
 		record.truncated = true
@@ -646,12 +663,28 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 	eventType := "completed"
 	processCancellationProven := record.hasProcessEvidence && record.processEvidence.Stopped && record.processEvidence.Validate() == nil
 	cancellationProven := record.cancellation.NativeAcknowledged || processCancellationProven || record.preSpawnCancelled
-	if record.outcome == executionOutcomeCancelled && cancellationProven {
+	// unconfirmedEvidence is true only when this executor promised exact
+	// process evidence but that evidence never proved the owned tree
+	// stopped. It downgrades what would otherwise be a clean success or a
+	// retryable timeout into a non-retryable failure; it never overrides an
+	// already-failed outcome (non-zero exit, executor error, ...), which
+	// keeps its own truthful classification.
+	unconfirmedEvidence := record.exactProcessEvidence && (!record.hasProcessEvidence || !record.processEvidence.Stopped)
+	switch {
+	case record.outcome == executionOutcomeCancelled && cancellationProven:
 		eventType = "cancelled"
-	} else if response != nil && response.Error != nil && response.Error.Type == types.ErrorTypeTimeout {
-		eventType = "timeout"
-	} else if record.outcome != executionOutcomeCompleted || record.exactProcessEvidence && (!record.hasProcessEvidence || !record.processEvidence.Stopped) {
+	case response != nil && response.Error != nil && response.Error.Type == types.ErrorTypeTimeout:
+		if unconfirmedEvidence {
+			eventType = "failed"
+			unconfirmedFinality = true
+		} else {
+			eventType = "timeout"
+		}
+	case record.outcome != executionOutcomeCompleted:
 		eventType = "failed"
+	case unconfirmedEvidence:
+		eventType = "failed"
+		unconfirmedFinality = true
 	}
 	record.terminal = true
 	record.cancelled = eventType == "cancelled"
@@ -665,7 +698,7 @@ func (record *executionRecord) finalizeTerminal(response *types.Response, runErr
 		record.truncated = true
 	}
 	close(record.terminalDone)
-	return record.admitted
+	return record.admitted, unconfirmedFinality
 }
 
 func (record *executionRecord) markExecutionReturned(response *types.Response, runErr error, cancellationObservedAtReturn bool) {

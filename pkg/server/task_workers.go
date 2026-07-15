@@ -16,7 +16,6 @@ import (
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/parser"
 	"github.com/thebtf/aimux/pkg/tenant"
-	runtimeTypes "github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/aimux/pkg/workerruntime"
 )
 
@@ -266,19 +265,24 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		SessionResume:  sessionResumeFromTaskMetadata(task.Metadata),
 		TimeoutSeconds: task.Timeout,
 	}
-	raw, selectedCLI, failedAttempts, dispatchErr := w.dispatch(execCtx, cli, task.Metadata, spec, writer, progress, task.ID)
+	raw, selectedCLI, failedAttempts, truncated, dispatchErr := w.dispatch(execCtx, cli, task.Metadata, spec, writer, progress, task.ID)
 
-	flushCtx, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
-	flushErr := writer.CloseAndFlush(flushCtx)
-	cancelFlush()
-	progress.Close()
-	close(stopFailureMonitor)
-	<-failureMonitorDone
-	cancelOnce.Do(cancelExecution)
-	if flushErr != nil {
-		return nil, artifactSinkUnavailableError(flushErr)
+	finalizeAndFlush := func(status string) error {
+		workerruntime.PublishFinalTerminal(writer, selectedCLI, status, truncated)
+		flushCtx, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
+		flushErr := writer.CloseAndFlush(flushCtx)
+		cancelFlush()
+		progress.Close()
+		close(stopFailureMonitor)
+		<-failureMonitorDone
+		cancelOnce.Do(cancelExecution)
+		return flushErr
 	}
+
 	if dispatchErr != nil {
+		if flushErr := finalizeAndFlush("failed"); flushErr != nil {
+			return nil, artifactSinkUnavailableError(flushErr)
+		}
 		return nil, dispatchErr
 	}
 	selectedProfile := profile
@@ -288,7 +292,11 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 			if err == nil {
 				err = fmt.Errorf("profile is nil")
 			}
-			return nil, extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable after fallback: %v", selectedCLI, err), err)
+			bnfErr := extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable after fallback: %v", selectedCLI, err), err)
+			if flushErr := finalizeAndFlush("failed"); flushErr != nil {
+				return nil, artifactSinkUnavailableError(flushErr)
+			}
+			return nil, bnfErr
 		}
 	}
 	parsed, sessionID := parser.ParseContent(raw, selectedProfile.OutputFormat)
@@ -297,11 +305,22 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 	if w.adapt != nil {
 		content, metadata, err = w.adapt(task, parsed)
 		if err != nil {
+			if flushErr := finalizeAndFlush("failed"); flushErr != nil {
+				return nil, artifactSinkUnavailableError(flushErr)
+			}
 			return nil, err
 		}
 	}
 	if strings.TrimSpace(content) == "" {
-		return nil, extypes.NewUnknown(fmt.Sprintf("%s worker produced empty output", w.workerType), nil)
+		emptyErr := extypes.NewUnknown(fmt.Sprintf("%s worker produced empty output", w.workerType), nil)
+		if flushErr := finalizeAndFlush("failed"); flushErr != nil {
+			return nil, artifactSinkUnavailableError(flushErr)
+		}
+		return nil, emptyErr
+	}
+
+	if flushErr := finalizeAndFlush("completed"); flushErr != nil {
+		return nil, artifactSinkUnavailableError(flushErr)
 	}
 
 	metadata["worker_type"] = string(w.workerType)
@@ -515,12 +534,13 @@ func runtimeRawEvent(line string, frame map[string]any) loom.TaskRuntimeEventApp
 	}
 }
 
-func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, metadata map[string]any, spec picker.TaskSpec, writer *workerruntime.EventWriter, progress *taskProgressSampler, taskID string) (string, string, []fallback.FailedAttempt, error) {
+func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, metadata map[string]any, spec picker.TaskSpec, writer *workerruntime.EventWriter, progress *taskProgressSampler, taskID string) (string, string, []fallback.FailedAttempt, bool, error) {
 	dispatch := w.dispatchLeaf
 	productionRuntime := dispatch == nil
 	if dispatch == nil {
 		dispatch = w.server.taskDispatch
 	}
+	var lastTruncated bool
 	providerDispatch := func(ctx context.Context, cli string, selected picker.TaskSpec) (string, error) {
 		profile, err := w.server.registry.Get(cli)
 		if err != nil || profile == nil {
@@ -529,27 +549,38 @@ func (w profileTaskWorker) dispatch(ctx context.Context, primaryCLI string, meta
 			}
 			return "", extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable during dispatch: %v", cli, err), err)
 		}
+		var attemptSink workerruntime.AttemptEventSink
 		if productionRuntime {
-			selected.EventSink = w.writerEventSink(writer, progress, cli, profile.OutputFormat)
+			attemptSink = w.attemptEventSink(writer, progress, cli, profile.OutputFormat)
+			selected.EventSink = attemptSink
 			selected.OnOutput = nil
 		} else {
 			selected.OnOutput = w.writerOutputSink(writer, progress, taskID, cli, profile.OutputFormat)
 		}
-		return dispatch(ctx, cli, selected)
+		content, dispatchErr := dispatch(ctx, cli, selected)
+		if attemptSink != nil {
+			lastTruncated = attemptSink.Truncated()
+		}
+		return content, dispatchErr
 	}
 	if w.server != nil && w.server.fallbackPicker != nil {
 		result, err := w.server.fallbackPicker.RunPrimary(ctx, primaryCLI, spec, fallbackOptionsFromTaskMetadata(metadata), providerDispatch)
 		if err != nil {
-			return "", primaryCLI, nil, err
+			return "", primaryCLI, nil, lastTruncated, err
 		}
-		return result.Content, result.SelectedCLI, result.FailedAttempts, nil
+		return result.Content, result.SelectedCLI, result.FailedAttempts, lastTruncated, nil
 	}
 	raw, err := providerDispatch(ctx, primaryCLI, spec)
-	return raw, primaryCLI, nil, err
+	return raw, primaryCLI, nil, lastTruncated, err
 }
 
-func (w profileTaskWorker) writerEventSink(writer *workerruntime.EventWriter, progress *taskProgressSampler, provider, outputFormat string) runtimeTypes.ExecutorEventSink {
-	return workerruntime.NewExecutorEventSink(writer, provider, outputFormat, func(line string) {
+// attemptEventSink binds one provider attempt's native executor bytes to the
+// bounded EventWriter/eventPump without persisting a durable Terminal=true
+// projection for that attempt — a task runtime stream may contain several
+// provider attempts (primary + fallback), but only the task's real final
+// outcome may publish Terminal=true (see PublishFinalTerminal in Execute).
+func (w profileTaskWorker) attemptEventSink(writer *workerruntime.EventWriter, progress *taskProgressSampler, provider, outputFormat string) workerruntime.AttemptEventSink {
+	return workerruntime.NewAttemptExecutorEventSink(writer, provider, outputFormat, func(line string) {
 		progressLine := normalizeProgressLine(outputFormat, line)
 		if progressLine != "" {
 			progress.Offer(progressLine)

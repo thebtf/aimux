@@ -10,11 +10,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/thebtf/aimux/pkg/executor"
+	"github.com/thebtf/aimux/pkg/executor/pipeline"
 	"github.com/thebtf/aimux/pkg/executor/session"
 	"github.com/thebtf/aimux/pkg/types"
 )
@@ -31,6 +33,11 @@ const (
 	// eventDrainTimeout bounds stdout/stderr/stdin completion after process exit.
 	eventDrainTimeout    = 2 * time.Second
 	processEvidenceLimit = 256
+	// maxPatternLineBytes bounds the native SendEvents CompletionPattern
+	// line accumulator, matching IOManager's 1 MiB scanner line bound. Raw
+	// bytes are always fully captured elsewhere; only pattern detection for
+	// a pathologically long unterminated line is skipped past this bound.
+	maxPatternLineBytes = 1 << 20
 )
 
 // Compile-time assertion: *Executor must implement types.SessionFactory (T007 / FR-1).
@@ -448,6 +455,12 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 		sink = types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })
 	}
 	args := types.SpawnArgsFromMessage(msg)
+	// SystemPrompt: prepend only when stdin still carries the default message
+	// content, matching Send/SendStream parity (adapter_pipe.go). An explicit
+	// stdin override stays byte-identical.
+	if msg.SystemPrompt != "" && args.Stdin == msg.Content {
+		args.Stdin = fmt.Sprintf("System: %s\n\n%s", msg.SystemPrompt, args.Stdin)
+	}
 	started := time.Now()
 	cmd := exec.CommandContext(ctx, args.Command, args.Args...)
 	cmd.Cancel = nil
@@ -499,12 +512,56 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 			_ = stdin.Close()
 		}()
 	}
+
+	// CompletionPattern: byte-safe incremental stdout line matching,
+	// equivalent to legacy IOManager semantics (ANSI-stripped line regex,
+	// chunk-boundary safe, bounded memory). An empty or invalid pattern
+	// silently disables matching, exactly like IOManager.
+	var pattern *regexp.Regexp
+	if args.CompletionPattern != "" {
+		if re, compileErr := regexp.Compile(args.CompletionPattern); compileErr == nil {
+			pattern = re
+		}
+	}
+	var patternMatched chan struct{}
+	if pattern != nil {
+		patternMatched = make(chan struct{}, 1)
+	}
+	var patternLineAcc []byte
+	scanPatternChunk := func(chunk []byte) {
+		patternLineAcc = append(patternLineAcc, chunk...)
+		for {
+			idx := bytes.IndexByte(patternLineAcc, '\n')
+			if idx < 0 {
+				break
+			}
+			line := patternLineAcc[:idx]
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+			patternLineAcc = patternLineAcc[idx+1:]
+			if pattern.MatchString(pipeline.StripANSI(string(line))) {
+				select {
+				case patternMatched <- struct{}{}:
+				default:
+				}
+			}
+		}
+		if len(patternLineAcc) > maxPatternLineBytes {
+			// Bounded memory: give up on completing this pathologically long
+			// line for pattern detection rather than growing without limit.
+			// Raw bytes are still fully captured via dst/sink below.
+			patternLineAcc = patternLineAcc[:0]
+		}
+	}
+
 	var stdout = cappedBuffer{cap: eventResponseCapBytes}
 	var stderr = cappedBuffer{cap: eventResponseCapBytes}
 	var rejected atomic.Bool
 	drain := func(channel string, reader io.Reader, dst *cappedBuffer) {
 		defer ioGroup.Done()
 		buf := make([]byte, 32<<10)
+		matchStdout := channel == "stdout" && pattern != nil
 		for {
 			n, readErr := reader.Read(buf)
 			if n > 0 {
@@ -512,6 +569,9 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 				_, _ = dst.Write(chunk)
 				if !sink.TryAdmit(types.ExecutorEvent{Channel: channel, Type: "output", Content: chunk}) {
 					rejected.Store(true)
+				}
+				if matchStdout {
+					scanPatternChunk(chunk)
 				}
 			}
 			if readErr != nil {
@@ -539,6 +599,7 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 	var waitErr error
 	timedOut := false
 	cancelled := false
+	patternDone := false
 	select {
 	case waitErr = <-h.Done:
 	case <-timerC:
@@ -549,6 +610,9 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 		cancelled = true
 		executor.SharedPM.Kill(h)
 		waitErr = ctx.Err()
+	case <-patternMatched:
+		patternDone = true
+		executor.SharedPM.Kill(h)
 	}
 	drainTimedOut := false
 	select {
@@ -580,6 +644,10 @@ func (e *Executor) sendEvents(ctx context.Context, executionID types.ExecutionID
 		response.ExitCode = 130
 		response.Partial = true
 		response.Error = types.NewExecutorError("cancelled", ctx.Err(), response.Content)
+		return response, nil
+	}
+	if patternDone {
+		response.ExitCode = 0
 		return response, nil
 	}
 	if waitErr == nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/thebtf/aimux/loom"
@@ -16,6 +17,7 @@ import (
 	"github.com/thebtf/aimux/pkg/recipes"
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/types"
+	"github.com/thebtf/aimux/pkg/workerruntime"
 	"github.com/thebtf/aimux/pkg/workflow"
 )
 
@@ -31,14 +33,28 @@ const workflowRecipeWorkerType loom.WorkerType = "recipe_workflow"
 type workflowRecipeDispatchFunc func(ctx context.Context, cli string, spec picker.TaskSpec, metadata map[string]any) (string, string, error)
 
 type workflowRecipeWorker struct {
-	server     *Server
-	defaultCLI string
-	dispatch   workflowRecipeDispatchFunc
-	patternFn  func(name string, input map[string]any) (map[string]any, error)
-	dialogue   workflow.DialogueRunner
+	server         *Server
+	defaultCLI     string
+	dispatch       workflowRecipeDispatchFunc
+	patternFn      func(name string, input map[string]any) (map[string]any, error)
+	dialogue       workflow.DialogueRunner
+	newEventWriter func(taskID string) (*workerruntime.EventWriter, error)
 }
 
 func (w workflowRecipeWorker) Type() loom.WorkerType { return workflowRecipeWorkerType }
+
+func (w workflowRecipeWorker) eventWriter(taskID string) (*workerruntime.EventWriter, error) {
+	if w.newEventWriter != nil {
+		return w.newEventWriter(taskID)
+	}
+	if w.server == nil || w.server.loom == nil {
+		return nil, nil
+	}
+	return workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(loomTaskEventSink{
+		engine: w.server.loom,
+		taskID: taskID,
+	}))
+}
 
 func (w workflowRecipeWorker) Execute(ctx context.Context, task *loom.Task) (*loom.WorkerResult, error) {
 	if task == nil {
@@ -53,11 +69,20 @@ func (w workflowRecipeWorker) Execute(ctx context.Context, task *loom.Task) (*lo
 		return nil, extypes.NewUserInputError(fmt.Sprintf("workflow recipe %q is not registered", workflowID), nil)
 	}
 
+	// writer/truncated are additive: a nil writer (no server.loom, e.g. unit
+	// tests with a custom dispatch) keeps Send()'s prior OnOutput-only
+	// behavior, preserving custom/test dispatch compatibility.
+	writer, writerErr := w.eventWriter(task.ID)
+	if writerErr != nil {
+		return nil, artifactSinkUnavailableError(writerErr)
+	}
+	defaultCLI := w.effectiveDefaultCLI(task)
 	sender := &workflowRecipeExecutorSender{
 		server:     w.server,
 		task:       task,
-		defaultCLI: w.effectiveDefaultCLI(task),
+		defaultCLI: defaultCLI,
 		dispatch:   w.effectiveDispatch(),
+		writer:     writer,
 	}
 	dlg := w.dialogue
 	if dlg == nil {
@@ -71,6 +96,21 @@ func (w workflowRecipeWorker) Execute(ctx context.Context, task *loom.Task) (*lo
 	engine := workflow.New(sender, dlg, patternFn, sender.Participant)
 	started := time.Now()
 	result, err := engine.Execute(ctx, stepsFn(), workflowInputFromTask(task))
+
+	if writer != nil {
+		status := "failed"
+		if err == nil && result != nil && result.Status == "completed" {
+			status = "completed"
+		}
+		workerruntime.PublishFinalTerminal(writer, defaultCLI, status, sender.truncated.Load())
+		flushCtx, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
+		flushErr := writer.CloseAndFlush(flushCtx)
+		cancelFlush()
+		if flushErr != nil {
+			return nil, artifactSinkUnavailableError(flushErr)
+		}
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +189,8 @@ type workflowRecipeExecutorSender struct {
 	task       *loom.Task
 	defaultCLI string
 	dispatch   workflowRecipeDispatchFunc
+	writer     *workerruntime.EventWriter
+	truncated  atomic.Bool
 }
 
 type workflowRecipeExecutorHandle struct {
@@ -197,7 +239,21 @@ func (s *workflowRecipeExecutorSender) Send(ctx context.Context, h workflow.Exec
 		Effort:         s.task.Effort,
 		Sandbox:        "read-only",
 		TimeoutSeconds: s.task.Timeout,
-		OnOutput:       s.progressSink(outputFormat),
+	}
+	if s.writer != nil {
+		attemptSink := workerruntime.NewAttemptExecutorEventSink(s.writer, handle.cli, outputFormat, func(line string) {
+			if progressLine := normalizeProgressLine(outputFormat, line); progressLine != "" {
+				appendNormalizedRuntimeOutput(s.server.loom, s.task.ID, outputFormat, progressLine)
+			}
+		})
+		spec.EventSink = attemptSink
+		defer func() {
+			if attemptSink.Truncated() {
+				s.truncated.Store(true)
+			}
+		}()
+	} else {
+		spec.OnOutput = s.progressSink(outputFormat)
 	}
 	if !workflowRecipeForcesReadOnly(s.task.Metadata) {
 		if sandbox, ok := metadataString(s.task.Metadata, "sandbox"); ok && strings.TrimSpace(sandbox) != "" {

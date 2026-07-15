@@ -43,7 +43,7 @@ func TestTaskDispatchUsesSwarmWorkerRuntimeAndBoundedEventWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(workers), "workerruntime.NewExecutorEventSink") {
+	if !strings.Contains(string(workers), "workerruntime.NewAttemptExecutorEventSink") {
 		t.Fatal("production task worker must bind the existing EventWriter/eventPump to runtime execution")
 	}
 

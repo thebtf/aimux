@@ -610,7 +610,7 @@ func TestProfileTaskWorker_FallbackCallbacksPreserveAttemptProviderIdentity(t *t
 			return "grok final", nil
 		},
 	}
-	raw, selected, failed, err := worker.dispatch(
+	raw, selected, failed, _, err := worker.dispatch(
 		context.Background(),
 		"codex",
 		map[string]any{"fallback_enabled": true, "max_attempts": 2},
