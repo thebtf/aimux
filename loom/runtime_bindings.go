@@ -3,10 +3,14 @@ package loom
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // RuntimeBindingMode declares whether a run is independent or session-backed.
@@ -876,9 +880,12 @@ func runtimeBindingWriteError(tx *authorityTransaction, operation string, err er
 	if err == nil {
 		return nil
 	}
-	lower := strings.ToLower(err.Error())
-	if strings.Contains(lower, "constraint") || strings.Contains(lower, "unique") {
-		return runtimeBindingConflict(tx, operation)
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() {
+		case sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY, sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+			return runtimeBindingConflict(tx, operation)
+		}
 	}
 	return rollbackRuntimeBinding(tx, fmt.Errorf("loom runtime bindings %s: %w", operation, err))
 }
@@ -1120,31 +1127,47 @@ func scanWorkerRunBinding(scanner runtimeBindingScanner) (*WorkerRunBindingRecor
 	return &record, nil
 }
 
-// GetWorkerSession returns one exact durable Worker Session record.
-func (s *TaskStore) GetWorkerSession(ctx context.Context, id string) (*WorkerSessionRecord, error) {
+// GetWorkerSession returns one exact durable Worker Session owned by tenantID
+// in this store's engine. Missing, foreign-tenant and foreign-engine records
+// all return ErrTaskNotFound without disclosing record existence.
+func (s *TaskStore) GetWorkerSession(ctx context.Context, id, tenantID string) (*WorkerSessionRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("loom runtime bindings: store unavailable")
 	}
 	if err := validateRuntimeBindingText("worker session ID", id); err != nil {
 		return nil, err
 	}
-	record, err := scanWorkerSession(s.db.QueryRowContext(ctx, `SELECT `+workerSessionSelectColumns+` FROM worker_sessions WHERE id=?`, id))
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	record, err := scanWorkerSession(s.db.QueryRowContext(ctx, `SELECT `+workerSessionSelectColumns+` FROM worker_sessions WHERE id=? AND tenant_id=? AND engine_name=?`, id, tenantID, s.engineName))
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrTaskNotFound
+		}
 		return nil, fmt.Errorf("loom runtime bindings get worker session %q: %w", id, err)
 	}
 	return record, nil
 }
 
-// GetWorkerRunBinding returns one exact durable Run Binding record.
-func (s *TaskStore) GetWorkerRunBinding(ctx context.Context, id string) (*WorkerRunBindingRecord, error) {
+// GetWorkerRunBinding returns one exact durable Run Binding owned by tenantID
+// in this store's engine. Missing, foreign-tenant and foreign-engine records
+// all return ErrTaskNotFound without disclosing record existence.
+func (s *TaskStore) GetWorkerRunBinding(ctx context.Context, id, tenantID string) (*WorkerRunBindingRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("loom runtime bindings: store unavailable")
 	}
 	if err := validateRuntimeBindingText("binding ID", id); err != nil {
 		return nil, err
 	}
-	record, err := scanWorkerRunBinding(s.db.QueryRowContext(ctx, `SELECT `+workerRunBindingSelectColumns+` FROM worker_run_bindings WHERE id=?`, id))
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	record, err := scanWorkerRunBinding(s.db.QueryRowContext(ctx, `SELECT `+workerRunBindingSelectColumns+` FROM worker_run_bindings WHERE id=? AND tenant_id=? AND engine_name=?`, id, tenantID, s.engineName))
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrTaskNotFound
+		}
 		return nil, fmt.Errorf("loom runtime bindings get run binding %q: %w", id, err)
 	}
 	return record, nil

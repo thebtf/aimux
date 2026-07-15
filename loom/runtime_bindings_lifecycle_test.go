@@ -59,13 +59,13 @@ func TestTaskStore_WorkerRunBindingLifecycle_StartAndReturnPreserveLeaseAndWinne
 	}
 	t003RequireLifecycleAuthority(t, startedAuthority, authority)
 
-	started := t003LeaseBinding(t, f.store, req.BindingID)
+	started := t003LeaseBinding(t, f.store, req.BindingID, req.TenantID)
 	t003RequireStartedBinding(t, started, authority, provider, connectionGeneration, live, start.ExecutionID)
 	if !started.StartedAt.Equal(f.now) {
 		t.Fatalf("started_at = %s, want %s", started.StartedAt, f.now)
 	}
 	expiresAt := *started.LeaseExpiresAt
-	session := t003LeaseSession(t, f.store, req.WorkerSessionID)
+	session := t003LeaseSession(t, f.store, req.WorkerSessionID, req.TenantID)
 	if session.ProviderSession == nil || *session.ProviderSession != provider {
 		t.Fatalf("started session provider = %#v, want %#v", session.ProviderSession, provider)
 	}
@@ -81,7 +81,7 @@ func TestTaskStore_WorkerRunBindingLifecycle_StartAndReturnPreserveLeaseAndWinne
 		if _, err := f.store.StartWorkerRunBinding(context.Background(), attempt); err == nil {
 			t.Fatalf("non-winning start succeeded: %#v", attempt.Authority)
 		}
-		t003RequireStartedBinding(t, t003LeaseBinding(t, f.store, req.BindingID), authority, provider, connectionGeneration, live, start.ExecutionID)
+		t003RequireStartedBinding(t, t003LeaseBinding(t, f.store, req.BindingID, req.TenantID), authority, provider, connectionGeneration, live, start.ExecutionID)
 	}
 
 	process := ProcessIdentity{PID: 23, StartFingerprint: "process-start", TreeID: "process-tree"}
@@ -90,12 +90,12 @@ func TestTaskStore_WorkerRunBindingLifecycle_StartAndReturnPreserveLeaseAndWinne
 		t.Fatalf("record native return: %v", err)
 	}
 	t003RequireLifecycleAuthority(t, returnedAuthority, authority)
-	returned := t003LeaseBinding(t, f.store, req.BindingID)
+	returned := t003LeaseBinding(t, f.store, req.BindingID, req.TenantID)
 	if returned.State != WorkerRunBindingStateReturned || returned.Process == nil || *returned.Process != process || returned.ReturnedAt == nil || !returned.ReturnedAt.Equal(f.now) || returned.StartedAt == nil || !returned.StartedAt.Equal(f.now) {
 		t.Fatalf("returned binding = %#v", returned)
 	}
 	t003LeaseRequireActive(t, returned, authority.LeaseOwner, authority.LeaseGeneration, expiresAt)
-	t003LeaseRequireSession(t, t003LeaseSession(t, f.store, req.WorkerSessionID), req.TaskID, authority.LeaseOwner, authority.LeaseGeneration, expiresAt)
+	t003LeaseRequireSession(t, t003LeaseSession(t, f.store, req.WorkerSessionID, req.TenantID), req.TaskID, authority.LeaseOwner, authority.LeaseGeneration, expiresAt)
 
 	duplicateReturn := ReturnWorkerRunBindingRequest{Authority: authority, Process: &ProcessIdentity{PID: 29, StartFingerprint: "duplicate-start", TreeID: "duplicate-tree"}}
 	staleOwnerReturn := duplicateReturn
@@ -106,7 +106,7 @@ func TestTaskStore_WorkerRunBindingLifecycle_StartAndReturnPreserveLeaseAndWinne
 		if _, err := f.store.RecordWorkerRunBindingReturned(context.Background(), attempt); err == nil {
 			t.Fatalf("non-winning return succeeded: %#v", attempt.Authority)
 		}
-		winner := t003LeaseBinding(t, f.store, req.BindingID)
+		winner := t003LeaseBinding(t, f.store, req.BindingID, req.TenantID)
 		if winner.State != WorkerRunBindingStateReturned || winner.Process == nil || *winner.Process != process {
 			t.Fatalf("returned winner rewritten: %#v", winner)
 		}
@@ -140,11 +140,11 @@ func TestTaskStore_WorkerRunBindingLifecycle_ExactResumeAdvancesGenerationAndFen
 	if secondAuthority.BindingID != second.BindingID || secondAuthority.LeaseOwner != second.LeaseOwner || secondAuthority.LeaseGeneration != 2 {
 		t.Fatalf("generation-two authority = %#v", secondAuthority)
 	}
-	secondBinding := t003LeaseBinding(t, f.store, second.BindingID)
+	secondBinding := t003LeaseBinding(t, f.store, second.BindingID, second.TenantID)
 	if secondBinding.State != WorkerRunBindingStateReserved || secondBinding.LeaseGeneration != 2 {
 		t.Fatalf("generation-two binding = %#v", secondBinding)
 	}
-	t003LeaseRequireSession(t, t003LeaseSession(t, f.store, second.WorkerSessionID), second.TaskID, secondAuthority.LeaseOwner, secondAuthority.LeaseGeneration, *secondBinding.LeaseExpiresAt)
+	t003LeaseRequireSession(t, t003LeaseSession(t, f.store, second.WorkerSessionID, second.TenantID), second.TaskID, secondAuthority.LeaseOwner, secondAuthority.LeaseGeneration, *secondBinding.LeaseExpiresAt)
 
 	staleForSecond := firstAuthority
 	staleForSecond.BindingID = second.BindingID
@@ -169,7 +169,7 @@ func TestTaskStore_WorkerRunBindingLifecycle_ExactResumeAdvancesGenerationAndFen
 		if err := action.call(); err == nil {
 			t.Fatalf("old authority %s succeeded against generation two", action.name)
 		}
-		winner := t003LeaseBinding(t, f.store, second.BindingID)
+		winner := t003LeaseBinding(t, f.store, second.BindingID, second.TenantID)
 		if winner.State != WorkerRunBindingStateReserved || winner.LeaseGeneration != secondAuthority.LeaseGeneration {
 			t.Fatalf("generation-two winner rewritten after stale %s: %#v", action.name, winner)
 		}

@@ -171,11 +171,11 @@ func TestTaskStore_ReserveWorkerRunBinding_NewAtomicallyCreatesLeasedSession(t *
 		t.Fatalf("reserve authority = %#v, want binding=%q owner=%q generation=1", authority, req.BindingID, req.LeaseOwner)
 	}
 
-	binding, err := f.store.GetWorkerRunBinding(context.Background(), req.BindingID)
+	binding, err := f.store.GetWorkerRunBinding(context.Background(), req.BindingID, req.TenantID)
 	if err != nil {
 		t.Fatalf("get reserved binding: %v", err)
 	}
-	session, err := f.store.GetWorkerSession(context.Background(), req.WorkerSessionID)
+	session, err := f.store.GetWorkerSession(context.Background(), req.WorkerSessionID, req.TenantID)
 	if err != nil {
 		t.Fatalf("get leased session: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestTaskStore_ReserveWorkerRunBinding_StatelessCreatesBindingOnly(t *testin
 	if authority.BindingID != req.BindingID || authority.LeaseOwner != req.LeaseOwner || authority.LeaseGeneration != 1 {
 		t.Fatalf("stateless authority = %#v", authority)
 	}
-	binding, err := f.store.GetWorkerRunBinding(context.Background(), req.BindingID)
+	binding, err := f.store.GetWorkerRunBinding(context.Background(), req.BindingID, req.TenantID)
 	if err != nil {
 		t.Fatalf("get stateless binding: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestTaskStore_ReserveWorkerRunBinding_ExactResumeRequiresExactAvailableGKey
 		if authority.BindingID != req.BindingID || authority.LeaseGeneration != 1 {
 			t.Fatalf("exact-resume authority = %#v", authority)
 		}
-		session, err := f.store.GetWorkerSession(context.Background(), req.WorkerSessionID)
+		session, err := f.store.GetWorkerSession(context.Background(), req.WorkerSessionID, req.TenantID)
 		if err != nil {
 			t.Fatalf("get exact-resume session: %v", err)
 		}
@@ -296,7 +296,7 @@ func TestTaskStore_ReserveWorkerRunBinding_ForkRequiresExactDistinctParent(t *te
 		if _, err := f.store.ReserveWorkerRunBinding(context.Background(), req); err != nil {
 			t.Fatalf("reserve fork: %v", err)
 		}
-		child, err := f.store.GetWorkerSession(context.Background(), req.WorkerSessionID)
+		child, err := f.store.GetWorkerSession(context.Background(), req.WorkerSessionID, req.TenantID)
 		if err != nil {
 			t.Fatalf("get fork child: %v", err)
 		}
@@ -371,7 +371,7 @@ func TestTaskStore_ReserveWorkerRunBinding_ConcurrentSameSessionHasOneWinner(t *
 	if activeBindings != 1 {
 		t.Fatalf("active race bindings = %d, want 1", activeBindings)
 	}
-	session, err := f.store.GetWorkerSession(context.Background(), "session-race")
+	session, err := f.store.GetWorkerSession(context.Background(), "session-race", "reserve-tenant")
 	if err != nil {
 		t.Fatalf("get race session: %v", err)
 	}

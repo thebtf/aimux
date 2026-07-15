@@ -59,18 +59,18 @@ func t003LeaseSeed(t *testing.T, store *TaskStore, now time.Time) (ReserveWorker
 	return request, WorkerRunBindingAuthority{BindingID: request.BindingID, LeaseOwner: request.LeaseOwner, LeaseGeneration: 1}
 }
 
-func t003LeaseBinding(t *testing.T, store *TaskStore, id string) *WorkerRunBindingRecord {
+func t003LeaseBinding(t *testing.T, store *TaskStore, id, tenantID string) *WorkerRunBindingRecord {
 	t.Helper()
-	binding, err := store.GetWorkerRunBinding(context.Background(), id)
+	binding, err := store.GetWorkerRunBinding(context.Background(), id, tenantID)
 	if err != nil {
 		t.Fatalf("get binding %q: %v", id, err)
 	}
 	return binding
 }
 
-func t003LeaseSession(t *testing.T, store *TaskStore, id string) *WorkerSessionRecord {
+func t003LeaseSession(t *testing.T, store *TaskStore, id, tenantID string) *WorkerSessionRecord {
 	t.Helper()
-	session, err := store.GetWorkerSession(context.Background(), id)
+	session, err := store.GetWorkerSession(context.Background(), id, tenantID)
 	if err != nil {
 		t.Fatalf("get session %q: %v", id, err)
 	}
@@ -102,8 +102,8 @@ func TestTaskStore_RenewWorkerRunBindingLease_ExactUnexpiredAuthorityOnly(t *tes
 		t.Fatalf("renew exact authority: %v", err)
 	}
 	expectedExpiry := now.Add(renewalTTL)
-	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID), authority.LeaseOwner, authority.LeaseGeneration, expectedExpiry)
-	t003LeaseRequireSession(t, t003LeaseSession(t, store, request.WorkerSessionID), request.TaskID, authority.LeaseOwner, authority.LeaseGeneration, expectedExpiry)
+	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID, request.TenantID), authority.LeaseOwner, authority.LeaseGeneration, expectedExpiry)
+	t003LeaseRequireSession(t, t003LeaseSession(t, store, request.WorkerSessionID, request.TenantID), request.TaskID, authority.LeaseOwner, authority.LeaseGeneration, expectedExpiry)
 
 	for _, stale := range []WorkerRunBindingAuthority{
 		{BindingID: authority.BindingID, LeaseOwner: "other-owner", LeaseGeneration: authority.LeaseGeneration},
@@ -112,14 +112,14 @@ func TestTaskStore_RenewWorkerRunBindingLease_ExactUnexpiredAuthorityOnly(t *tes
 		if _, err := store.RenewWorkerRunBindingLease(context.Background(), RenewWorkerRunBindingLeaseRequest{Authority: stale, LeaseTTL: time.Hour}); err == nil {
 			t.Fatalf("renew stale authority %+v succeeded", stale)
 		}
-		t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID), authority.LeaseOwner, authority.LeaseGeneration, expectedExpiry)
+		t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID, request.TenantID), authority.LeaseOwner, authority.LeaseGeneration, expectedExpiry)
 	}
 
 	*now = expectedExpiry.Add(time.Nanosecond)
 	if _, err := store.RenewWorkerRunBindingLease(context.Background(), RenewWorkerRunBindingLeaseRequest{Authority: authority, LeaseTTL: time.Hour}); err == nil {
 		t.Fatal("renew expired authority succeeded")
 	}
-	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID), authority.LeaseOwner, authority.LeaseGeneration, expectedExpiry)
+	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID, request.TenantID), authority.LeaseOwner, authority.LeaseGeneration, expectedExpiry)
 	if initialExpiry.Equal(expectedExpiry) {
 		t.Fatal("renewal did not extend the lease")
 	}
@@ -134,15 +134,15 @@ func TestTaskStore_TakeoverWorkerRunBindingLease_ExpiryFencingAndSingleWinner(t 
 	if _, err := store.TakeoverWorkerRunBindingLease(context.Background(), takeover); err == nil {
 		t.Fatal("takeover before expiry succeeded")
 	}
-	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID), authority.LeaseOwner, authority.LeaseGeneration, initialExpiry)
+	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID, request.TenantID), authority.LeaseOwner, authority.LeaseGeneration, initialExpiry)
 
 	*now = initialExpiry
 	if _, err := store.TakeoverWorkerRunBindingLease(context.Background(), takeover); err != nil {
 		t.Fatalf("takeover after expiry: %v", err)
 	}
 	newExpiry := now.Add(takeover.LeaseTTL)
-	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID), takeover.NewLeaseOwner, authority.LeaseGeneration+1, newExpiry)
-	t003LeaseRequireSession(t, t003LeaseSession(t, store, request.WorkerSessionID), request.TaskID, takeover.NewLeaseOwner, authority.LeaseGeneration+1, newExpiry)
+	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID, request.TenantID), takeover.NewLeaseOwner, authority.LeaseGeneration+1, newExpiry)
+	t003LeaseRequireSession(t, t003LeaseSession(t, store, request.WorkerSessionID, request.TenantID), request.TaskID, takeover.NewLeaseOwner, authority.LeaseGeneration+1, newExpiry)
 
 	*now = newExpiry
 	owners := []string{"owner-c", "owner-d"}
@@ -166,7 +166,7 @@ func TestTaskStore_TakeoverWorkerRunBindingLease_ExpiryFencingAndSingleWinner(t 
 	if wins != 1 {
 		t.Fatalf("concurrent takeovers won %d times, want 1", wins)
 	}
-	binding := t003LeaseBinding(t, store, request.BindingID)
+	binding := t003LeaseBinding(t, store, request.BindingID, request.TenantID)
 	if binding.LeaseOwner == nil || (*binding.LeaseOwner != owners[0] && *binding.LeaseOwner != owners[1]) || binding.LeaseGeneration != authority.LeaseGeneration+2 {
 		t.Fatalf("concurrent winner binding = owner=%v generation=%d", binding.LeaseOwner, binding.LeaseGeneration)
 	}
@@ -190,11 +190,11 @@ func TestTaskStore_WorkerRunBindingLease_TakeoverFencesOldAuthorityAndFinalizesO
 	if _, err := store.FinalizeWorkerRunBinding(context.Background(), FinalizeWorkerRunBindingRequest{Authority: currentAuthority, TerminalReason: "completed"}); err != nil {
 		t.Fatalf("current authority finalize: %v", err)
 	}
-	binding := t003LeaseBinding(t, store, request.BindingID)
+	binding := t003LeaseBinding(t, store, request.BindingID, request.TenantID)
 	if binding.State != WorkerRunBindingStateTerminal || binding.LeaseOwner != nil || binding.LeaseExpiresAt != nil || binding.TerminalReason == nil || *binding.TerminalReason != "completed" || binding.TerminalAt == nil || binding.TerminalAt.IsZero() || binding.TerminalAt.After(*now) {
 		t.Fatalf("final binding = %+v", binding)
 	}
-	session := t003LeaseSession(t, store, request.WorkerSessionID)
+	session := t003LeaseSession(t, store, request.WorkerSessionID, request.TenantID)
 	if session.State != WorkerSessionStateAvailable || session.ActiveTaskID != nil || session.LeaseOwner != nil || session.LeaseExpiresAt != nil || session.LeaseGeneration != currentAuthority.LeaseGeneration {
 		t.Fatalf("final session = %+v", session)
 	}
@@ -221,7 +221,7 @@ func TestTaskStore_FinalizeWorkerRunBinding_StaleDuplicateAndBusyDoNotReplaceAut
 	if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
 		t.Fatalf("rollback busy lock: %v", err)
 	}
-	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID), authority.LeaseOwner, authority.LeaseGeneration, initialExpiry)
+	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID, request.TenantID), authority.LeaseOwner, authority.LeaseGeneration, initialExpiry)
 
 	if _, err := store.FinalizeWorkerRunBinding(context.Background(), FinalizeWorkerRunBindingRequest{Authority: authority, TerminalReason: "winner"}); err != nil {
 		t.Fatalf("winner finalize: %v", err)
@@ -234,7 +234,7 @@ func TestTaskStore_FinalizeWorkerRunBinding_StaleDuplicateAndBusyDoNotReplaceAut
 			t.Fatalf("stale finalize %+v succeeded", stale)
 		}
 	}
-	binding := t003LeaseBinding(t, store, request.BindingID)
+	binding := t003LeaseBinding(t, store, request.BindingID, request.TenantID)
 	if binding.State != WorkerRunBindingStateTerminal || binding.TerminalReason == nil || *binding.TerminalReason != "winner" || binding.LeaseOwner != nil || binding.LeaseExpiresAt != nil {
 		t.Fatalf("terminal winner rewritten: %+v", binding)
 	}
@@ -243,8 +243,8 @@ func TestTaskStore_FinalizeWorkerRunBinding_StaleDuplicateAndBusyDoNotReplaceAut
 func TestTaskStore_WorkerRunBindingLease_GettersPersistExactAuthorityAndValidTimes(t *testing.T) {
 	store, _, now := t003LeaseOpenStore(t)
 	request, authority := t003LeaseSeed(t, store, *now)
-	binding := t003LeaseBinding(t, store, request.BindingID)
-	session := t003LeaseSession(t, store, request.WorkerSessionID)
+	binding := t003LeaseBinding(t, store, request.BindingID, request.TenantID)
+	session := t003LeaseSession(t, store, request.WorkerSessionID, request.TenantID)
 	expiresAt := now.Add(request.LeaseTTL)
 	t003LeaseRequireActive(t, binding, authority.LeaseOwner, authority.LeaseGeneration, expiresAt)
 	t003LeaseRequireSession(t, session, request.TaskID, authority.LeaseOwner, authority.LeaseGeneration, expiresAt)
