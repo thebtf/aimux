@@ -187,9 +187,10 @@ type Swarm struct {
 	factoryFn func(ctx context.Context, name string) (types.ExecutorV2, error)
 	auditLog  audit.AuditLog // receives spawn/close/restart/cross-tenant events
 
-	mu       sync.RWMutex
-	registry map[string][]*Handle // keyed by registryKey(tenantID, scope, name)
-	nextID   uint64
+	mu                 sync.RWMutex
+	registry           map[string][]*Handle // keyed by registryKey(tenantID, scope, name)
+	nextID             uint64
+	registryGeneration uint64
 
 	lifecycleMu  sync.RWMutex
 	shuttingDown bool
@@ -287,6 +288,7 @@ func NewWithContextFactory(factoryFn func(context.Context, string) (types.Execut
 		factoryFn:              factoryFn,
 		auditLog:               al,
 		registry:               make(map[string][]*Handle),
+		registryGeneration:     nextSwarmRegistryGeneration.Add(1),
 		executions:             make(map[executionKey]*executionRecord),
 		active:                 make(map[*Handle]*executionRecord),
 		live:                   make(map[*Handle]handleAuthority),
