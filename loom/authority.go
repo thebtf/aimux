@@ -269,6 +269,10 @@ func beginAuthorityTransaction(ctx context.Context, db *sql.DB) (*authorityTrans
 	if err != nil {
 		return nil, fmt.Errorf("loom authority acquire connection: %w", err)
 	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("loom authority enable foreign keys: %w", err)
+	}
 	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("loom authority set busy timeout: %w", err)

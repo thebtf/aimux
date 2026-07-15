@@ -271,8 +271,8 @@ func t004AssertConflictTrace(t *testing.T, entries []t004TraceEntry) {
 	t.Helper()
 	t004AssertSingleConnection(t, entries)
 	ops := t004TraceOps(entries)
-	if len(ops) < 4 || ops[0] != "PRAGMA" || ops[1] != "BEGIN IMMEDIATE" || ops[len(ops)-1] != "ROLLBACK" {
-		t.Errorf("conflict trace ops=%v want PRAGMA, BEGIN IMMEDIATE, SELECT(s), ROLLBACK", ops)
+	if len(ops) < 5 || ops[0] != "PRAGMA" || ops[1] != "PRAGMA" || ops[2] != "BEGIN IMMEDIATE" || ops[len(ops)-1] != "ROLLBACK" {
+		t.Errorf("conflict trace ops=%v want foreign-key PRAGMA, busy-timeout PRAGMA, BEGIN IMMEDIATE, SELECT(s), ROLLBACK", ops)
 	}
 	seenSelect := false
 	for index, op := range ops {
@@ -346,8 +346,8 @@ func TestTaskAuthority_TransactionTraceSuccess(t *testing.T) {
 	t004RequireApplied(t, result, invokeErr)
 	t004AssertSingleConnection(t, entries)
 	ops := t004TraceOps(entries)
-	if len(ops) < 6 || ops[0] != "PRAGMA" || ops[1] != "BEGIN IMMEDIATE" || ops[len(ops)-1] != "COMMIT" {
-		t.Errorf("success trace=%v want PRAGMA, BEGIN IMMEDIATE, SELECT(s), writes, COMMIT", ops)
+	if len(ops) < 7 || ops[0] != "PRAGMA" || ops[1] != "PRAGMA" || ops[2] != "BEGIN IMMEDIATE" || ops[len(ops)-1] != "COMMIT" {
+		t.Errorf("success trace=%v want foreign-key PRAGMA, busy-timeout PRAGMA, BEGIN IMMEDIATE, SELECT(s), writes, COMMIT", ops)
 	}
 	seenSelect, seenUpdate, seenInsert := false, false, false
 	for _, op := range ops {

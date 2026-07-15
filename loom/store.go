@@ -842,6 +842,7 @@ type TaskStore struct {
 	db         *sql.DB
 	daemonUUID string // set via SetDaemonUUID; empty string means not configured
 	engineName string // identifies owning daemon for query scoping (AIMUX-10)
+	now        func() time.Time
 }
 
 // NewTaskStore initialises the tasks table and returns a TaskStore.
@@ -950,7 +951,10 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 	if err := migrateV10(db); err != nil {
 		return nil, fmt.Errorf("loom store: migrate v10 runtime event ledger: %w", err)
 	}
-	// Inherit WAL mode from parent DB (session.Store already sets WAL).
+	if err := migrateV11(db); err != nil {
+		return nil, fmt.Errorf("loom store: migrate v11 worker session bindings: %w", err)
+	}
+	// After all startup schema migrations, inherit WAL mode from parent DB (session.Store already sets WAL).
 	// Reading first avoids an unnecessary write-PRAGMA racing a concurrent
 	// constructor's immediate migration transaction when WAL is already active.
 	if err := ensureTaskStoreJournalMode(db); err != nil {
@@ -959,7 +963,7 @@ func NewTaskStore(db *sql.DB, engineName string) (*TaskStore, error) {
 	if err := ensureTaskStoreSynchronousNormal(db); err != nil {
 		return nil, fmt.Errorf("loom store: set synchronous mode: %w", err)
 	}
-	return &TaskStore{db: db, engineName: engineName}, nil
+	return &TaskStore{db: db, engineName: engineName, now: func() time.Time { return time.Now().UTC() }}, nil
 }
 
 // SetDaemonUUID configures the daemon-lifetime UUID to be stamped on every
