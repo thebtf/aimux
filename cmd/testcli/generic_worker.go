@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -14,12 +15,15 @@ import (
 )
 
 const (
-	genericWorkerMaxFloodChunks     = 4096
-	genericWorkerMaxFloodChunkBytes = 64 << 10
-	genericWorkerMaxFloodBytes      = 1 << 20
-	genericWorkerMaxTreeDepth       = 8
-	genericWorkerMaxTreeHoldMS      = 10_000
-	genericWorkerTreeChildEnv       = "AIMUX_TESTCLI_INTERNAL_TREE_NODE"
+	genericWorkerMaxFloodChunks          = 4096
+	genericWorkerMaxFloodChunkBytes      = 64 << 10
+	genericWorkerMaxFloodBytes           = 1 << 20
+	genericWorkerMaxTreeDepth            = 8
+	genericWorkerMaxTreeHoldMS           = 10_000
+	genericWorkerTreeChildEnv            = "AIMUX_TESTCLI_INTERNAL_TREE_NODE"
+	genericWorkerMaxTypedInputStdinBytes = 1 << 16
+	genericWorkerMaxTypedInputArgs       = 64
+	genericWorkerMaxTypedInputArgBytes   = 4096
 )
 
 type genericWorkerFloodResult struct {
@@ -55,7 +59,7 @@ func reportGenericWorkerWriteFailure(stderr io.Writer, mode, channel string) {
 
 // runGenericWorker runs the provider-neutral process emulator against explicit
 // output channels so tests can prove stdout/stderr separation without globals.
-func runGenericWorker(args []string, stdout, stderr io.Writer) int {
+func runGenericWorker(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("generic-worker", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	mode := flags.String("mode", "stream", "emulation mode")
@@ -166,6 +170,8 @@ func runGenericWorker(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "typed-input":
+		return runGenericWorkerTypedInput(flags.Args(), stdin, stdout, stderr)
 	case "tree":
 		if *depth < 0 || *depth > genericWorkerMaxTreeDepth ||
 			*level != 0 ||
@@ -269,6 +275,68 @@ func runGenericWorkerTree(stdout, stderr io.Writer, depth, level, holdMS int, ro
 			reportGenericWorkerWriteFailure(stderr, "tree", "stdout")
 			return 1
 		}
+	}
+	return 0
+}
+
+// genericWorkerTypedInputEvent reports the exact typed argv (captured after a
+// "--" separator) and the exact bounded stdin payload a caller supplied, so
+// tests can prove byte-for-byte argv/stdin fidelity without provider-specific
+// semantics. StdinBase64 preserves arbitrary bytes losslessly through JSON,
+// which mangles invalid UTF-8 carried in plain string fields.
+type genericWorkerTypedInputEvent struct {
+	Event       string   `json:"event"`
+	Argv        []string `json:"argv"`
+	StdinBytes  int      `json:"stdin_bytes"`
+	StdinBase64 string   `json:"stdin_base64"`
+}
+
+// runGenericWorkerTypedInput proves explicit typed argv (everything after a
+// "--" separator) and a bounded stdin payload without provider-specific
+// framing. It rejects oversize argv or stdin before writing anything to
+// stdout so a failure never mixes with successful output.
+func runGenericWorkerTypedInput(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(argv) > genericWorkerMaxTypedInputArgs {
+		fmt.Fprintf(
+			stderr,
+			"generic-worker: typed-input bounds: argv<=%d\n",
+			genericWorkerMaxTypedInputArgs,
+		)
+		return 2
+	}
+	for _, arg := range argv {
+		if len(arg) > genericWorkerMaxTypedInputArgBytes {
+			fmt.Fprintf(
+				stderr,
+				"generic-worker: typed-input bounds: arg-bytes<=%d\n",
+				genericWorkerMaxTypedInputArgBytes,
+			)
+			return 2
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(stdin, genericWorkerMaxTypedInputStdinBytes+1))
+	if err != nil {
+		fmt.Fprintf(stderr, "generic-worker: typed-input stdin read: %v\n", err)
+		return 2
+	}
+	if len(data) > genericWorkerMaxTypedInputStdinBytes {
+		fmt.Fprintf(
+			stderr,
+			"generic-worker: typed-input bounds: stdin-bytes<=%d\n",
+			genericWorkerMaxTypedInputStdinBytes,
+		)
+		return 2
+	}
+
+	event := genericWorkerTypedInputEvent{
+		Event:       "typed_input",
+		Argv:        append([]string{}, argv...),
+		StdinBytes:  len(data),
+		StdinBase64: base64.StdEncoding.EncodeToString(data),
+	}
+	if err := json.NewEncoder(stdout).Encode(event); err != nil {
+		reportGenericWorkerWriteFailure(stderr, "typed-input", "stdout")
+		return 1
 	}
 	return 0
 }

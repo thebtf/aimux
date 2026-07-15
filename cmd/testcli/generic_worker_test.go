@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -63,7 +65,7 @@ func TestGenericWorker_StreamSeparatesChannels(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	exitCode := runGenericWorker([]string{"--mode", "stream"}, &stdout, &stderr)
+	exitCode := runGenericWorker([]string{"--mode", "stream"}, bytes.NewReader(nil), &stdout, &stderr)
 
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
@@ -82,6 +84,7 @@ func TestGenericWorker_FloodWritesFixedChunksToBothChannels(t *testing.T) {
 
 	exitCode := runGenericWorker(
 		[]string{"--mode", "flood", "--count", "3", "--chunk-bytes", "8"},
+		bytes.NewReader(nil),
 		&stdout,
 		&stderr,
 	)
@@ -112,7 +115,7 @@ func TestGenericWorker_FloodRejectsUnboundedRequests(t *testing.T) {
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
 
-			exitCode := runGenericWorker(testCase.args, &stdout, &stderr)
+			exitCode := runGenericWorker(testCase.args, bytes.NewReader(nil), &stdout, &stderr)
 
 			if exitCode != 2 {
 				t.Fatalf("exit code = %d, want 2", exitCode)
@@ -136,6 +139,7 @@ func TestGenericWorker_FloodStartsBothChannelsConcurrently(t *testing.T) {
 	go func() {
 		exitCode <- runGenericWorker(
 			[]string{"--mode", "flood", "--count", "1", "--chunk-bytes", "8"},
+			bytes.NewReader(nil),
 			stdout,
 			stderr,
 		)
@@ -186,7 +190,7 @@ func TestGenericWorker_OutputSinkFailureReturnsNonZero(t *testing.T) {
 						stderrWriter = rejected
 					}
 
-					exitCode := runGenericWorker(testCase.args, stdoutWriter, stderrWriter)
+					exitCode := runGenericWorker(testCase.args, bytes.NewReader(nil), stdoutWriter, stderrWriter)
 
 					if exitCode != 1 {
 						t.Fatalf("exit code = %d, want 1 after %s failure", exitCode, failedChannel)
@@ -207,7 +211,7 @@ func TestGenericWorker_FramingEmitsByteEdgeCases(t *testing.T) {
 	var stdout recordingWriter
 	var stderr recordingWriter
 
-	exitCode := runGenericWorker([]string{"--mode", "framing"}, &stdout, &stderr)
+	exitCode := runGenericWorker([]string{"--mode", "framing"}, bytes.NewReader(nil), &stdout, &stderr)
 
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
@@ -319,7 +323,7 @@ func TestGenericWorker_TreeRejectsUnboundedRequestsBeforeOutput(t *testing.T) {
 			stdout := &rejectingWriter{}
 			var stderr bytes.Buffer
 
-			exitCode := runGenericWorker(testCase.args, stdout, &stderr)
+			exitCode := runGenericWorker(testCase.args, bytes.NewReader(nil), stdout, &stderr)
 
 			if exitCode != 2 {
 				t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr.String())
@@ -349,7 +353,7 @@ func TestGenericWorker_TreeRejectsForgedInternalInvocation(t *testing.T) {
 			stdout := &rejectingWriter{}
 			var stderr bytes.Buffer
 
-			exitCode := runGenericWorker(testCase.args, stdout, &stderr)
+			exitCode := runGenericWorker(testCase.args, bytes.NewReader(nil), stdout, &stderr)
 
 			if exitCode != 2 {
 				t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr.String())
@@ -361,5 +365,95 @@ func TestGenericWorker_TreeRejectsForgedInternalInvocation(t *testing.T) {
 				t.Fatalf("stderr = %q, want tree invocation diagnostic", stderr.String())
 			}
 		})
+	}
+}
+
+func TestGenericWorker_TypedInputProvesArgvAndStdinExactly(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stdinPayload := []byte("typed input: \xff\x00 unicode:\xc3\xa9 line1\nline2\tend")
+	argv := []string{"--mode", "typed-input", "--", "alpha", "beta gamma", "delta=3"}
+
+	exitCode := runGenericWorker(argv, bytes.NewReader(stdinPayload), &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	var event genericWorkerTypedInputEvent
+	if err := json.Unmarshal(stdout.Bytes(), &event); err != nil {
+		t.Fatalf("decode typed-input event: %v; stdout=%q", err, stdout.String())
+	}
+	if event.Event != "typed_input" {
+		t.Fatalf("event = %q, want typed_input", event.Event)
+	}
+	wantArgv := []string{"alpha", "beta gamma", "delta=3"}
+	if !slices.Equal(event.Argv, wantArgv) {
+		t.Fatalf("argv = %#v, want %#v", event.Argv, wantArgv)
+	}
+	if event.StdinBytes != len(stdinPayload) {
+		t.Fatalf("stdin bytes = %d, want %d", event.StdinBytes, len(stdinPayload))
+	}
+	decoded, err := base64.StdEncoding.DecodeString(event.StdinBase64)
+	if err != nil {
+		t.Fatalf("decode stdin_base64: %v", err)
+	}
+	if !bytes.Equal(decoded, stdinPayload) {
+		t.Fatalf("stdin bytes = %v, want %v", decoded, stdinPayload)
+	}
+}
+
+func TestGenericWorker_TypedInputRejectsOversizedArgvBeforeStdout(t *testing.T) {
+	testCases := []struct {
+		name string
+		argv []string
+	}{
+		{
+			name: "too many args",
+			argv: append(
+				[]string{"--mode", "typed-input", "--"},
+				make([]string, genericWorkerMaxTypedInputArgs+1)...,
+			),
+		},
+		{
+			name: "one arg too long",
+			argv: []string{"--mode", "typed-input", "--", strings.Repeat("x", genericWorkerMaxTypedInputArgBytes+1)},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			stdout := &rejectingWriter{}
+			var stderr bytes.Buffer
+
+			exitCode := runGenericWorker(testCase.argv, bytes.NewReader(nil), stdout, &stderr)
+
+			if exitCode != 2 {
+				t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr.String())
+			}
+			if stdout.writes != 0 {
+				t.Fatalf("stdout writes = %d, want 0 before argv bounds rejection", stdout.writes)
+			}
+			if !strings.Contains(stderr.String(), "typed-input bounds:") {
+				t.Fatalf("stderr = %q, want typed-input bounds diagnostic", stderr.String())
+			}
+		})
+	}
+}
+
+func TestGenericWorker_TypedInputRejectsOversizedStdinBeforeStdout(t *testing.T) {
+	stdout := &rejectingWriter{}
+	var stderr bytes.Buffer
+	oversized := bytes.Repeat([]byte("a"), genericWorkerMaxTypedInputStdinBytes+1)
+
+	exitCode := runGenericWorker([]string{"--mode", "typed-input"}, bytes.NewReader(oversized), stdout, &stderr)
+
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%q", exitCode, stderr.String())
+	}
+	if stdout.writes != 0 {
+		t.Fatalf("stdout writes = %d, want 0 before stdin bounds rejection", stdout.writes)
+	}
+	if !strings.Contains(stderr.String(), "typed-input bounds:") {
+		t.Fatalf("stderr = %q, want typed-input bounds diagnostic", stderr.String())
 	}
 }

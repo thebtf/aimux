@@ -46,7 +46,7 @@ func main() {
 	case "claude":
 		exitCode = runClaude()
 	case "generic-worker":
-		exitCode = runGenericWorker(os.Args[1:], os.Stdout, os.Stderr)
+		exitCode = runGenericWorker(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "goose":
 		exitCode = runGoose()
 	case "crush":
