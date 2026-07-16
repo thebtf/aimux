@@ -169,10 +169,15 @@ type Server struct {
 	fallbackPicker *fallback.FallbackPicker
 
 	// CR-002: one daemon-owned generic execution fabric behind taskDispatch.
-	taskRuntimeMu     sync.Mutex
-	taskSwarm         *swarm.Swarm
-	taskRuntime       *workerruntime.WorkerRuntime
-	taskRuntimeClosed bool
+	// CR-003 adds one daemon-owned durable binding coordinator beside it —
+	// every provider attempt reserves Loom Worker Session/Run Binding
+	// authority through taskBindingCoord before Swarm acquisition/execution.
+	taskRuntimeMu        sync.Mutex
+	taskSwarm            *swarm.Swarm
+	taskRuntime          *workerruntime.WorkerRuntime
+	taskBindingCoord     *taskBindingCoordinator
+	taskBindingCoordLoom *loom.LoomEngine
+	taskRuntimeClosed    bool
 }
 
 // deprecationOnce ensures the New deprecation warning fires at most once per process.

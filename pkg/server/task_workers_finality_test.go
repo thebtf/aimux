@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/thebtf/aimux/loom"
 	"github.com/thebtf/aimux/pkg/config"
@@ -71,7 +72,24 @@ func TestProfileTaskWorkerFallbackPublishesExactlyOneFinalTerminalLast(t *testin
 	registry.SetAvailable("codex", true)
 	registry.SetAvailable("claude", true)
 
-	srv := &Server{cfg: &config.Config{}, registry: registry}
+	const taskID = "finality-task-1"
+	engine := newTaskToolEngine(t)
+	task := &loom.Task{
+		ID:         taskID,
+		Status:     loom.TaskStatusRunning,
+		WorkerType: loom.WorkerType("finality-probe"),
+		ProjectID:  "finality-project",
+		TenantID:   "finality-tenant",
+		Prompt:     "run the fallback finality check",
+		CWD:        dir,
+		Timeout:    1,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := engine.Import(task); err != nil {
+		t.Fatalf("seed finality task: %v", err)
+	}
+
+	srv := &Server{cfg: &config.Config{}, registry: registry, loom: engine}
 	srv.fallbackPicker = buildFallbackPicker(srv)
 	if srv.fallbackPicker == nil {
 		t.Fatal("buildFallbackPicker returned nil")
@@ -88,7 +106,6 @@ func TestProfileTaskWorkerFallbackPublishesExactlyOneFinalTerminalLast(t *testin
 		},
 	}
 
-	task := &loom.Task{ID: "finality-task-1", Prompt: "run the fallback finality check", Timeout: 1}
 	result, err := worker.Execute(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

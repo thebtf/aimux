@@ -268,3 +268,79 @@ func TestTaskStore_WorkerRunBindingLease_GettersPersistExactAuthorityAndValidTim
 		t.Fatalf("getter authority mismatch: binding=%+v session=%+v", binding, session)
 	}
 }
+
+func TestTaskStore_FinalizeWorkerRunBinding_BlankSessionStateDefaultsAvailable(t *testing.T) {
+	store, _, now := t003LeaseOpenStore(t)
+	request, authority := t003LeaseSeed(t, store, *now)
+
+	if _, err := store.FinalizeWorkerRunBinding(context.Background(), FinalizeWorkerRunBindingRequest{Authority: authority, TerminalReason: "complete"}); err != nil {
+		t.Fatalf("finalize default state: %v", err)
+	}
+	session := t003LeaseSession(t, store, request.WorkerSessionID, request.TenantID)
+	if session.State != WorkerSessionStateAvailable || session.ActiveTaskID != nil || session.LeaseOwner != nil || session.LeaseExpiresAt != nil || session.ClosedAt != nil {
+		t.Fatalf("default finalized session = %#v", session)
+	}
+}
+
+func TestTaskStore_FinalizeWorkerRunBinding_UnavailableSessionCannotResumeOrFork(t *testing.T) {
+	store, _, now := t003LeaseOpenStore(t)
+	request, authority := t003LeaseSeed(t, store, *now)
+
+	if _, err := store.FinalizeWorkerRunBinding(context.Background(), FinalizeWorkerRunBindingRequest{
+		Authority: authority, TerminalReason: "live-handle-closed", WorkerSessionState: WorkerSessionStateUnavailable,
+	}); err != nil {
+		t.Fatalf("finalize unavailable state: %v", err)
+	}
+	binding := t003LeaseBinding(t, store, request.BindingID, request.TenantID)
+	if binding.State != WorkerRunBindingStateTerminal || binding.LeaseOwner != nil || binding.LeaseExpiresAt != nil || binding.TerminalReason == nil || *binding.TerminalReason != "live-handle-closed" {
+		t.Fatalf("unavailable finalized binding = %#v", binding)
+	}
+	session := t003LeaseSession(t, store, request.WorkerSessionID, request.TenantID)
+	if session.State != WorkerSessionStateUnavailable || session.ActiveTaskID != nil || session.LeaseOwner != nil || session.LeaseExpiresAt != nil || session.ClosedAt != nil {
+		t.Fatalf("unavailable finalized session = %#v", session)
+	}
+
+	exact := request
+	exact.BindingID = "unavailable-exact-resume"
+	exact.RequestedMode = RuntimeBindingModeExactResume
+	if _, err := store.ReserveWorkerRunBinding(context.Background(), exact); err == nil {
+		t.Fatal("exact resume accepted unavailable session")
+	}
+	fork := request
+	fork.BindingID = "unavailable-fork"
+	fork.WorkerSessionID = "unavailable-fork-child"
+	fork.ParentWorkerSessionID = request.WorkerSessionID
+	fork.RequestedMode = RuntimeBindingModeFork
+	if _, err := store.ReserveWorkerRunBinding(context.Background(), fork); err == nil {
+		t.Fatal("fork accepted unavailable parent session")
+	}
+}
+
+func TestTaskStore_FinalizeWorkerRunBinding_InvalidSessionStateIsZeroAndNonMutating(t *testing.T) {
+	store, _, now := t003LeaseOpenStore(t)
+	request, authority := t003LeaseSeed(t, store, *now)
+	expiresAt := now.Add(request.LeaseTTL)
+
+	got, err := store.FinalizeWorkerRunBinding(context.Background(), FinalizeWorkerRunBindingRequest{
+		Authority: authority, TerminalReason: "invalid-state", WorkerSessionState: WorkerSessionStateClosed,
+	})
+	if err == nil {
+		t.Fatal("finalize accepted closed session target")
+	}
+	if got != (WorkerRunBindingAuthority{}) {
+		t.Fatalf("invalid finalization authority = %#v, want zero", got)
+	}
+	t003LeaseRequireActive(t, t003LeaseBinding(t, store, request.BindingID, request.TenantID), authority.LeaseOwner, authority.LeaseGeneration, expiresAt)
+	t003LeaseRequireSession(t, t003LeaseSession(t, store, request.WorkerSessionID, request.TenantID), request.TaskID, authority.LeaseOwner, authority.LeaseGeneration, expiresAt)
+}
+
+func TestLoomEngine_GetWorkerSession_DelegatesToTaskStore(t *testing.T) {
+	store, _, now := t003LeaseOpenStore(t)
+	request, authority := t003LeaseSeed(t, store, *now)
+
+	session, err := New(store).GetWorkerSession(context.Background(), request.WorkerSessionID, request.TenantID)
+	if err != nil {
+		t.Fatalf("engine get worker session: %v", err)
+	}
+	t003LeaseRequireSession(t, session, request.TaskID, authority.LeaseOwner, authority.LeaseGeneration, now.Add(request.LeaseTTL))
+}

@@ -657,12 +657,20 @@ func (s *Server) taskDispatch(ctx context.Context, cli string, spec picker.TaskS
 	}
 
 	spawnArgs := taskDispatchSpawnArgs(cli, binaryPath, profile, spec)
-	// For stdin-mode CLIs, deliver the prompt via stdin.
+	sessionLaunchArgs := taskDispatchSessionSpawnArgs(cli, binaryPath, profile, spec)
+	// For stdin-mode CLIs, deliver the prompt via stdin on stateless attempts.
 	if profile.PromptFlagType == "stdin" {
 		spawnArgs.Stdin = spec.Prompt
 	}
 
-	result, execErr := s.dispatchTaskRuntime(ctx, cli, spawnArgs, spec.EventSink)
+	ident := TaskBindingIdentity{
+		TaskID:                spec.TaskID,
+		TenantID:              spec.TenantID,
+		ProjectID:             spec.ProjectID,
+		ProfileFingerprint:    taskProfileFingerprint(cli, profile),
+		CapabilityFingerprint: taskCapabilityFingerprint(spec),
+	}
+	result, execErr := s.dispatchTaskRuntime(ctx, cli, spawnArgs, sessionLaunchArgs, spec.Prompt, spec.EventSink, ident, taskSessionRequestFromSpec(spec))
 	if execErr != nil {
 		return "", mapExecError(execErr)
 	}
@@ -712,6 +720,13 @@ func taskDispatchSpawnArgs(cli string, binaryPath string, profile *config.CLIPro
 	}
 }
 
+func taskDispatchSessionSpawnArgs(cli string, binaryPath string, profile *config.CLIProfile, spec picker.TaskSpec) types.SpawnArgs {
+	args := taskDispatchSpawnArgs(cli, binaryPath, profile, spec)
+	args.Args = buildTaskSessionArgs(profile, spec)
+	args.Stdin = ""
+	return args
+}
+
 // buildTaskArgs constructs the CLI argument list for a task prompt.
 //
 // Decision order:
@@ -725,6 +740,16 @@ func taskDispatchSpawnArgs(cli string, binaryPath string, profile *config.CLIPro
 // taskDispatch supplies the binary separately, so the leading binary token is stripped
 // and only subcommands/flags are prepended. The result is never nil.
 func buildTaskArgs(profile *config.CLIProfile, spec picker.TaskSpec) []string {
+	return buildTaskArgsWithPrompt(profile, spec, true)
+}
+
+func buildTaskSessionArgs(profile *config.CLIProfile, spec picker.TaskSpec) []string {
+	launchSpec := spec
+	launchSpec.Prompt = ""
+	return buildTaskArgsWithPrompt(profile, launchSpec, false)
+}
+
+func buildTaskArgsWithPrompt(profile *config.CLIProfile, spec picker.TaskSpec, includePrompt bool) []string {
 	args := commandBaseArgs(profile)
 	if args == nil {
 		args = []string{}
@@ -760,6 +785,13 @@ func buildTaskArgs(profile *config.CLIProfile, spec picker.TaskSpec) []string {
 	}
 	if spec.Effort != "" && profile.Reasoning != nil && profile.Reasoning.Flag != "" {
 		args = append(args, profile.Reasoning.Flag, reasoningFlagValue(profile.Reasoning, spec.Effort))
+	}
+
+	if !includePrompt {
+		if profile.PromptFlagType == "stdin" && profile.StdinSentinel != "" {
+			args = append(args, profile.StdinSentinel)
+		}
+		return args
 	}
 
 	switch profile.PromptFlagType {

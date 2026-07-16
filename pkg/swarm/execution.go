@@ -168,6 +168,26 @@ type ownedProcessEvidenceLease interface {
 // terminal. Cancellation starts process shutdown, while Execute keeps the
 // admission window open until the executor has drained and returned.
 func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.ExecutionID, msg types.Message, sink types.ExecutorEventSink) (*types.Response, error) {
+	return s.executeAdmitted(ctx, h, scope, id, msg, sink, nil, nil)
+}
+
+// executeAdmitted is Execute's shared implementation.
+//
+// onAdmitted, when non-nil, runs exactly once — immediately before the
+// actual provider method invocation, never before the owned-process
+// pre-spawn cancellation gate. That is the single truthful boundary between
+// "rejected before the provider ran" (a context already cancelled before an
+// owned provider spawn never calls onAdmitted) and "the provider call
+// happened" that ExecuteSessionBinding needs for durable Run Binding
+// classification (CR-003). It must not block or panic.
+//
+// bindingCheck, when non-nil, runs once under the handle's operation lease
+// and Swarm's lifecycle fence, immediately after executionAuthority
+// resolves the current live authority/executor pair and before any lease
+// acquisition or provider invocation. ExecuteSessionBinding uses it to prove
+// a caller-supplied LiveSessionBinding is still an exact, unmutated
+// capability token (CR-003); Execute's legacy callers pass nil.
+func (s *Swarm) executeAdmitted(ctx context.Context, h *Handle, scope string, id types.ExecutionID, msg types.Message, sink types.ExecutorEventSink, onAdmitted func(), bindingCheck func(handleAuthority, types.ExecutorV2) error) (*types.Response, error) {
 	if err := id.Validate(); err != nil {
 		return nil, err
 	}
@@ -195,6 +215,12 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	if err != nil {
 		s.lifecycleMu.RUnlock()
 		return nil, err
+	}
+	if bindingCheck != nil {
+		if err := bindingCheck(authority, exec); err != nil {
+			s.lifecycleMu.RUnlock()
+			return nil, err
+		}
 	}
 	if sink == nil {
 		sink = types.ExecutorEventSinkFunc(func(types.ExecutorEvent) bool { return true })
@@ -260,6 +286,20 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 			defer holder.ReleaseProcessEvidence(id)
 		}
 	}
+	// providerInvoked and onAdmitted always fire together, exactly once,
+	// immediately before the one actual provider call this attempt makes.
+	// The owned-lease pre-spawn cancellation branch below deliberately
+	// short-circuits before markProviderInvoked when execCtx is already
+	// cancelled — the provider is never spawned, so neither the durable
+	// Run Binding classification nor the Stateless auto-close tail may
+	// treat this as an attempt that reached the provider.
+	var providerInvoked bool
+	markProviderInvoked := func() {
+		providerInvoked = true
+		if onAdmitted != nil {
+			onAdmitted()
+		}
+	}
 	var response *types.Response
 	if native, ok := exec.(types.EventExecutor); ok {
 		if ownedLease != nil {
@@ -270,12 +310,15 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 				releaseOwnedLease()
 				record.markPreSpawnCancellation(err)
 			} else {
+				markProviderInvoked()
 				response, err = ownedLease.SendEventsWithProcessEvidenceLease(execCtx, id, lease, msg, admission)
 			}
 		} else {
+			markProviderInvoked()
 			response, err = native.SendEvents(execCtx, id, msg, admission)
 		}
 	} else {
+		markProviderInvoked()
 		response, err = exec.SendStream(execCtx, msg, func(chunk types.Chunk) {
 			if !chunk.Done {
 				admission.TryAdmit(types.ExecutorEvent{Channel: "stdout", Type: "text-only", Content: []byte(chunk.Content)})
@@ -325,7 +368,13 @@ func (s *Swarm) Execute(ctx context.Context, h *Handle, scope string, id types.E
 	h.mu.Unlock()
 	if record.transferOperationLeaseToNativeCancellation() {
 		operationLeaseOwned = false
-	} else if authority.mode == Stateless {
+	} else if authority.mode == Stateless && (onAdmitted == nil || providerInvoked) {
+		// Legacy Execute callers (onAdmitted == nil) keep the unconditional
+		// auto-close. Session-binding callers only auto-close once the
+		// provider was actually invoked; a pre-spawn-cancelled attempt
+		// (providerInvoked == false) leaves the live handle open so the
+		// coordinator can itself prove and complete close-before-finalize
+		// for the exact same handle it acquired (CR-003).
 		_ = s.closeHandleLocked(h, "stateless-after-execution")
 	}
 	if !terminalAdmitted && err == nil {

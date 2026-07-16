@@ -234,6 +234,10 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		}
 		return nil, extypes.NewBinaryNotFound(fmt.Sprintf("CLI %q profile unavailable: %v", cli, err), err)
 	}
+	sessionRequest, err := taskSessionRequestFromMetadata(task.Metadata)
+	if err != nil {
+		return nil, extypes.NewUserInputError(fmt.Sprintf("profile task worker has invalid internal Worker Session request: %v", err), err)
+	}
 	writer, err := w.eventWriter(task.ID)
 	if err != nil {
 		return nil, artifactSinkUnavailableError(err)
@@ -264,7 +268,11 @@ func (w profileTaskWorker) Execute(ctx context.Context, task *loom.Task) (*loom.
 		SessionID:      sessionIDFromTaskMetadata(task.Metadata),
 		SessionResume:  sessionResumeFromTaskMetadata(task.Metadata),
 		TimeoutSeconds: task.Timeout,
+		TaskID:         task.ID,
+		TenantID:       task.TenantID,
+		ProjectID:      task.ProjectID,
 	}
+	applyTaskSessionRequestToSpec(&spec, sessionRequest)
 	raw, selectedCLI, failedAttempts, truncated, dispatchErr := w.dispatch(execCtx, cli, task.Metadata, spec, writer, progress, task.ID)
 
 	finalizeAndFlush := func(status string) error {

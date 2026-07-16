@@ -581,20 +581,21 @@ type WorkerRunBindingAuthority struct {
 
 // ReserveWorkerRunBindingRequest atomically reserves one execution attempt.
 type ReserveWorkerRunBindingRequest struct {
-	BindingID             string
-	TaskID                string
-	WorkerSessionID       string
-	TenantID              string
-	ProjectID             string
-	CanonicalWorktreeRoot string
-	ProfileFingerprint    string
-	CapabilityFingerprint string
-	RequestedMode         RuntimeBindingMode
-	ExecutorName          string
-	SwarmScope            string
-	LeaseOwner            string
-	LeaseTTL              time.Duration
-	ParentWorkerSessionID string
+	BindingID                     string
+	TaskID                        string
+	WorkerSessionID               string
+	TenantID                      string
+	ProjectID                     string
+	CanonicalWorktreeRoot         string
+	ProfileFingerprint            string
+	CapabilityFingerprint         string
+	RequestedMode                 RuntimeBindingMode
+	ExecutorName                  string
+	SwarmScope                    string
+	LeaseOwner                    string
+	LeaseTTL                      time.Duration
+	ParentWorkerSessionID         string
+	ExpectedParentProviderSession *ProviderSessionIdentity
 }
 
 // RenewWorkerRunBindingLeaseRequest renews an exact unexpired lease.
@@ -613,8 +614,9 @@ type TakeoverWorkerRunBindingLeaseRequest struct {
 
 // FinalizeWorkerRunBindingRequest terminalizes one exact active binding.
 type FinalizeWorkerRunBindingRequest struct {
-	Authority      WorkerRunBindingAuthority
-	TerminalReason string
+	Authority          WorkerRunBindingAuthority
+	TerminalReason     string
+	WorkerSessionState WorkerSessionState
 }
 
 // StartWorkerRunBindingRequest attaches exact live authority before execution.
@@ -707,12 +709,40 @@ func validateRuntimeBindingMode(mode RuntimeBindingMode) error {
 	}
 }
 
+// validateReserveProjectID allows a canonical blank project only for a
+// stateless reserve (single-tenant/no-project callers whose durable task
+// row itself carries a blank project ID). Session-backed modes (new,
+// exact_resume, fork) durably scope a Worker Session by project and must
+// always require a nonblank, canonical value; a nonblank stateless project
+// is validated exactly like any other session-backed project.
+func validateReserveProjectID(mode RuntimeBindingMode, projectID string) error {
+	if projectID == "" {
+		if mode == RuntimeBindingModeStateless {
+			return nil
+		}
+		return fmt.Errorf("loom runtime bindings: project ID must be nonblank and canonical")
+	}
+	return validateRuntimeBindingText("project ID", projectID)
+}
+
 func validateWorkerSessionState(state WorkerSessionState) error {
 	switch state {
 	case WorkerSessionStateAvailable, WorkerSessionStateLeased, WorkerSessionStateClosed, WorkerSessionStateUnavailable:
 		return nil
 	default:
 		return fmt.Errorf("loom runtime bindings: unknown worker session state %q", state)
+	}
+}
+
+func finalizeWorkerSessionState(state WorkerSessionState) (WorkerSessionState, error) {
+	if state == "" {
+		return WorkerSessionStateAvailable, nil
+	}
+	switch state {
+	case WorkerSessionStateAvailable, WorkerSessionStateUnavailable:
+		return state, nil
+	default:
+		return "", fmt.Errorf("loom runtime bindings: final worker session state must be available or unavailable")
 	}
 }
 
@@ -781,7 +811,6 @@ func validateReserveWorkerRunBindingRequest(request ReserveWorkerRunBindingReque
 		{"binding ID", request.BindingID},
 		{"task ID", request.TaskID},
 		{"tenant ID", request.TenantID},
-		{"project ID", request.ProjectID},
 		{"profile fingerprint", request.ProfileFingerprint},
 		{"capability fingerprint", request.CapabilityFingerprint},
 		{"executor name", request.ExecutorName},
@@ -796,6 +825,9 @@ func validateReserveWorkerRunBindingRequest(request ReserveWorkerRunBindingReque
 		return err
 	}
 	if err := validateRuntimeBindingMode(request.RequestedMode); err != nil {
+		return err
+	}
+	if err := validateReserveProjectID(request.RequestedMode, request.ProjectID); err != nil {
 		return err
 	}
 	if request.LeaseTTL <= 0 {
@@ -822,6 +854,11 @@ func validateReserveWorkerRunBindingRequest(request ReserveWorkerRunBindingReque
 		}
 		if request.WorkerSessionID == request.ParentWorkerSessionID {
 			return fmt.Errorf("loom runtime bindings: fork child must differ from parent")
+		}
+		if request.ExpectedParentProviderSession != nil {
+			if err := validateProviderSessionIdentity(*request.ExpectedParentProviderSession); err != nil {
+				return fmt.Errorf("loom runtime bindings: invalid expected fork parent: %w", err)
+			}
 		}
 	}
 	return nil
@@ -1204,7 +1241,7 @@ func (s *TaskStore) ReserveWorkerRunBinding(ctx context.Context, request Reserve
 	var taskStatus, taskTenant, taskProject, taskEngine string
 	err = tx.conn.QueryRowContext(tx.ctx, `SELECT status, tenant_id, project_id, engine_name FROM tasks WHERE id=?`, request.TaskID).Scan(&taskStatus, &taskTenant, &taskProject, &taskEngine)
 	if err == sql.ErrNoRows {
-		return zero, rollbackRuntimeBinding(tx, fmt.Errorf("loom runtime bindings: task %q not found", request.TaskID))
+		return zero, rollbackRuntimeBinding(tx, fmt.Errorf("%w: runtime binding task %q", ErrTaskNotFound, request.TaskID))
 	}
 	if err != nil {
 		return zero, rollbackRuntimeBinding(tx, fmt.Errorf("loom runtime bindings load task: %w", err))
@@ -1307,6 +1344,11 @@ func (s *TaskStore) ReserveWorkerRunBinding(ctx context.Context, request Reserve
 			parent.CanonicalWorktreeRoot != request.CanonicalWorktreeRoot || parent.ProfileFingerprint != request.ProfileFingerprint ||
 			parent.CapabilityFingerprint != request.CapabilityFingerprint {
 			return zero, runtimeBindingConflict(tx, "fork parent identity is unavailable or mismatched")
+		}
+		if expected := request.ExpectedParentProviderSession; expected != nil {
+			if parent.ProviderSession == nil || parent.ProviderSession.ProviderName != expected.ProviderName || parent.ProviderSession.SessionID != expected.SessionID || parent.ProviderSession.Generation != expected.Generation {
+				return zero, runtimeBindingConflict(tx, "fork parent provider identity is mismatched")
+			}
 		}
 		err = tx.conn.QueryRowContext(tx.ctx, `SELECT 1 FROM worker_sessions WHERE id=?`, request.WorkerSessionID).Scan(&exists)
 		if err == nil {
@@ -1690,6 +1732,10 @@ func (s *TaskStore) FinalizeWorkerRunBinding(ctx context.Context, request Finali
 	if err := validateRuntimeBindingText("terminal reason", request.TerminalReason); err != nil {
 		return zero, err
 	}
+	workerSessionState, err := finalizeWorkerSessionState(request.WorkerSessionState)
+	if err != nil {
+		return zero, err
+	}
 	nowText := runtimeBindingTimestamp(s.runtimeBindingNow())
 	tx, err := beginAuthorityTransaction(ctx, s.db)
 	if err != nil {
@@ -1727,7 +1773,7 @@ func (s *TaskStore) FinalizeWorkerRunBinding(ctx context.Context, request Finali
 			UPDATE worker_sessions
 			SET state=?, active_task_id=NULL, lease_owner=NULL, lease_expires_at=NULL, updated_at=?
 			WHERE id=? AND state=? AND active_task_id=? AND lease_owner=? AND lease_generation=?
-		`, WorkerSessionStateAvailable, nowText, *binding.WorkerSessionID,
+		`, workerSessionState, nowText, *binding.WorkerSessionID,
 			WorkerSessionStateLeased, binding.TaskID, request.Authority.LeaseOwner,
 			request.Authority.LeaseGeneration)
 		if err != nil {

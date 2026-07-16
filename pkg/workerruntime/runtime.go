@@ -29,6 +29,25 @@ func (r *WorkerRuntime) Execute(ctx context.Context, h *swarm.Handle, scope stri
 	return response, err
 }
 
+// ExecuteSessionBinding runs one execution against the live handle referenced
+// by binding (CR-003). attempted reports whether the provider was actually
+// invoked; see Swarm.ExecuteSessionBinding for exact semantics.
+func (r *WorkerRuntime) ExecuteSessionBinding(ctx context.Context, binding swarm.LiveSessionBinding, id types.ExecutionID, msg types.Message, sink types.ExecutorEventSink) (*types.Response, bool, error) {
+	response, attempted, err := r.swarm.ExecuteSessionBinding(ctx, binding, id, msg, sink)
+	if source, ok := sink.(interface{ Err() error }); ok {
+		if sinkErr := source.Err(); sinkErr != nil {
+			return response, attempted, sinkErr
+		}
+	}
+	return response, attempted, err
+}
+
+// ReleaseSessionBinding closes a live handle acquired but never started
+// (CR-003). See Swarm.ReleaseSessionBinding for exact ownership rules.
+func (r *WorkerRuntime) ReleaseSessionBinding(ctx context.Context, binding swarm.LiveSessionBinding, reason string) error {
+	return r.swarm.ReleaseSessionBinding(ctx, binding, reason)
+}
+
 func (r *WorkerRuntime) Cancel(ctx context.Context, h *swarm.Handle, scope string, id types.ExecutionID, reason string) (types.CancellationEvidence, error) {
 	return r.swarm.Cancel(ctx, h, scope, id, reason)
 }

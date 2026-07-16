@@ -69,6 +69,11 @@ func (w workflowRecipeWorker) Execute(ctx context.Context, task *loom.Task) (*lo
 		return nil, extypes.NewUserInputError(fmt.Sprintf("workflow recipe %q is not registered", workflowID), nil)
 	}
 
+	sessionRequest, sessionErr := taskSessionRequestFromMetadata(task.Metadata)
+	if sessionErr != nil {
+		return nil, extypes.NewUserInputError(fmt.Sprintf("workflow recipe worker has invalid internal Worker Session request: %v", sessionErr), sessionErr)
+	}
+
 	// writer/truncated are additive: a nil writer (no server.loom, e.g. unit
 	// tests with a custom dispatch) keeps Send()'s prior OnOutput-only
 	// behavior, preserving custom/test dispatch compatibility.
@@ -81,6 +86,7 @@ func (w workflowRecipeWorker) Execute(ctx context.Context, task *loom.Task) (*lo
 		server:     w.server,
 		task:       task,
 		defaultCLI: defaultCLI,
+		session:    sessionRequest,
 		dispatch:   w.effectiveDispatch(),
 		writer:     writer,
 	}
@@ -187,6 +193,7 @@ func (w workflowRecipeWorker) dispatchViaServer(ctx context.Context, cli string,
 type workflowRecipeExecutorSender struct {
 	server     *Server
 	task       *loom.Task
+	session    taskSessionRequest
 	defaultCLI string
 	dispatch   workflowRecipeDispatchFunc
 	writer     *workerruntime.EventWriter
@@ -239,7 +246,11 @@ func (s *workflowRecipeExecutorSender) Send(ctx context.Context, h workflow.Exec
 		Effort:         s.task.Effort,
 		Sandbox:        "read-only",
 		TimeoutSeconds: s.task.Timeout,
+		TaskID:         s.task.ID,
+		TenantID:       s.task.TenantID,
+		ProjectID:      s.task.ProjectID,
 	}
+	applyTaskSessionRequestToSpec(&spec, s.session)
 	if s.writer != nil {
 		attemptSink := workerruntime.NewAttemptExecutorEventSink(s.writer, handle.cli, outputFormat, func(line string) {
 			if progressLine := normalizeProgressLine(outputFormat, line); progressLine != "" {

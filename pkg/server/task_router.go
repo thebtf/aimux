@@ -64,6 +64,10 @@ type TaskRequest struct {
 	ResumeID       string
 	Target         string
 	Gate           bool
+	// SessionRequest is internal durable Worker Session routing state. Public
+	// task/review parsing leaves it zero (stateless); later internal callers may
+	// set it without widening the MCP schema.
+	SessionRequest taskSessionRequest
 	Metadata       map[string]any
 }
 
@@ -148,6 +152,9 @@ func (r *TaskRouter) Dispatch(ctx context.Context, req TaskRequest) (TaskResult,
 	if prompt == "" {
 		return TaskResult{}, extypes.NewUserInputError("task prompt is required", nil)
 	}
+	if err := req.SessionRequest.validateInternal(); err != nil {
+		return TaskResult{}, extypes.NewUserInputError(fmt.Sprintf("invalid internal Worker Session request: %v", err), err)
+	}
 
 	resolvedClass, confidence, candidates, err := r.resolveTaskClass(prompt, req.TaskClass)
 	if err != nil {
@@ -168,13 +175,15 @@ func (r *TaskRouter) Dispatch(ctx context.Context, req TaskRequest) (TaskResult,
 	}
 
 	loomReq := canonicalLoomRequest(req, prompt, resolvedClass, workerType, confidence, candidates)
-	if _, err := attachRecipeReplayMetadata(&loomReq); err != nil {
-		return TaskResult{TaskClass: resolvedClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}, ensureCLIError(err)
-	}
-	if replayTask, ok, err := r.findRecipeReplayTask(loomReq); err != nil {
-		return TaskResult{TaskClass: resolvedClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}, ensureCLIError(err)
-	} else if ok {
-		return r.recipeReplayResult(replayTask, resolvedClass, confidence, candidates)
+	if req.SessionRequest.allowsRecipeReplay() {
+		if _, err := attachRecipeReplayMetadata(&loomReq); err != nil {
+			return TaskResult{TaskClass: resolvedClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}, ensureCLIError(err)
+		}
+		if replayTask, ok, err := r.findRecipeReplayTask(loomReq); err != nil {
+			return TaskResult{TaskClass: resolvedClass, WorkerType: workerType, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}, ensureCLIError(err)
+		} else if ok {
+			return r.recipeReplayResult(replayTask, resolvedClass, confidence, candidates)
+		}
 	}
 	taskID, err := r.loom.Submit(ctx, loomReq)
 	if err != nil {
@@ -182,7 +191,7 @@ func (r *TaskRouter) Dispatch(ctx context.Context, req TaskRequest) (TaskResult,
 	}
 
 	result := acceptedTaskResult(taskID, resolvedClass, workerType, confidence, candidates)
-	result.Metadata = cloneTaskMetadata(loomReq.Metadata)
+	result.Metadata = publicTaskResultMetadata(loomReq.Metadata)
 	result.Metadata["accepted"] = true
 	result.Metadata["async_contract"] = "loom"
 	result.Metadata["observe_with"] = "status(job_id)"
@@ -239,6 +248,9 @@ func canonicalLoomRequest(req TaskRequest, prompt string, taskClass string, work
 	metadata["task_class"] = taskClass
 	metadata["worker_type"] = string(workerType)
 	metadata["classification_confidence"] = confidence
+	if !req.SessionRequest.isZero() {
+		metadata[taskWorkerSessionRequestMetadata] = taskSessionRequestMetadataValue(req.SessionRequest)
+	}
 	if len(candidates) > 0 {
 		metadata["classification_candidates"] = cloneCandidates(candidates)
 	}
@@ -340,11 +352,17 @@ func contextError(ctx context.Context, err error) error {
 	return context.Canceled
 }
 
+func publicTaskResultMetadata(metadata map[string]any) map[string]any {
+	public := cloneTaskMetadata(metadata)
+	delete(public, taskWorkerSessionRequestMetadata)
+	return public
+}
+
 func buildTaskResult(task *loom.Task, taskClass string, confidence float64, candidates []classifier.Candidate) TaskResult {
 	if task == nil {
 		return TaskResult{TaskClass: taskClass, ConfidenceScore: confidence, Candidates: cloneCandidates(candidates)}
 	}
-	metadata := cloneTaskMetadata(task.Metadata)
+	metadata := publicTaskResultMetadata(task.Metadata)
 	if value, ok := metadataString(metadata, "task_class"); ok && value != "" {
 		taskClass = value
 	}

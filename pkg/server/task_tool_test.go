@@ -31,6 +31,7 @@ import (
 	"github.com/thebtf/aimux/pkg/think"
 	"github.com/thebtf/aimux/pkg/think/patterns"
 	"github.com/thebtf/aimux/pkg/types"
+	"github.com/thebtf/aimux/pkg/workerruntime"
 	"github.com/thebtf/aimux/pkg/workflow"
 )
 
@@ -1009,6 +1010,67 @@ func TestHandleTaskWorkflowBackedReadOnlyRecipeForcesDispatchSandbox(t *testing.
 	}
 }
 
+func TestWorkflowRecipeWorkerPropagatesInternalWorkerSessionRequestToEveryStep(t *testing.T) {
+	profile := defaultRecipeProfile()
+	registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": profile})
+	registry.SetAvailable("codex", true)
+	server := &Server{registry: registry}
+	expected := types.SessionBindingIdentity{
+		HandleID:           "workflow-resume-handle",
+		HandleGeneration:   3,
+		RegistryGeneration: 5,
+		ProviderSession: types.SessionIdentity{
+			Provider:   "neutral",
+			ID:         "workflow-provider-session",
+			Generation: 8,
+		},
+	}
+	var capturedMu sync.Mutex
+	var captured []picker.TaskSpec
+	worker := workflowRecipeWorker{
+		server:     server,
+		defaultCLI: "codex",
+		newEventWriter: func(string) (*workerruntime.EventWriter, error) {
+			return nil, nil
+		},
+		dispatch: func(_ context.Context, cli string, spec picker.TaskSpec, _ map[string]any) (string, string, error) {
+			capturedMu.Lock()
+			captured = append(captured, spec)
+			capturedMu.Unlock()
+			return `{"type":"agent_message","content":"workflow step complete"}` + "\n", cli, nil
+		},
+		patternFn: defaultWorkflowRecipePattern,
+	}
+	task := &loom.Task{
+		ID:        "workflow-session-propagation",
+		Prompt:    "audit the durable session",
+		CLI:       "codex",
+		CWD:       "D:/work/project",
+		TenantID:  "workflow-tenant",
+		ProjectID: "workflow-project",
+		Metadata: map[string]any{
+			"recipe_workflow_id": "secaudit",
+			taskWorkerSessionRequestMetadata: map[string]any{
+				"mode":              string(types.SessionBindingModeExactResume),
+				"worker_session_id": "workflow-worker-session",
+				"expected":          expected,
+			},
+		},
+	}
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result == nil || len(captured) == 0 {
+		t.Fatalf("result=%#v captured=%d, want completed workflow dispatches", result, len(captured))
+	}
+	for i, spec := range captured {
+		if spec.WorkerSessionID != "workflow-worker-session" || spec.ParentWorkerSessionID != "" || spec.SessionBinding.Mode != types.SessionBindingModeExactResume || spec.SessionBinding.Expected == nil || *spec.SessionBinding.Expected != expected || spec.SessionBinding.Parent != nil {
+			t.Fatalf("workflow step %d session request = worker=%q parent=%q binding=%#v", i, spec.WorkerSessionID, spec.ParentWorkerSessionID, spec.SessionBinding)
+		}
+	}
+}
+
 func TestWorkflowRecipeExecutorSenderSendFallsBackToRawContentWhenSelectedProfileIsNil(t *testing.T) {
 	t.Parallel()
 
@@ -1712,9 +1774,25 @@ func TestTaskDispatchRejectsPartialOutputForZeroAndNonZeroExit(t *testing.T) {
 			}
 			registry := driver.NewRegistry(map[string]*config.CLIProfile{"codex": profile})
 			registry.SetAvailable("codex", true)
-			srv := &Server{registry: registry}
+			engine := newTaskToolEngine(t)
+			const taskID = "partial-output-task"
+			if err := engine.Import(&loom.Task{
+				ID:         taskID,
+				Status:     loom.TaskStatusRunning,
+				WorkerType: code.WorkerTypeCode,
+				ProjectID:  "partial-output-project",
+				TenantID:   "partial-output-tenant",
+				Prompt:     "test partial handling",
+				CreatedAt:  time.Now().UTC(),
+			}); err != nil {
+				t.Fatalf("seed partial-output task: %v", err)
+			}
+			srv := &Server{registry: registry, loom: engine}
 			_, err := srv.taskDispatch(context.Background(), "codex", picker.TaskSpec{
-				Prompt: "test partial handling",
+				TaskID:    taskID,
+				TenantID:  "partial-output-tenant",
+				ProjectID: "partial-output-project",
+				Prompt:    "test partial handling",
 				EventSink: types.ExecutorEventSinkFunc(func(event types.ExecutorEvent) bool {
 					return event.Terminal
 				}),
@@ -2731,6 +2809,44 @@ func TestTaskDispatchSpawnArgsCarriesTaskEnv(t *testing.T) {
 	env["OPENAI_API_KEY"] = "mutated"
 	if args.Env["OPENAI_API_KEY"] != "session-key" {
 		t.Fatalf("Env was not cloned: %#v", args.Env)
+	}
+}
+
+func TestTaskDispatchSessionSpawnArgsPreservesLaunchIdentityWithoutTurnPrompt(t *testing.T) {
+	t.Parallel()
+
+	profile := &config.CLIProfile{
+		Binary:            "codex",
+		TimeoutSeconds:    7,
+		CompletionPattern: "done",
+		Command: config.CommandConfig{
+			Base:         "codex exec",
+			ArgsTemplate: `--model "{{.Model}}" "{{.Prompt}}"`,
+		},
+		PromptFlagType: "positional",
+	}
+	spec := picker.TaskSpec{
+		Prompt: "turn prompt must not enter launch argv",
+		CWD:    "project-cwd",
+		Env:    map[string]string{"SESSION_KEY": "value"},
+		Model:  "gpt-test",
+	}
+	args := taskDispatchSessionSpawnArgs("codex", "codex.exe", profile, spec)
+
+	if args.Command != "codex.exe" || args.CWD != "project-cwd" || args.Env["SESSION_KEY"] != "value" {
+		t.Fatalf("session launch identity = %#v, want command/CWD/env preserved", args)
+	}
+	if args.Stdin != "" {
+		t.Fatalf("session launch stdin = %q, want empty until the first turn", args.Stdin)
+	}
+	for _, arg := range args.Args {
+		if strings.Contains(arg, spec.Prompt) {
+			t.Fatalf("session launch argv leaked turn prompt: %#v", args.Args)
+		}
+	}
+	want := []string{"exec", "--model", "gpt-test"}
+	if !stringSlicesEqual(args.Args, want) {
+		t.Fatalf("session launch args = %#v, want %#v", args.Args, want)
 	}
 }
 

@@ -95,15 +95,24 @@ func t003ReserveRequest(mode RuntimeBindingMode, bindingID, sessionID string) Re
 
 func t003SeedAvailableSession(t *testing.T, f *t003ReserveFixture, id string, req ReserveWorkerRunBindingRequest) {
 	t.Helper()
+	var providerName, providerSessionID any
+	var providerGeneration any
+	if expected := req.ExpectedParentProviderSession; expected != nil {
+		providerName = expected.ProviderName
+		providerSessionID = expected.SessionID
+		providerGeneration = expected.Generation
+	}
 	_, err := f.db.Exec(`
 		INSERT INTO worker_sessions (
 			id, tenant_id, engine_name, project_id, canonical_worktree_root,
 			profile_fingerprint, capability_fingerprint, requested_mode, state,
+			provider_name, provider_session_id, provider_session_generation,
 			lease_generation, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, id, req.TenantID, "reserve-engine", req.ProjectID, req.CanonicalWorktreeRoot,
 		req.ProfileFingerprint, req.CapabilityFingerprint, RuntimeBindingModeNew,
-		WorkerSessionStateAvailable, 0, f.now.Format(time.RFC3339Nano), f.now.Format(time.RFC3339Nano))
+		WorkerSessionStateAvailable, providerName, providerSessionID, providerGeneration,
+		0, f.now.Format(time.RFC3339Nano), f.now.Format(time.RFC3339Nano))
 	if err != nil {
 		t.Fatalf("seed available worker session %q: %v", id, err)
 	}
@@ -215,6 +224,120 @@ func TestTaskStore_ReserveWorkerRunBinding_StatelessCreatesBindingOnly(t *testin
 	t003RequireForeignKeyCheck(t, f.observer)
 }
 
+func TestTaskStore_ReserveWorkerRunBinding_TypesTaskLookupAndOwnershipErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*ReserveWorkerRunBindingRequest)
+		wantErr error
+	}{
+		{
+			name: "missing task",
+			mutate: func(req *ReserveWorkerRunBindingRequest) {
+				req.TaskID = "missing-reserve-task"
+			},
+			wantErr: ErrTaskNotFound,
+		},
+		{
+			name: "foreign task owner",
+			mutate: func(req *ReserveWorkerRunBindingRequest) {
+				req.TenantID = "other-tenant"
+			},
+			wantErr: ErrAuthorityConflict,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := t003NewReserveFixture(t)
+			req := t003ReserveRequest(RuntimeBindingModeStateless, "binding-task-error", "")
+			test.mutate(&req)
+
+			_, err := f.store.ReserveWorkerRunBinding(context.Background(), req)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("reserve error = %v, want errors.Is(_, %v)", err, test.wantErr)
+			}
+			t003RequireCounts(t, f.observer, 0, 0)
+		})
+	}
+}
+
+// TestTaskStore_ReserveWorkerRunBinding_StatelessBlankProjectMatchesBlankTaskAndPersistsBlank
+// proves a stateless reserve whose ProjectID is blank matches a durable task
+// row that itself carries a blank project (no-project/single-tenant
+// callers) and persists that blank value honestly — never a sentinel that
+// would mismatch the owning task row.
+func TestTaskStore_ReserveWorkerRunBinding_StatelessBlankProjectMatchesBlankTaskAndPersistsBlank(t *testing.T) {
+	f := t003NewReserveFixture(t)
+	if err := f.store.Create(&Task{
+		ID:         "reserve-task-blank-project",
+		Status:     TaskStatusPending,
+		WorkerType: WorkerTypeCLI,
+		ProjectID:  "",
+		TenantID:   "reserve-tenant",
+		Prompt:     "reserve runtime binding blank project",
+		CreatedAt:  f.now,
+	}); err != nil {
+		t.Fatalf("seed blank-project task: %v", err)
+	}
+	req := t003ReserveRequest(RuntimeBindingModeStateless, "binding-stateless-blank-project", "")
+	req.TaskID = "reserve-task-blank-project"
+	req.ProjectID = ""
+
+	authority, err := f.store.ReserveWorkerRunBinding(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reserve stateless blank-project binding: %v", err)
+	}
+	if authority.BindingID != req.BindingID || authority.LeaseOwner != req.LeaseOwner || authority.LeaseGeneration != 1 {
+		t.Fatalf("stateless blank-project authority = %#v", authority)
+	}
+	binding, err := f.store.GetWorkerRunBinding(context.Background(), req.BindingID, req.TenantID)
+	if err != nil {
+		t.Fatalf("get stateless blank-project binding: %v", err)
+	}
+	if binding.ProjectID != "" {
+		t.Fatalf("stored project ID = %q, want blank to honestly match the owning blank-project task row", binding.ProjectID)
+	}
+	if binding.WorkerSessionID != nil || binding.RequestedMode != RuntimeBindingModeStateless || binding.State != WorkerRunBindingStateReserved {
+		t.Fatalf("stateless blank-project binding = %#v", binding)
+	}
+	t003RequireCounts(t, f.observer, 0, 1)
+	t003RequireForeignKeyCheck(t, f.observer)
+}
+
+// TestTaskStore_ReserveWorkerRunBinding_SessionBackedModesRejectBlankProjectBeforeWrite
+// proves new/exact_resume/fork reserves still require a nonblank project —
+// only stateless may compatibly carry a blank one — and that the rejection
+// happens before any row is written.
+func TestTaskStore_ReserveWorkerRunBinding_SessionBackedModesRejectBlankProjectBeforeWrite(t *testing.T) {
+	for _, mode := range []RuntimeBindingMode{RuntimeBindingModeNew, RuntimeBindingModeExactResume, RuntimeBindingModeFork} {
+		t.Run(string(mode), func(t *testing.T) {
+			f := t003NewReserveFixture(t)
+			taskID := "reserve-task-blank-project-" + string(mode)
+			if err := f.store.Create(&Task{
+				ID:         taskID,
+				Status:     TaskStatusPending,
+				WorkerType: WorkerTypeCLI,
+				ProjectID:  "",
+				TenantID:   "reserve-tenant",
+				Prompt:     "reserve runtime binding blank project",
+				CreatedAt:  f.now,
+			}); err != nil {
+				t.Fatalf("seed blank-project task: %v", err)
+			}
+			req := t003ReserveRequest(mode, "binding-blank-project-"+string(mode), "session-blank-project-"+string(mode))
+			req.TaskID = taskID
+			req.ProjectID = ""
+			if mode == RuntimeBindingModeFork {
+				req.ParentWorkerSessionID = "parent-blank-project-" + string(mode)
+			}
+			if _, err := f.store.ReserveWorkerRunBinding(context.Background(), req); err == nil {
+				t.Fatalf("%s reserve with blank project error = nil, want validation failure", mode)
+			}
+			t003RequireCounts(t, f.observer, 0, 0)
+		})
+	}
+}
+
 func TestTaskStore_ReserveWorkerRunBinding_ExactResumeRequiresExactAvailableGKey(t *testing.T) {
 	t.Run("selects exact available session", func(t *testing.T) {
 		f := t003NewReserveFixture(t)
@@ -291,6 +414,7 @@ func TestTaskStore_ReserveWorkerRunBinding_ForkRequiresExactDistinctParent(t *te
 		f := t003NewReserveFixture(t)
 		req := t003ReserveRequest(RuntimeBindingModeFork, "binding-fork", "session-child")
 		req.ParentWorkerSessionID = "session-parent"
+		req.ExpectedParentProviderSession = &ProviderSessionIdentity{ProviderName: "codex", SessionID: "parent-provider", Generation: 3}
 		t003SeedAvailableSession(t, f, req.ParentWorkerSessionID, req)
 
 		if _, err := f.store.ReserveWorkerRunBinding(context.Background(), req); err != nil {
@@ -313,11 +437,15 @@ func TestTaskStore_ReserveWorkerRunBinding_ForkRequiresExactDistinctParent(t *te
 		{"missing-parent", func(r *ReserveWorkerRunBindingRequest) { r.ParentWorkerSessionID = "missing-parent" }},
 		{"same-child-and-parent", func(r *ReserveWorkerRunBindingRequest) { r.WorkerSessionID = r.ParentWorkerSessionID }},
 		{"parent-g-key-mismatch", func(r *ReserveWorkerRunBindingRequest) { r.ProfileFingerprint = "other-profile" }},
+		{"parent-provider-mismatch", func(r *ReserveWorkerRunBindingRequest) {
+			r.ExpectedParentProviderSession = &ProviderSessionIdentity{ProviderName: "codex", SessionID: "other-parent-provider", Generation: 3}
+		}},
 	} {
 		t.Run("rejects "+tc.name, func(t *testing.T) {
 			f := t003NewReserveFixture(t)
 			req := t003ReserveRequest(RuntimeBindingModeFork, "binding-fork-"+tc.name, "session-child")
 			req.ParentWorkerSessionID = "session-parent"
+			req.ExpectedParentProviderSession = &ProviderSessionIdentity{ProviderName: "codex", SessionID: "parent-provider", Generation: 3}
 			t003SeedAvailableSession(t, f, req.ParentWorkerSessionID, req)
 			tc.mutate(&req)
 

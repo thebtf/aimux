@@ -13,6 +13,7 @@ import (
 	"github.com/thebtf/aimux/pkg/executor/review"
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/server/classifier"
+	"github.com/thebtf/aimux/pkg/types"
 )
 
 func TestPersistedMetadataNumbersPreservePublicControls(t *testing.T) {
@@ -75,6 +76,9 @@ func TestTaskRouterDispatchExplicitTaskClass(t *testing.T) {
 	assertMetadataString(t, req.Metadata, "review_target", "HEAD")
 	assertMetadataBool(t, req.Metadata, "review_gate", true)
 	assertMetadataString(t, req.Metadata, "caller", "test")
+	if _, ok := req.Metadata[taskWorkerSessionRequestMetadata]; ok {
+		t.Fatalf("public default unexpectedly persisted %s metadata: %#v", taskWorkerSessionRequestMetadata, req.Metadata)
+	}
 
 	if result.TaskClass != classifier.TaskClassReview {
 		t.Fatalf("result task_class = %s, want review", result.TaskClass)
@@ -90,6 +94,124 @@ func TestTaskRouterDispatchExplicitTaskClass(t *testing.T) {
 	}
 	if result.StatusCommand == "" || result.CancelCommand == "" || result.TaskURI == "" || result.ProgressURI == "" {
 		t.Fatalf("accepted result missing observation fields: %#v", result)
+	}
+}
+
+func TestTaskRouterPersistsInternalWorkerSessionRequest(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeTaskRouterLoom()
+	router := mustTaskRouter(t, fake, 500*time.Millisecond)
+	expected := types.SessionBindingIdentity{
+		HandleID:           "resume-handle",
+		HandleGeneration:   4,
+		RegistryGeneration: 7,
+		ProviderSession: types.SessionIdentity{
+			Provider:   "neutral",
+			ID:         "provider-session",
+			Generation: 9,
+		},
+	}
+	want := taskSessionRequest{
+		Mode:            types.SessionBindingModeExactResume,
+		WorkerSessionID: "worker-session-42",
+		Expected:        &expected,
+	}
+	result, err := router.Dispatch(context.Background(), TaskRequest{
+		Prompt:         "Continue the durable internal worker session.",
+		TaskClass:      classifier.TaskClassCode,
+		ProjectID:      "project-session",
+		SessionRequest: want,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if _, ok := result.Metadata[taskWorkerSessionRequestMetadata]; ok {
+		t.Fatalf("accepted TaskResult leaked %s metadata: %#v", taskWorkerSessionRequestMetadata, result.Metadata)
+	}
+
+	submitted := fake.onlySubmission(t)
+	got, err := taskSessionRequestFromMetadata(submitted.Metadata)
+	if err != nil {
+		t.Fatalf("taskSessionRequestFromMetadata: %v", err)
+	}
+	if got.Mode != want.Mode || got.WorkerSessionID != want.WorkerSessionID || got.ParentWorkerSessionID != "" || got.Expected == nil || *got.Expected != expected || got.Parent != nil {
+		t.Fatalf("persisted Worker Session request = %#v, want %#v", got, want)
+	}
+	projected := buildTaskResult(&loom.Task{ID: "session-projection", Metadata: submitted.Metadata}, classifier.TaskClassCode, 1, nil)
+	if _, ok := projected.Metadata[taskWorkerSessionRequestMetadata]; ok {
+		t.Fatalf("public TaskResult leaked %s metadata: %#v", taskWorkerSessionRequestMetadata, projected.Metadata)
+	}
+}
+
+func TestTaskRouterSessionRequestBypassesRecipeReplay(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeTaskRouterLoom()
+	router := mustTaskRouter(t, fake, 500*time.Millisecond)
+	base := TaskRequest{
+		Prompt:    "Review the durable session boundary.",
+		TaskClass: classifier.TaskClassReview,
+		ProjectID: "project-session-replay",
+		Metadata: map[string]any{
+			"recipe_id":                     "session-safe-recipe",
+			"recipe_read_only":              true,
+			recipePolicyEnforcedMetadataKey: true,
+		},
+	}
+	first, err := router.Dispatch(context.Background(), base)
+	if err != nil {
+		t.Fatalf("first Dispatch() error = %v", err)
+	}
+	expected := types.SessionBindingIdentity{
+		HandleID:           "resume-handle",
+		HandleGeneration:   2,
+		RegistryGeneration: 3,
+		ProviderSession: types.SessionIdentity{
+			Provider:   "neutral",
+			ID:         "resume-provider-session",
+			Generation: 4,
+		},
+	}
+	resume := base
+	resume.SessionRequest = taskSessionRequest{
+		Mode:            types.SessionBindingModeExactResume,
+		WorkerSessionID: "resume-worker-session",
+		Expected:        &expected,
+	}
+	second, err := router.Dispatch(context.Background(), resume)
+	if err != nil {
+		t.Fatalf("session Dispatch() error = %v", err)
+	}
+	if second.TaskID == first.TaskID {
+		t.Fatalf("session-bound request replayed task %q instead of submitting a fresh execution", second.TaskID)
+	}
+	if got := fake.submissionCount(); got != 2 {
+		t.Fatalf("submission count = %d, want 2", got)
+	}
+	if _, ok := second.Metadata[recipeReplayCacheHitMetadata]; ok {
+		t.Fatalf("session-bound accepted result carried replay metadata: %#v", second.Metadata)
+	}
+}
+
+func TestTaskRouterRejectsInvalidInternalWorkerSessionRequestBeforeSubmit(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeTaskRouterLoom()
+	router := mustTaskRouter(t, fake, 500*time.Millisecond)
+	_, err := router.Dispatch(context.Background(), TaskRequest{
+		Prompt:    "Fork from an invalid parent.",
+		TaskClass: classifier.TaskClassCode,
+		SessionRequest: taskSessionRequest{
+			Mode:            types.SessionBindingModeFork,
+			WorkerSessionID: "fork-child",
+		},
+	})
+	if err == nil {
+		t.Fatal("Dispatch() error = nil, want invalid internal Worker Session request rejection")
+	}
+	if got := fake.submissionCount(); got != 0 {
+		t.Fatalf("submission count = %d, want 0", got)
 	}
 }
 
@@ -448,6 +570,30 @@ func (f *fakeTaskRouterLoom) GetContext(ctx context.Context, taskID string) (*lo
 	cp := *task
 	cp.Metadata = cloneTaskMetadata(task.Metadata)
 	return &cp, nil
+}
+
+func (f *fakeTaskRouterLoom) List(projectID string, statuses ...loom.TaskStatus) ([]*loom.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	allowed := make(map[loom.TaskStatus]struct{}, len(statuses))
+	for _, status := range statuses {
+		allowed[status] = struct{}{}
+	}
+	tasks := make([]*loom.Task, 0, len(f.tasks))
+	for _, task := range f.tasks {
+		if task == nil || (projectID != "" && task.ProjectID != projectID) {
+			continue
+		}
+		if len(allowed) > 0 {
+			if _, ok := allowed[task.Status]; !ok {
+				continue
+			}
+		}
+		cp := *task
+		cp.Metadata = cloneTaskMetadata(task.Metadata)
+		tasks = append(tasks, &cp)
+	}
+	return tasks, nil
 }
 
 func (f *fakeTaskRouterLoom) Cancel(taskID string) error {

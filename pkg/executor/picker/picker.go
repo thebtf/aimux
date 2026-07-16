@@ -54,6 +54,38 @@ type TaskSpec struct {
 	// EventSink is the internal bounded raw-event admission path used by the
 	// production WorkerRuntime. It is never interpreted by the picker.
 	EventSink types.ExecutorEventSink
+
+	// TaskID is the durable Loom task identifier for this dispatch attempt.
+	// Internal-only: never part of a public MCP request/response schema.
+	// CR-003's server-owned binding coordinator uses it to reserve an exact
+	// durable Run Binding before any Swarm acquisition/execution.
+	TaskID string
+
+	// TenantID is the owning tenant for this task, taken from the durable
+	// Loom task record rather than the execution context — Loom dispatches
+	// worker.Execute on a context.Background()-derived context that never
+	// carries the original request's tenant (see loom.go dispatch). Internal
+	// only; never part of a public MCP request/response schema.
+	TenantID string
+
+	// ProjectID is the owning project for this task, taken from the durable
+	// Loom task record. Internal-only: never part of a public MCP
+	// request/response schema.
+	ProjectID string
+
+	// WorkerSessionID is the durable Loom Worker Session selected for this
+	// provider attempt. Internal-only: it is populated by task workers from
+	// durable metadata and never exposed on the public task/review schema.
+	WorkerSessionID string
+
+	// ParentWorkerSessionID is the exact durable parent used by fork mode.
+	// It stays separate from the provider-neutral live Parent identity below.
+	ParentWorkerSessionID string
+
+	// SessionBinding carries the selected provider-neutral live binding mode
+	// and exact expected/parent identity through picker and fallback copies.
+	// Its zero value preserves the current stateless public default.
+	SessionBinding types.SessionBindingRequest
 }
 
 // Picker selects the optimal CLI for a TaskSpec when the caller does not

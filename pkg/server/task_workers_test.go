@@ -19,6 +19,7 @@ import (
 	extypes "github.com/thebtf/aimux/pkg/executor/types"
 	"github.com/thebtf/aimux/pkg/server/budget"
 	"github.com/thebtf/aimux/pkg/tenant"
+	"github.com/thebtf/aimux/pkg/types"
 	"github.com/thebtf/aimux/pkg/workerruntime"
 )
 
@@ -693,5 +694,83 @@ func TestProfileTaskWorkerFallbackMetadataSanitizesFailedAttemptMessage(t *testi
 	attempt, ok := attempts[0].(map[string]any)
 	if !ok || attempt["CLI"] != "codex" || attempt["Code"] != extypes.CLIErrorCodeRateLimit.String() {
 		t.Fatalf("failed_attempt = %#v, want codex rate-limit provenance", attempts[0])
+	}
+}
+
+func TestProfileTaskWorkerPropagatesInternalWorkerSessionRequestToEveryFallbackAttempt(t *testing.T) {
+	t.Parallel()
+
+	srv := testServerWithLoom(t)
+	profiles := map[string]*config.CLIProfile{}
+	for _, cli := range []string{"codex", "grok"} {
+		binary := fakeExecutable(t, t.TempDir(), cli)
+		profiles[cli] = &config.CLIProfile{
+			Name:         cli,
+			Binary:       binary,
+			ResolvedPath: binary,
+			OutputFormat: "text",
+			Capabilities: []string{"code", "task", "review"},
+		}
+	}
+	srv.cfg.CLIProfiles = profiles
+	srv.cfg.Executor.Picker = picker.DefaultPickerConfig()
+	srv.registry = driver.NewRegistry(profiles)
+	for cli := range profiles {
+		srv.registry.SetAvailable(cli, true)
+	}
+	srv.fallbackPicker = buildFallbackPicker(srv)
+
+	var mu sync.Mutex
+	var captured []picker.TaskSpec
+	worker := profileTaskWorker{
+		server:     srv,
+		workerType: loom.WorkerTypeCLI,
+		taskClass:  "code",
+		defaultCLI: "codex",
+		newEventWriter: func(string) (*workerruntime.EventWriter, error) {
+			return workerruntime.NewEventWriter(workerruntime.DefaultEventWriterConfig(&t019ServerRecordingSink{}))
+		},
+		dispatchLeaf: func(_ context.Context, cli string, spec picker.TaskSpec) (string, error) {
+			mu.Lock()
+			captured = append(captured, spec)
+			mu.Unlock()
+			if cli == "codex" {
+				return "", extypes.NewRateLimit("primary unavailable", nil)
+			}
+			return "fallback completed", nil
+		},
+	}
+	task := &loom.Task{
+		ID:        "profile-session-propagation",
+		CLI:       "codex",
+		Prompt:    "continue through fallback",
+		TenantID:  "session-tenant",
+		ProjectID: "session-project",
+		Metadata: map[string]any{
+			"fallback_enabled": true,
+			"max_attempts":     2,
+			taskWorkerSessionRequestMetadata: map[string]any{
+				"mode":              string(types.SessionBindingModeNew),
+				"worker_session_id": "worker-session-new",
+			},
+		},
+	}
+	result, err := worker.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result == nil || result.Content != "fallback completed" {
+		t.Fatalf("result = %#v, want fallback content", result)
+	}
+	mu.Lock()
+	attempts := append([]picker.TaskSpec(nil), captured...)
+	mu.Unlock()
+	if len(attempts) != 2 {
+		t.Fatalf("captured attempts = %d, want primary plus fallback", len(attempts))
+	}
+	for i, spec := range attempts {
+		if spec.WorkerSessionID != "worker-session-new" || spec.ParentWorkerSessionID != "" || spec.SessionBinding.Mode != types.SessionBindingModeNew || spec.SessionBinding.Expected != nil || spec.SessionBinding.Parent != nil {
+			t.Fatalf("attempt %d session request = worker=%q parent=%q binding=%#v", i, spec.WorkerSessionID, spec.ParentWorkerSessionID, spec.SessionBinding)
+		}
 	}
 }

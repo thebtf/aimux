@@ -737,6 +737,43 @@ func (l *LoomEngine) Events() *EventBus {
 	return l.events
 }
 
+// ReserveWorkerRunBinding atomically reserves one Worker Session turn and
+// Run Binding (CR-003). Delegates to the underlying TaskStore so the
+// server-owned binding coordinator never reaches into TaskStore directly.
+func (l *LoomEngine) ReserveWorkerRunBinding(ctx context.Context, request ReserveWorkerRunBindingRequest) (WorkerRunBindingAuthority, error) {
+	return l.store.ReserveWorkerRunBinding(ctx, request)
+}
+
+// GetWorkerSession returns one exact durable Worker Session owned by tenantID.
+// Delegates to the underlying TaskStore.
+func (l *LoomEngine) GetWorkerSession(ctx context.Context, id, tenantID string) (*WorkerSessionRecord, error) {
+	return l.store.GetWorkerSession(ctx, id, tenantID)
+}
+
+// StartWorkerRunBinding records exact live authority before provider
+// execution (CR-003). Delegates to the underlying TaskStore.
+func (l *LoomEngine) StartWorkerRunBinding(ctx context.Context, request StartWorkerRunBindingRequest) (WorkerRunBindingAuthority, error) {
+	return l.store.StartWorkerRunBinding(ctx, request)
+}
+
+// RenewWorkerRunBindingLease renews one exact unexpired binding authority
+// (CR-003). Delegates to the underlying TaskStore.
+func (l *LoomEngine) RenewWorkerRunBindingLease(ctx context.Context, request RenewWorkerRunBindingLeaseRequest) (WorkerRunBindingAuthority, error) {
+	return l.store.RenewWorkerRunBindingLease(ctx, request)
+}
+
+// RecordWorkerRunBindingReturned records native return while retaining
+// lease authority (CR-003). Delegates to the underlying TaskStore.
+func (l *LoomEngine) RecordWorkerRunBindingReturned(ctx context.Context, request ReturnWorkerRunBindingRequest) (WorkerRunBindingAuthority, error) {
+	return l.store.RecordWorkerRunBindingReturned(ctx, request)
+}
+
+// FinalizeWorkerRunBinding terminalizes one exact Run Binding and releases
+// its Worker Session (CR-003). Delegates to the underlying TaskStore.
+func (l *LoomEngine) FinalizeWorkerRunBinding(ctx context.Context, request FinalizeWorkerRunBindingRequest) (WorkerRunBindingAuthority, error) {
+	return l.store.FinalizeWorkerRunBinding(ctx, request)
+}
+
 // AppendProgress records a single progress line for taskID and emits an
 // EventTaskProgress on the event bus. Workers (or worker wrappers like
 // workers.StreamingBase) call this for every line of live output so that
