@@ -1227,19 +1227,24 @@ func (s *Server) attachNativeMuxcoreHealth(ctx context.Context, health map[strin
 	if engineName == "" {
 		engineName = ResolveEngineName()
 	}
+	muxReady := s.muxEngine == nil
 	if s.muxEngine != nil {
-		if err := waitForMuxEngineReady(ctx, s.muxEngine.Ready()); err != nil {
+		var err error
+		muxReady, err = waitForMuxEngineReady(ctx, s.muxEngine.Ready())
+		if err != nil {
 			if s.log != nil {
 				s.log.Debug("native muxcore readiness wait canceled: %v", err)
 			}
 			return
 		}
 	}
-	if d := s.liveDaemon(); d != nil {
-		for k, v := range normalizeNativeStatus(d.HandleStatus(), engineName) {
-			health[k] = v
+	if muxReady {
+		if d := s.liveDaemon(); d != nil {
+			for k, v := range normalizeNativeStatus(d.HandleStatus(), engineName) {
+				health[k] = v
+			}
+			return
 		}
-		return
 	}
 
 	var (
@@ -1262,13 +1267,16 @@ func (s *Server) attachNativeMuxcoreHealth(ctx context.Context, health map[strin
 	}
 }
 
-func waitForMuxEngineReady(ctx context.Context, ready <-chan struct{}) error {
+func waitForMuxEngineReady(ctx context.Context, ready <-chan struct{}) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	select {
 	case <-ready:
-		return ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		return true, nil
 	default:
 	}
 
@@ -1276,11 +1284,14 @@ func waitForMuxEngineReady(ctx context.Context, ready <-chan struct{}) error {
 	defer timer.Stop()
 	select {
 	case <-ready:
-		return ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		return true, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	case <-timer.C:
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 }
 

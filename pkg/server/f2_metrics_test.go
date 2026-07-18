@@ -304,7 +304,24 @@ func TestWaitForMuxEngineReady_CanceledContextWinsOverReady(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := waitForMuxEngineReady(ctx, ready); !errors.Is(err, context.Canceled) {
+	isReady, err := waitForMuxEngineReady(ctx, ready)
+	if isReady {
+		t.Fatal("waitForMuxEngineReady reported ready for canceled context")
+	}
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("waitForMuxEngineReady error = %v, want context.Canceled", err)
+	}
+}
+
+func TestWaitForMuxEngineReady_ReportsReady(t *testing.T) {
+	ready := make(chan struct{})
+	close(ready)
+
+	isReady, err := waitForMuxEngineReady(context.Background(), ready)
+	if err != nil {
+		t.Fatalf("waitForMuxEngineReady error = %v, want nil", err)
+	}
+	if !isReady {
+		t.Fatal("waitForMuxEngineReady reported not ready for closed ready channel")
 	}
 }
