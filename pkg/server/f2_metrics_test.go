@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/thebtf/mcp-mux/muxcore/control"
+	"github.com/thebtf/mcp-mux/muxcore/engine"
 	"github.com/thebtf/mcp-mux/muxcore/ipc"
 )
 
@@ -235,5 +238,90 @@ func TestQueryNativeStatusAt_ExtractsGenerationRestoreAndHandoff(t *testing.T) {
 	}
 	if handoff["fallback"] != float64(2) {
 		t.Fatalf("handoff.fallback = %v, want 2", handoff["fallback"])
+	}
+}
+
+func TestAttachNativeMuxcoreHealth_UsesStoredCanonicalSocket(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{
+		"daemon_generation": "daemon-canonical",
+		"owner_count":       1,
+		"servers":           []map[string]any{{"server_id": "owner-canonical"}},
+		"handoff":           map[string]any{"attempted": uint64(1)},
+	})
+	sock := tempSocket(t)
+	done := serveFakeControl(t, sock, control.Response{OK: true, Data: json.RawMessage(data)})
+
+	srv := &Server{
+		engineName:              "display-name-does-not-own-the-socket",
+		daemonControlSocketPath: sock,
+	}
+	health := map[string]any{}
+	srv.attachNativeMuxcoreHealth(context.Background(), health)
+	waitFakeControl(t, done)
+
+	if health["engine_name"] != srv.engineName {
+		t.Fatalf("engine_name = %v, want %q; health=%v", health["engine_name"], srv.engineName, health)
+	}
+	if health["daemon_generation"] != "daemon-canonical" {
+		t.Fatalf("daemon_generation = %v, want daemon-canonical; health=%v", health["daemon_generation"], health)
+	}
+	if health["owner_count"] != float64(1) {
+		t.Fatalf("owner_count = %v, want 1; health=%v", health["owner_count"], health)
+	}
+}
+
+func TestAttachNativeMuxcoreHealth_ContextCancellationBeforeEngineReady(t *testing.T) {
+	srv := testServer(t)
+	eng, err := engine.New(engine.Config{
+		Name:           "health-ready-cancel",
+		BaseDir:        t.TempDir(),
+		SkipSnapshot:   true,
+		Persistent:     true,
+		SessionHandler: srv.SessionHandler(),
+	})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	srv.SetMuxEngine(eng)
+	srv.SetDaemonControlSocketPath(eng.ControlSocketPath())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	health := map[string]any{}
+	started := time.Now()
+	srv.attachNativeMuxcoreHealth(ctx, health)
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("canceled pre-ready health wait took %v, want <=250ms", elapsed)
+	}
+	if _, ok := health["engine_name"]; ok {
+		t.Fatalf("canceled pre-ready health unexpectedly reported native status: %v", health)
+	}
+}
+
+func TestWaitForMuxEngineReady_CanceledContextWinsOverReady(t *testing.T) {
+	ready := make(chan struct{})
+	close(ready)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	isReady, err := waitForMuxEngineReady(ctx, ready)
+	if isReady {
+		t.Fatal("waitForMuxEngineReady reported ready for canceled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForMuxEngineReady error = %v, want context.Canceled", err)
+	}
+}
+
+func TestWaitForMuxEngineReady_ReportsReady(t *testing.T) {
+	ready := make(chan struct{})
+	close(ready)
+
+	isReady, err := waitForMuxEngineReady(context.Background(), ready)
+	if err != nil {
+		t.Fatalf("waitForMuxEngineReady error = %v, want nil", err)
+	}
+	if !isReady {
+		t.Fatal("waitForMuxEngineReady reported not ready for closed ready channel")
 	}
 }

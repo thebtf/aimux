@@ -1062,7 +1062,7 @@ func (s *Server) handleSessions(ctx context.Context, request mcp.CallToolRequest
 				health["loom_tasks"] = len(tasks)
 			}
 		}
-		s.attachNativeMuxcoreHealth(health)
+		s.attachNativeMuxcoreHealth(ctx, health)
 		// Two-phase init observability (issue #129).
 		health["init_phase"] = s.initPhase.Load()
 		health["init_duration_ms"] = s.initDurationMs.Load()
@@ -1220,18 +1220,42 @@ func (s *Server) attachCapabilityHealth(health map[string]any) {
 	}
 }
 
-func (s *Server) attachNativeMuxcoreHealth(health map[string]any) {
+const nativeMuxcoreReadyWait = 5 * time.Second
+
+func (s *Server) attachNativeMuxcoreHealth(ctx context.Context, health map[string]any) {
 	engineName := s.engineName
 	if engineName == "" {
 		engineName = ResolveEngineName()
 	}
-	if d := s.liveDaemon(); d != nil {
-		for k, v := range normalizeNativeStatus(d.HandleStatus(), engineName) {
-			health[k] = v
+	muxReady := s.muxEngine == nil
+	if s.muxEngine != nil {
+		var err error
+		muxReady, err = waitForMuxEngineReady(ctx, s.muxEngine.Ready())
+		if err != nil {
+			if s.log != nil {
+				s.log.Debug("native muxcore readiness wait canceled: %v", err)
+			}
+			return
 		}
-		return
 	}
-	status, err := queryNativeStatus()
+	if muxReady {
+		if d := s.liveDaemon(); d != nil {
+			for k, v := range normalizeNativeStatus(d.HandleStatus(), engineName) {
+				health[k] = v
+			}
+			return
+		}
+	}
+
+	var (
+		status map[string]any
+		err    error
+	)
+	if s.daemonControlSocketPath != "" {
+		status, err = queryNativeStatusAt(s.daemonControlSocketPath, engineName)
+	} else {
+		status, err = queryNativeStatus()
+	}
 	if err != nil {
 		if s.log != nil {
 			s.log.Debug("native muxcore status unavailable: %v", err)
@@ -1240,6 +1264,34 @@ func (s *Server) attachNativeMuxcoreHealth(health map[string]any) {
 	}
 	for k, v := range status {
 		health[k] = v
+	}
+}
+
+func waitForMuxEngineReady(ctx context.Context, ready <-chan struct{}) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	select {
+	case <-ready:
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		return true, nil
+	default:
+	}
+
+	timer := time.NewTimer(nativeMuxcoreReadyWait)
+	defer timer.Stop()
+	select {
+	case <-ready:
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		return true, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C:
+		return false, ctx.Err()
 	}
 }
 
@@ -1358,7 +1410,7 @@ func (s *Server) handleHealthResource(ctx context.Context, request mcp.ReadResou
 	// Keep the resource schema in sync with sessions(action="health") for the
 	// AIMUX-16 CR-003 capability-cache observability fields. Operators should
 	// be able to scrape the same fields from either surface.
-	s.attachNativeMuxcoreHealth(health)
+	s.attachNativeMuxcoreHealth(ctx, health)
 	s.attachCapabilityHealth(health)
 	data, _ := json.Marshal(health)
 
