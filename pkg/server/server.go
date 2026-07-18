@@ -1263,9 +1263,12 @@ func (s *Server) attachNativeMuxcoreHealth(ctx context.Context, health map[strin
 }
 
 func waitForMuxEngineReady(ctx context.Context, ready <-chan struct{}) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case <-ready:
-		return nil
+		return ctx.Err()
 	default:
 	}
 
@@ -1273,11 +1276,11 @@ func waitForMuxEngineReady(ctx context.Context, ready <-chan struct{}) error {
 	defer timer.Stop()
 	select {
 	case <-ready:
-		return nil
+		return ctx.Err()
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-timer.C:
-		return nil
+		return ctx.Err()
 	}
 }
 

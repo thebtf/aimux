@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -294,5 +295,16 @@ func TestAttachNativeMuxcoreHealth_ContextCancellationBeforeEngineReady(t *testi
 	}
 	if _, ok := health["engine_name"]; ok {
 		t.Fatalf("canceled pre-ready health unexpectedly reported native status: %v", health)
+	}
+}
+
+func TestWaitForMuxEngineReady_CanceledContextWinsOverReady(t *testing.T) {
+	ready := make(chan struct{})
+	close(ready)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := waitForMuxEngineReady(ctx, ready); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForMuxEngineReady error = %v, want context.Canceled", err)
 	}
 }
