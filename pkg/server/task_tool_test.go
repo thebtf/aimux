@@ -1715,7 +1715,7 @@ func limitedRecipeProfile() *config.CLIProfile {
 
 func newTaskToolEngine(t *testing.T) *loom.LoomEngine {
 	t.Helper()
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:task_tool_%d?cache=shared&mode=memory", time.Now().UnixNano()))
+	db, err := sql.Open("sqlite", "file:"+t.Name()+"?cache=shared&mode=memory")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
