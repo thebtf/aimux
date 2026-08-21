@@ -23,6 +23,9 @@ Thumbs.db
 /vendor/
 .gocache/
 
+# SonarQube scanner cache
+.scannerwork/
+
 # Agent state and local tooling
 .agent/
 .serena/
