@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Canonical muxcore readiness.** Daemon startup now waits boundedly for canonical muxcore health, prefers in-process status after publication, preserves the canonical control socket for fallback, and honors canceled health requests.
+- **Canonical muxcore readiness.** Health reporting now waits boundedly for canonical muxcore readiness, prefers in-process status after publication, preserves the canonical control socket for fallback, and honors canceled health requests.
 - **Cross-platform E2E startup readiness.** MCP initialization fixtures retry only the exact transient `project not connected` response under one bounded deadline, preventing macOS startup races without hiding other JSON-RPC failures.
 
 ### Compatibility

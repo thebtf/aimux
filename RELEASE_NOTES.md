@@ -11,7 +11,7 @@ This MINOR release adds an operator-selectable restricted MCP surface for period
 
 ### Compatibility
 
-The feature is opt-in and reversible. Existing MCP clients see no change unless the environment key is exactly `1`. Changing the key requires a daemon restart and MCP reconnect. The mode changes registration and handshake capabilities only; it does not migrate or rewrite Loom tasks, session storage, tenant data, provider profiles, or routing state.
+The feature is opt-in and reversible. Existing MCP clients see no change unless the environment key is exactly `1`. Changing the key requires a daemon restart and MCP reconnect. In thinking-only mode, startup may proceed without an external CLI and the MCP registration/handshake surface is reduced; Loom tasks, session storage, tenant data, provider profiles, and routing state are not migrated or rewritten.
 
 ### Review and verification
 
