@@ -3,9 +3,9 @@ name: loomlint
 on:
   pull_request:
     paths:
-      - 'loom/**'
-      - 'pkg/aimuxworkers/**'
-      - 'tools/loomlint/**'
+      - "loom/**"
+      - "pkg/aimuxworkers/**"
+      - "tools/loomlint/**"
 
 jobs:
   loomlint:
@@ -15,7 +15,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: Test loomlint
         run: go test ./tools/loomlint -count=1

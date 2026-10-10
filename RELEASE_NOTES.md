@@ -8,6 +8,8 @@ This MINOR release adds an operator-selectable restricted MCP surface for period
 - The restricted mode does not advertise MCP Tasks, Resources, or Prompts and does not register `think`, `task`, `review`, `status`, `sessions`, `deepresearch`, `upgrade`, built-in skill prompts, or recipe resources.
 - Thinking-only mode starts successfully without an external AI CLI on `PATH`; unset or non-`1` values retain the existing 29-tool surface and CLI requirement.
 - Upgraded muxcore to `v0.28.0` and tightened daemon readiness around canonical muxcore health and cancellation.
+- Raised the minimum build toolchain to Go `1.26.9`, with matching CI, security, release, loomlint, mutation, Docker, source-build, contributor, and production-testing pins.
+- Upgraded `golang.org/x/net` to `v0.60.0` and `google.golang.org/grpc` to `v1.83.1`, including the compatible transitive versions selected by the Go module solver.
 
 ### Compatibility
 
@@ -18,6 +20,7 @@ The feature is opt-in and reversible. Existing MCP clients see no change unless 
 - PR [#202](https://github.com/thebtf/aimux/pull/202) merged the restricted MCP surface as `c6e21c2309c0cc11be4f749b7bcde1620a8a047d` after cross-platform CI, security scanning, built-binary 22/29-tool smoke checks, and independent review.
 - PR [#203](https://github.com/thebtf/aimux/pull/203) merged the CLI-less startup correction as `4f05b8935c4a412274fdd149402270ffe7fbd61b` after Linux, macOS, and Windows CI, `govulncheck`, CodeRabbit approval, local full-suite/build/vet checks, and a built-binary smoke with external CLI discovery removed from `PATH`.
 - The shared E2E initialize helper now handles only the exact transient `-32603 project not connected: <project ID>` response under one common deadline; other initialization failures remain immediate.
+- The fresh-clone pre-release scan of the binary built with Go `1.25.11` reported 21 callable vulnerabilities. This security repair adopts the scan's minimum fixed Go, x/net, and gRPC versions without weakening the hard `govulncheck -mode=binary` release gate. Source-mode scanning remains a soft dependency-hygiene signal.
 
 ### Upgrade
 

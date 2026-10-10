@@ -18,11 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Muxcore dependency.** Upgraded `github.com/thebtf/mcp-mux/muxcore` from `v0.27.1` to `v0.28.0` while preserving Aimux's persistent `SessionHandler` and update topology.
 - **Static analysis configuration.** Added SonarQube project and coverage inputs, including the standalone Loom module profile.
+- **Safe build toolchain.** Raised the minimum Go version to `1.26.9` and pinned CI, security, release, loomlint, mutation, and Docker builds to that version; source-build, contributor, and production-testing guidance use the same minimum.
 
 ### Fixed
 
 - **Canonical muxcore readiness.** Health reporting now waits boundedly for canonical muxcore readiness, prefers in-process status after publication, preserves the canonical control socket for fallback, and honors canceled health requests.
 - **Cross-platform E2E startup readiness.** MCP initialization fixtures retry only the exact transient `project not connected` response under one bounded deadline, preventing macOS startup races without hiding other JSON-RPC failures.
+- **Artifact security-gate repair.** The fresh-clone binary scan built with Go `1.25.11` reported 21 callable vulnerabilities. Raised Go to `1.26.9`, `golang.org/x/net` to `v0.60.0`, and `google.golang.org/grpc` to `v1.83.1`, with solver-required transitive updates. The hard built-binary vulnerability gate remains unchanged; the source scan remains a soft dependency-hygiene signal.
 
 ### Compatibility
 

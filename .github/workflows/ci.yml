@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: Build
         run: go build ./...
@@ -72,13 +72,13 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.1.6
-        continue-on-error: true  # golangci-lint v2.1.6 built with Go 1.24, go.mod targets 1.25
+        continue-on-error: true # golangci-lint v2.1.6 built with Go 1.24, go.mod targets 1.26.9
 
   loom-examples:
     runs-on: ubuntu-latest
@@ -87,7 +87,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: Build loom examples
         working-directory: loom
@@ -100,11 +100,11 @@ jobs:
 
       - name: Stub grep scanner (Constitution P17)
         run: bash scripts/stub-grep.sh .
-        continue-on-error: true  # informational until v3 stubs are fixed
+        continue-on-error: true # informational until v3 stubs are fixed
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: Dead code analysis
         run: |
