@@ -9,7 +9,7 @@ This MINOR release adds an operator-selectable restricted MCP surface for period
 - Thinking-only mode starts successfully without an external AI CLI on `PATH`; unset or non-`1` values retain the existing 29-tool surface and CLI requirement.
 - Upgraded muxcore to `v0.28.0` and tightened daemon readiness around canonical muxcore health and cancellation.
 - Raised the minimum build toolchain to Go `1.26.9`, with matching CI, security, release, loomlint, mutation, Docker, source-build, contributor, and production-testing pins.
-- Upgraded `golang.org/x/net` to `v0.60.0` and `google.golang.org/grpc` to `v1.83.1`, including the compatible transitive versions selected by the Go module solver.
+- Upgraded `golang.org/x/net` to `v0.60.0` and `google.golang.org/grpc` to `v1.83.2`, including the compatible transitive versions selected by the Go module solver.
 
 ### Compatibility
 
