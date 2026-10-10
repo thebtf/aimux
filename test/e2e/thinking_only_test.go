@@ -32,20 +32,32 @@ func TestE2E_MCPStartupMode(t *testing.T) {
 			_, stdin, reader := startDaemonAndShimWithEnv(t, aimuxBin, filepath.Dir(testcliBin), filepath.Join(testdataDir(), "config"), []string{
 				"AIMUX_MCP_THINKING_ONLY=" + tc.value,
 			})
-			if _, err := fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-				"protocolVersion": "2024-11-05",
-				"capabilities":    map[string]any{},
-				"clientInfo":      map[string]any{"name": "e2e-mode-test", "version": "1.0"},
-			})); err != nil {
-				t.Fatalf("initialize request: %v", err)
-			}
-			response, err := readResponse(reader, 10*time.Second)
-			if err != nil {
-				t.Fatalf("initialize: %v", err)
-			}
-			initialized, ok := response["result"].(map[string]any)
-			if !ok {
-				t.Fatalf("initialize result missing: %#v", response)
+			deadline := time.Now().Add(10 * time.Second)
+			var initialized map[string]any
+			var response map[string]any
+			var err error
+			for attempt := 1; ; attempt++ {
+				if _, err := fmt.Fprint(stdin, jsonRPCRequest(100+attempt, "initialize", map[string]any{
+					"protocolVersion": "2024-11-05",
+					"capabilities":    map[string]any{},
+					"clientInfo":      map[string]any{"name": "e2e-mode-test", "version": "1.0"},
+				})); err != nil {
+					t.Fatalf("initialize request: %v", err)
+				}
+				response, err = readResponse(reader, 10*time.Second)
+				if err != nil {
+					t.Fatalf("initialize: %v", err)
+				}
+				if result, ok := response["result"].(map[string]any); ok {
+					initialized = result
+					break
+				}
+				rpcError, _ := response["error"].(map[string]any)
+				message, _ := rpcError["message"].(string)
+				if !strings.Contains(message, "project not connected") || time.Now().After(deadline) {
+					t.Fatalf("initialize result missing: %#v", response)
+				}
+				time.Sleep(25 * time.Millisecond)
 			}
 			caps, ok := initialized["capabilities"].(map[string]any)
 			if !ok {
