@@ -48,6 +48,10 @@ func TestE2E_MCPStartupMode(t *testing.T) {
 				})); err != nil {
 					t.Fatalf("initialize request: %v", err)
 				}
+				remaining = time.Until(deadline)
+				if remaining <= 0 {
+					t.Fatalf("initialize deadline exceeded after request write: %#v", response)
+				}
 				response, err = readResponse(reader, remaining)
 				if err != nil {
 					t.Fatalf("initialize: %v", err)
