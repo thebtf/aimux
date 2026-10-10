@@ -133,7 +133,7 @@ func TestThinkingOnlyInstructions(t *testing.T) {
 	if !strings.Contains(thinkingOnlyInstructions, "thinking-only") || !strings.Contains(thinkingOnlyInstructions, "22 low-level cognitive move tools") {
 		t.Fatalf("instructions must identify thinking-only mode: %s", thinkingOnlyInstructions)
 	}
-	for _, disabled := range []string{"`think`", "`task`", "`review`", "status(", "sessions(", "deepresearch", "upgrade", "aimux://", "resources/", "prompts/"} {
+	for _, disabled := range []string{"`think`", "`task`", "`review`", "status(", "sessions(", "deepresearch", "upgrade", "aimux://", "resources/", "prompts/", "Sampling remains enabled"} {
 		if strings.Contains(thinkingOnlyInstructions, disabled) {
 			t.Errorf("instructions reference disabled surface %q", disabled)
 		}
