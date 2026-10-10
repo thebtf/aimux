@@ -1,3 +1,28 @@
+## v5.25.0 — thinking-only MCP mode
+
+This MINOR release adds an operator-selectable restricted MCP surface for periods when Aimux task/session orchestration should be unavailable but the in-process reasoning patterns must remain usable.
+
+### Highlights
+
+- Set `AIMUX_MCP_THINKING_ONLY=1` before daemon startup to expose exactly the 22 low-level cognitive move tools.
+- The restricted mode does not advertise MCP Tasks, Resources, or Prompts and does not register `think`, `task`, `review`, `status`, `sessions`, `deepresearch`, `upgrade`, built-in skill prompts, or recipe resources.
+- Thinking-only mode starts successfully without an external AI CLI on `PATH`; unset or non-`1` values retain the existing 29-tool surface and CLI requirement.
+- Upgraded muxcore to `v0.28.0` and tightened daemon readiness around canonical muxcore health and cancellation.
+
+### Compatibility
+
+The feature is opt-in and reversible. Existing MCP clients see no change unless the environment key is exactly `1`. Changing the key requires a daemon restart and MCP reconnect. The mode changes registration and handshake capabilities only; it does not migrate or rewrite Loom tasks, session storage, tenant data, provider profiles, or routing state.
+
+### Review and verification
+
+- PR [#202](https://github.com/thebtf/aimux/pull/202) merged the restricted MCP surface as `c6e21c2309c0cc11be4f749b7bcde1620a8a047d` after cross-platform CI, security scanning, built-binary 22/29-tool smoke checks, and independent review.
+- PR [#203](https://github.com/thebtf/aimux/pull/203) merged the CLI-less startup correction as `4f05b8935c4a412274fdd149402270ffe7fbd61b` after Linux, macOS, and Windows CI, `govulncheck`, CodeRabbit approval, local full-suite/build/vet checks, and a built-binary smoke with external CLI discovery removed from `PATH`.
+- The shared E2E initialize helper now handles only the exact transient `-32603 project not connected: <project ID>` response under one common deadline; other initialization failures remain immediate.
+
+### Upgrade
+
+After the GitHub release publishes the archives and checksums, operators can use `upgrade(action="apply")` or install the matching archive. Set the environment key in the MCP server configuration, then restart the daemon and reconnect the client before checking for the 22-tool surface.
+
 ## v5.24.1 — muxcore v0.27.1 handoff adaptation
 
 This PATCH release adopts the released muxcore `v0.27.1` protocol-v2 handoff contract without changing Aimux's persistent daemon/shim lifecycle policy.
