@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+
+- **Opt-in MCP thinking-only mode.** Documented `AIMUX_MCP_THINKING_ONLY=1`, which exposes only the 22 cognitive move tools and disables the remaining tools, resources, prompts, and built-in skill/recipe surfaces while preserving the default 29-tool surface.
 
 ## [5.24.1] — 2026-07-14 — muxcore v0.27.1 handoff adaptation
 
