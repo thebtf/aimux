@@ -33,7 +33,7 @@ live surface. Их pre-purge архитектура заморожена в ве
 **Windows (PowerShell):**
 
 ```powershell
-$version = "5.21.0"
+$version = (gh release view --repo thebtf/aimux --json tagName --jq .tagName).TrimStart('v')
 gh release download "v$version" --repo thebtf/aimux --pattern "aimux_${version}_windows_amd64.zip" --output aimux.zip
 Expand-Archive aimux.zip -DestinationPath "$env:LOCALAPPDATA\aimux" -Force
 Remove-Item aimux.zip
@@ -44,15 +44,16 @@ aimux.exe --version
 **Linux / macOS (bash):**
 
 ```bash
-version="5.21.0"
+version=$(gh release view --repo thebtf/aimux --json tagName --jq .tagName | sed 's/^v//')
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 gh release download "v${version}" --repo thebtf/aimux --pattern "aimux_${version}_${os}_${arch}.tar.gz" --output aimux.tar.gz
-mkdir -p ~/.local/bin
-tar xzf aimux.tar.gz -C ~/.local/bin aimux
+mkdir -p ~/.local/lib/aimux ~/.local/bin
+tar xzf aimux.tar.gz -C ~/.local/lib/aimux
 rm aimux.tar.gz
-chmod +x ~/.local/bin/aimux
-aimux --version
+chmod +x ~/.local/lib/aimux/aimux
+ln -sfn ~/.local/lib/aimux/aimux ~/.local/bin/aimux
+~/.local/bin/aimux --version
 ```
 
 ### Из исходников

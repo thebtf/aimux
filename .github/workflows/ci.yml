@@ -65,6 +65,98 @@ jobs:
           name: coverage
           path: coverage.out
 
+  archive-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+
+      - name: Build snapshot release archives
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+
+      - name: Verify archive payload and thinking-only MCP startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(dist/aimux_*_linux_amd64.tar.gz)
+          if [[ ${#archives[@]} -ne 1 ]]; then
+            echo "::error::Expected one Linux amd64 snapshot archive" >&2
+            exit 1
+          fi
+          smoke=$(mktemp -d "$RUNNER_TEMP/aimux-archive-smoke.XXXXXX")
+          tar -tzf "${archives[0]}" > "$smoke/entries.txt"
+          for required in \
+            aimux LICENSE README.md README.ru.md CHANGELOG.md RELEASE_NOTES.md \
+            config/default.yaml \
+            config/cli.d/claude/profile.yaml \
+            config/cli.d/codex/profile.yaml \
+            config/cli.d/gemini/profile.yaml \
+            config/prompts.d/coding-rules.md \
+            config/prompts.d/roles/coding.md \
+            config/prompts.d/styles/concise.md \
+            config/skills.d/developer.md \
+            config/skills.d/_fragments/verification-gate.md \
+            config/p26/classification.v1.json \
+            config/audit-rules.d/stub-detection.yaml; do
+            if ! grep -Fxq "$required" "$smoke/entries.txt"; then
+              echo "::error::Archive is missing $required" >&2
+              exit 1
+            fi
+          done
+          if grep -Eq '\.go$' "$smoke/entries.txt"; then
+            echo "::error::Archive contains Go source" >&2
+            exit 1
+          fi
+          mkdir -p "$smoke/payload" "$smoke/home" "$smoke/work" "$smoke/bin"
+          tar -xzf "${archives[0]}" -C "$smoke/payload"
+          ln -s "$smoke/payload/aimux" "$smoke/bin/aimux"
+          export HOME="$smoke/home"
+          export AIMUX_MCP_THINKING_ONLY=1
+          export AIMUX_ENGINE_NAME="aimux-archive-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export AIMUX_STDIN_EOF_POLICY=eager
+          unset AIMUX_CONFIG_DIR
+          cd "$smoke/work"
+          coproc MCP { timeout --kill-after=5s 60s "$smoke/bin/aimux" 2> "$smoke/stderr.log"; }
+          mcp_pid=$MCP_PID
+          mcp_in=${MCP[1]}
+          mcp_out=${MCP[0]}
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"archive-smoke","version":"1"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' >& "$mcp_in"
+          : > "$smoke/responses.jsonl"
+          while IFS= read -r -t 60 response <& "$mcp_out"; do
+            printf '%s\n' "$response" >> "$smoke/responses.jsonl"
+            if jq -e 'select(.id == 2)' <<< "$response" > /dev/null; then
+              break
+            fi
+          done
+          exec {mcp_in}>&-
+          if ! wait "$mcp_pid"; then
+            cat "$smoke/stderr.log" >&2
+            exit 1
+          fi
+          cat "$smoke/responses.jsonl"
+          jq -se '
+            [.[] | select(.id == 1)] as $initialize |
+            [.[] | select(.id == 2)] as $tools |
+            ($initialize | length) == 1 and
+            $initialize[0].result.protocolVersion != null and
+            ($tools | length) == 1 and
+            ($tools[0].result.tools | type) == "array" and
+            ($tools[0].result.tools | length) == 22
+          ' "$smoke/responses.jsonl"
+
   lint:
     runs-on: ubuntu-latest
     steps:

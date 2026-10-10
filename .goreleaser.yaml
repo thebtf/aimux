@@ -19,19 +19,34 @@ builds:
       - -X github.com/thebtf/aimux/pkg/build.BuildDate={{.Date}}
 
 archives:
-  - formats: ['tar.gz']
+  - formats: ["tar.gz"]
     format_overrides:
       - goos: windows
-        formats: ['zip']
+        formats: ["zip"]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - README.ru.md
+      - CHANGELOG.md
+      - RELEASE_NOTES.md
+      - config/default.yaml
+      - config/cli.d/*/profile.yaml
+      - config/prompts.d/*.md
+      - config/prompts.d/roles/*.md
+      - config/prompts.d/styles/*.md
+      - config/skills.d/*.md
+      - config/skills.d/_fragments/*.md
+      - config/p26/*.json
+      - config/audit-rules.d/*.yaml
 
 checksum:
-  name_template: 'checksums.txt'
+  name_template: "checksums.txt"
 
 changelog:
   sort: asc
   filters:
     exclude:
-      - '^docs:'
-      - '^chore:'
-      - '^test:'
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
