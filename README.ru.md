@@ -3,7 +3,7 @@
 
 # aimux
 
-[![Go](https://img.shields.io/badge/go-1.25.11%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/go-1.26.9%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![MCP Tools](https://img.shields.io/badge/MCP-29%20tools-blueviolet)](https://modelcontextprotocol.io)
 
@@ -58,12 +58,12 @@ aimux --version
 ### Из исходников
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.11"
+$env:GOTOOLCHAIN = "go1.26.9"
 go build -o aimux.exe ./cmd/aimux/
 .\aimux.exe --version
 ```
 
-Требуется Go 1.25.11+.
+Требуется Go 1.26.9+.
 
 ### Настройка MCP-клиента
 
@@ -112,7 +112,7 @@ go build -o aimux.exe ./cmd/aimux/
 Обычные development и release checks:
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.11"
+$env:GOTOOLCHAIN = "go1.26.9"
 go build ./...
 go test ./... -count=1 -timeout 300s
 go test ./tests/critical -count=1 -timeout 300s
@@ -371,7 +371,7 @@ design work в AIMUX-9 / DEF-1.
 
 Перед release:
 
-1. Собрать с Go 1.25.11 или новее.
+1. Собрать с Go 1.26.9 или новее.
 2. Запустить полный Go test suite.
 3. Запустить critical suite в `tests/critical/`.
 4. Запустить `go vet`, `go mod verify` и `govulncheck`.

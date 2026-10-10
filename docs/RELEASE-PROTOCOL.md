@@ -19,7 +19,7 @@ This protocol applies to aimux versioned releases cut from the protected default
 | Release Git Readiness | `git fetch --prune origin`; default branch is `master`; local `master` clean and synchronized with `origin/master`; only one registered worktree or all stale worktrees cleaned/preserved | Dirty/default-branch drift, unpreserved stale worktree/branch, or unreached release SHA |
 | PR / branch review evidence | For non-trivial changes, merged PR with green CI/Security or equivalent protected-branch evidence | Missing review/CI evidence for release commits |
 | Local build | `go build ./...` | Non-zero exit |
-| Local full test suite | `go test ./... -count=1 -timeout 120s` | Non-zero exit |
+| Local full test suite | `go test ./... -count=1 -timeout 300s` | Non-zero exit |
 | Vet | `go vet ./...` | Non-zero exit |
 | Module verification | `go mod verify` | Non-zero exit |
 | Critical suite | `go test ./tests/critical -count=1 -timeout 300s` | Non-zero exit |

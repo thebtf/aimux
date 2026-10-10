@@ -2,7 +2,7 @@
 
 # aimux
 
-[![Go](https://img.shields.io/badge/go-1.25.11%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/go-1.26.9%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![MCP Tools](https://img.shields.io/badge/MCP-29%20tools-blueviolet)](https://modelcontextprotocol.io)
 
@@ -57,12 +57,12 @@ aimux --version
 ### From Source
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.11"
+$env:GOTOOLCHAIN = "go1.26.9"
 go build -o aimux.exe ./cmd/aimux/
 .\aimux.exe --version
 ```
 
-Requires Go 1.25.11 or newer.
+Requires Go 1.26.9 or newer.
 
 ### Configure MCP Client
 
@@ -130,7 +130,7 @@ Run `tools/list` from any MCP-capable client. A current build should expose
 Common development and release checks:
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.25.11"
+$env:GOTOOLCHAIN = "go1.26.9"
 go build ./...
 go test ./... -count=1 -timeout 300s
 go test ./tests/critical -count=1 -timeout 300s
@@ -406,7 +406,7 @@ future design work under AIMUX-9 / DEF-1.
 
 Before a release:
 
-1. Build with Go 1.25.11 or newer.
+1. Build with Go 1.26.9 or newer.
 2. Run the full Go test suite.
 3. Run the critical suite under `tests/critical/`.
 4. Run `go vet`, `go mod verify`, and `govulncheck`.

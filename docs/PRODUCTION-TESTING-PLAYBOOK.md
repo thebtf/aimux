@@ -35,7 +35,7 @@ aggregate: PRODUCT_WORKS / PARTIALLY_WORKS / BROKEN.
 
 - Linux, macOS, or Windows host with a POSIX-like shell (bash, zsh, or PowerShell
   with `kill` shimmed).
-- Go 1.25.11+ available **only for the build step**. After the binary is produced,
+- Go 1.26.9+ available **only for the build step**. After the binary is produced,
   the operator should drop the toolchain assumption — only `./aimux`, `cat`,
   `kill`, and `mcp-launcher` (optional) are used.
 - Two unprivileged user accounts on the host with distinct numeric UIDs (used
@@ -52,7 +52,7 @@ aggregate: PRODUCT_WORKS / PARTIALLY_WORKS / BROKEN.
 From the project root:
 
 ```bash
-export GOTOOLCHAIN=go1.25.11
+export GOTOOLCHAIN=go1.26.9
 go build -o aimux ./cmd/aimux/
 ./aimux --version
 ```

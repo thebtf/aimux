@@ -14,7 +14,7 @@ go vet ./...                   # static analysis
 
 ## Development Setup
 
-- **Go 1.25+** required (`go version` to verify)
+- **Go 1.26.9+** required (`go version` to verify)
 - No additional toolchain — SQLite is bundled via `modernc.org/sqlite` (pure Go)
 - Any editor with `gopls` support works (VS Code + Go extension, GoLand, Neovim)
 
