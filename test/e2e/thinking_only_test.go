@@ -37,6 +37,10 @@ func TestE2E_MCPStartupMode(t *testing.T) {
 			var response map[string]any
 			var err error
 			for attempt := 1; ; attempt++ {
+				remaining := time.Until(deadline)
+				if remaining <= 0 {
+					t.Fatalf("initialize deadline exceeded: %#v", response)
+				}
 				if _, err := fmt.Fprint(stdin, jsonRPCRequest(100+attempt, "initialize", map[string]any{
 					"protocolVersion": "2024-11-05",
 					"capabilities":    map[string]any{},
@@ -44,17 +48,21 @@ func TestE2E_MCPStartupMode(t *testing.T) {
 				})); err != nil {
 					t.Fatalf("initialize request: %v", err)
 				}
-				response, err = readResponse(reader, 10*time.Second)
+				response, err = readResponse(reader, remaining)
 				if err != nil {
 					t.Fatalf("initialize: %v", err)
 				}
 				if result, ok := response["result"].(map[string]any); ok {
+					if time.Now().After(deadline) {
+						t.Fatalf("initialize succeeded after deadline: %#v", response)
+					}
 					initialized = result
 					break
 				}
 				rpcError, _ := response["error"].(map[string]any)
+				code, _ := rpcError["code"].(float64)
 				message, _ := rpcError["message"].(string)
-				if !strings.Contains(message, "project not connected") || time.Now().After(deadline) {
+				if code != -32603 || !strings.HasPrefix(message, "project not connected: ") {
 					t.Fatalf("initialize result missing: %#v", response)
 				}
 				time.Sleep(25 * time.Millisecond)
