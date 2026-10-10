@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.25.1] — 2026-10-11 — release archive runtime configuration
+
+### Fixed
+
+- **Release archive payload.** Include the mandatory runtime `config/` tree in each GoReleaser archive. The published v5.25.0 Windows archive passed checksum and version checks but failed a clean MCP start with `failed to read config\\default.yaml` because the runtime configuration was omitted.
+
+### Upgrade
+
+- Reinstall from the v5.25.1 archive, extracting the complete archive so the adjacent `config/` directory remains beside the binary. This patch changes packaging only; it does not rewrite v5.25.0 history.
+
 ## [5.25.0] — 2026-10-11 — thinking-only MCP mode
 
 ### Added

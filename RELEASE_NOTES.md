@@ -1,3 +1,15 @@
+## v5.25.1 — release archive runtime configuration
+
+This packaging-only PATCH release fixes the published v5.25.0 Windows archive: its checksum and embedded version checks passed, but a clean MCP start failed with `failed to read config\\default.yaml` because GoReleaser omitted the required runtime `config/` tree.
+
+### Fix
+
+- Package the runtime configuration alongside the binary in release archives, preserving archive-relative paths so `config/` stays adjacent to the extracted executable.
+
+### Upgrade
+
+Download the v5.25.1 archive and extract its full contents. On Windows, extract the complete ZIP into `$env:LOCALAPPDATA\\aimux`. On Linux/macOS, extract the complete tarball into `~/.local/lib/aimux` and use `~/.local/bin/aimux` as a symlink to `~/.local/lib/aimux/aimux`; do not extract only the binary. This preserves the required adjacent `config/` tree. v5.25.0 history and its existing feature behavior are unchanged.
+
 ## v5.25.0 — thinking-only MCP mode
 
 This MINOR release adds an operator-selectable restricted MCP surface for periods when Aimux task/session orchestration should be unavailable but the in-process reasoning patterns must remain usable.
