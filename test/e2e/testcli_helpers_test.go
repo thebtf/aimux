@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -79,20 +80,60 @@ func initTestCLIServer(t *testing.T) (io.WriteCloser, *bufio.Reader) {
 
 func initializeMCP(t *testing.T, stdin io.Writer, reader *bufio.Reader) {
 	t.Helper()
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities": map[string]any{
-			"tasks": map[string]any{
-				"requests": map[string]any{
-					"tools": map[string]any{
-						"call": map[string]any{},
-					},
+	initializeMCPWhenReady(t, stdin, reader, map[string]any{
+		"tasks": map[string]any{
+			"requests": map[string]any{
+				"tools": map[string]any{
+					"call": map[string]any{},
 				},
 			},
 		},
-		"clientInfo": map[string]any{"name": "e2e-testcli", "version": "1.0"},
-	}))
-	if _, err := readResponse(reader, 5*time.Second); err != nil {
-		t.Fatalf("initialize: %v", err)
+	})
+}
+
+func initializeMCPWithResponse(t *testing.T, stdin io.Writer, reader *bufio.Reader) map[string]any {
+	t.Helper()
+	return initializeMCPWhenReady(t, stdin, reader, map[string]any{})
+}
+
+func initializeMCPWhenReady(t *testing.T, stdin io.Writer, reader *bufio.Reader, capabilities map[string]any) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	var response map[string]any
+	for attempt := 1; ; attempt++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("initialize deadline exceeded: %#v", response)
+		}
+		if _, err := fmt.Fprint(stdin, jsonRPCRequest(100+attempt, "initialize", map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    capabilities,
+			"clientInfo":      map[string]any{"name": "e2e-testcli", "version": "1.0"},
+		})); err != nil {
+			t.Fatalf("initialize request: %v", err)
+		}
+		remaining = time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("initialize deadline exceeded after request write: %#v", response)
+		}
+		var err error
+		response, err = readResponse(reader, remaining)
+		if err != nil {
+			t.Fatalf("initialize: %v", err)
+		}
+		if _, ok := response["result"].(map[string]any); ok {
+			if time.Now().After(deadline) {
+				t.Fatalf("initialize succeeded after deadline: %#v", response)
+			}
+			return response
+		}
+		rpcError, _ := response["error"].(map[string]any)
+		code, _ := rpcError["code"].(float64)
+		message, _ := rpcError["message"].(string)
+		if code != -32603 || !strings.HasPrefix(message, "project not connected: ") {
+			t.Fatalf("initialize result missing: %#v", response)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }

@@ -316,20 +316,6 @@ func TestE2E_Upgrade_ActivePointerSuccessorRuntimeAcceptance(t *testing.T) {
 	requireToolNamed(t, readToolsList(t, freshThirdStdin, freshThirdReader, 2), "upgrade")
 }
 
-func initializeMCPWithResponse(t *testing.T, stdin io.Writer, reader *bufio.Reader) map[string]any {
-	t.Helper()
-	fmt.Fprint(stdin, jsonRPCRequest(1, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "e2e-upgrade-smoke", "version": "1.0"},
-	}))
-	resp, err := readResponse(reader, 5*time.Second)
-	if err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
-	return resp
-}
-
 func requireInitializeVersion(t *testing.T, resp map[string]any, want string) {
 	t.Helper()
 	result, ok := resp["result"].(map[string]any)
