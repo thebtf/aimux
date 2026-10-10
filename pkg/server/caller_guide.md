@@ -4,6 +4,16 @@ This guide is the supported caller path for the post Layer 5 aimux surface.
 Use it when you need task execution, task evidence, structured thinking,
 curated recipes, replay evidence, or the read-only viewer.
 
+## Thinking-only mode
+
+Set `AIMUX_MCP_THINKING_ONLY` to the exact value `1` in the daemon environment.
+Restart the daemon and reconnect the MCP client for the setting to take effect.
+This mode exposes only the 22 low-level cognitive move tools. It does not expose
+`think`, `task`, `review`, `status`, `sessions`, `deepresearch`, or `upgrade`,
+and does not register MCP resources or prompts, including built-in skill and
+recipe surfaces. Without the exact value `1`, the default 29-tool surface and
+existing capabilities remain unchanged.
+
 ## Current Surface
 
 Use these MCP tools:

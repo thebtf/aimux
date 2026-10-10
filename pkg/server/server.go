@@ -242,6 +242,8 @@ func initAuditLog(cfg *config.Config, log *logger.Logger, reg *tenant.TenantRegi
 // registry AFTER loading tenants.yaml so initAuditLog sees the correct multi-tenant
 // state at daemon construction time (DEF-11 / FR-4 fix).
 func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, router *routing.Router, tenantReg *tenant.TenantRegistry) *Server {
+	thinkingOnly := os.Getenv("AIMUX_MCP_THINKING_ONLY") == "1"
+
 	s := &Server{
 		cfg:      cfg,
 		log:      log,
@@ -444,37 +446,42 @@ func NewDaemon(cfg *config.Config, log *logger.Logger, reg *driver.Registry, rou
 		}
 	}
 
-	// Create MCP server with capabilities
-	s.mcp = server.NewMCPServer(
-		"aimux",
-		Version,
+	// Create MCP server with capabilities matching the startup mode.
+	opts := []server.ServerOption{
 		server.WithToolCapabilities(true),
-		server.WithTaskCapabilities(false, false, true),
-		server.WithResourceCapabilities(true, true),
-		server.WithPromptCapabilities(true),
 		server.WithLogging(),
 		server.WithRecovery(),
-		// Build initial instructions at daemon construction time after agent and CLI discovery.
-		// warmupComplete is false here because RunWarmup executes in a background goroutine
-		// (see cmd/aimux/main.go) and has not finished by the time NewDaemon returns.
-		// Clients see the initial warmup-in-progress view until an explicit daemon
-		// refresh path rebuilds or reports newer state elsewhere.
-		server.WithInstructions(buildInstructions(
-			s.registry.EnabledCLIs(),
-			false, // warmup runs in background — not yet complete at construction time
-			s.registry.AllCLIs(),
-			0,
-			buildRoleMap(s.router),
-		)),
-	)
+	}
+	if thinkingOnly {
+		opts = append(opts, server.WithInstructions(thinkingOnlyInstructions))
+	} else {
+		opts = append(opts,
+			server.WithTaskCapabilities(false, false, true),
+			server.WithResourceCapabilities(true, true),
+			server.WithPromptCapabilities(true),
+			// Warmup runs in the background and is not yet complete at construction.
+			server.WithInstructions(buildInstructions(
+				s.registry.EnabledCLIs(),
+				false,
+				s.registry.AllCLIs(),
+				0,
+				buildRoleMap(s.router),
+			)),
+		)
+	}
+	s.mcp = server.NewMCPServer("aimux", Version, opts...)
 
 	// Enable sampling capability — allows think patterns to request LLM calls from the client.
 	s.mcp.EnableSampling()
 
-	s.registerTools()
-	s.registerResources()
-	s.registerPrompts()
-	s.registerSkillPrompts()
+	if thinkingOnly {
+		s.registerPatternTools()
+	} else {
+		s.registerTools()
+		s.registerResources()
+		s.registerPrompts()
+		s.registerSkillPrompts()
+	}
 
 	return s
 }

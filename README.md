@@ -93,6 +93,23 @@ If the binary is not on PATH, use the full path:
 }
 ```
 
+### Thinking-only mode
+
+Set `AIMUX_MCP_THINKING_ONLY` to the exact value `1` in the MCP server
+environment. For example, add this field to the existing server entry in a
+Claude Code `.mcp.json` configuration:
+
+```json
+"env": { "AIMUX_MCP_THINKING_ONLY": "1" }
+```
+
+Restart the aimux daemon and reconnect the MCP client for the setting to take
+effect. This mode exposes only the 22 low-level cognitive move tools. It does
+not expose `think`, `task`, `review`, `status`, `sessions`, `deepresearch`, or
+`upgrade`, and does not register MCP resources or prompts, including built-in
+skill and recipe surfaces. Without the exact value `1`, aimux keeps its default
+29-tool surface and existing capabilities.
+
 ### Verify
 
 Run `tools/list` from any MCP-capable client. A current build should expose
