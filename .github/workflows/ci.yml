@@ -117,15 +117,16 @@ jobs:
             echo "::error::Archive contains Go source" >&2
             exit 1
           fi
-          mkdir -p "$smoke/payload" "$smoke/home" "$smoke/work"
+          mkdir -p "$smoke/payload" "$smoke/home" "$smoke/work" "$smoke/bin"
           tar -xzf "${archives[0]}" -C "$smoke/payload"
+          ln -s "$smoke/payload/aimux" "$smoke/bin/aimux"
           export HOME="$smoke/home"
           export AIMUX_MCP_THINKING_ONLY=1
           export AIMUX_ENGINE_NAME="aimux-archive-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           export AIMUX_STDIN_EOF_POLICY=eager
           unset AIMUX_CONFIG_DIR
           cd "$smoke/work"
-          coproc MCP { timeout --kill-after=5s 60s "$smoke/payload/aimux" 2> "$smoke/stderr.log"; }
+          coproc MCP { timeout --kill-after=5s 60s "$smoke/bin/aimux" 2> "$smoke/stderr.log"; }
           mcp_pid=$MCP_PID
           mcp_in=${MCP[1]}
           mcp_out=${MCP[0]}

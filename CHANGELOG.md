@@ -12,10 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Release archive payload.** Include the mandatory runtime `config/` tree in each GoReleaser archive. The published v5.25.0 Windows archive passed checksum and version checks but failed a clean MCP start with `failed to read config\\default.yaml` because the runtime configuration was omitted.
+- **Symlinked install config discovery.** Resolve the executable symlink before locating its adjacent `config/` directory, so the documented Linux/macOS `~/.local/bin/aimux` symlink uses the configuration shipped beside the real binary.
 
 ### Upgrade
 
-- Reinstall from the v5.25.1 archive, extracting the complete archive so the adjacent `config/` directory remains beside the binary. This patch changes packaging only; it does not rewrite v5.25.0 history.
+- Reinstall from the v5.25.1 archive, extracting the complete archive so the adjacent `config/` directory remains beside the real binary. This patch changes release packaging and executable-path resolution only; it does not rewrite v5.25.0 history.
 
 ## [5.25.0] — 2026-10-11 — thinking-only MCP mode
 

@@ -352,6 +352,9 @@ func findConfigDir() string {
 
 	exe, err := os.Executable()
 	if err == nil {
+		if resolved, resolveErr := filepath.EvalSymlinks(exe); resolveErr == nil {
+			exe = resolved
+		}
 		dir := filepath.Join(filepath.Dir(exe), "config")
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			return dir

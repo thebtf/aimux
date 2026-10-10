@@ -1,10 +1,11 @@
 ## v5.25.1 — release archive runtime configuration
 
-This packaging-only PATCH release fixes the published v5.25.0 Windows archive: its checksum and embedded version checks passed, but a clean MCP start failed with `failed to read config\\default.yaml` because GoReleaser omitted the required runtime `config/` tree.
+This PATCH release fixes the published v5.25.0 Windows archive: its checksum and embedded version checks passed, but a clean MCP start failed with `failed to read config\\default.yaml` because GoReleaser omitted the required runtime `config/` tree.
 
 ### Fix
 
 - Package the runtime configuration alongside the binary in release archives, preserving archive-relative paths so `config/` stays adjacent to the extracted executable.
+- Resolve executable symlinks before locating adjacent configuration, so the documented Linux/macOS `~/.local/bin/aimux` link starts against `~/.local/lib/aimux/config`.
 
 ### Upgrade
 
