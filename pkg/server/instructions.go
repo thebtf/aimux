@@ -13,7 +13,7 @@ const thinkingOnlyInstructions = `aimux — thinking-only MCP mode (22 low-level
 
 Use tools/list to discover the available cognitive moves and their input schemas.
 Choose a cognitive move directly for structured reasoning in-process.
-Sampling remains enabled so cognitive moves can request LLM assistance from a supporting client.`
+Task, server-state, resource, prompt, and built-in skill surfaces are not registered.`
 
 // buildInstructions generates the MCP server instructions string for the daemon's
 // initial handshake. Warmup/live-state changes are refreshed by explicit daemon actions.

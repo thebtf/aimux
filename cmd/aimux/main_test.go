@@ -19,6 +19,31 @@ import (
 	mcpsnapshot "github.com/thebtf/mcp-mux/muxcore/snapshot"
 )
 
+func TestThinkingOnlyMCPEnabled(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "1", want: true},
+		{value: ""},
+		{value: "0"},
+		{value: "true"},
+		{value: " 1"},
+	} {
+		env := func(key string) string {
+			if key == "AIMUX_MCP_THINKING_ONLY" {
+				return tc.value
+			}
+			return ""
+		}
+		if got := thinkingOnlyMCPEnabled(env); got != tc.want {
+			t.Errorf("thinkingOnlyMCPEnabled(%q) = %v, want %v", tc.value, got, tc.want)
+		}
+	}
+}
+
 // TestDetectMode exercises the 4 real combinations of:
 //   - daemon flag present/absent in args
 //   - MCP_MUX_SESSION_ID set/unset

@@ -149,6 +149,7 @@ func run() error {
 	// driver.Registry.Probe and DiscoveryCache wiring (AIMUX-16 CR-006), only
 	// runs after detectMode == ModeDaemon. If you move CLI/registry code that
 	// relies on filesystem state above the shim return, NFR-3 will regress.
+	thinkingOnly := thinkingOnlyMCPEnabled(os.Getenv)
 	registry := driver.NewRegistry(cfg.CLIProfiles)
 	if cfg.Driver.DiscoveryCacheTTLSeconds > 0 {
 		registry.SetDiscoveryCacheTTL(time.Duration(cfg.Driver.DiscoveryCacheTTLSeconds) * time.Second)
@@ -158,13 +159,16 @@ func run() error {
 	enabled := registry.EnabledCLIs()
 	log.Info("CLI discovery: %d available: %v", len(enabled), enabled)
 
-	if len(enabled) == 0 {
+	if len(enabled) == 0 && !thinkingOnly {
 		return fmt.Errorf("no CLI tools found — install at least one of: codex, gemini, claude, qwen, aider, droid, opencode")
+	}
+	if len(enabled) == 0 {
+		log.Info("thinking-only MCP mode: continuing without external CLI tools")
 	}
 
 	afterWarmup := registry.EnabledCLIs()
 	log.Info("CLI warmup complete: %d available: %v", len(afterWarmup), afterWarmup)
-	if len(afterWarmup) == 0 {
+	if len(afterWarmup) == 0 && !thinkingOnly {
 		// All probes failed — this almost always indicates an environment
 		// issue (PATH not inherited by spawned daemon, probe-exec cold-start
 		// timeout) rather than every CLI being genuinely broken. CLI binaries
@@ -335,6 +339,10 @@ func logResolvedSuccessor(log *logger.Logger) {
 		return
 	}
 	log.Info("daemon successor: os.Executable() fallback = %s", exe)
+}
+
+func thinkingOnlyMCPEnabled(env func(string) string) bool {
+	return env("AIMUX_MCP_THINKING_ONLY") == "1"
 }
 
 func findConfigDir() string {
