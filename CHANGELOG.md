@@ -6,9 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [5.25.0] — 2026-10-11 — thinking-only MCP mode
+
 ### Added
 
-- **Opt-in MCP thinking-only mode.** Documented `AIMUX_MCP_THINKING_ONLY=1`, which exposes only the 22 cognitive move tools and disables the remaining tools, resources, prompts, and built-in skill/recipe surfaces while preserving the default 29-tool surface.
+- **Opt-in MCP thinking-only mode.** `AIMUX_MCP_THINKING_ONLY=1` exposes exactly the 22 low-level cognitive move tools while omitting the `think`, task/review, server-state, research, upgrade, resource, prompt, and built-in skill/recipe surfaces. Any other value preserves the default 29-tool surface.
+- **CLI-less restricted startup.** Thinking-only mode can start without Codex, Gemini, Claude, or another external CLI because its available tools run in-process.
+
+### Changed
+
+- **Muxcore dependency.** Upgraded `github.com/thebtf/mcp-mux/muxcore` from `v0.27.1` to `v0.28.0` while preserving Aimux's persistent `SessionHandler` and update topology.
+- **Static analysis configuration.** Added SonarQube project and coverage inputs, including the standalone Loom module profile.
+
+### Fixed
+
+- **Canonical muxcore readiness.** Health reporting now waits boundedly for canonical muxcore readiness, prefers in-process status after publication, preserves the canonical control socket for fallback, and honors canceled health requests.
+- **Cross-platform E2E startup readiness.** MCP initialization fixtures retry only the exact transient `project not connected` response under one bounded deadline, preventing macOS startup races without hiding other JSON-RPC failures.
+
+### Compatibility
+
+- The new mode is startup-only and opt-in. Remove `AIMUX_MCP_THINKING_ONLY` and restart the daemon to restore the existing surface. No schema, task state, session store, or provider migration is required.
 
 ## [5.24.1] — 2026-07-14 — muxcore v0.27.1 handoff adaptation
 
