@@ -1,11 +1,11 @@
 # aimux Production Testing Playbook
 
-**Last updated:** 2026-06-14
-**Tested surface:** v5.16.0 candidate MCP surface: 4 server tools, `task`,
-`think(action=start|step|finalize)`, 22 cognitive move tools, task resources,
-compiled recipe resources, read-only viewer resources, caller guide resources,
-and 4 delegation playbook MCP Prompts (`developer`, `pm`, `codereviewer`,
-`docs`).
+**Last updated:** 2026-10-11
+**Target surface:** v5.26.0 candidate MCP surface: 4 server tools, `task`,
+`review`, `think(action=start|step|finalize)`, 22 cognitive move tools, task
+resources, compiled recipe resources, read-only viewer resources, caller guide
+resources, and 4 built-in MCP Prompt skills (`developer`, `codereviewer`,
+`docs`, `pm`). These are test expectations, not a record of passed checks.
 **Mode:** customer (no internal code knowledge — operator perspective)
 
 ## How to use
@@ -387,19 +387,24 @@ v5.11.0 maintainer debug helper because the first-class
   listed, code task fails, file mutation is absent, the task-backed review gate
   cannot return a decision, or either dedicated `review` facade call fails.
 
-### Scenario B7: v5.14.0 MCP Prompts delegation playbooks
+### Scenario B7: v5.26.0 built-in MCP Prompt skills
 
-This scenario verifies the v5.14.0 user-visible Prompt surface. The operator
-uses a released `aimux` / `aimux-dev` binary and an MCP client. Source files
-stay closed; the product contract is the MCP `prompts/list` and `prompts/get`
-responses.
+This scenario verifies the rewritten skills through MCP Prompt transport.
+Use the v5.26.0 candidate or released `aimux` / `aimux-dev` binary and an MCP
+client. Source files stay closed; the observable contract is `prompts/list`
+and `prompts/get`. Agent Skills-style packaging does not imply support for
+the deferred `io.modelcontextprotocol/skills` extension.
 
 **Setup:**
-1. Confirm the binary under test reports the release version:
+1. Use a clean v5.26.0 installation with the full archive extracted, including
+   adjacent `config/`. Exclude custom skill overlays so the built-ins are tested.
+2. Confirm the binary under test reports v5.26.0:
    ```powershell
    .\bin\aimux-dev.exe --version
    ```
-2. Connect an MCP client to the binary. With `mcp-launcher`, use:
+3. Use the default MCP surface: `AIMUX_MCP_THINKING_ONLY` must not equal `1`.
+   Reconnect to the v5.26.0 daemon after upgrade; reconnecting a shim alone does
+   not replace an older daemon. With `mcp-launcher`, use:
    ```powershell
    D:\Dev\mcp-launcher\mcp-launcher.exe `
      -binary .\bin\aimux-dev.exe `
@@ -408,48 +413,67 @@ responses.
      -method prompts/list `
      -params '{}' `
      -expect-tools 29 `
-     -expect-version 5.14.0
+     -expect-version 5.26.0
    ```
 
 **Steps:**
-1. Call `prompts/list`.
-2. Confirm the prompt list contains `developer`, `pm`, `codereviewer`, and
-   `docs`.
-3. Call `prompts/get` for each new prompt:
-   ```powershell
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"developer","arguments":{"task":"smoke"}}' -expect-tools 29 -expect-version 5.14.0
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"pm","arguments":{"intent":"smoke"}}' -expect-tools 29 -expect-version 5.14.0
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"codereviewer","arguments":{"target":"HEAD"}}' -expect-tools 29 -expect-version 5.14.0
-   D:\Dev\mcp-launcher\mcp-launcher.exe -binary .\bin\aimux-dev.exe -cwd D:\Dev\aimux -mode call -method prompts/get -params '{"name":"docs","arguments":{"change":"smoke","audience":"operator"}}' -expect-tools 29 -expect-version 5.14.0
+1. Call `prompts/list` and confirm that the built-in skill names are
+   `developer`, `codereviewer`, `docs`, and `pm`. Legacy hand-coded prompts may
+   also appear; support files, fragments, and eval files must not appear.
+2. Confirm each built-in advertises these arguments:
+   | Prompt | Arguments |
+   | --- | --- |
+   | `developer` | `task`, `scope`, `mode` |
+   | `codereviewer` | `target`, `focus`, `as_gate` |
+   | `docs` | `change`, `audience`, `surfaces` |
+   | `pm` | `intent`, `scale` |
+3. Use an initialized generic MCP client or a raw stdio JSON-RPC client to call
+   `prompts/get` with all declared arguments. For raw stdio, complete
+   `initialize` and send `notifications/initialized` first; then send each
+   request below on that same connection, waiting for its matching response
+   before sending the next request:
+   ```jsonl
+   {"jsonrpc":"2.0","id":101,"method":"prompts/get","params":{"name":"developer","arguments":{"task":"smoke implementation request","scope":"README.md","mode":"preview"}}}
+   {"jsonrpc":"2.0","id":102,"method":"prompts/get","params":{"name":"codereviewer","arguments":{"target":"HEAD","focus":"regression","as_gate":"true"}}}
+   {"jsonrpc":"2.0","id":103,"method":"prompts/get","params":{"name":"docs","arguments":{"change":"smoke documentation request","audience":"operator","surfaces":"README.md"}}}
+   {"jsonrpc":"2.0","id":104,"method":"prompts/get","params":{"name":"pm","arguments":{"intent":"smoke planning request","scale":"standard"}}}
    ```
-4. Inspect each `prompts/get` response body from the MCP client.
+   Do not use the current workstation `mcp-launcher -mode call` path for
+   `prompts/get`: it returns `prompt '' not found` against aimux even when these
+   requests succeed through raw sequential MCP JSON-RPC. The launcher remains
+   usable for the startup/list check above; this retrieval-path mismatch is
+   not evidence that the four aimux prompts are missing.
+4. Match each JSON-RPC response to its request ID. Confirm it has no `error`
+   and its `result` contains `description` and rendered Markdown `messages`.
+   Confirm each supplied argument is reflected in its intended context and no
+   raw `{{` marker, package frontmatter, or fragment frontmatter leaks into the body.
+5. Check the workflow guidance, without executing the example work:
+   - `task`, `review`, and `deepresearch` submit asynchronously; terminal content
+     comes from `status(job_id, include_content=true)`, not the submit response.
+   - Read-only code preview is solo diff (`navigator="none"`,
+     `sandbox="read-only"`); paired `APPLY`/`REVISE` needs an authorized write
+     sandbox. Required pairing/review is not silently downgraded.
+   - Review uses the current `review` facade. No stale `/aimux:*` handoff routes
+     or old role-routing prose is presented as the runtime contract.
+   - Prompt arguments, sandbox capability, worker output, and gate verdicts do
+     not authorize destructive actions, secret disclosure, external writes,
+     deployment, or publication.
 
-**Expected:**
-- Server initialization reports MCP server version `5.14.0`.
-- `tools/list` count remains `29`.
-- `prompts/list` includes exactly the new delegation playbooks:
-  `developer`, `pm`, `codereviewer`, and `docs`, in addition to legacy prompts.
-- Each `prompts/get` response contains a rendered Markdown prompt with
-  `description` and `messages`.
-- `docs` renders `Documentation role: **codex**` (or another concrete CLI name
-  from the live routing table), not `unknown`.
-- Responses do not expose raw template markers such as `{{RoleFor`, `{{template`,
-  or unexpanded `{{`.
-- Fragment frontmatter does not leak into rendered prompts.
-
-**Pass criteria:**
-- Step 1 returns a valid MCP `prompts` array and no MCP error.
-- Step 2 finds all four new prompt names.
-- Step 3 returns success for all four `prompts/get` calls.
-- Step 4 confirms no raw `{{` marker, no `unknown` role value, and no fragment
-  frontmatter leakage in the four rendered prompt bodies.
+**Expected / pass criteria:**
+- MCP initialization reports version `5.26.0`; `tools/list` contains `29` tools.
+- All four built-in skill names and their declared argument sets are present;
+  support/eval files and fragments are not prompts.
+- All four `prompts/get` calls succeed, contain `description` and `messages`,
+  and render every supplied argument without template/frontmatter leakage.
+- The workflows satisfy step 5. No concrete CLI role routing is required to
+  render these skills; a fabricated role-routing value is not a pass criterion.
 
 **Verdict classification:**
 - **PRODUCT_WORKS** — all pass criteria are met.
-- **PARTIALLY_WORKS** — prompts render, but a non-blocking presentation issue is
-  observed (for example, awkward ordering or verbose but valid content).
-- **BROKEN** — any new prompt is missing, any `prompts/get` call fails, role
-  routing renders `unknown`, or template markers/frontmatter leak into output.
+- **PARTIALLY_WORKS** — only a non-blocking presentation issue is observed; all
+  names, arguments, rendering, transport, async, and authority checks pass.
+- **BROKEN** — a skill/argument is missing, a get call fails, rendering leaks
+  markers/frontmatter, or workflow guidance contradicts the current contract.
 
 ### Scenario B8: AIMUX-23 caller guide and read-only resources
 

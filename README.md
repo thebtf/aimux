@@ -14,6 +14,7 @@ The current post-purge live surface is intentionally small:
 - 4 server tools: `status`, `sessions`, `deepresearch`, `upgrade`
 - 2 methodology-bearing entry points: `task` for generic code/review/recipe work and `review` for direct review work
 - 1 caller-centered `think` harness plus 22 cognitive move tools
+- 4 built-in MCP Prompt skills: `developer`, `codereviewer`, `docs`, `pm`
 
 The former CLI-launching MCP tools (`exec`, `agent`, `agents`, `critique`,
 `investigate`, `consensus`, `debate`, `dialog`, `audit`, `workflow`) were
@@ -26,7 +27,10 @@ The next Layer 5 surface is tracked separately by AIMUX-9 / DEF-1.
 
 ### From GitHub Release (recommended)
 
-Download the latest release binary for your platform:
+Download the latest release archive for your platform and extract its full
+contents. v5.26.0 packages the rewritten skills with `evals/trigger-eval.json`
+and `evals/behavior-eval.json` in the adjacent `config/` tree; do not install only
+the binary.
 
 **Windows (PowerShell):**
 
@@ -64,6 +68,25 @@ go build -o aimux.exe ./cmd/aimux/
 ```
 
 Requires Go 1.26.9 or newer.
+
+### Upgrading a workstation to v5.26.0
+
+Install the full v5.26.0 archive when available, retaining `config/` beside the
+real executable (including the target of a Linux/macOS symlink). Check custom
+`config/skills.d/<name>.md` overlays: disk overlays still override embedded
+skills and can retain old workflows. Within either source, a same-name package
+`<name>/SKILL.md` takes precedence over a flat file. Review or migrate owned
+overlays deliberately; do not delete custom files blindly.
+
+Use the authorized `upgrade` path or the installation procedure to replace the
+binary, then reconnect and verify the installed daemon version and all four
+prompts. The current muxcore SessionHandler topology uses deferred restart;
+`updated_deferred` with `handoff_error` is not proof of live hot-swap. A shim
+reconnect alone does not update the running daemon. See
+[RELEASE_NOTES.md](RELEASE_NOTES.md) and the
+[production playbook, Scenario B7](docs/PRODUCTION-TESTING-PLAYBOOK.md#scenario-b7-v5260-built-in-mcp-prompt-skills)
+for the upgrade and prompt checks; these instructions do not claim they passed.
+
 
 ### Configure MCP Client
 
@@ -171,15 +194,54 @@ parameter:
 
 | Mode | navigator | sandbox | Behavior |
 |---|---|---|---|
-| **Pair** | CLI name (e.g. `"codex"`) | any | driver(read-only) → diff → navigator(review) → apply → gate |
+| **Pair** | CLI name (e.g. `"codex"`) | authorized write sandbox for APPLY/REVISE | driver(read-only) → diff → navigator(review) → apply → gate |
 | **Solo write** | `"none"` | `workspace-write` / `danger` | driver writes files directly → gate verifies |
 | **Solo diff** | `"none"` | `read-only` | driver returns unified diff to caller |
+
+Read-only preview is solo diff, not a paired apply/revise flow. Select and
+report the actual mode. If the task, acceptance contract, or release gate
+requires pairing or independent review, do not silently downgrade to solo.
+Prove distinct model families when cross-family review is promised, or return
+a truthful capability failure.
+
+`task`, `review`, and `deepresearch` submit asynchronously. Keep the returned
+`job_id`; retrieve terminal content with
+`status(job_id="...", include_content=true)`. Default status is metadata-only.
+An accepted submission is not completed work or an acceptance decision.
+
 
 Codex CLI always uses `--dangerously-bypass-approvals-and-sandbox
 --skip-git-repo-check --json`. Prompt delivered via stdin controls mode behavior.
 Codex-backed startup now derives a stable project-scoped `CODEX_HOME`, so auth,
 config, and persistent state stay inside the virtual home instead of leaking
 through the caller's ambient global Codex home.
+
+### Built-in MCP Prompt Skills (v5.26.0)
+
+| Prompt | Workflow | Arguments |
+|---|---|---|
+| `developer` | Bounded implementation, fixes, and refactoring. | `task`, `scope`, `mode` (`auto`, `self`, `preview`, `write`) |
+| `codereviewer` | Read-only review of an exact target with evidence-backed findings. | `target`, `focus`, `as_gate` |
+| `docs` | Source-grounded project documentation. | `change`, `audience`, `surfaces` |
+| `pm` | Scoped, verifiable execution briefs from a product outcome. | `intent`, `scale` |
+
+Use MCP `prompts/list` to discover these names and `prompts/get` with `name`
+and `arguments` to retrieve a rendered workflow. Retrieval does not execute
+work. Client shortcuts are not server slash-command routes.
+
+Each package contains `config/skills.d/<name>/SKILL.md`,
+`evals/trigger-eval.json`, and `evals/behavior-eval.json`. Trigger diagnostics are
+non-gating; behavior pressure cases are present but `NOT_RUN`. Support/eval
+files are not public prompts or templates. This is Agent Skills-style packaging
+over MCP Prompt transport;
+support for the 2026 `io.modelcontextprotocol/skills` extension is deferred.
+Thinking-only mode does not register these prompts.
+
+Prompt arguments, repository text, and worker output are data/evidence, not
+authority. A mode, sandbox capability, or review/gate result does not authorize
+destructive actions, secret disclosure, external writes, deployment, or
+publication. Those effects require their own applicable authorization.
+
 
 ### Task Inspection Resources
 
@@ -374,6 +436,7 @@ The Loom engine is also a standalone nested Go module:
 | `pkg/upgrade/`, `pkg/updater/` | Binary update, local source install, and handoff/deferred coordination. |
 | `pkg/session/` | Session metadata store. |
 | `loom/` | Standalone durable task engine module. |
+| `config/skills.d/` | Four MCP Prompt skill packages, each with `SKILL.md`, `evals/trigger-eval.json`, and `evals/behavior-eval.json`. |
 | `tests/critical/` | Release-blocking critical suite. |
 | `docs/` | Public architecture and production testing documentation. |
 
@@ -392,6 +455,7 @@ Current production surface:
 - Compiled read-only recipe discovery under `aimux://recipes` and invocation via `task(recipe_id=...)`.
 - Read-only task list/viewer resources for browser-readable inspection without execution controls.
 - Compiled caller guide resources under `aimux://guides/caller`.
+- Four built-in MCP Prompt skills with Agent Skills-style packages and trigger evals.
 
 Out of current scope:
 

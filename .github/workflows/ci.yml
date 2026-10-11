@@ -83,7 +83,7 @@ jobs:
           version: "~> v2"
           args: release --snapshot --clean
 
-      - name: Verify archive payload and thinking-only MCP startup
+      - name: Verify archive payload, MCP startup, and skill prompts
         shell: bash
         run: |
           set -euo pipefail
@@ -104,8 +104,18 @@ jobs:
             config/prompts.d/coding-rules.md \
             config/prompts.d/roles/coding.md \
             config/prompts.d/styles/concise.md \
-            config/skills.d/developer.md \
-            config/skills.d/_fragments/verification-gate.md \
+            config/skills.d/developer/SKILL.md \
+            config/skills.d/developer/evals/trigger-eval.json \
+            config/skills.d/developer/evals/behavior-eval.json \
+            config/skills.d/codereviewer/SKILL.md \
+            config/skills.d/codereviewer/evals/trigger-eval.json \
+            config/skills.d/codereviewer/evals/behavior-eval.json \
+            config/skills.d/docs/SKILL.md \
+            config/skills.d/docs/evals/trigger-eval.json \
+            config/skills.d/docs/evals/behavior-eval.json \
+            config/skills.d/pm/SKILL.md \
+            config/skills.d/pm/evals/trigger-eval.json \
+            config/skills.d/pm/evals/behavior-eval.json \
             config/p26/classification.v1.json \
             config/audit-rules.d/stub-detection.yaml; do
             if ! grep -Fxq "$required" "$smoke/entries.txt"; then
@@ -121,6 +131,7 @@ jobs:
           tar -xzf "${archives[0]}" -C "$smoke/payload"
           ln -s "$smoke/payload/aimux" "$smoke/bin/aimux"
           export HOME="$smoke/home"
+          export AIMUX_WARMUP=false
           export AIMUX_MCP_THINKING_ONLY=1
           export AIMUX_ENGINE_NAME="aimux-archive-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           export AIMUX_STDIN_EOF_POLICY=eager
@@ -151,11 +162,79 @@ jobs:
             [.[] | select(.id == 1)] as $initialize |
             [.[] | select(.id == 2)] as $tools |
             ($initialize | length) == 1 and
-            $initialize[0].result.protocolVersion != null and
+            $initialize[0].result.protocolVersion == "2024-11-05" and
             ($tools | length) == 1 and
             ($tools[0].result.tools | type) == "array" and
             ($tools[0].result.tools | length) == 22
           ' "$smoke/responses.jsonl"
+
+          export AIMUX_MCP_THINKING_ONLY=0
+          export AIMUX_ENGINE_NAME="aimux-archive-prompts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          coproc MCP { timeout --kill-after=5s 60s "$smoke/bin/aimux" 2> "$smoke/prompts-stderr.log"; }
+          mcp_pid=$MCP_PID
+          mcp_in=${MCP[1]}
+          mcp_out=${MCP[0]}
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"archive-prompts-smoke","version":"1"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"prompts/list","params":{}}' >& "$mcp_in"
+          : > "$smoke/prompts-responses.jsonl"
+          prompt_catalog=''
+          while IFS= read -r -t 60 response <& "$mcp_out"; do
+            printf '%s\n' "$response" >> "$smoke/prompts-responses.jsonl"
+            if jq -e 'select(.id == 2)' <<< "$response" > /dev/null; then
+              prompt_catalog=$response
+              break
+            fi
+          done
+          jq -e '
+            [.result.prompts[].name] | sort ==
+            ["background", "codereviewer", "developer", "docs", "guide", "investigate", "pm", "workflow"]
+          ' <<< "$prompt_catalog"
+          jq -c '
+            .result.prompts |
+            map(select(.name == "developer" or .name == "codereviewer" or .name == "docs" or .name == "pm")) |
+            sort_by(.name) | to_entries[] |
+            .value.name as $name |
+            {jsonrpc: "2.0", id: (.key + 3), method: "prompts/get", params: {
+              name: $name,
+              arguments: ((.value.arguments // []) | map({key: .name, value:
+                (if .name == "as_gate" then "true" else "archive-argument-" + $name + "-" + .name end)
+              }) | from_entries)
+            }}
+          ' <<< "$prompt_catalog" > "$smoke/prompts-requests.jsonl"
+          while IFS= read -r request; do
+            request_id=$(jq -r '.id' <<< "$request")
+            printf '%s\n' "$request" >& "$mcp_in"
+            while IFS= read -r -t 60 response <& "$mcp_out"; do
+              printf '%s\n' "$response" >> "$smoke/prompts-responses.jsonl"
+              if jq -e --argjson id "$request_id" 'select(.id == $id)' <<< "$response" > /dev/null; then
+                break
+              fi
+            done
+          done < "$smoke/prompts-requests.jsonl"
+          exec {mcp_in}>&-
+          if ! wait "$mcp_pid"; then
+            cat "$smoke/prompts-stderr.log" >&2
+            exit 1
+          fi
+          cat "$smoke/prompts-responses.jsonl"
+          jq -se --slurpfile requests "$smoke/prompts-requests.jsonl" '
+            . as $responses |
+            [.[] | select(.id == 1)] as $initialize |
+            ($initialize | length) == 1 and
+            $initialize[0].result.protocolVersion == "2024-11-05" and
+            $initialize[0].result.capabilities.prompts != null and
+            ($requests | length) == 4 and
+            all($requests[];
+              . as $request |
+              [$responses[] | select(.id == $request.id)] as $reply |
+              ($reply | length) == 1 and $reply[0].error == null and
+              ($reply[0].result.messages | length) > 0 and
+              ([$reply[0].result.messages[].content.text // ""] | join("\n") |
+                . as $text | all($request.params.arguments[]; . as $value | $text | contains($value)))
+            )
+          ' "$smoke/prompts-responses.jsonl"
 
   lint:
     runs-on: ubuntu-latest

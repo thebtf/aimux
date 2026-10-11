@@ -2,6 +2,8 @@ package skills
 
 import (
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -110,12 +112,8 @@ func TestEngineLoad(t *testing.T) {
 		t.Errorf("Skills() count = %d, want 2 (fragment excluded)", len(skills))
 	}
 
-	// Fragment must still be stored internally
-	helper := eng.Get("_helper")
-	if helper == nil {
-		t.Error("Get(\"_helper\") returned nil, expected fragment to be stored")
-	} else if !helper.IsFragment {
-		t.Error("_helper.IsFragment = false, want true")
+	if helper := eng.Get("_helper"); helper != nil {
+		t.Errorf("embedded legacy fragment was loaded: %+v", helper)
 	}
 }
 
@@ -166,16 +164,18 @@ func TestEngineRender(t *testing.T) {
 
 func TestEngineRenderFragment(t *testing.T) {
 	fsys := fstest.MapFS{
-		"_test-frag.md": &fstest.MapFile{
-			Data: []byte("---\nname: test-frag\ndescription: A test fragment\n---\n{{define \"test-frag\"}}FRAGMENT_CONTENT{{end}}"),
-		},
 		"main.md": &fstest.MapFile{
 			Data: []byte("---\nname: main\ndescription: Main skill\n---\nBefore {{template \"test-frag\" .}} After"),
 		},
 	}
 
+	diskDir := writeSkillFiles(t, fstest.MapFS{
+		"_test-frag.md": &fstest.MapFile{
+			Data: []byte("---\nname: test-frag\ndescription: A test fragment\n---\n{{define \"test-frag\"}}FRAGMENT_CONTENT{{end}}"),
+		},
+	})
 	eng := NewEngine()
-	if err := eng.Load(fsys, ""); err != nil {
+	if err := eng.Load(fsys, diskDir); err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
 
@@ -191,27 +191,23 @@ func TestEngineRenderFragment(t *testing.T) {
 // ---- missingkey=zero ---------------------------------------------------------
 
 func TestEngineRenderMissingKey(t *testing.T) {
-	// missingkey=zero applies to map lookups (not struct field access).
-	// SkillData.Args is map[string]string — accessing a missing key should render
-	// as the zero value ("") rather than returning an error.
 	fsys := fstest.MapFS{
-		"missing-key.md": &fstest.MapFile{
-			Data: []byte("---\nname: missing-key\ndescription: Missing key test\n---\nValue: {{index .Args \"nonexistent_key\"}}"),
+		"missing-key/SKILL.md": &fstest.MapFile{
+			Data: skillFile("missing-key", "Missing key test", "", "Value: [{{.Args.nonexistent_key}}]"),
 		},
 	}
-
 	eng := NewEngine()
 	if err := eng.Load(fsys, ""); err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
-
-	// Args is nil — index on nil map returns zero value ("") with missingkey=zero
-	out, err := eng.Render("missing-key", &SkillData{})
-	if err != nil {
-		t.Errorf("Render() with missing map key returned error %v, want nil (missingkey=zero)", err)
-	}
-	if !strings.Contains(out, "Value:") {
-		t.Errorf("output %q should contain 'Value:'", out)
+	for _, args := range []map[string]string{nil, {}} {
+		out, err := eng.Render("missing-key", &SkillData{Args: args})
+		if err != nil {
+			t.Fatalf("Render() with missing map key returned error: %v", err)
+		}
+		if out != "Value: []" {
+			t.Errorf("Render() = %q, want zero-value rendering %q", out, "Value: []")
+		}
 	}
 }
 
@@ -336,4 +332,213 @@ func TestEngineGet(t *testing.T) {
 			t.Errorf("Get(\"nonexistent\") = %v, want nil", m)
 		}
 	})
+}
+
+func writeSkillFiles(t *testing.T, files fstest.MapFS) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, file := range files {
+		filePath := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filePath, file.Data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestEnginePackageLoading(t *testing.T) {
+	files := fstest.MapFS{
+		"debug/SKILL.md":                &fstest.MapFile{Data: skillFile("debug", "Debug a program", "", "Package {{.Args.task}}")},
+		"debug/evals/trigger-eval.json": &fstest.MapFile{Data: []byte(`{"name":"eval"}`)},
+		"debug/evals/prompt.md":         &fstest.MapFile{Data: skillFile("eval-prompt", "Not public", "", "{{ broken")},
+		"debug/references/SKILL.md":     &fstest.MapFile{Data: skillFile("nested", "Not public", "", "{{ broken")},
+		"debug/scripts/helper.md":       &fstest.MapFile{Data: skillFile("script", "Not public", "", "{{define \"injected\"}}BAD{{end}}")},
+		"debug/notes.md":                &fstest.MapFile{Data: skillFile("notes", "Not public", "", "notes")},
+		"debug/other/nested.md":         &fstest.MapFile{Data: skillFile("other", "Not public", "", "other")},
+		"_fragments/legacy.md":          &fstest.MapFile{Data: []byte("{{ broken")},
+		"_helper.md":                    &fstest.MapFile{Data: skillFile("helper", "Not public", "", "{{ broken")},
+	}
+	for _, disk := range []bool{false, true} {
+		t.Run(map[bool]string{false: "embedded", true: "disk"}[disk], func(t *testing.T) {
+			eng := NewEngine()
+			embedded := files
+			diskDir := ""
+			if disk {
+				embedded = fstest.MapFS{}
+				diskFiles := make(fstest.MapFS)
+				for name, file := range files {
+					if !strings.HasPrefix(name, "_") {
+						diskFiles[name] = file
+					}
+				}
+				diskDir = writeSkillFiles(t, diskFiles)
+			}
+			if err := eng.Load(embedded, diskDir); err != nil {
+				t.Fatal(err)
+			}
+			public := eng.Skills()
+			if len(public) != 1 || public[0].Name != "debug" || public[0].FilePath != "debug/SKILL.md" {
+				t.Fatalf("public skills = %+v, want only debug package", public)
+			}
+			if len(eng.skills) != 1 || eng.Get("SKILL") != nil {
+				t.Fatalf("support files became skills: %+v", eng.skills)
+			}
+			for _, name := range []string{"prompt", "SKILL", "helper", "notes", "nested", "legacy", "_helper", "injected"} {
+				if eng.templates.Lookup(name) != nil {
+					t.Errorf("support or embedded legacy template %q was registered", name)
+				}
+			}
+			out, err := eng.Render("debug", &SkillData{Args: map[string]string{"task": "argument-marker"}})
+			if err != nil || out != "Package argument-marker" {
+				t.Fatalf("Render(debug) = %q, %v", out, err)
+			}
+		})
+	}
+}
+
+func TestEnginePackagePrecedence(t *testing.T) {
+	for _, name := range []string{"debug", "z-debug"} {
+		for _, disk := range []bool{false, true} {
+			t.Run(name+map[bool]string{false: "/embedded", true: "/disk"}[disk], func(t *testing.T) {
+				files := fstest.MapFS{
+					name + ".md":       &fstest.MapFile{Data: skillFile(name, "Legacy", "", "{{ broken")},
+					name + "/SKILL.md": &fstest.MapFile{Data: skillFile(name, "Package", "", "package winner")},
+				}
+				embedded := files
+				diskDir := ""
+				if disk {
+					embedded = fstest.MapFS{}
+					diskDir = writeSkillFiles(t, files)
+				}
+				eng := NewEngine()
+				if err := eng.Load(embedded, diskDir); err != nil {
+					t.Fatal(err)
+				}
+				if got := eng.Get(name); got == nil || got.FilePath != name+"/SKILL.md" {
+					t.Fatalf("Get(%q) = %+v, want package winner", name, got)
+				}
+				out, err := eng.Render(name, &SkillData{})
+				if err != nil || out != "package winner" {
+					t.Fatalf("Render(%q) = %q, %v", name, out, err)
+				}
+			})
+		}
+	}
+}
+
+func TestEnginePackageDiskOverrides(t *testing.T) {
+	for _, embeddedPath := range []string{"debug.md", "debug/SKILL.md"} {
+		for _, diskPath := range []string{"debug.md", "debug/SKILL.md"} {
+			t.Run(embeddedPath+"/"+diskPath, func(t *testing.T) {
+				embedded := fstest.MapFS{embeddedPath: &fstest.MapFile{Data: skillFile("debug", "Embedded", "", "embedded")}}
+				diskDir := writeSkillFiles(t, fstest.MapFS{diskPath: &fstest.MapFile{Data: skillFile("debug", "Disk", "", "disk winner")}})
+				eng := NewEngine()
+				if err := eng.Load(embedded, diskDir); err != nil {
+					t.Fatal(err)
+				}
+				out, err := eng.Render("debug", &SkillData{})
+				if err != nil || out != "disk winner" {
+					t.Fatalf("Render(debug) = %q, %v", out, err)
+				}
+				if got := eng.Get("debug"); got == nil || got.Description != "Disk" || got.FilePath != diskPath {
+					t.Fatalf("disk metadata was lost: %+v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestEngineRejectsInvalidPackage(t *testing.T) {
+	for _, content := range [][]byte{
+		skillFile("different", "Wrong identity", "", "body"),
+		[]byte("no frontmatter"),
+	} {
+		for _, disk := range []bool{false, true} {
+			embedded := fstest.MapFS{"debug/SKILL.md": &fstest.MapFile{Data: content}}
+			diskDir := ""
+			if disk {
+				diskDir = writeSkillFiles(t, embedded)
+				embedded = fstest.MapFS{"debug.md": &fstest.MapFile{Data: skillFile("debug", "Embedded", "", "body")}}
+			}
+			eng := NewEngine()
+			err := eng.Load(embedded, diskDir)
+			if err == nil || !strings.Contains(err.Error(), "debug/SKILL.md") {
+				t.Fatalf("Load invalid package (disk=%v) = %v", disk, err)
+			}
+			if len(eng.Skills()) != 0 || eng.Get("debug") != nil || eng.Get("different") != nil {
+				t.Fatal("invalid package was exposed")
+			}
+		}
+	}
+}
+
+func TestEngineDiskFragments(t *testing.T) {
+	eng := NewEngine()
+	embedded := fstest.MapFS{"debug/SKILL.md": &fstest.MapFile{Data: skillFile("debug", "Embedded", "", "embedded")}}
+	diskDir := writeSkillFiles(t, fstest.MapFS{
+		"debug.md":           &fstest.MapFile{Data: skillFile("debug", "Disk", "", `before {{template "gate" .}} after`)},
+		"_fragments/gate.md": &fstest.MapFile{Data: []byte(`{{define "gate"}}disk fragment{{end}}`)},
+	})
+	if err := eng.Load(embedded, diskDir); err != nil {
+		t.Fatal(err)
+	}
+	out, err := eng.Render("debug", &SkillData{})
+	if err != nil || out != "before disk fragment after" {
+		t.Fatalf("Render(debug) = %q, %v", out, err)
+	}
+	if got := eng.Get("gate"); got == nil || !got.IsFragment || len(eng.Skills()) != 1 {
+		t.Fatalf("disk fragment metadata = %+v; public = %+v", got, eng.Skills())
+	}
+}
+
+func TestEnginePackageMetadata(t *testing.T) {
+	extra := `prompt: true
+args:
+  - name: task
+    description: Requested task
+related: [review]
+tags: [coding]
+metadata:
+  task_classes: [task, code]
+  effect_class: write-local
+  refusal: allowed`
+	content := skillFile("debug", "Debug a program", extra, "body")
+	want := SkillMetadata{TaskClasses: []string{"task", "code"}, EffectClass: "write-local", Refusal: "allowed"}
+	parsed, err := parseFrontmatter(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := NewEngine()
+	if err := eng.Load(fstest.MapFS{"debug/SKILL.md": &fstest.MapFile{Data: content}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	public := eng.Skills()
+	if len(public) != 1 {
+		t.Fatalf("Skills() = %+v", public)
+	}
+	for _, meta := range []*SkillMeta{parsed, eng.Get("debug"), &public[0]} {
+		if meta == nil || !reflect.DeepEqual(meta.Metadata, want) {
+			t.Fatalf("metadata not preserved: %+v", meta)
+		}
+		if meta.Prompt == nil || !*meta.Prompt || !reflect.DeepEqual(meta.Args, []ArgDef{{Name: "task", Description: "Requested task"}}) ||
+			!reflect.DeepEqual(meta.Related, []string{"review"}) || !reflect.DeepEqual(meta.Tags, []string{"coding"}) {
+			t.Fatalf("existing metadata not preserved: %+v", meta)
+		}
+	}
+}
+
+func TestEngineInvalidFlatDiskOverrideIsSkipped(t *testing.T) {
+	embedded := fstest.MapFS{"debug/SKILL.md": &fstest.MapFile{Data: skillFile("debug", "Embedded", "", "embedded winner")}}
+	diskDir := writeSkillFiles(t, fstest.MapFS{"debug.md": &fstest.MapFile{Data: []byte("legacy file without frontmatter")}})
+	eng := NewEngine()
+	if err := eng.Load(embedded, diskDir); err != nil {
+		t.Fatal(err)
+	}
+	out, err := eng.Render("debug", &SkillData{})
+	if err != nil || out != "embedded winner" {
+		t.Fatalf("invalid legacy overlay replaced embedded package: %q, %v", out, err)
+	}
 }

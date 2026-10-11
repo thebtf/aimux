@@ -35,8 +35,7 @@ archives:
       - config/prompts.d/*.md
       - config/prompts.d/roles/*.md
       - config/prompts.d/styles/*.md
-      - config/skills.d/*.md
-      - config/skills.d/_fragments/*.md
+      - config/skills.d/**/*
       - config/p26/*.json
       - config/audit-rules.d/*.yaml
 

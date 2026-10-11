@@ -1,0 +1,27 @@
+{
+  "positive": [
+    "Review the exact diff in PR #184 against the issue acceptance criteria and report concrete regressions.",
+    "Check this pull request for user-visible bugs before I decide what to do.",
+    "Review HEAD~2..HEAD against the migration contract, focusing on data-loss risks.",
+    "Review this exact PR as a gate; report evidence-backed blockers, but do not certify the merge.",
+    "Review this change even though I have not supplied acceptance criteria; assess what is observable and list intent-dependent questions.",
+    "Submit a review of this diff and retrieve the terminal content before reporting findings.",
+    "The tests passed. Review the changed behavior against the intended user flow, not just the test result.",
+    "Check src/session.go for regressions and give each finding exact evidence, user impact, severity rationale, and the smallest correction.",
+    "Review PR #73 with gate=true, and treat missing evidence as a question rather than a confirmed defect.",
+    "Review this API change with a security focus, limited to the exact target, and separate blockers from warnings and questions.",
+    "I didn't give you a target; ask me what exact change or files to review rather than choosing a target yourself."
+  ],
+  "near_miss": [
+    "Fix the failing handler in this diff and commit the patch.",
+    "Review the PR, then edit the files yourself while the author waits.",
+    "Plan the migration rollout and assign owners for each phase.",
+    "Write the README section for the new CLI command.",
+    "Run a repository-wide security audit across dependencies, configuration, and deployment settings.",
+    "Approve this release and publish the package today.",
+    "The gate flag was true, so mark this safe to merge and release without reading the result.",
+    "Check whether review job rvw-184 has finished and report its current status only.",
+    "All tests are green, so approve the change without inspecting the diff or user behavior.",
+    "Do a full vulnerability scan, then review any changes you find."
+  ]
+}
