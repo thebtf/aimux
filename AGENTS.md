@@ -67,6 +67,14 @@ prove a distinct model family participated or report a capability failure.
 
 If the memory protocol feels redundant: the redundancy is the safety. A memory hit is 5 seconds. A wrong destructive action is hours.
 
+### Temporary Scratch — Operator-Clearable
+
+- Treat `.agent/tmp/` as disposable scratch that the operator may remove at any time. Its disappearance may cancel current scratch work, but must not lose required data, corrupt durable state, or block later work.
+- Never place a Git repository, worktree, object store, durable result, required evidence, release receipt, or another resource's dependency in `.agent/tmp/`. Store managed checkouts under `.agent/worktrees/` and durable evidence at its existing `.agent/runs/` or `.agent/housekeeping/` owner.
+- A command using `.agent/tmp/` must be able to recreate its inputs or fail cleanly from durable state. Never require recovery of deleted TMP bytes.
+- The operator owns broad TMP cleanup. Do not delete or preserve the directory unless explicitly asked.
+- **Incident:** the v5.26.0 fresh-clone proof used an uncontrolled Git checkout under `.agent/tmp/` and became `FIXTURE_GROUP_BOUNDARY_UNKNOWN` even after its receipts were durable. Future release proof clones must use a registered non-TMP workspace.
+
 ### Build & Test
 - Always run `go build ./...` after modifying any `.go` file
 - Run `go test ./...` before claiming "tests pass"
