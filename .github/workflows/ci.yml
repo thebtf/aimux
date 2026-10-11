@@ -273,10 +273,11 @@ jobs:
             exit 1
           fi
           cat "$smoke/responses.jsonl"
-          jq -se --slurpfile requests "$smoke/prompts-requests.jsonl" '
+          if ! jq -se --argjson initialize_id "$initialize_id" --slurpfile requests "$smoke/prompts-requests.jsonl" '
             . as $responses |
-            [.[] | select(.id == 1)] as $initialize |
+            [.[] | select(.id == $initialize_id)] as $initialize |
             ($initialize | length) == 1 and
+            $initialize[0].error == null and
             $initialize[0].result.protocolVersion == "2024-11-05" and
             $initialize[0].result.capabilities.prompts != null and
             ($requests | length) == 4 and
@@ -288,7 +289,10 @@ jobs:
               ([$reply[0].result.messages[].content.text // ""] | join("\n") |
                 . as $text | all($request.params.arguments[]; . as $value | $text | contains($value)))
             )
-          ' "$smoke/responses.jsonl"
+          ' "$smoke/responses.jsonl"; then
+            cat "$smoke/stderr.log" >&2
+            exit 1
+          fi
 
   lint:
     runs-on: ubuntu-latest
