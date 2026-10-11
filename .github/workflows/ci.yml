@@ -130,6 +130,11 @@ jobs:
           mkdir -p "$smoke/payload" "$smoke/home" "$smoke/work" "$smoke/bin"
           tar -xzf "${archives[0]}" -C "$smoke/payload"
           ln -s "$smoke/payload/aimux" "$smoke/bin/aimux"
+          for cli in codex claude gemini; do
+            printf '#!/usr/bin/env sh\nexit 0\n' > "$smoke/bin/$cli"
+            chmod +x "$smoke/bin/$cli"
+          done
+          export PATH="$smoke/bin:$PATH"
           export HOME="$smoke/home"
           export AIMUX_WARMUP=false
           export AIMUX_MCP_THINKING_ONLY=0
