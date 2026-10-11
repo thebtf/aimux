@@ -152,6 +152,10 @@ func (e *Engine) Load(embedded fs.FS, diskDir string) error {
 					log.Printf("skip %s: frontmatter name %q does not match package name %q", c.path, c.meta.Name, slug)
 					return nil
 				}
+				if _, err := template.New(slug).Option("missingkey=zero").Funcs(placeholderFuncMap()).Parse(c.meta.Body); err != nil {
+					log.Printf("skip %s: template parse: %v", c.path, err)
+					return nil
+				}
 			}
 			if previous, exists := selected[slug]; exists && previous.packaged && !packaged {
 				return nil
@@ -179,7 +183,7 @@ func (e *Engine) Load(embedded fs.FS, diskDir string) error {
 	if diskDir != "" {
 		if _, statErr := os.Stat(diskDir); statErr == nil {
 			if err := loadFS(os.DirFS(diskDir), true); err != nil {
-				return fmt.Errorf("load disk skills %q: %w", diskDir, err)
+				log.Printf("load disk skills %q: %v", diskDir, err)
 			}
 		}
 	}

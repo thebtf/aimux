@@ -1,9 +1,11 @@
 package skills
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -455,6 +457,7 @@ func TestEngineRejectsInvalidPackage(t *testing.T) {
 	for _, content := range [][]byte{
 		skillFile("different", "Wrong identity", "", "body"),
 		[]byte("no frontmatter"),
+		skillFile("debug", "Invalid template", "", "{{ broken"),
 	} {
 		for _, source := range []string{"embedded", "disk", "disk-flat"} {
 			disk := source != "embedded"
@@ -489,6 +492,18 @@ func TestEngineRejectsInvalidPackage(t *testing.T) {
 			}
 			if len(eng.Skills()) != 0 || eng.Get("debug") != nil || eng.Get("different") != nil {
 				t.Fatal("invalid package was exposed")
+			}
+		}
+		for _, diskPath := range []string{"debug.md", "debug/SKILL.md"} {
+			embedded := fstest.MapFS{"debug/SKILL.md": &fstest.MapFile{Data: content}}
+			diskDir := writeSkillFiles(t, fstest.MapFS{diskPath: &fstest.MapFile{Data: skillFile("debug", "Disk", "", "disk winner")}})
+			eng := NewEngine()
+			if err := eng.Load(embedded, diskDir); err != nil {
+				t.Fatalf("valid %s overlay did not replace invalid embedded package: %v", diskPath, err)
+			}
+			out, err := eng.Render("debug", &SkillData{})
+			if err != nil || out != "disk winner" {
+				t.Fatalf("Render(debug) with %s overlay = %q, %v", diskPath, out, err)
 			}
 		}
 	}
@@ -551,13 +566,51 @@ metadata:
 
 func TestEngineInvalidFlatDiskOverrideIsSkipped(t *testing.T) {
 	embedded := fstest.MapFS{"debug/SKILL.md": &fstest.MapFile{Data: skillFile("debug", "Embedded", "", "embedded winner")}}
-	diskDir := writeSkillFiles(t, fstest.MapFS{"debug.md": &fstest.MapFile{Data: []byte("legacy file without frontmatter")}})
+	for _, content := range [][]byte{
+		[]byte("legacy file without frontmatter"),
+		skillFile("debug", "Invalid template", "", "{{ broken"),
+	} {
+		diskDir := writeSkillFiles(t, fstest.MapFS{"debug.md": &fstest.MapFile{Data: content}})
+		eng := NewEngine()
+		if err := eng.Load(embedded, diskDir); err != nil {
+			t.Fatal(err)
+		}
+		out, err := eng.Render("debug", &SkillData{})
+		if err != nil || out != "embedded winner" {
+			t.Fatalf("invalid legacy overlay replaced embedded package: %q, %v", out, err)
+		}
+	}
+}
+
+func TestEngineDiskWalkErrorFallsBackToEmbedded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions do not prevent traversal on Windows")
+	}
+	embedded := fstest.MapFS{"debug/SKILL.md": &fstest.MapFile{Data: skillFile("debug", "Embedded", "", "embedded winner")}}
+	diskDir := writeSkillFiles(t, fstest.MapFS{"debug.md": &fstest.MapFile{Data: skillFile("debug", "Disk", "", "disk body")}})
+	t.Cleanup(func() {
+		if err := os.Chmod(diskDir, 0o755); err != nil {
+			t.Errorf("restore disk directory permissions: %v", err)
+		}
+	})
+	if err := os.Chmod(diskDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	err := fs.WalkDir(os.DirFS(diskDir), ".", func(_ string, _ fs.DirEntry, err error) error {
+		return err
+	})
+	if err == nil {
+		t.Skip("environment permits traversal of a directory with no permissions")
+	}
+	if !os.IsPermission(err) {
+		t.Fatalf("disk traversal error = %v, want permission denied", err)
+	}
 	eng := NewEngine()
 	if err := eng.Load(embedded, diskDir); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Load with inaccessible disk directory = %v", err)
 	}
 	out, err := eng.Render("debug", &SkillData{})
 	if err != nil || out != "embedded winner" {
-		t.Fatalf("invalid legacy overlay replaced embedded package: %q, %v", out, err)
+		t.Fatalf("disk walk error lost embedded skill: %q, %v", out, err)
 	}
 }
