@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"text/template"
@@ -90,93 +91,141 @@ func placeholderFuncMap() template.FuncMap {
 	}
 }
 
-// Load walks embedded (required) and disk (optional) file systems, parses skill
-// markdown files, and compiles all bodies into a single template set.
-//
-// Rules:
-//   - Embedded FS is walked first.
-//   - Disk files with the same slug override embedded ones (logged as a warning).
-//   - Files whose basename starts with '_' are fragments (IsFragment=true).
-//   - Files where IsPrompt() returns false are also marked IsFragment=true.
-//   - All skill bodies and fragments are registered as named templates by slug.
+// Load compiles public package entrypoints and legacy root-flat skill files.
+// Disk candidates override embedded candidates; within either source, a package
+// <name>/SKILL.md wins over <name>.md. Package support files are never templates.
+// Legacy underscore files and raw _fragments/ templates are disk-only.
 func (e *Engine) Load(embedded fs.FS, diskDir string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	skills := make(map[string]*SkillMeta)
-
-	// Root template set — all skill bodies are registered here as named templates.
-	root := template.New("").Option("missingkey=zero").Funcs(placeholderFuncMap())
-
-	loadFS := func(fsys fs.FS, override bool) error {
-		return fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+	type candidate struct {
+		fsys        fs.FS
+		path        string
+		packaged    bool
+		rawFragment bool
+		meta        *SkillMeta
+	}
+	candidates := make(map[string]candidate)
+	loadFS := func(fsys fs.FS, disk bool) error {
+		selected := make(map[string]candidate)
+		err := fs.WalkDir(fsys, ".", func(filePath string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-			if d.IsDir() || !strings.HasSuffix(path, ".md") {
+			if d.IsDir() {
+				if filePath == "." || (disk && (filePath == "_fragments" || strings.HasPrefix(filePath, "_fragments/"))) {
+					return nil
+				}
+				if strings.Contains(filePath, "/") || strings.HasPrefix(d.Name(), "_") {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(d.Name(), ".md") || (!disk && strings.HasPrefix(d.Name(), "_")) {
 				return nil
 			}
 
-			raw, err := fs.ReadFile(fsys, path)
-			if err != nil {
-				return fmt.Errorf("read %s: %w", path, err)
+			dir, rest, nested := strings.Cut(filePath, "/")
+			rawFragment := disk && dir == "_fragments" && nested
+			packaged := nested && rest == "SKILL.md" && !rawFragment
+			if nested && !packaged && !rawFragment {
+				return nil
 			}
-
-			base := d.Name() // e.g. "_helper.md" or "debug.md"
-			slug := strings.TrimSuffix(base, ".md")
-
-			// Files in _fragments/ are raw templates without frontmatter.
-			isFragmentDir := strings.Contains(path, "_fragments/") || strings.Contains(path, "_fragments\\")
-			var meta *SkillMeta
-			if isFragmentDir {
-				meta = &SkillMeta{
-					Name:       slug,
-					Body:       string(raw),
-					IsFragment: true,
+			slug := strings.TrimSuffix(d.Name(), ".md")
+			if packaged {
+				slug = dir
+			}
+			c := candidate{fsys: fsys, path: filePath, packaged: packaged, rawFragment: rawFragment}
+			if disk && !c.rawFragment {
+				raw, err := fs.ReadFile(c.fsys, c.path)
+				if err != nil {
+					log.Printf("skip %s: %v", c.path, err)
+					return nil
 				}
-			} else {
-				var parseErr error
-				meta, parseErr = parseFrontmatter(raw)
-				if parseErr != nil {
-					// Skip files without valid frontmatter (e.g. .gitkeep, _map.yaml).
-					log.Printf("skip %s: %v", path, parseErr)
+				c.meta, err = parseFrontmatter(raw)
+				if err != nil {
+					log.Printf("skip %s: %v", c.path, err)
+					return nil
+				}
+				if c.packaged && c.meta.Name != slug {
+					log.Printf("skip %s: frontmatter name %q does not match package name %q", c.path, c.meta.Name, slug)
+					return nil
+				}
+				if _, err := template.New(slug).Option("missingkey=zero").Funcs(placeholderFuncMap()).Parse(c.meta.Body); err != nil {
+					log.Printf("skip %s: template parse: %v", c.path, err)
 					return nil
 				}
 			}
-
-			meta.FilePath = path
-			if !isFragmentDir {
-				meta.IsFragment = strings.HasPrefix(base, "_") || !meta.IsPrompt()
+			if previous, exists := selected[slug]; exists && previous.packaged && !packaged {
+				return nil
 			}
-
-			if override {
-				if _, exists := skills[slug]; exists {
-					log.Printf("skill %q overridden by disk: %s", slug, path)
-				}
-			}
-			skills[slug] = meta
-
-			// Option("missingkey=zero") must be set on each named template
-			// individually: text/template checks the option on the executing template,
-			// not on the root. Clone() preserves these per-template options.
-			if _, tmplErr := root.New(slug).Option("missingkey=zero").Funcs(placeholderFuncMap()).Parse(meta.Body); tmplErr != nil {
-				return fmt.Errorf("template parse %s: %w", path, tmplErr)
-			}
-
+			selected[slug] = c
 			return nil
 		})
+		if err != nil {
+			return err
+		}
+		for slug, c := range selected {
+			if disk {
+				if _, exists := candidates[slug]; exists {
+					log.Printf("skill %q overridden by disk: %s", slug, c.path)
+				}
+			}
+			candidates[slug] = c
+		}
+		return nil
 	}
 
 	if err := loadFS(embedded, false); err != nil {
 		return fmt.Errorf("load embedded skills: %w", err)
 	}
-
 	if diskDir != "" {
 		if _, statErr := os.Stat(diskDir); statErr == nil {
-			diskFSys := os.DirFS(diskDir)
-			if err := loadFS(diskFSys, true); err != nil {
-				log.Printf("disk skill dir %q error: %v", diskDir, err)
+			if err := loadFS(os.DirFS(diskDir), true); err != nil {
+				log.Printf("load disk skills %q: %v", diskDir, err)
 			}
+		}
+	}
+
+	slugs := make([]string, 0, len(candidates))
+	for slug := range candidates {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	skills := make(map[string]*SkillMeta, len(candidates))
+	root := template.New("").Option("missingkey=zero").Funcs(placeholderFuncMap())
+	for _, slug := range slugs {
+		c := candidates[slug]
+		meta := c.meta
+		if meta == nil {
+			raw, err := fs.ReadFile(c.fsys, c.path)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", c.path, err)
+			}
+			if c.rawFragment {
+				meta = &SkillMeta{Name: slug, Body: string(raw), IsFragment: true}
+			} else {
+				meta, err = parseFrontmatter(raw)
+				if err != nil {
+					if c.packaged {
+						return fmt.Errorf("parse skill package %s: %w", c.path, err)
+					}
+					log.Printf("skip %s: %v", c.path, err)
+					continue
+				}
+			}
+		}
+		if c.packaged && meta.Name != slug {
+			return fmt.Errorf("skill package %s: frontmatter name %q does not match package name %q", c.path, meta.Name, slug)
+		}
+		meta.IsFragment = c.rawFragment || strings.HasPrefix(slug, "_") || !meta.IsPrompt()
+		meta.FilePath = c.path
+		skills[slug] = meta
+
+		// The executing named template needs its own missing-key option.
+		if _, err := root.New(slug).Option("missingkey=zero").Parse(meta.Body); err != nil {
+			return fmt.Errorf("template parse %s: %w", c.path, err)
 		}
 	}
 

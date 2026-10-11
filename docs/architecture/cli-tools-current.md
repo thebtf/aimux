@@ -10,6 +10,33 @@ ultimately spawns an AI CLI works in the v5.0.3 codebase. It captures wiring,
 layering, contracts, and dead-code surface — not a redesign. The redesign
 follows in a separate spec.
 
+### Current skill status (v5.26.0)
+
+The sections below remain a v5.0.3 historical snapshot, not the current MCP
+caller contract. The default current surface has 29 tools and four built-in
+MCP Prompt skills: `developer`, `codereviewer`, `docs`, and `pm`. See
+`pkg/server/caller_guide.md` for current task/review/research behavior.
+
+The rewritten skills use `config/skills.d/<name>/SKILL.md` plus
+`evals/trigger-eval.json` and `evals/behavior-eval.json`. The loader publishes
+only skill entrypoints, not support/eval files. Disk flat `<name>.md` overlays
+remain supported and win over embedded skills; within each source a package
+wins over a same-name flat
+file. Legacy disk fragments remain loader-compatible, but the unused bundled
+`_fragments/` tree and superseded flat built-ins are removed. Release archives
+include the nested package files under their original `config/skills.d/` paths.
+This is Agent Skills-style packaging over MCP Prompt transport; the
+`io.modelcontextprotocol/skills` extension remains deferred.
+
+`task`, `review`, and `deepresearch` submit async jobs; terminal content is
+retrieved through `status(job_id, include_content=true)`. Code work supports
+pair, solo-write, and solo-diff. Read-only preview is solo diff; paired apply
+or revise requires an authorized write sandbox. Preserve pairing/independent
+review when required by the task or gate. Prompt content, worker output, and
+sandbox capability do not authorize destructive actions, secret disclosure,
+external writes, deployment, or publication.
+
+
 ---
 
 ## 1. Scope
@@ -424,7 +451,12 @@ deleted, the following code becomes unreachable from MCP entrypoints:
 - `config/cli.d/*/profile.yaml` (12 profiles) — no longer needed at runtime, but
   tests may still reference them; keep as references for redesign.
 - `config/p26/` — P26 tool classification artifact; references removed tools.
-- `config/skills.d/aimux-guide.md`, `delegate.md`, `poll-wrapper-subagent.md` — describe removed tools; update or remove.
+- **Historical skill files — replaced.** The pre-purge guide/delegation files
+  are not current entrypoints. v5.26.0 uses the four packages at
+  `config/skills.d/{developer,codereviewer,docs,pm}/SKILL.md`, each with
+  `evals/trigger-eval.json` and `evals/behavior-eval.json`; unused bundled
+  fragments are removed. See the current skill status above rather than
+  restoring the old guidance.
 
 ---
 

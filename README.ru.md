@@ -16,6 +16,7 @@ reasoning.
 - 4 server tools: `status`, `sessions`, `deepresearch`, `upgrade`
 - 2 methodology-bearing entry points: `task` для generic code/review/recipe work и `review` для direct review work
 - 1 caller-centered `think` harness и 22 cognitive move tools
+- 4 встроенных MCP Prompt skills: `developer`, `codereviewer`, `docs`, `pm`
 
 Прежние CLI-launching MCP tools (`exec`, `agent`, `agents`, `critique`,
 `investigate`, `consensus`, `debate`, `dialog`, `audit`, `workflow`) удалены из
@@ -28,7 +29,10 @@ live surface. Их pre-purge архитектура заморожена в ве
 
 ### Из GitHub Release (рекомендуется)
 
-Скачайте бинарник для вашей платформы:
+Скачайте последний релизный архив для вашей платформы и извлеките всё его
+содержимое. В v5.26.0 переписанные skills, `evals/trigger-eval.json` и
+`evals/behavior-eval.json` находятся в соседнем каталоге `config/`.
+Не устанавливайте только бинарник.
 
 **Windows (PowerShell):**
 
@@ -65,6 +69,26 @@ go build -o aimux.exe ./cmd/aimux/
 ```
 
 Требуется Go 1.26.9+.
+
+### Обновление рабочей станции до v5.26.0
+
+Когда архив v5.26.0 будет доступен, установите всё его содержимое. Каталог
+`config/` должен оставаться рядом с настоящим исполняемым файлом, в том числе
+с целью символической ссылки на Linux/macOS. Проверьте свои overrides
+`config/skills.d/<name>.md`: файлы на диске по-прежнему перекрывают встроенные
+skills и могут сохранить старые инструкции. Внутри каждого источника пакет
+`<name>/SKILL.md` имеет приоритет над одноимённым flat-файлом. Проверьте или
+перенесите свои overrides отдельно; не удаляйте пользовательские файлы вслепую.
+
+Замените бинарник через разрешённый `upgrade` или процедуру установки. Затем
+переподключите клиент и проверьте версию установленного daemon и все четыре
+prompts. Текущая топология muxcore SessionHandler использует отложенный
+перезапуск: `updated_deferred` с `handoff_error` не доказывает live hot-swap.
+Одно переподключение shim не обновляет работающий daemon. Инструкции и проверки
+описаны в [RELEASE_NOTES.md](RELEASE_NOTES.md) и
+[production playbook, Scenario B7](docs/PRODUCTION-TESTING-PLAYBOOK.md#scenario-b7-v5260-built-in-mcp-prompt-skills).
+Эти инструкции не означают, что проверки уже прошли.
+
 
 ### Настройка MCP-клиента
 
@@ -152,15 +176,55 @@ go test ./... -count=1
 
 | Режим | navigator | sandbox | Поведение |
 |---|---|---|---|
-| **Pair** | имя CLI (напр. `"codex"`) | любой | driver(read-only) → diff → navigator(review) → apply → gate |
+| **Pair** | имя CLI (напр. `"codex"`) | разрешённый write sandbox для APPLY/REVISE | driver(read-only) → diff → navigator(review) → apply → gate |
 | **Solo write** | `"none"` | `workspace-write` / `danger` | driver пишет файлы напрямую → gate проверяет |
 | **Solo diff** | `"none"` | `read-only` | driver возвращает unified diff вызывающему агенту |
+
+Read-only preview — это solo diff, а не paired apply/revise. Выберите режим и
+укажите, какой режим действительно выполнился. Если задача, acceptance contract
+или release gate требует pairing либо независимого review, не заменяйте его
+solo-режимом без согласования. Если обещано cross-family review, подтвердите
+участие разных семейств моделей или верните явную ошибку capability.
+
+`task`, `review` и `deepresearch` запускают асинхронные задачи. Сохраните
+полученный `job_id` и получите итоговый результат через
+`status(job_id="...", include_content=true)`. По умолчанию status возвращает
+только metadata. Принятая заявка не означает завершение работы или её приёмку.
+
 
 Codex CLI всегда использует `--dangerously-bypass-approvals-and-sandbox
 --skip-git-repo-check --json`. Промпт через stdin определяет поведение.
 Запуск через Codex теперь использует стабильный project-scoped `CODEX_HOME`,
 поэтому auth, config и persistent state остаются внутри virtual home, а не
 подтягиваются из глобального Codex home вызывающей среды.
+
+### Встроенные MCP Prompt skills (v5.26.0)
+
+| Prompt | Назначение | Аргументы |
+|---|---|---|
+| `developer` | Реализация, исправление и рефакторинг в заданных границах. | `task`, `scope`, `mode` (`auto`, `self`, `preview`, `write`) |
+| `codereviewer` | Read-only review точной цели с выводами, подтверждёнными evidence. | `target`, `focus`, `as_gate` |
+| `docs` | Документация проекта на основе проверенных источников. | `change`, `audience`, `surfaces` |
+| `pm` | Ограниченные, проверяемые задания на основе продуктового результата. | `intent`, `scale` |
+
+Для поиска этих имён используйте MCP `prompts/list`. Для получения готовых
+инструкций вызовите `prompts/get` с `name` и `arguments`. Получение prompt не
+запускает работу. Ярлыки клиента не являются slash-командами сервера.
+
+Каждый пакет содержит `config/skills.d/<name>/SKILL.md`,
+`evals/trigger-eval.json` и `evals/behavior-eval.json`. Trigger-диагностика не
+является критерием приёмки; pressure cases для проверки поведения включены,
+но имеют статус `NOT_RUN`. Support/eval-файлы не являются публичными prompts
+или templates. Это упаковка в стиле Agent Skills с транспортом MCP Prompt;
+поддержка расширения 2026 года `io.modelcontextprotocol/skills` отложена.
+Thinking-only mode не регистрирует эти prompts.
+
+Аргументы prompt, текст репозитория и результат worker — данные и evidence,
+а не полномочия. Режим, sandbox capability или результат review/gate не
+разрешает разрушительные действия, раскрытие секретов, внешние записи,
+deployment или публикацию. Для этих действий нужно отдельное применимое
+разрешение.
+
 
 ### Task Inspection Resources
 
@@ -350,12 +414,14 @@ Current production surface:
 - Binary update с local source install и deferred fallback, когда live handoff не поддержан.
 - Caller-centered `think` harness и 22 local cognitive move tools.
 - Loom-backed task state и recovery.
+- Task entry point с тремя режимами: pair (driver+navigator), solo write и solo diff.
 - Dedicated `review` facade поверх того же task/runtime-events backbone.
 - Task inspection resources under `aimux://tasks/{task_id}`.
 - Compiled read-only recipe discovery under `aimux://recipes` и invocation через `task(recipe_id=...)`.
 - Read-only task list/viewer resources для browser-readable inspection без
   execution controls.
 - Compiled caller guide resources under `aimux://guides/caller`.
+- Четыре встроенных MCP Prompt skills с пакетами в стиле Agent Skills и trigger evals.
 
 Out of current scope:
 

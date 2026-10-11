@@ -8,14 +8,22 @@ type ArgDef struct {
 	Description string `yaml:"description"`
 }
 
+// SkillMetadata describes routing and effect boundaries declared by a skill.
+type SkillMetadata struct {
+	TaskClasses []string `yaml:"task_classes"`
+	EffectClass string   `yaml:"effect_class"`
+	Refusal     string   `yaml:"refusal"`
+}
+
 // SkillMeta holds parsed YAML frontmatter for a skill file.
 type SkillMeta struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Prompt      *bool    `yaml:"prompt"`
-	Args        []ArgDef `yaml:"args"`
-	Related     []string `yaml:"related"`
-	Tags        []string `yaml:"tags"`
+	Name        string        `yaml:"name"`
+	Description string        `yaml:"description"`
+	Prompt      *bool         `yaml:"prompt"`
+	Args        []ArgDef      `yaml:"args"`
+	Related     []string      `yaml:"related"`
+	Tags        []string      `yaml:"tags"`
+	Metadata    SkillMetadata `yaml:"metadata"`
 
 	// Not serialized — populated by the loader.
 	FilePath   string `yaml:"-"`

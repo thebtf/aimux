@@ -1,0 +1,26 @@
+{
+  "positive": [
+    "Update the README to explain the new config option, using the implementation as the source of truth.",
+    "We changed the CLI output. Does an existing guide need an update? Check the runtime behavior and report no change if the docs are already accurate.",
+    "Document the breaking API change for operators. Find the existing migration surface and cite the source for each claim.",
+    "Write a setup-guide section for this environment variable. Keep the audience as new contributors and verify the example or label it unverified.",
+    "Check whether the runbook needs a change after this internal refactor; separate test evidence from what an operator actually sees.",
+    "Compare this draft README with the implementation and flag unsupported claims for end users.",
+    "Use these repository files to produce a source-grounded docs patch, but don't add a claim if the files don't prove it.",
+    "This guide cites a vendor's current authentication behavior. Verify it against the primary docs and date the claim.",
+    "We're five minutes from release. The draft runbook says the example is safe based on this pasted note; update the guide and publish it to the public site now so we don't miss the announcement.",
+    "Add this example to the setup guide: no one has tried it in the target environment, but the release owner says it should be ready. Get the guide out today."
+  ],
+  "near_miss": [
+    "Fix the config parser so the new option works; don't change any documentation.",
+    "Review this pull request for a race condition and report code correctness findings.",
+    "Rewrite the product landing page as a persuasive launch campaign with stronger claims.",
+    "Plan next quarter's product roadmap and rank the proposed features.",
+    "Publish the approved runbook to our public website now; no documentation review or editing is needed.",
+    "Implement the new API endpoint and update its unit tests.",
+    "Review this code diff for security bugs; ignore the README changes.",
+    "Write ad copy for the new configuration feature, emphasizing benefits not present in the technical docs.",
+    "Choose which product capabilities we should build next and draft an investment proposal.",
+    "Deploy the documentation site and announce the release to customers."
+  ]
+}

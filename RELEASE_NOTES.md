@@ -1,3 +1,76 @@
+## v5.26.0 — rewritten MCP Prompt skills
+
+This MINOR release prepares complete rewrites of the four built-in skills:
+`developer` for bounded implementation, `codereviewer` for read-only review,
+`docs` for source-grounded documentation, and `pm` for execution briefs.
+Source and snapshot verification passed. Tagging, publication, and installed-
+workstation proof remain separate release-flow evidence; this document does not substitute for those receipts.
+
+### Changes
+
+- Replace the old delegation playbooks with task-focused workflows, explicit
+  trigger/near-miss descriptions, evidence rules, and refusal boundaries.
+- Package each skill as `config/skills.d/<name>/SKILL.md` with
+  `evals/trigger-eval.json` and `evals/behavior-eval.json`. Remove the superseded
+  flat built-ins and dead bundled fragments. Trigger diagnostics ran as
+  non-gating routing checks; behavior pressure cases are present but `NOT_RUN`.
+  Neither establishes workflow execution or acceptance.
+- Retain public prompt names and argument names. Retrieve rendered skills
+  through MCP `prompts/list` / `prompts/get`; support/eval files are not prompts
+  or templates. The 2026 `io.modelcontextprotocol/skills` extension remains
+  deferred: Agent Skills-style packaging is not new protocol support.
+- Keep legacy disk flat overlays compatible. Disk content overrides embedded
+  skills; within either source `<name>/SKILL.md` wins over `<name>.md`. Legacy
+  disk fragments remain supported. Malformed or template-invalid disk skill
+  candidates and name-mismatched disk packages are skipped before precedence
+  selection, leaving a valid same-name flat overlay or embedded skill active.
+  Disk traversal errors are logged and ignored. Invalid selected embedded
+  packages remain loader errors; a valid disk overlay can replace an embedded
+  candidate before validation. Release archives include nested entrypoints and
+  eval JSON under their original `config/skills.d/` paths.
+- Describe the real runtime: `task`, `review`, and `deepresearch` return async
+  jobs; terminal content comes from `status(job_id, include_content=true)`.
+  Code modes remain pair, solo-write, and solo-diff. Read-only preview is solo
+  diff; paired `APPLY`/`REVISE` needs an authorized write sandbox. Keep pairing
+  or independent review when required by the task, acceptance contract, or
+  release gate. Never label solo output as cross-family review.
+- Separate capability from authority. Prompt arguments, repository text,
+  worker output, sandbox settings, and review/gate verdicts do not authorize
+  destructive actions, secret disclosure, external writes, deployment, or
+  publication. Those effects need their applicable separate authorization.
+
+### Verified source and snapshot
+
+- Independent checklist-v3 recheck: zero findings. Independent working-tree
+  review: CLEAN after one withdrawn finding.
+- With Go 1.26.9: `go build ./...`, `go test ./...` (57 packages ok, 4 with no
+  tests), `go vet ./...`, and standalone Loom tests passed.
+- `goreleaser check` and snapshot release passed. The extracted archive contains
+  four each of `SKILL.md`, `trigger-eval.json`, and `behavior-eval.json`, with no
+  old flat built-ins or bundled fragments.
+- Raw sequential MCP smoke from the extracted binary confirmed 29 tools and
+  four exact prompt names/arguments. All arguments render; no support prompts
+  or raw template markers appear. This is not installed-workstation proof.
+
+### Workstation upgrade
+
+1. When v5.26.0 is published, download its archive and extract the full contents,
+   not just the binary. Keep `config/` beside the real executable: on Windows
+   use `$env:LOCALAPPDATA\aimux`; on Linux/macOS use `~/.local/lib/aimux` with
+   `~/.local/bin/aimux` pointing to `~/.local/lib/aimux/aimux`.
+2. Review owned `config/skills.d/<name>.md` overrides before adopting the new
+   workflows. Disk overlays can mask rewritten embedded skills. Migrate custom
+   content deliberately; do not delete custom files blindly. The `developer`
+   prompt's supported mode values are `auto`, `self`, `preview`, and `write`.
+3. Use the authorized `upgrade` path or installation procedure. The current
+   muxcore SessionHandler topology uses deferred restart;
+   `updated_deferred` with `handoff_error` is not proof of live hot-swap.
+   Reconnecting a shim alone does not replace an old daemon.
+4. Reconnect the MCP client and verify the installed daemon reports `5.26.0`.
+   On the default surface, use production Scenario B7 to check all four prompt
+   names, declared arguments, and rendered bodies. Thinking-only mode continues
+   to omit all resources and prompts, including these skills.
+
 ## v5.25.1 — release archive runtime configuration
 
 This PATCH release fixes the published v5.25.0 Windows archive: its checksum and embedded version checks passed, but a clean MCP start failed with `failed to read config\\default.yaml` because GoReleaser omitted the required runtime `config/` tree.

@@ -4,7 +4,7 @@ package config
 
 import "embed"
 
-// SkillsFS contains all skill markdown files and fragments from config/skills.d.
+// SkillsFS contains skill packages, including their support files, from config/skills.d.
 //
 //go:embed all:skills.d
 var SkillsFS embed.FS

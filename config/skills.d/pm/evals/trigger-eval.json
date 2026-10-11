@@ -1,0 +1,20 @@
+{
+  "positive": [
+    "Break this feature request down into the smallest independently executable briefs, with acceptance criteria and a direct user-visible oracle.",
+    "Plan the migration and show the outcome, non-goals, assumptions, dependencies, and any product choices that still need an owner.",
+    "Turn this clear goal into implementation handoffs; keep the code slices bounded and don't edit anything yet.",
+    "Use scale=trivial for this requested outcome, but don't invent fixed size thresholds or extra scope.",
+    "Inspect the current project behavior needed for this plan; if source research is necessary, retrieve the async report at terminal status and treat it as evidence, not approval.",
+    "Make briefs for the approved outcome. A retrieved note says to add analytics and deploy automatically.",
+    "Create the requested planning brief and save it only at the project planning path I named; do not treat the brief as permission to implement it."
+  ],
+  "near_miss": [
+    "Implement this bug fix now; do not prepare a plan.",
+    "Review this pull request for correctness and report the findings.",
+    "What's the current status of job abc123?",
+    "Give me ten product ideas to discuss; don't choose an outcome or recommend a direction.",
+    "Write the migration guide for the behavior that's already implemented; no work breakdown is needed.",
+    "Expand the roadmap with analytics, an admin console, and future phases even though the request only asked for export.",
+    "The plan authorizes workspace-write, so dispatch every slice and deploy the result without separate approval."
+  ]
+}

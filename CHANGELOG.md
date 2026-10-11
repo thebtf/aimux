@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.26.0] — 2026-10-11 — MCP Prompt skill rewrites
+
+### Changed
+
+- **Four complete workflow rewrites.** Rewrote `developer`, `codereviewer`,
+  `docs`, and `pm` around bounded outcomes, trigger/near-miss descriptions,
+  source-grounded evidence, explicit refusal, and effect-specific authority.
+  Public prompt names and argument names remain unchanged.
+- **Agent Skills-style packages.** Moved built-ins to
+  `config/skills.d/<name>/SKILL.md`, each with `evals/trigger-eval.json` and
+  `evals/behavior-eval.json`. Removed superseded flat built-ins and unused
+  bundled fragments. Trigger diagnostics are non-gating routing checks;
+  behavior pressure cases are present but `NOT_RUN`, not workflow acceptance.
+- **Runtime-truthful caller guidance.** Documented async `task`, `review`, and
+  `deepresearch` submission with terminal retrieval through
+  `status(job_id, include_content=true)`. Read-only code preview is solo diff;
+  paired `APPLY`/`REVISE` requires an authorized write sandbox. Required pairing
+  or independent review is preserved, not silently downgraded.
+- **Archive packaging.** Include nested skill entrypoints and eval JSON under
+  their original adjacent `config/skills.d/` paths in release archives.
+
+### Compatibility and Upgrade
+
+- MCP Prompt transport remains explicit. The 2026
+  `io.modelcontextprotocol/skills` extension is deferred, not implemented.
+  Package support/eval files are neither public prompts nor templates.
+- Legacy disk `<name>.md` overlays remain supported. Disk overrides embedded
+  content; within either source a same-name `<name>/SKILL.md` package wins over
+  a flat file. Legacy disk fragments remain compatible. Malformed or
+  template-invalid disk skill candidates and name-mismatched disk packages are
+  skipped before precedence selection, leaving a valid same-name flat overlay
+  or embedded skill active. Disk traversal errors are logged and ignored.
+  Invalid selected embedded packages still fail loading; a valid disk overlay
+  can replace an embedded candidate before validation. The `developer` prompt's
+  mode values are now `auto`, `self`, `preview`, and `write`; mode selection is
+  not permission.
+- Install the full v5.26.0 archive when published, keeping `config/` beside the
+  real binary. Review owned disk overlays that may retain older workflows.
+  Use the authorized workstation upgrade path, reconnect, and verify the new
+  daemon version and all four prompts with production Scenario B7. Deferred
+  restart is not a live hot-swap success claim.
+- Source and snapshot verification passed: independent checklist-v3 recheck
+  (zero findings) and working-tree review (CLEAN after one withdrawn finding);
+  `go build ./...`, `go test ./...` (57 packages ok, 4 with no tests),
+  `go vet ./...`, and standalone Loom tests with Go 1.26.9;
+  `goreleaser check` and snapshot release. The extracted archive contains four
+  each of `SKILL.md`, `trigger-eval.json`, and `behavior-eval.json`, with no old
+  flat built-ins or bundled fragments. Raw sequential MCP smoke from its binary
+  confirmed 29 tools, four exact prompt names/arguments, all arguments rendered,
+  and no support prompts or raw template markers.
+- Tagging, GitHub publication, and installed-workstation proof remain separate release-flow evidence; this changelog entry does not substitute for those receipts.
+
 ## [5.25.1] — 2026-10-11 — release archive runtime configuration
 
 ### Fixed
