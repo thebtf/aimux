@@ -143,21 +143,36 @@ jobs:
           mcp_out=${MCP[0]}
           printf '%s\n' \
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"archive-smoke","version":"1"}}}' \
-            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' >& "$mcp_in"
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' >& "$mcp_in"
           : > "$smoke/responses.jsonl"
-          while IFS= read -r -t 60 response <& "$mcp_out"; do
-            printf '%s\n' "$response" >> "$smoke/responses.jsonl"
-            if jq -e 'select(.id == 2)' <<< "$response" > /dev/null; then
+          tools_list_id=2
+          for attempt in 1 2 3 4 5; do
+            tools_catalog=''
+            printf '{"jsonrpc":"2.0","id":%d,"method":"tools/list","params":{}}\n' "$tools_list_id" >& "$mcp_in"
+            while IFS= read -r -t 60 response <& "$mcp_out"; do
+              printf '%s\n' "$response" >> "$smoke/responses.jsonl"
+              if jq -e --argjson id "$tools_list_id" 'select(.id == $id)' <<< "$response" > /dev/null; then
+                tools_catalog=$response
+                break
+              fi
+            done
+            if jq -e '.result.tools | type == "array"' <<< "$tools_catalog" > /dev/null; then
               break
             fi
+            if [[ $attempt -eq 5 ]] || ! jq -e '.error.code == -32603 and (.error.message | startswith("project not connected:"))' <<< "$tools_catalog" > /dev/null; then
+              break
+            fi
+            sleep 1
+            tools_list_id=$((attempt + 11))
           done
-          jq -se '
+          cat "$smoke/responses.jsonl"
+          jq -se --argjson tools_id "$tools_list_id" '
             [.[] | select(.id == 1)] as $initialize |
-            [.[] | select(.id == 2)] as $tools |
+            [.[] | select(.id == $tools_id)] as $tools |
             ($initialize | length) == 1 and
             $initialize[0].result.protocolVersion == "2024-11-05" and
             ($tools | length) == 1 and
+            $tools[0].error == null and
             ($tools[0].result.tools | type) == "array" and
             ($tools[0].result.tools | length) == 29
           ' "$smoke/responses.jsonl"
