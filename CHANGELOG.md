@@ -35,9 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Package support/eval files are neither public prompts nor templates.
 - Legacy disk `<name>.md` overlays remain supported. Disk overrides embedded
   content; within either source a same-name `<name>/SKILL.md` package wins over
-  a flat file. Legacy disk fragments remain compatible; a package/frontmatter
-  name mismatch is a loader error. The `developer` prompt's mode values are
-  now `auto`, `self`, `preview`, and `write`; mode selection is not permission.
+  a flat file. Legacy disk fragments remain compatible. A malformed or
+  name-mismatched disk package is skipped before precedence selection, leaving
+  a valid same-name flat overlay or embedded skill active; invalid embedded
+  packages still fail loading. The `developer` prompt's mode values are now
+  `auto`, `self`, `preview`, and `write`; mode selection is not permission.
 - Install the full v5.26.0 archive when published, keeping `config/` beside the
   real binary. Review owned disk overlays that may retain older workflows.
   Use the authorized workstation upgrade path, reconnect, and verify the new

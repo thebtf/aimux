@@ -456,15 +456,34 @@ func TestEngineRejectsInvalidPackage(t *testing.T) {
 		skillFile("different", "Wrong identity", "", "body"),
 		[]byte("no frontmatter"),
 	} {
-		for _, disk := range []bool{false, true} {
+		for _, source := range []string{"embedded", "disk", "disk-flat"} {
+			disk := source != "embedded"
 			embedded := fstest.MapFS{"debug/SKILL.md": &fstest.MapFile{Data: content}}
 			diskDir := ""
+			want := "embedded winner"
 			if disk {
+				if source == "disk-flat" {
+					want = "disk flat winner"
+					embedded["debug.md"] = &fstest.MapFile{Data: skillFile("debug", "Disk flat", "", want)}
+				}
 				diskDir = writeSkillFiles(t, embedded)
-				embedded = fstest.MapFS{"debug.md": &fstest.MapFile{Data: skillFile("debug", "Embedded", "", "body")}}
+				embedded = fstest.MapFS{"debug/SKILL.md": &fstest.MapFile{Data: skillFile("debug", "Embedded", "", "embedded winner")}}
 			}
 			eng := NewEngine()
 			err := eng.Load(embedded, diskDir)
+			if disk {
+				if err != nil {
+					t.Fatalf("Load invalid disk package overlay = %v", err)
+				}
+				out, err := eng.Render("debug", &SkillData{})
+				if err != nil || out != want {
+					t.Fatalf("invalid disk package lost fallback (%s): %q, %v, want %q", source, out, err, want)
+				}
+				if len(eng.Skills()) != 1 || eng.Get("different") != nil {
+					t.Fatal("invalid disk package was exposed")
+				}
+				continue
+			}
 			if err == nil || !strings.Contains(err.Error(), "debug/SKILL.md") {
 				t.Fatalf("Load invalid package (disk=%v) = %v", disk, err)
 			}

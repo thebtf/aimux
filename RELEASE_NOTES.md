@@ -21,9 +21,11 @@ workstation proof remain separate release-flow evidence; this document does not 
   deferred: Agent Skills-style packaging is not new protocol support.
 - Keep legacy disk flat overlays compatible. Disk content overrides embedded
   skills; within either source `<name>/SKILL.md` wins over `<name>.md`. Legacy
-  disk fragments remain supported, while a package/frontmatter name mismatch
-  is a loader error. Release archives include nested entrypoints and eval JSON
-  under their original `config/skills.d/` paths.
+  disk fragments remain supported. A malformed or name-mismatched disk package
+  is skipped before precedence selection, leaving a valid same-name flat
+  overlay or embedded skill active; invalid embedded packages remain loader
+  errors. Release archives include nested entrypoints and eval JSON under their
+  original `config/skills.d/` paths.
 - Describe the real runtime: `task`, `review`, and `deepresearch` return async
   jobs; terminal content comes from `status(job_id, include_content=true)`.
   Code modes remain pair, solo-write, and solo-diff. Read-only preview is solo

@@ -136,27 +136,33 @@ func (e *Engine) Load(embedded fs.FS, diskDir string) error {
 			if packaged {
 				slug = dir
 			}
+			c := candidate{fsys: fsys, path: filePath, packaged: packaged, rawFragment: rawFragment}
+			if disk && !c.rawFragment {
+				raw, err := fs.ReadFile(c.fsys, c.path)
+				if err != nil {
+					log.Printf("skip %s: %v", c.path, err)
+					return nil
+				}
+				c.meta, err = parseFrontmatter(raw)
+				if err != nil {
+					log.Printf("skip %s: %v", c.path, err)
+					return nil
+				}
+				if c.packaged && c.meta.Name != slug {
+					log.Printf("skip %s: frontmatter name %q does not match package name %q", c.path, c.meta.Name, slug)
+					return nil
+				}
+			}
 			if previous, exists := selected[slug]; exists && previous.packaged && !packaged {
 				return nil
 			}
-			selected[slug] = candidate{fsys: fsys, path: filePath, packaged: packaged, rawFragment: rawFragment}
+			selected[slug] = c
 			return nil
 		})
 		if err != nil {
 			return err
 		}
 		for slug, c := range selected {
-			if disk && !c.packaged && !c.rawFragment {
-				raw, err := fs.ReadFile(c.fsys, c.path)
-				if err != nil {
-					return fmt.Errorf("read %s: %w", c.path, err)
-				}
-				c.meta, err = parseFrontmatter(raw)
-				if err != nil {
-					log.Printf("skip %s: %v", c.path, err)
-					continue
-				}
-			}
 			if disk {
 				if _, exists := candidates[slug]; exists {
 					log.Printf("skill %q overridden by disk: %s", slug, c.path)

@@ -202,10 +202,16 @@ jobs:
             sleep 1
             prompt_list_id=$((attempt + 7))
           done
-          jq -e '
+          if ! jq -e '
             [.result.prompts[].name] | sort ==
             ["background", "codereviewer", "developer", "docs", "guide", "investigate", "pm", "workflow"]
-          ' <<< "$prompt_catalog"
+          ' <<< "$prompt_catalog" > /dev/null 2>&1; then
+            printf '::error::Invalid prompts/list response: %s\n' "$prompt_catalog" >&2
+            exec {mcp_in}>&-
+            wait "$mcp_pid" || true
+            cat "$smoke/stderr.log" >&2
+            exit 1
+          fi
           jq -c '
             .result.prompts |
             map(select(.name == "developer" or .name == "codereviewer" or .name == "docs" or .name == "pm")) |
