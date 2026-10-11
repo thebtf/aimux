@@ -130,12 +130,9 @@ jobs:
           mkdir -p "$smoke/payload" "$smoke/home" "$smoke/work" "$smoke/bin"
           tar -xzf "${archives[0]}" -C "$smoke/payload"
           ln -s "$smoke/payload/aimux" "$smoke/bin/aimux"
-          mkdir -p "$smoke/prompts-payload"
-          cp "$smoke/payload/aimux" "$smoke/prompts-payload/aimux"
-          cp -a "$smoke/payload/config" "$smoke/prompts-payload/config"
           export HOME="$smoke/home"
           export AIMUX_WARMUP=false
-          export AIMUX_MCP_THINKING_ONLY=1
+          export AIMUX_MCP_THINKING_ONLY=0
           export AIMUX_ENGINE_NAME="aimux-archive-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           export AIMUX_STDIN_EOF_POLICY=eager
           unset AIMUX_CONFIG_DIR
@@ -155,12 +152,6 @@ jobs:
               break
             fi
           done
-          exec {mcp_in}>&-
-          if ! wait "$mcp_pid"; then
-            cat "$smoke/stderr.log" >&2
-            exit 1
-          fi
-          cat "$smoke/responses.jsonl"
           jq -se '
             [.[] | select(.id == 1)] as $initialize |
             [.[] | select(.id == 2)] as $tools |
@@ -168,25 +159,16 @@ jobs:
             $initialize[0].result.protocolVersion == "2024-11-05" and
             ($tools | length) == 1 and
             ($tools[0].result.tools | type) == "array" and
-            ($tools[0].result.tools | length) == 22
+            ($tools[0].result.tools | length) == 29
           ' "$smoke/responses.jsonl"
 
-          export AIMUX_MCP_THINKING_ONLY=0
-          export AIMUX_ENGINE_NAME="aimux-archive-prompts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          coproc MCP { timeout --kill-after=5s 60s "$smoke/prompts-payload/aimux" 2> "$smoke/prompts-stderr.log"; }
-          mcp_pid=$MCP_PID
-          mcp_in=${MCP[1]}
-          mcp_out=${MCP[0]}
-          printf '%s\n' \
-            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"archive-prompts-smoke","version":"1"}}}' \
-            '{"jsonrpc":"2.0","method":"notifications/initialized"}' >& "$mcp_in"
-          : > "$smoke/prompts-responses.jsonl"
-          prompt_catalog=''
+          prompt_list_id=3
           for attempt in 1 2 3 4 5; do
-            printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"prompts/list","params":{}}' >& "$mcp_in"
+            prompt_catalog=''
+            printf '{"jsonrpc":"2.0","id":%d,"method":"prompts/list","params":{}}\n' "$prompt_list_id" >& "$mcp_in"
             while IFS= read -r -t 60 response <& "$mcp_out"; do
-              printf '%s\n' "$response" >> "$smoke/prompts-responses.jsonl"
-              if jq -e 'select(.id == 2)' <<< "$response" > /dev/null; then
+              printf '%s\n' "$response" >> "$smoke/responses.jsonl"
+              if jq -e --argjson id "$prompt_list_id" 'select(.id == $id)' <<< "$response" > /dev/null; then
                 prompt_catalog=$response
                 break
               fi
@@ -194,10 +176,11 @@ jobs:
             if jq -e '.result.prompts | type == "array"' <<< "$prompt_catalog" > /dev/null; then
               break
             fi
-            if ! jq -e '.error.code == -32603 and (.error.message | startswith("project not connected:"))' <<< "$prompt_catalog" > /dev/null; then
+            if [[ $attempt -eq 5 ]] || ! jq -e '.error.code == -32603 and (.error.message | startswith("project not connected:"))' <<< "$prompt_catalog" > /dev/null; then
               break
             fi
             sleep 1
+            prompt_list_id=$((attempt + 7))
           done
           jq -e '
             [.result.prompts[].name] | sort ==
@@ -208,7 +191,7 @@ jobs:
             map(select(.name == "developer" or .name == "codereviewer" or .name == "docs" or .name == "pm")) |
             sort_by(.name) | to_entries[] |
             .value.name as $name |
-            {jsonrpc: "2.0", id: (.key + 3), method: "prompts/get", params: {
+            {jsonrpc: "2.0", id: (.key + 4), method: "prompts/get", params: {
               name: $name,
               arguments: ((.value.arguments // []) | map({key: .name, value:
                 (if .name == "as_gate" then "true" else "archive-argument-" + $name + "-" + .name end)
@@ -219,7 +202,7 @@ jobs:
             request_id=$(jq -r '.id' <<< "$request")
             printf '%s\n' "$request" >& "$mcp_in"
             while IFS= read -r -t 60 response <& "$mcp_out"; do
-              printf '%s\n' "$response" >> "$smoke/prompts-responses.jsonl"
+              printf '%s\n' "$response" >> "$smoke/responses.jsonl"
               if jq -e --argjson id "$request_id" 'select(.id == $id)' <<< "$response" > /dev/null; then
                 break
               fi
@@ -227,10 +210,10 @@ jobs:
           done < "$smoke/prompts-requests.jsonl"
           exec {mcp_in}>&-
           if ! wait "$mcp_pid"; then
-            cat "$smoke/prompts-stderr.log" >&2
+            cat "$smoke/stderr.log" >&2
             exit 1
           fi
-          cat "$smoke/prompts-responses.jsonl"
+          cat "$smoke/responses.jsonl"
           jq -se --slurpfile requests "$smoke/prompts-requests.jsonl" '
             . as $responses |
             [.[] | select(.id == 1)] as $initialize |
@@ -246,7 +229,7 @@ jobs:
               ([$reply[0].result.messages[].content.text // ""] | join("\n") |
                 . as $text | all($request.params.arguments[]; . as $value | $text | contains($value)))
             )
-          ' "$smoke/prompts-responses.jsonl"
+          ' "$smoke/responses.jsonl"
 
   lint:
     runs-on: ubuntu-latest
