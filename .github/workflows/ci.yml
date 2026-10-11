@@ -176,16 +176,25 @@ jobs:
           mcp_out=${MCP[0]}
           printf '%s\n' \
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"archive-prompts-smoke","version":"1"}}}' \
-            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-            '{"jsonrpc":"2.0","id":2,"method":"prompts/list","params":{}}' >& "$mcp_in"
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' >& "$mcp_in"
           : > "$smoke/prompts-responses.jsonl"
           prompt_catalog=''
-          while IFS= read -r -t 60 response <& "$mcp_out"; do
-            printf '%s\n' "$response" >> "$smoke/prompts-responses.jsonl"
-            if jq -e 'select(.id == 2)' <<< "$response" > /dev/null; then
-              prompt_catalog=$response
+          for attempt in 1 2 3 4 5; do
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"prompts/list","params":{}}' >& "$mcp_in"
+            while IFS= read -r -t 60 response <& "$mcp_out"; do
+              printf '%s\n' "$response" >> "$smoke/prompts-responses.jsonl"
+              if jq -e 'select(.id == 2)' <<< "$response" > /dev/null; then
+                prompt_catalog=$response
+                break
+              fi
+            done
+            if jq -e '.result.prompts | type == "array"' <<< "$prompt_catalog" > /dev/null; then
               break
             fi
+            if ! jq -e '.error.code == -32603 and (.error.message | startswith("project not connected:"))' <<< "$prompt_catalog" > /dev/null; then
+              break
+            fi
+            sleep 1
           done
           jq -e '
             [.result.prompts[].name] | sort ==
