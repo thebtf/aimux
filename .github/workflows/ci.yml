@@ -130,6 +130,9 @@ jobs:
           mkdir -p "$smoke/payload" "$smoke/home" "$smoke/work" "$smoke/bin"
           tar -xzf "${archives[0]}" -C "$smoke/payload"
           ln -s "$smoke/payload/aimux" "$smoke/bin/aimux"
+          mkdir -p "$smoke/prompts-payload"
+          cp "$smoke/payload/aimux" "$smoke/prompts-payload/aimux"
+          cp -a "$smoke/payload/config" "$smoke/prompts-payload/config"
           export HOME="$smoke/home"
           export AIMUX_WARMUP=false
           export AIMUX_MCP_THINKING_ONLY=1
@@ -170,7 +173,7 @@ jobs:
 
           export AIMUX_MCP_THINKING_ONLY=0
           export AIMUX_ENGINE_NAME="aimux-archive-prompts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          coproc MCP { timeout --kill-after=5s 60s "$smoke/bin/aimux" 2> "$smoke/prompts-stderr.log"; }
+          coproc MCP { timeout --kill-after=5s 60s "$smoke/prompts-payload/aimux" 2> "$smoke/prompts-stderr.log"; }
           mcp_pid=$MCP_PID
           mcp_in=${MCP[1]}
           mcp_out=${MCP[0]}
